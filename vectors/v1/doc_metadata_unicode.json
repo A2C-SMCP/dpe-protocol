@@ -1,0 +1,61 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "doc_metadata_unicode",
+  "description": "doc_metadata：非 ASCII 键、emoji 键、嵌套对象、带时区时间、引用 URI",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": "2026-01-02T03:04:05+00:00",
+      "last_modified": "2026-09-01T12:00:00",
+      "languages": [
+        "zho",
+        "eng"
+      ],
+      "filename": "手册.md",
+      "summary": "摘要 ✅",
+      "global_dict": {
+        "甲方": "图灵",
+        "乙方": "Acme"
+      },
+      "forward_citation_uris": [
+        "https://acme.com/a"
+      ],
+      "x-来源": {
+        "z": 1,
+        "a": [
+          1,
+          "二"
+        ],
+        "😀": true,
+        "￿": 0,
+        "𠀋": 1
+      }
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "p",
+        "elements": [
+          {
+            "category": "NarrativeText",
+            "element_id": "e24",
+            "text": "x"
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "e742abc7c8651d42db9d6572cba14b1c"
+      ]
+    ],
+    "page_hashes": {
+      "0": "68a35875004e5e6075f3f1bfc277de7c"
+    },
+    "doc_hash": "eca8483e6b18f32aadff4eadff6bc656"
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "page_numbers_unsorted",
+  "description": "页编号非连续、非 0 起始、数组乱序：doc_hash 按 number 升序",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": null
+    },
+    "pages": [
+      {
+        "number": 5,
+        "title": "五",
+        "elements": [
+          {
+            "category": "NarrativeText",
+            "element_id": "e28",
+            "text": "5"
+          }
+        ]
+      },
+      {
+        "number": 2,
+        "title": "二",
+        "elements": [
+          {
+            "category": "NarrativeText",
+            "element_id": "e29",
+            "text": "2"
+          }
+        ]
+      },
+      {
+        "number": 10,
+        "title": "十",
+        "elements": [
+          {
+            "category": "NarrativeText",
+            "element_id": "e30",
+            "text": "10"
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "6d88545e011228fbda15d430b16f3dcf"
+      ],
+      [
+        "213d185bfe1b0aced4589432b9d0e268"
+      ],
+      [
+        "dd1dea046a6a3e109062bb5f7ddc18b8"
+      ]
+    ],
+    "page_hashes": {
+      "5": "bf4b8dc10e6d6f931e310da22a1fe532",
+      "2": "d4b311bf0a58c39df2a27ac8b08521a5",
+      "10": "791eae82acffad272aee3ce53e16d31b"
+    },
+    "doc_hash": "0c9f2b9a560ffca31517edd81ad7f040"
+  }
+}

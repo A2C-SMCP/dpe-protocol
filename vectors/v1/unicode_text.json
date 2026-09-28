@@ -1,0 +1,49 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "unicode_text",
+  "description": "CJK / emoji（U+FFFF 以上）/ 组合字符 / RTL",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": null
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "😀 标题",
+        "elements": [
+          {
+            "category": "NarrativeText",
+            "element_id": "e21",
+            "text": "𠀋𩸽 emoji 👨‍👩‍👧"
+          },
+          {
+            "category": "NarrativeText",
+            "element_id": "e22",
+            "text": "é café"
+          },
+          {
+            "category": "NarrativeText",
+            "element_id": "e23",
+            "text": "مرحبا بالعالم"
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "6827c57f92a9926f23db547370a7c87b",
+        "9996b33f9f99fb36544b6c87d348e9f7",
+        "9ac23e85169f6cf86c8184603c1a852f"
+      ]
+    ],
+    "page_hashes": {
+      "0": "037d5404a92b934786a3bedda8677a78"
+    },
+    "doc_hash": "0bfa620bf8114c832b7dc6c3b4ed48e5"
+  }
+}

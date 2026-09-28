@@ -1,0 +1,40 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "table_html_changed",
+  "description": "负例：Table 仅 text_as_html 不同",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": null
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "表",
+        "elements": [
+          {
+            "category": "Table",
+            "element_id": "e12",
+            "text": "a b",
+            "ele_metadata": {
+              "text_as_html": "<table><tr><td>a b</td></tr></table>"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "5a6675abaef1e40a60597f06d8540e15"
+      ]
+    ],
+    "page_hashes": {
+      "0": "a759592b837a5fd2f967cecfab7ed49e"
+    },
+    "doc_hash": "09fcba0cbef83abbc6e54871096fbc9a"
+  }
+}

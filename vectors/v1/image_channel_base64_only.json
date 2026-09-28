@@ -1,0 +1,41 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "image_channel_base64_only",
+  "description": "Image 仅 base64 通道",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": null
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "图",
+        "elements": [
+          {
+            "category": "Image",
+            "element_id": "e9",
+            "text": "示意图",
+            "ele_metadata": {
+              "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+              "image_mime_type": "image/png"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "c62a97eb5136afb1acb075b3cfa19a3d"
+      ]
+    ],
+    "page_hashes": {
+      "0": "fbfce5535ef7a697bbdaac706573fa9b"
+    },
+    "doc_hash": "347e79b65d2dc7f364707ead01877a32"
+  }
+}

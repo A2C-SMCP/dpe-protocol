@@ -1,0 +1,59 @@
+{
+  "algo_version": "v1",
+  "generator": "scripts/gen_vectors.py (TFRobot kernel DefaultHashStrategy)",
+  "provenance": {
+    "tfrobot_version": "0.9.4a4",
+    "pydantic_version": "2.11.10",
+    "pydantic_core_version": "2.33.2",
+    "python_version": "3.11.16",
+    "generated_at": "2026-09-28T03:51:12Z",
+    "hosting": "temporary: hosted in dpe-protocol, to be handed over to the TFRobot kernel repository"
+  },
+  "cases": [
+    "element_text_basic",
+    "null_normalization",
+    "image_channel_priority",
+    "image_channel_url_changed",
+    "image_channel_base64_only",
+    "image_mime_changed",
+    "table_html",
+    "table_html_changed",
+    "formula_html",
+    "non_identity_metadata_ignored",
+    "page_order",
+    "page_order_swapped",
+    "unicode_text",
+    "doc_metadata_unicode",
+    "doc_metadata_numbers_escapes",
+    "doc_metadata_datetimes",
+    "doc_metadata_datetime_naive_micro",
+    "page_numbers_unsorted",
+    "empty_document",
+    "empty_page",
+    "long_element",
+    "file_uri_normalization",
+    "file_type_changed"
+  ],
+  "distinct_pairs": [
+    [
+      "image_channel_priority",
+      "image_channel_url_changed"
+    ],
+    [
+      "image_channel_base64_only",
+      "image_mime_changed"
+    ],
+    [
+      "table_html",
+      "table_html_changed"
+    ],
+    [
+      "page_order",
+      "page_order_swapped"
+    ],
+    [
+      "file_uri_normalization",
+      "file_type_changed"
+    ]
+  ]
+}

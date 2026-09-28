@@ -1,0 +1,51 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "doc_metadata_numbers_escapes",
+  "description": "json_stable：浮点数 repr（科学计数法边界）、控制字符与引号转义",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": null,
+      "x-num": {
+        "one": 1.0,
+        "half": 0.5,
+        "big": 1e+16,
+        "below_big": 1234567890123456.0,
+        "small": 1.5e-05,
+        "edge": 0.0001,
+        "neg": -2.5,
+        "negzero": -0.0,
+        "int": 10,
+        "negint": -7,
+        "pi": 3.141592653589793
+      },
+      "x-str": "tab\there\nnew \"quote\" back\\slash \u0001\u001f    é"
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "p",
+        "elements": [
+          {
+            "category": "NarrativeText",
+            "element_id": "e25",
+            "text": "x"
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "e742abc7c8651d42db9d6572cba14b1c"
+      ]
+    ],
+    "page_hashes": {
+      "0": "68a35875004e5e6075f3f1bfc277de7c"
+    },
+    "doc_hash": "24c368e8d96772d80fa6f00fd8c450e1"
+  }
+}

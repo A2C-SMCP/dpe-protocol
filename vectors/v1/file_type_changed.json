@@ -1,0 +1,37 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "file_type_changed",
+  "description": "负例：file_type 不同",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "txt",
+    "doc_metadata": {
+      "created_at": null
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "p",
+        "elements": [
+          {
+            "category": "NarrativeText",
+            "element_id": "e33",
+            "text": "x"
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "e742abc7c8651d42db9d6572cba14b1c"
+      ]
+    ],
+    "page_hashes": {
+      "0": "68a35875004e5e6075f3f1bfc277de7c"
+    },
+    "doc_hash": "a44404dcc15b11708f79cb49f4b352fe"
+  }
+}

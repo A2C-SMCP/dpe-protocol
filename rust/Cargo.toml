@@ -1,0 +1,47 @@
+[package]
+name = "dpe-protocol"
+version = "0.1.0-dev"
+edition = "2021"
+rust-version = "1.80"
+description = "DPE (Document / Page / Element) protocol layer: incremental document push to TFRobot via dpe-push/1, with validation and conformance checks"
+license = "MIT"
+repository = "https://github.com/A2C-SMCP/dpe-protocol"
+keywords = ["dpe", "document", "robot", "incremental-sync"]
+readme = "README.md"
+
+[features]
+default = ["reqwest"]
+## 基于 reqwest 的 HTTP 传输实现
+reqwest = ["dep:reqwest"]
+## 内存版 Robot 服务端（FakeRobotServer），用于测试与本地联调
+testing = []
+
+[dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+flate2 = "1"
+futures = "0.3"
+hex = "0.4"
+percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "sync", "time"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+dpe-protocol = { path = ".", features = ["testing"] }
+regex = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+
+[[example]]
+name = "push_markdown_dir"
+required-features = ["testing"]
+
+[[example]]
+name = "push_dpe_json"
+required-features = ["testing"]

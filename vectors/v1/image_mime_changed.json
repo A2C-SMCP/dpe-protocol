@@ -1,0 +1,41 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "image_mime_changed",
+  "description": "负例：仅 image_mime_type 不同",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": null
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "图",
+        "elements": [
+          {
+            "category": "Image",
+            "element_id": "e10",
+            "text": "示意图",
+            "ele_metadata": {
+              "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+              "image_mime_type": "image/jpeg"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "305ba77ea0b09978922b1cfb032200b2"
+      ]
+    ],
+    "page_hashes": {
+      "0": "bbac5457bd3fa36e283c7f400ab2fd6a"
+    },
+    "doc_hash": "011516ce666a9a721243e66ff7877ef6"
+  }
+}

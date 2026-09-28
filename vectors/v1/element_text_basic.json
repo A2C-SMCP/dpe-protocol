@@ -1,0 +1,49 @@
+{
+  "algo_version": "v1",
+  "hash_strategy_uri": "hash-strategy://default?algo_version=v1",
+  "case": "element_text_basic",
+  "description": "基础文本 element：Title + NarrativeText + ListItem（CJK）",
+  "input": {
+    "file_uri": "dpe://acme/handbook",
+    "file_type": "md",
+    "doc_metadata": {
+      "created_at": null
+    },
+    "pages": [
+      {
+        "number": 0,
+        "title": "第一章",
+        "elements": [
+          {
+            "category": "Title",
+            "element_id": "e1",
+            "text": "员工手册"
+          },
+          {
+            "category": "NarrativeText",
+            "element_id": "e2",
+            "text": "欢迎加入。"
+          },
+          {
+            "category": "ListItem",
+            "element_id": "e3",
+            "text": "第一条"
+          }
+        ]
+      }
+    ]
+  },
+  "expect": {
+    "content_hashes": [
+      [
+        "51e904aa0faa8d1188ec566a22df2e5e",
+        "3a04110fb7658ceff887d277d8602883",
+        "1cd01f3e1b8554790867774ce5341dfe"
+      ]
+    ],
+    "page_hashes": {
+      "0": "25db16e68adb9be8c85ce2bea316b139"
+    },
+    "doc_hash": "aa1e28899033af0357268461fcd73ab4"
+  }
+}
