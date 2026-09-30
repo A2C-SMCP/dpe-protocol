@@ -1,14 +1,12 @@
 {
   "name": "empty_document",
   "kind": "document",
-  "description": "空文档（0 页）与空页（0 元素）均合法。",
+  "description": "空文档（0 页）与空页（0 元素）均合法；契约 1 没有 doc title（#3 S6）。",
   "documents": {
     "no_pages": {
-      "title": "empty",
       "pages": []
     },
     "empty_page": {
-      "title": "empty",
       "pages": [
         {
           "number": 1,
@@ -16,25 +14,37 @@
           "elements": []
         }
       ]
+    },
+    "no_pages_with_meta": {
+      "pages": [],
+      "doc_metadata": {
+        "author": "gmq"
+      }
     }
   },
   "expected": {
     "no_pages": {
       "dpe1": {
-        "doc_hash": "dpe1:03b56e23cce08d4bfd22426ee559ec18e75b429aa416760d45fabef028fa3ded",
+        "doc_hash": "dpe1:fc1212e550a498c567b71fa295f8b53100dc88996d7e38d9cdf86f4d198c4256",
         "pages": []
       }
     },
     "empty_page": {
       "dpe1": {
-        "doc_hash": "dpe1:dbbaa7c2edb61ffd951d1b6f53acd064ecaf4630ab3cfb096d90bc1016bc2f9d",
+        "doc_hash": "dpe1:72626c0f99fce31bad281e8db5d78da2da927b1b4b55a385148681bd625153c5",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:165d8ad7a02db50a5941fb420546d3af0e06ae9198a83392ff0edd96af55992a",
+            "page_hash": "dpe1:671c0a607b842b8aea016547bb3a9de64757356bf5defd0c32568f75468b11e4",
             "elements": []
           }
         ]
+      }
+    },
+    "no_pages_with_meta": {
+      "dpe1": {
+        "doc_hash": "dpe1:8de53bbdb30ed6c894c7f25ee372b240e109d04baa052d152487ef5e261f1d3e",
+        "pages": []
       }
     }
   }

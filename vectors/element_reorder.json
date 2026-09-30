@@ -1,0 +1,75 @@
+{
+  "name": "element_reorder",
+  "kind": "document",
+  "description": "顺序属于内容身份（#3 S7）：同页元素对调，content_hash 多重集不变（delta 为 0），但 page_hash / doc_hash 变化。",
+  "documents": {
+    "before": {
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "他们离婚了"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "A 与 C 再婚了"
+            }
+          ]
+        }
+      ]
+    },
+    "after": {
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "A 与 C 再婚了"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "他们离婚了"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "before": {
+      "dpe1": {
+        "doc_hash": "dpe1:e367b223fc0850e4f0940097574654a038e9581ff46d2774059ec8db96919c35",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:bd46116770ab5452402b104bccfb9975101884c668fb3c68060e5f6c0b672b1f",
+            "elements": [
+              "dpe1:5cd21d74830921bcad407c9306b5f58d9ea31fc727da70443cbef0a3aff5a73d",
+              "dpe1:3e3541e0033e1630da52fac37329666784b3ac20f4f151138901b7c00d080d6a"
+            ]
+          }
+        ]
+      }
+    },
+    "after": {
+      "dpe1": {
+        "doc_hash": "dpe1:2bc1ca0296554c336dc088da39ee457f2883fc1e54a345045c8be10f19451cbc",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:8d3d6e788751ededa7a88ebcd2edc39dd4d5882835933b1ea0dce6c1a8c3a846",
+            "elements": [
+              "dpe1:3e3541e0033e1630da52fac37329666784b3ac20f4f151138901b7c00d080d6a",
+              "dpe1:5cd21d74830921bcad407c9306b5f58d9ea31fc727da70443cbef0a3aff5a73d"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

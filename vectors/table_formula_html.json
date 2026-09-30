@@ -4,7 +4,6 @@
   "description": "Table / Formula 的身份包含 text_as_html：text 相同而 html 不同时 hash 不同。",
   "documents": {
     "doc": {
-      "title": null,
       "pages": [
         {
           "number": 1,
@@ -37,16 +36,16 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:bb70b83d2daa7e6a3eb98b227ce2f8dd2abb442bd0d481f1b318bc06956b7cbb",
+        "doc_hash": "dpe1:6cea47678412225995cdc6113fc801834b6b503b1cf15587d8f044c77f079c6f",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:33958cc8d6743294185ad957022f7e407eba481b21bf057b258d4e56c1bab032",
+            "page_hash": "dpe1:366b5ce109f1be1fc5f24c5a427bf00756e86a6ad50c5d8801d272d7c16e65cc",
             "elements": [
-              "dpe1:e599a511dad4bf1af43f3a02b4cca4bc857dc3cfbb368067c522f6613e2c1c6b",
-              "dpe1:4ab323a7e5018381cbb59791c2ff057080e83d65088bcd2e9740175ac8ad04c9",
-              "dpe1:8e36f6d8f5cd0dc4e3dbe3348b83772105cc5f26b34082de775dfb6a817a56f1",
-              "dpe1:807b16103d4ea27bed42d2f3aa4128fac53835ac4a97eda0b0941e1b50045c5c"
+              "dpe1:6c3d12c8a5840865445da6b6ea57409a0f080fef0c5ac6e1498421047c1f6bf8",
+              "dpe1:86e1cd454118791d4bbc35235dda57027187ed662dc3a6da0fbdaf3e98bca203",
+              "dpe1:be54d7a97e1267a6e8ea7eabe11e2a31cb86274094c7f50b78be08857a12caf2",
+              "dpe1:ac14131ff73c6ace7c57dea277de03568e823c50345f139212f7dbeb42bde748"
             ]
           }
         ]

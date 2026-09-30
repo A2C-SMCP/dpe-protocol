@@ -1,10 +1,9 @@
 {
   "name": "page_number_identity",
   "kind": "document",
-  "description": "页号进入 page_hash：内容不动、只改页号，doc_hash 必须变化（否则 head 快路径漏推）。",
+  "description": "页号进入 page_hash（待评审，契约 1 §8-1）：内容不动、只改页号，doc_hash 必须变化（否则 head 快路径漏推）。",
   "documents": {
     "before": {
-      "title": null,
       "pages": [
         {
           "number": 1,
@@ -29,7 +28,6 @@
       ]
     },
     "after": {
-      "title": null,
       "pages": [
         {
           "number": 10,
@@ -57,20 +55,20 @@
   "expected": {
     "before": {
       "dpe1": {
-        "doc_hash": "dpe1:11ff6678fd27b4c9f9a63626d5ee21eda0ac04ac335319cdee0d31fff41cb842",
+        "doc_hash": "dpe1:98a9067009b9413fffbc4f552b6a31e20c2021617a39aaf95987d59587e62e86",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:3d9f21cb53c21971df44c3e9fbe7621b08633d11e6674c04f4f319fa18dcc03c",
+            "page_hash": "dpe1:c2c016f9cc207184153fdb30353abeeb34b38ed92b7fdca3e07e2018a34119de",
             "elements": [
-              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+              "dpe1:0b5f1519bf45eeb4502d048406e4f334d47d07a67742bfdae16183e3193e22cd"
             ]
           },
           {
             "number": 2,
-            "page_hash": "dpe1:b7012f4e9400b0d5794ff6d38c602ec8ab8096bc4f3b17e7b5dcb27ac882c2d0",
+            "page_hash": "dpe1:14156b5b194097485c1fb60fac8312fe15eb428a0ff266a7d6933b71ae8f7c4e",
             "elements": [
-              "dpe1:4180173be2618cffaa558770a462cd156e198377ad9ec78cb15fd8ee42b749d1"
+              "dpe1:e03c2811982c8efabb72ca2824562085f60e2180c9c0ad429dae2be09a5d0190"
             ]
           }
         ]
@@ -78,20 +76,20 @@
     },
     "after": {
       "dpe1": {
-        "doc_hash": "dpe1:6ac9d33562055c47270835921eb911b8db55b92d12da5968e54d3aef7e86a7f8",
+        "doc_hash": "dpe1:201774909c734bbe07d6ab1952d00355e157ea277d448d09e5769069ec37d4e6",
         "pages": [
           {
             "number": 10,
-            "page_hash": "dpe1:8bcd3b024f3bb70a66beef0b1cae05000523ade58beff82d30f0e0bee544a957",
+            "page_hash": "dpe1:a5466a368e6198ba23fb91ff624a059d433637c9afc46290e6508d5f9df49333",
             "elements": [
-              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+              "dpe1:0b5f1519bf45eeb4502d048406e4f334d47d07a67742bfdae16183e3193e22cd"
             ]
           },
           {
             "number": 20,
-            "page_hash": "dpe1:039363ed31070055aab3d5450c5256ba27ea995b513ba8c578a31b5e895c3950",
+            "page_hash": "dpe1:191c882a472ff2347a0dab7aac8539a1a5384214071e5e958d3ecae8792b139c",
             "elements": [
-              "dpe1:4180173be2618cffaa558770a462cd156e198377ad9ec78cb15fd8ee42b749d1"
+              "dpe1:e03c2811982c8efabb72ca2824562085f60e2180c9c0ad429dae2be09a5d0190"
             ]
           }
         ]

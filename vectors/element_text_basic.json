@@ -1,10 +1,9 @@
 {
   "name": "element_text_basic",
   "kind": "document",
-  "description": "最小文档：单页单 NarrativeText。",
+  "description": "最小文档：单页单 NarrativeText，无 metadata（meta 段为 \"{}\" 的字节）。",
   "documents": {
     "doc": {
-      "title": "hello",
       "pages": [
         {
           "number": 1,
@@ -22,13 +21,13 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:b3ac186084d44e2ab9ac4f8922ca3f3bbe29715eb1b2a10b3f3abd6f30503d5f",
+        "doc_hash": "dpe1:4f3fb731f6b6e5d6fb96eb03392cd608f35e34498f1effaa3cac83ef9a12044a",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:7b64ee9a365ea8e5e1864fb3415e2ea742eaba931267d6ab44b698015ef1bbf9",
+            "page_hash": "dpe1:1b1f24ca3f2384c88032b71992125d8571d538a0bcffb00ebcd9890ede305d6a",
             "elements": [
-              "dpe1:d42bcda66d2d72e04e27c3a357b7e6c891b086d0d84105c1989cd566a1ff95a0"
+              "dpe1:731dadf1970b4cf2b917d8d5197ed5efab996c4a51156b9b85eaf10718aafe79"
             ]
           }
         ]

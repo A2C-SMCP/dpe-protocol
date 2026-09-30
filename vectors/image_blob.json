@@ -1,10 +1,9 @@
 {
   "name": "image_blob",
   "kind": "document",
-  "description": "Image 引用 blob：image_ref = \"blob:\" + sha256 引用。",
+  "description": "Image 身份只认 blob：blob_ref = \"blob:\" + sha256 引用。",
   "documents": {
     "doc": {
-      "title": null,
       "pages": [
         {
           "number": 1,
@@ -24,13 +23,13 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:562996d78aeeceefce5be86537cec7447d6889626e58a7d6d99040254c113267",
+        "doc_hash": "dpe1:e687a30561e12d6d3dbcb1c48ad93e8821557f7162dd64f189cea8ec7c2fcab5",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:74d3c6154d8433f0c6007673143b1dd123fcc7fe1570c9a3476559f1913417f8",
+            "page_hash": "dpe1:9db9312372a5207564df5b32a4a40c3a67b2084165e9d91f54c118a314554eba",
             "elements": [
-              "dpe1:e3bdd371d155daee0fadb07eb453f9579a9d5803affa5681e4d4dff897d57d8c"
+              "dpe1:1dd8057f00f8d02a73e04898f7f450bebb5aa59217c117a9bc15acdac48099f8"
             ]
           }
         ]

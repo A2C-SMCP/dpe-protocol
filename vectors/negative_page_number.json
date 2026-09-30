@@ -4,7 +4,6 @@
   "description": "页号的十进制 ASCII 编码：负号保留、无前导零。",
   "documents": {
     "doc": {
-      "title": null,
       "pages": [
         {
           "number": -3,
@@ -27,18 +26,18 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:e831fef72fbc38e7decbbfca4995c740ac7ebc90c5501a015d8c7ed3f2a7e8e7",
+        "doc_hash": "dpe1:3140399ab9787f288a2fe582652cf612bdad90263a789810e627e3f03371b0f6",
         "pages": [
           {
             "number": -3,
-            "page_hash": "dpe1:3a751ce8f5491bcf43b546f8b146bc30ef099e676795d4cd6655b386da5b6c80",
+            "page_hash": "dpe1:3b19ac1554b9f4f1d7262409f3a4d918d7c42376d878737a2a37a7c167bd8847",
             "elements": [
-              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+              "dpe1:0b5f1519bf45eeb4502d048406e4f334d47d07a67742bfdae16183e3193e22cd"
             ]
           },
           {
             "number": 0,
-            "page_hash": "dpe1:b9012d94e1eee7dd246ee5318d0d126a9cd5b87f04e1cf5d43172e3e27192ef8",
+            "page_hash": "dpe1:7c37109fd9f1d296b774b2e6aacf0b983a5957a3e5748e38badecc073a82ec8c",
             "elements": []
           }
         ]

@@ -1,0 +1,84 @@
+{
+  "name": "metadata_null_nested",
+  "kind": "document",
+  "description": "null 键删除是递归的：嵌套对象中的 null 键同样删除；数组中的 null 保留。",
+  "documents": {
+    "with_nulls": {
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "a": {
+                  "b": null,
+                  "c": 1
+                },
+                "arr": [
+                  null,
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "stripped": {
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "a": {
+                  "c": 1
+                },
+                "arr": [
+                  null,
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "with_nulls": {
+      "dpe1": {
+        "doc_hash": "dpe1:16ffd3921d6f1cb5b8ca41aef84c6bc5ec03a53d2249dc438080d2a252a9aab4",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:5a2e07546235b50bdfa1a40b9962edc4550aca2db2d4f3f3e51750ab59826832",
+            "elements": [
+              "dpe1:44f40937c59964edc901375eeb5e030fdc4bfcd8a4959f38fbe9ac01c6829b8b"
+            ]
+          }
+        ]
+      }
+    },
+    "stripped": {
+      "dpe1": {
+        "doc_hash": "dpe1:16ffd3921d6f1cb5b8ca41aef84c6bc5ec03a53d2249dc438080d2a252a9aab4",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:5a2e07546235b50bdfa1a40b9962edc4550aca2db2d4f3f3e51750ab59826832",
+            "elements": [
+              "dpe1:44f40937c59964edc901375eeb5e030fdc4bfcd8a4959f38fbe9ac01c6829b8b"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

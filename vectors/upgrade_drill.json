@@ -1,10 +1,9 @@
 {
   "name": "upgrade_drill",
   "kind": "document",
-  "description": "契约升级演练：同一份内容同时给出 dpe1 与假想 dpe2（定义见 vectors/README.md）的期望值。",
+  "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpe2 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
   "documents": {
     "doc": {
-      "title": "upgrade",
       "pages": [
         {
           "number": 1,
@@ -19,7 +18,10 @@
               "text": "a",
               "text_as_html": "<table/>"
             }
-          ]
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
         },
         {
           "number": 2,
@@ -33,47 +35,50 @@
             }
           ]
         }
-      ]
+      ],
+      "doc_metadata": {
+        "author": "gmq"
+      }
     }
   },
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:9e010e491a69bf870456a602a4cfb1c5e33193dd8b45cd36cf0788728627b8b8",
+        "doc_hash": "dpe1:d3bc696d01d1afbac265ae4a5bb73c941b17c133bab762d183d9eeab5a26171a",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:b201d998a4f65d110c83cc3820fe9cd1264d704c5ef88760a2daadf771fb877c",
+            "page_hash": "dpe1:e390803c1ecb8796928d8c162f494d738a1b6c8d2ea35b14bb7fc8b3f7085ca0",
             "elements": [
-              "dpe1:ec68eaa48e613850714685309b2d76d70e0df5f24c5b8dda1638d65693bf2b84",
-              "dpe1:06206bd17d0c1ff38db1341a73da4a6c8f9e85a99a94365ce2a29aa60ca66418"
+              "dpe1:b4749dac3ec6c641a24d6ec915391a773ac7db5a7a814a31107a70942ad02b00",
+              "dpe1:2643cefbe2e9378872a6a586f3178b861a21fcc2ef23b36807339b2f1bbe353c"
             ]
           },
           {
             "number": 2,
-            "page_hash": "dpe1:c4545c43b68d22d2b4c9d17f9066fb54ad842fa2d7b5ae6d1ee1afb2aeb495ad",
+            "page_hash": "dpe1:39e616d6cd8ceb35369134992de4457d254a4d41c88336a99a52fe5995ac658d",
             "elements": [
-              "dpe1:54fe0ac942013d87ba5f5d716a1e61bfd20a7974e838047fe47d09087393fcca"
+              "dpe1:2869e852403498df546293dab5f03b2d5c637b9bc3a04f01f9bb77778265a2f1"
             ]
           }
         ]
       },
       "dpe2": {
-        "doc_hash": "dpe2:1fa806b4c9ad45c9e235c8bc60fe1fcd77113219f0ad9164e625b7cf0193b548",
+        "doc_hash": "dpe2:0523753ce53ab648c638d1da80659004931958fbd124e5c7715524db2b3624b5",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe2:2338a0616123d1c64f19795f5dc1847d108df0c7b57cddcc64485f59476bfdf4",
+            "page_hash": "dpe2:62f377cde865ae300b4f1296e9687478692cdcf85174926d5dcbab6c39d9caa3",
             "elements": [
-              "dpe2:82c521e9adac4a5006efd0e4e6d12021042b354c2802f104101d8e24925d5603",
-              "dpe2:8b98bf01e72972cd6ee222f2ee8f55dc10f55210d01d04a8e80135ab2370cca5"
+              "dpe2:efa9192c3ec8faeabb38d6465e06fca3602d9e31b4e182958c7e53e2dd2d72d8",
+              "dpe2:739e2a246cdbe81c2c2a91f113d27b5fe6739fa38e436301aacdd855fff46c5c"
             ]
           },
           {
             "number": 2,
-            "page_hash": "dpe2:3442dada97e6fbc8666239145a7c2f948b75b742fe82a8e12cbccf3bbd007e30",
+            "page_hash": "dpe2:004c0e6526a5fcb2316dfd9c91314eea4f1bef4cf975b52103b6e7f4bf995264",
             "elements": [
-              "dpe2:e93d4e9944161c660e8aecce44a1ae7c19fc7575e026661a961248aa3b2dc08f"
+              "dpe2:84653efaf8eca8ee69b67d8420f34b64ed180af63c8d6d85a66bbe64cf43d6c1"
             ]
           }
         ]

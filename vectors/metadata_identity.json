@@ -1,0 +1,161 @@
+{
+  "name": "metadata_identity",
+  "kind": "document",
+  "description": "源提供的 metadata 是内容身份（#3 S2）：doc / page / element 任一层 metadata 变化，对应层 hash 变化。",
+  "documents": {
+    "base": {
+      "pages": [
+        {
+          "number": 1,
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-01T02:03:04Z"
+      }
+    },
+    "ele_meta_changed": {
+      "pages": [
+        {
+          "number": 1,
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "en"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-01T02:03:04Z"
+      }
+    },
+    "page_meta_changed": {
+      "pages": [
+        {
+          "number": 1,
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b2"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-01T02:03:04Z"
+      }
+    },
+    "doc_meta_changed": {
+      "pages": [
+        {
+          "number": 1,
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-02T00:00:00Z"
+      }
+    }
+  },
+  "expected": {
+    "base": {
+      "dpe1": {
+        "doc_hash": "dpe1:136a69b561605577293d72d3d1caaee4ad3a6ed4afef8645c47758eaacb08975",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:11f4fe031cc5a192d0bdfa41ad8c83db100cac61d2f444f56d12744d092fb1c1",
+            "elements": [
+              "dpe1:791ada9c72f35c992c60f4ddd03e25d6ed579df7de93561b81f178c2d3a0104d"
+            ]
+          }
+        ]
+      }
+    },
+    "ele_meta_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:1f9d625661cb5cb0c6a733fff46ff5b41eb241cb4e3268910ea60b2f0e85574e",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:3fdfdf1df46b7128e94c6cb99f38f7316c48f9220e795f379a777b72b2a62acf",
+            "elements": [
+              "dpe1:e8aa516f1e85f75b73868076061554772c68b858b12a219ccdad280fbbf004d1"
+            ]
+          }
+        ]
+      }
+    },
+    "page_meta_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:eee050599ec536f6df7b957df5ccb5d1154d54a3a6b72c165d93db05a4446be2",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:765d805f9e2b9b40b75c2b16513a19faabc093f0d825e167ece3a7e2f63bc524",
+            "elements": [
+              "dpe1:791ada9c72f35c992c60f4ddd03e25d6ed579df7de93561b81f178c2d3a0104d"
+            ]
+          }
+        ]
+      }
+    },
+    "doc_meta_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:d93b133e9c69a4427f2c0e435d40c78f20ab43c53925bbe9f9a0f97853cdc660",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:11f4fe031cc5a192d0bdfa41ad8c83db100cac61d2f444f56d12744d092fb1c1",
+            "elements": [
+              "dpe1:791ada9c72f35c992c60f4ddd03e25d6ed579df7de93561b81f178c2d3a0104d"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

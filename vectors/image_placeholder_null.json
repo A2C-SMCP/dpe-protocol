@@ -1,10 +1,9 @@
 {
   "name": "image_placeholder_null",
   "kind": "document",
-  "description": "占位图片：blob / url / mime 全为 null，各段按空串编码（null 与空串同字节）。",
+  "description": "占位图片：blob / mime 为 null 与缺省同字节（段级 null 按空串处理）。",
   "documents": {
-    "null": {
-      "title": null,
+    "absent": {
       "pages": [
         {
           "number": 1,
@@ -18,8 +17,7 @@
         }
       ]
     },
-    "empty": {
-      "title": null,
+    "null_fields": {
       "pages": [
         {
           "number": 1,
@@ -28,8 +26,8 @@
             {
               "category": "Image",
               "text": "占位",
-              "image_url": "",
-              "image_mime_type": ""
+              "image_blob": null,
+              "image_mime_type": null
             }
           ]
         }
@@ -37,29 +35,29 @@
     }
   },
   "expected": {
-    "null": {
+    "absent": {
       "dpe1": {
-        "doc_hash": "dpe1:bd631f58eac037275dea0a01110367867bbb528b1efef90103c11c40b6250626",
+        "doc_hash": "dpe1:088596e7d141ec4a15130a8f98b5bf7a6c413374955208ef0e1184b2eda73c0e",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:cb5efc04d289d4e883473115483e273ab30fd8892a0763a10ace4ade2f92029d",
+            "page_hash": "dpe1:c113a5b16c8d7350e80d09d3897d58296f87a5daf6b5add6e3475ea19cebf590",
             "elements": [
-              "dpe1:5ce6682da1951685515a80d0c605ca629a3bc67cb6fada1be505ab5a9d2d5efa"
+              "dpe1:40e6647f9e8f3df190c2068961d3f2f98c70d195bf6f650c523769985b7b4929"
             ]
           }
         ]
       }
     },
-    "empty": {
+    "null_fields": {
       "dpe1": {
-        "doc_hash": "dpe1:bd631f58eac037275dea0a01110367867bbb528b1efef90103c11c40b6250626",
+        "doc_hash": "dpe1:088596e7d141ec4a15130a8f98b5bf7a6c413374955208ef0e1184b2eda73c0e",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:cb5efc04d289d4e883473115483e273ab30fd8892a0763a10ace4ade2f92029d",
+            "page_hash": "dpe1:c113a5b16c8d7350e80d09d3897d58296f87a5daf6b5add6e3475ea19cebf590",
             "elements": [
-              "dpe1:5ce6682da1951685515a80d0c605ca629a3bc67cb6fada1be505ab5a9d2d5efa"
+              "dpe1:40e6647f9e8f3df190c2068961d3f2f98c70d195bf6f650c523769985b7b4929"
             ]
           }
         ]

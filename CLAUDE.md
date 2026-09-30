@@ -25,9 +25,10 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 ## 不可破坏的约束
 
 - **规范先行**：要改 hash 规则，必须先改规范、升契约版本，再改生成器重新生成向量。任何实现（含内核、TFRS）的现有行为都不能倒逼规范。
-- **向量由本仓库产出**：生成器是 `scripts/gen_vectors.py`（不 import 任何 SDK / 内核代码），不得手改 `vectors/`。SDK、内核、TFRS 只消费向量；SDK 测试失败而向量一致时，错的是 SDK。
+- **向量由本仓库产出**：生成器是 `scripts/gen_vectors.py`（不 import 任何 SDK / 内核代码），不得手改 `vectors/`。SDK 与各服务端实现只消费向量；SDK 测试失败而向量一致时，错的是 SDK。
+- **依赖方向：内核 → Python SDK（#3 S1），SDK 运行时不依赖内核**。内核不保留自有 hash 实现，直接 import Python SDK 的 hash 核心；因此 M2 的 Python SDK 必须：hash 核心可单独安装（或主包零重依赖）、纯 Python（3.11 / 3.12）、导出契约常量（category 表与 hash_parts、metadata 保留键集合），PyPI 发布是内核 K2 的前置门禁。
 - **规范与 SDK 中不出现任何服务端私有概念**：Robot、`vnd.tfrs`、`X-TFRS-Robot-Id`、tenant、TFRS 错误信封、JWT/scope 细节都不能进。SDK 只接受 remote URL + 可插拔 `CredentialProvider`。attributes 键（如 `tfrs/creator_id`）只能作为「某服务端声明」的示例出现。
-- **字段三分类完整**（内容身份 / 正交属性 / 衍生字段，core.md §2.4）：新增任何字段必须显式归类；未归类即违规。正交属性变更不得被静默丢弃。
+- **字段按来源分类**（源提供进 hash / 寻址坐标与访问方式 / 治理属性 / 服务端衍生不投递，契约 1 §2，#3 S2 取代计划 §6 的三分类）：新增任何字段必须显式可归类；未归类即违规。不进 hash 的字段变更不得被静默丢弃。服务端写入的字段不得进入内容身份；源字段不得带会自行变化的默认值。
 - **hash 值始终带契约前缀**（`dpe1:`），不暴露接受裸 hash 的公共 API；结构化值一律 RFC 8785 JCS，时间戳一律 RFC 3339 UTC。
 - **写操作默认拒绝无 CAS 前置条件**（`DPE_PRECONDITION_REQUIRED`）；本地状态只作缓存，缓存丢失也必须正确，**绝不自动 force**。
 - **两个 SDK 行为对等**（M2 起）：改一个 SDK 的协议行为必须同步另一个并补齐双方测试；两份实现出现分歧说明规范需要补正——修规范，而不是互相对齐。

@@ -89,13 +89,12 @@
   "revision": "r-9",
   "doc_hash": "dpe1:…",
   "file_type": "md",
-  "doc_metadata": { "created_at": "2026-09-01T02:03:04Z", "...": "…" },
   "attributes": { "tfrs/creator_id": "u-1" },
   "skeleton": {
-    "title": null,
+    "doc_metadata": { "created_at": "2026-09-01T02:03:04Z", "author": "…" },
     "pages": [
-      { "number": 1, "title": "第一页", "page_metadata": {},
-        "elements": [ { "hash": "dpe1:…" }, { "hash": "dpe1:…", "metadata": { "lang": "zh" } } ] }
+      { "number": 1, "title": "第一页", "page_metadata": { "source_block": "blk-1" },
+        "elements": [ "dpe1:…", "dpe1:…" ] }
     ]
   }
 }
@@ -143,9 +142,8 @@ negotiate 不校验 CAS 结果的持续有效性（commit 时才裁决），但 
 ```json
 { "file_uri": "feishu://doc/a",
   "hash_contract": "dpe1",
-  "skeleton": { … },
+  "skeleton": { …同 4.3（含 doc / page metadata）… },
   "file_type": "md",
-  "doc_metadata": { … },
   "attributes": { … },
   "staging_session": "st-…",          // 可选
   "objects": [ { …内联内容对象… } ],   // 可选（快路径）

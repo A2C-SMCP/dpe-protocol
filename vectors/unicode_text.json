@@ -1,10 +1,9 @@
 {
   "name": "unicode_text",
   "kind": "document",
-  "description": "Unicode 不做规范化：NFC 与 NFD、emoji（代理对）、组合字符都按 UTF-8 原字节参与。",
+  "description": "Unicode 不做规范化（hash 的是投递的字节）：NFC 与 NFD、emoji（代理对）、组合字符都按 UTF-8 原字节参与。",
   "documents": {
     "nfc": {
-      "title": null,
       "pages": [
         {
           "number": 1,
@@ -19,7 +18,6 @@
       ]
     },
     "nfd": {
-      "title": null,
       "pages": [
         {
           "number": 1,
@@ -37,13 +35,13 @@
   "expected": {
     "nfc": {
       "dpe1": {
-        "doc_hash": "dpe1:45afcd3a065ca75c9385227d6537966a72ad30b80f580380c19709b3906b1f34",
+        "doc_hash": "dpe1:44d69eabec6e73e9f775515ea7c38b75e57aee41d538181336a69a3259d688b2",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:288caa4283326f5f52a4b5ab9f053a63c53b273abc901659f6e109b9104cb5bd",
+            "page_hash": "dpe1:4898f4f1c6970d308123ca5b0f651c3f66c94b97e9e2b2f0a7fee8dd95e1b70f",
             "elements": [
-              "dpe1:7f5c705956dbefb77aa0bcb5b3ccdebcb83a4d863e5b9a0f83de1bb7898f5cda"
+              "dpe1:6e82ff8c0358dd5d8733f582294c9939c0520c733336e6289e2edfbe1b0eab79"
             ]
           }
         ]
@@ -51,13 +49,13 @@
     },
     "nfd": {
       "dpe1": {
-        "doc_hash": "dpe1:3ac1daa052875fa9c0fbc32e8c48ab694fbad7effecdf68217ab84c00f68a6ca",
+        "doc_hash": "dpe1:f09bc4240b431fe0474b5bf09f3f64990ddd961a06edc5d22502a386bb1fba0d",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:8df44add778edf5f755cf71049638bbb05c974e9525a7fec071a94c8aea6ff15",
+            "page_hash": "dpe1:eabc63b82572054248341bc4d9c0811f73df8c0a88f1634c70f081ac4785ef3c",
             "elements": [
-              "dpe1:98a0131db73650f57b9a2d684d2c4c0501f1922ea684d0b8d29e63296b070b36"
+              "dpe1:0d2ccb20e9795d33ddcc3c0aff18a2311d5309641a6331a3a787a1fd57791b72"
             ]
           }
         ]

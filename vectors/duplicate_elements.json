@@ -4,7 +4,6 @@
   "description": "同页两个相同元素：content_hash 相同（内容对象共享），page_hash 中按位置重复出现。",
   "documents": {
     "doc": {
-      "title": null,
       "pages": [
         {
           "number": 1,
@@ -30,15 +29,15 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:552224e3696a1acb92ac1c64ed1d074bc90aa71fec3f350d3583185782b6a8e3",
+        "doc_hash": "dpe1:7226d70ac33a7af6caa6f29b2cd929937976d764985d0b601e97b724828a7c05",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:7815019ef6a5e513061879d712615ace34b30686811c76dfc006aee77f29d6a3",
+            "page_hash": "dpe1:f80c97dc7762d2bafddb0d0efbfa12cc0f407c700db98b3f52ccc06b39025cd6",
             "elements": [
-              "dpe1:c82b948456ffc8484635d6293c05abf12b523a703ca3c00ea02765a5f9616b33",
-              "dpe1:9e055890b4a3f9ac80d143f55a94ac3abf869238783297890da784cb5c251935",
-              "dpe1:c82b948456ffc8484635d6293c05abf12b523a703ca3c00ea02765a5f9616b33"
+              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b",
+              "dpe1:5c1ce7307294df729c44b5c749c64d92dd7fb8e836667bd75583552ef03bf004",
+              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b"
             ]
           }
         ]
