@@ -4,6 +4,7 @@
   "description": "占位图片：blob / mime 为 null 与缺省同字节（段级 null 按空串处理）。",
   "documents": {
     "absent": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -18,6 +19,7 @@
       ]
     },
     "null_fields": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -37,7 +39,8 @@
   "expected": {
     "absent": {
       "dpe1": {
-        "doc_hash": "dpe1:088596e7d141ec4a15130a8f98b5bf7a6c413374955208ef0e1184b2eda73c0e",
+        "doc_hash": "dpe1:5445afc7a51530231766ae5120a09a69bc600f3cd37d3ac986a137e7aec8bda8",
+        "state_hash": "dpe1:4764adafd4f134cd20d765acfe0f45be71b16a96c8a5bdcc30973d87d16b13a9",
         "pages": [
           {
             "number": 1,
@@ -51,7 +54,8 @@
     },
     "null_fields": {
       "dpe1": {
-        "doc_hash": "dpe1:088596e7d141ec4a15130a8f98b5bf7a6c413374955208ef0e1184b2eda73c0e",
+        "doc_hash": "dpe1:5445afc7a51530231766ae5120a09a69bc600f3cd37d3ac986a137e7aec8bda8",
+        "state_hash": "dpe1:4764adafd4f134cd20d765acfe0f45be71b16a96c8a5bdcc30973d87d16b13a9",
         "pages": [
           {
             "number": 1,
@@ -63,5 +67,13 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "absent.doc_hash",
+        "null_fields.doc_hash"
+      ]
+    }
+  ]
 }

@@ -4,6 +4,7 @@
   "description": "元素跨页移动：content_hash 不变，两页 page_hash 与 doc_hash 变化（delta 应为 added=0/removed=0，retained 全保留）。",
   "documents": {
     "before": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -27,6 +28,7 @@
       ]
     },
     "after": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -54,7 +56,8 @@
   "expected": {
     "before": {
       "dpe1": {
-        "doc_hash": "dpe1:0f236cbd410a7ee59a597a8afcdd099efb5db25d593146a4feb44843dab0bc2c",
+        "doc_hash": "dpe1:57b6332ef33ae3a4f202c5e1b1e37e173cce69dff42b602764ffc75148c46516",
+        "state_hash": "dpe1:b04ee96bb0fe0e3999e40fbfd4d49cedd114862b01bbd3e8e763f5cf69684521",
         "pages": [
           {
             "number": 1,
@@ -74,7 +77,8 @@
     },
     "after": {
       "dpe1": {
-        "doc_hash": "dpe1:ebabdae5dd3a5f61e6e672408a5a957c6402effdb8bdf97cf3af921507d75b11",
+        "doc_hash": "dpe1:472d1c4bbe84a8a099b549cd0807a063590c975af2d29aa182d071ece26510e9",
+        "state_hash": "dpe1:59906cd7b03ccc2641c3e542de33059fc0c3bfcad388d8ca0349af8e075aaeaf",
         "pages": [
           {
             "number": 1,
@@ -93,5 +97,25 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "before.pages.0.elements.1",
+        "after.pages.1.elements.0"
+      ]
+    },
+    {
+      "distinct": [
+        "before.pages.0.page_hash",
+        "after.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "before.doc_hash",
+        "after.doc_hash"
+      ]
+    }
+  ]
 }

@@ -1,9 +1,10 @@
 {
   "name": "image_url_not_identity",
   "kind": "document",
-  "description": "url 是访问方式不是身份（#3 S4）：同一 blob 配不同 url，hash 完全相同；blob 变化才是内容变化。",
+  "description": "url 是访问方式不是身份（#3 S4）：image_url 在骨架 entry 的 occurrence 上，同一 blob 配不同 url 时 doc_hash 相同、state_hash 不同；blob 变化才是内容变化。",
   "documents": {
     "url_a": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -13,14 +14,17 @@
               "category": "Image",
               "text": "",
               "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_url": "https://a.cdn/x.png",
-              "image_mime_type": "image/png"
+              "image_mime_type": "image/png",
+              "occurrence": {
+                "image_url": "https://a.cdn/x.png"
+              }
             }
           ]
         }
       ]
     },
     "url_b": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -30,14 +34,17 @@
               "category": "Image",
               "text": "",
               "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_url": "https://b.cdn/y.png",
-              "image_mime_type": "image/png"
+              "image_mime_type": "image/png",
+              "occurrence": {
+                "image_url": "https://b.cdn/y.png"
+              }
             }
           ]
         }
       ]
     },
     "blob_changed": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -47,8 +54,10 @@
               "category": "Image",
               "text": "",
               "image_blob": "sha256:e37c167d65a03d37aba237a79193900dc65170298167d95e6e61a29766f11900",
-              "image_url": "https://a.cdn/x.png",
-              "image_mime_type": "image/png"
+              "image_mime_type": "image/png",
+              "occurrence": {
+                "image_url": "https://a.cdn/x.png"
+              }
             }
           ]
         }
@@ -58,7 +67,8 @@
   "expected": {
     "url_a": {
       "dpe1": {
-        "doc_hash": "dpe1:cd526851279e8ebfe2971e8e0aff854ad9c50828713883db27838c3460e88995",
+        "doc_hash": "dpe1:198b4d097ec56a7c7b04b20509af09dc590f71cc262a9c14f56d7d6c2a87f91d",
+        "state_hash": "dpe1:cb4ff1e36830f905bb53a35c68e199330a7fc79e3593d369e378629d752135bf",
         "pages": [
           {
             "number": 1,
@@ -72,7 +82,8 @@
     },
     "url_b": {
       "dpe1": {
-        "doc_hash": "dpe1:cd526851279e8ebfe2971e8e0aff854ad9c50828713883db27838c3460e88995",
+        "doc_hash": "dpe1:198b4d097ec56a7c7b04b20509af09dc590f71cc262a9c14f56d7d6c2a87f91d",
+        "state_hash": "dpe1:e82110ef65292c50194d92072f138bcf132abf341870f7bee567f521ed90523f",
         "pages": [
           {
             "number": 1,
@@ -86,7 +97,8 @@
     },
     "blob_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:30dc674b23e20274121c054cdb18afe33f0c28511166b7a1a5ff2e7c733f04d8",
+        "doc_hash": "dpe1:7723784d8af6390f5fc6699482ea7aa533cf1180ab6ce7a41c695c78bbb38c57",
+        "state_hash": "dpe1:484d37ae7ca59debe7b1084635e4ce5548b8d5e3c38fe942efbe170fbadb7589",
         "pages": [
           {
             "number": 1,
@@ -98,5 +110,31 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "url_a.pages.0.elements.0",
+        "url_b.pages.0.elements.0"
+      ]
+    },
+    {
+      "equal": [
+        "url_a.doc_hash",
+        "url_b.doc_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "url_a.state_hash",
+        "url_b.state_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "url_a.doc_hash",
+        "blob_changed.doc_hash"
+      ]
+    }
+  ]
 }

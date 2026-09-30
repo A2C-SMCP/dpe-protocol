@@ -1,9 +1,9 @@
 {
-  "name": "page_array_order_irrelevant",
+  "name": "duplicate_occurrence",
   "kind": "document",
-  "description": "页的阅读顺序是 number 升序（core §2.2）：hash 核心对输入数组顺序宽容，pages 数组 [3,1] 与 [1,3] 的 doc_hash 与 state_hash 均相同（线上报文仍 MUST 升序）。",
+  "description": "同一内容出现在两个位置、各带不同坐标（A1）：两处共用一个内容对象（content_hash 相同），坐标分别记在各自 entry 的 occurrence 上；对调两处坐标不改变 doc_hash，但改变 state_hash。",
   "documents": {
-    "sorted": {
+    "ab": {
       "file_type": "md",
       "pages": [
         {
@@ -11,8 +11,8 @@
           "title": null,
           "elements": [
             {
-              "category": "NarrativeText",
-              "text": "a",
+              "category": "ListItem",
+              "text": "重复项",
               "occurrence": {
                 "coordinates": {
                   "points": [
@@ -28,16 +28,10 @@
                   "system": "PixelSpace"
                 }
               }
-            }
-          ]
-        },
-        {
-          "number": 3,
-          "title": null,
-          "elements": [
+            },
             {
-              "category": "NarrativeText",
-              "text": "b",
+              "category": "ListItem",
+              "text": "重复项",
               "occurrence": {
                 "coordinates": {
                   "points": [
@@ -58,16 +52,16 @@
         }
       ]
     },
-    "unsorted": {
+    "ba": {
       "file_type": "md",
       "pages": [
         {
-          "number": 3,
+          "number": 1,
           "title": null,
           "elements": [
             {
-              "category": "NarrativeText",
-              "text": "b",
+              "category": "ListItem",
+              "text": "重复项",
               "occurrence": {
                 "coordinates": {
                   "points": [
@@ -83,16 +77,10 @@
                   "system": "PixelSpace"
                 }
               }
-            }
-          ]
-        },
-        {
-          "number": 1,
-          "title": null,
-          "elements": [
+            },
             {
-              "category": "NarrativeText",
-              "text": "a",
+              "category": "ListItem",
+              "text": "重复项",
               "occurrence": {
                 "coordinates": {
                   "points": [
@@ -115,45 +103,33 @@
     }
   },
   "expected": {
-    "sorted": {
+    "ab": {
       "dpe1": {
-        "doc_hash": "dpe1:e5ab20d7c3f790e8bef315dbf3553a88ef52bdaf0094b9de29bf74f7b3c8230c",
-        "state_hash": "dpe1:c774d7384b942104ab5a8068365830312aa3a4d8adf9af4bb1266bc79fd15dd2",
+        "doc_hash": "dpe1:47aa78bef0278d9c2b208ff1e6ef30d529f7ede376ff3ee3729d98a4947ff735",
+        "state_hash": "dpe1:f4f021e6b00c7c973a303f20b8b59ba1ed64970a764ef86f2406ffdafeab9ada",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:94c2ec1ad1e26039d5b5328ab0781922ee4753ade011abc67f82ed93a1d78061",
+            "page_hash": "dpe1:50bc99f869222aaa1d52966a9f882971fc0f1597cc980eabd26d6cb7f9657d09",
             "elements": [
-              "dpe1:70a306843ab45631c564ef123e7ef033df3b7379061ec26956ea43edf9fa0d3f"
-            ]
-          },
-          {
-            "number": 3,
-            "page_hash": "dpe1:73fe2ed0547ba34f6ef5c63a6146bf7b5206be4bf89fcf468aebe56241d1e0ed",
-            "elements": [
-              "dpe1:6cf216f660e2c31041f24b863115aed88d04856cf833d6f082188ff160a49fd6"
+              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b",
+              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b"
             ]
           }
         ]
       }
     },
-    "unsorted": {
+    "ba": {
       "dpe1": {
-        "doc_hash": "dpe1:e5ab20d7c3f790e8bef315dbf3553a88ef52bdaf0094b9de29bf74f7b3c8230c",
-        "state_hash": "dpe1:c774d7384b942104ab5a8068365830312aa3a4d8adf9af4bb1266bc79fd15dd2",
+        "doc_hash": "dpe1:47aa78bef0278d9c2b208ff1e6ef30d529f7ede376ff3ee3729d98a4947ff735",
+        "state_hash": "dpe1:d05af3e7ffe84113b6f06ba8371ce657a8c55a2e36c8399dc136a47129188d80",
         "pages": [
           {
-            "number": 3,
-            "page_hash": "dpe1:73fe2ed0547ba34f6ef5c63a6146bf7b5206be4bf89fcf468aebe56241d1e0ed",
-            "elements": [
-              "dpe1:6cf216f660e2c31041f24b863115aed88d04856cf833d6f082188ff160a49fd6"
-            ]
-          },
-          {
             "number": 1,
-            "page_hash": "dpe1:94c2ec1ad1e26039d5b5328ab0781922ee4753ade011abc67f82ed93a1d78061",
+            "page_hash": "dpe1:50bc99f869222aaa1d52966a9f882971fc0f1597cc980eabd26d6cb7f9657d09",
             "elements": [
-              "dpe1:70a306843ab45631c564ef123e7ef033df3b7379061ec26956ea43edf9fa0d3f"
+              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b",
+              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b"
             ]
           }
         ]
@@ -163,14 +139,21 @@
   "relations": [
     {
       "equal": [
-        "sorted.doc_hash",
-        "unsorted.doc_hash"
+        "ab.pages.0.elements.0",
+        "ab.pages.0.elements.1",
+        "ba.pages.0.elements.0"
       ]
     },
     {
       "equal": [
-        "sorted.state_hash",
-        "unsorted.state_hash"
+        "ab.doc_hash",
+        "ba.doc_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "ab.state_hash",
+        "ba.state_hash"
       ]
     }
   ]

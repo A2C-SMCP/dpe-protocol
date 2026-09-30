@@ -1,9 +1,10 @@
 {
   "name": "metadata_reserved_and_null",
   "kind": "document",
-  "description": "保留键（寻址坐标 / 服务端衍生）与值为 null 的键不进 hash：三篇文档全部 hash 相同（缺省 ≡ null，#3 S5）。",
+  "description": "hash 核心按保留键全集（随位投递 + 不投递，契约 1 §2.1）过滤顶层键，并删除值为 null 的键（缺省 ≡ null，#3 S5）：三篇文档的全部 hash 相同。注意这是 hash 核心的输入视图：线上报文的 metadata 出现任一保留键都会被拒绝；计算 state_hash 前，随位键须先从 metadata 移入 occurrence（契约 1 §6），故本向量不对 state_hash 作断言。",
   "documents": {
     "plain": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -21,6 +22,7 @@
       ]
     },
     "with_reserved": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -31,22 +33,52 @@
               "text": "x",
               "metadata": {
                 "lang": "zh",
-                "page_number": 1,
                 "coordinates": {
-                  "x": 0.1,
-                  "y": 0.2
+                  "points": [
+                    [
+                      0.1,
+                      0.1
+                    ],
+                    [
+                      0.4,
+                      0.2
+                    ]
+                  ],
+                  "system": "PixelSpace"
                 },
+                "image_url": "https://a.cdn/x.png",
+                "parent_id": "e-1",
+                "related_ids": [
+                  "e-2"
+                ],
+                "page_number": 1,
+                "page_name": "Sheet1",
                 "seq_in_page": 3,
                 "keywords": [
                   "k"
-                ]
+                ],
+                "image_path": "/tmp/x.png",
+                "image_base64": "aGk=",
+                "file_directory": "/tmp"
               }
             }
-          ]
+          ],
+          "page_metadata": {
+            "page_number": 1,
+            "keywords": [
+              "k"
+            ]
+          }
         }
-      ]
+      ],
+      "doc_metadata": {
+        "keywords": [
+          "k"
+        ]
+      }
     },
     "with_nulls": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -68,7 +100,8 @@
   "expected": {
     "plain": {
       "dpe1": {
-        "doc_hash": "dpe1:0695daec62ad215ee0ac9c15c60a3cafa50d9c9ecc04841a9b099f001de103e3",
+        "doc_hash": "dpe1:1f0f5d8878ee11df5ed878801fd156080444b2b48aaa316455f49f68d9c7a1ad",
+        "state_hash": "dpe1:049bda057cbd6db2a8009861dbe9e08ac63fe46126a2559d4891a317ad4b2316",
         "pages": [
           {
             "number": 1,
@@ -82,7 +115,8 @@
     },
     "with_reserved": {
       "dpe1": {
-        "doc_hash": "dpe1:0695daec62ad215ee0ac9c15c60a3cafa50d9c9ecc04841a9b099f001de103e3",
+        "doc_hash": "dpe1:1f0f5d8878ee11df5ed878801fd156080444b2b48aaa316455f49f68d9c7a1ad",
+        "state_hash": "dpe1:049bda057cbd6db2a8009861dbe9e08ac63fe46126a2559d4891a317ad4b2316",
         "pages": [
           {
             "number": 1,
@@ -96,7 +130,8 @@
     },
     "with_nulls": {
       "dpe1": {
-        "doc_hash": "dpe1:0695daec62ad215ee0ac9c15c60a3cafa50d9c9ecc04841a9b099f001de103e3",
+        "doc_hash": "dpe1:1f0f5d8878ee11df5ed878801fd156080444b2b48aaa316455f49f68d9c7a1ad",
+        "state_hash": "dpe1:049bda057cbd6db2a8009861dbe9e08ac63fe46126a2559d4891a317ad4b2316",
         "pages": [
           {
             "number": 1,
@@ -108,5 +143,14 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "plain.doc_hash",
+        "with_reserved.doc_hash",
+        "with_nulls.doc_hash"
+      ]
+    }
+  ]
 }

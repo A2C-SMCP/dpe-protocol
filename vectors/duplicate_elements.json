@@ -4,6 +4,7 @@
   "description": "同页两个相同元素：content_hash 相同（内容对象共享），page_hash 中按位置重复出现。",
   "documents": {
     "doc": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -29,7 +30,8 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:7226d70ac33a7af6caa6f29b2cd929937976d764985d0b601e97b724828a7c05",
+        "doc_hash": "dpe1:4e277a17ac8b0cfc267cd21272d11dbe8e55570a439c0021d57ad31f6606f355",
+        "state_hash": "dpe1:c9622a73957cf5d3807a7f8df0b3fc29380064923098e7802295c91aafd4c47e",
         "pages": [
           {
             "number": 1,
@@ -43,5 +45,13 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.2"
+      ]
+    }
+  ]
 }

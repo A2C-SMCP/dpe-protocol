@@ -4,6 +4,7 @@
   "description": "页号的十进制 ASCII 编码：负号保留、无前导零。",
   "documents": {
     "doc": {
+      "file_type": "md",
       "pages": [
         {
           "number": -3,
@@ -26,7 +27,8 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:3140399ab9787f288a2fe582652cf612bdad90263a789810e627e3f03371b0f6",
+        "doc_hash": "dpe1:00c9860af14d9788e2e1b6a0db67acaf3552cf30e5b74ec409acf80c9068bc73",
+        "state_hash": "dpe1:7e2d209f5353929e19abf8129b29886e6122c5f4ef28f70932a11808df2168d8",
         "pages": [
           {
             "number": -3,

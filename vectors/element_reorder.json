@@ -4,6 +4,7 @@
   "description": "顺序属于内容身份（#3 S7）：同页元素对调，content_hash 多重集不变（delta 为 0），但 page_hash / doc_hash 变化。",
   "documents": {
     "before": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -22,6 +23,7 @@
       ]
     },
     "after": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -43,7 +45,8 @@
   "expected": {
     "before": {
       "dpe1": {
-        "doc_hash": "dpe1:e367b223fc0850e4f0940097574654a038e9581ff46d2774059ec8db96919c35",
+        "doc_hash": "dpe1:77b2f037b162626d73adfe6240545961f975a696d2ebdab1010657ff7ff42e85",
+        "state_hash": "dpe1:e15299921f82b77d6b5f09fc5f30313b61dc674a8ea8ae530eac1291c88444f7",
         "pages": [
           {
             "number": 1,
@@ -58,7 +61,8 @@
     },
     "after": {
       "dpe1": {
-        "doc_hash": "dpe1:2bc1ca0296554c336dc088da39ee457f2883fc1e54a345045c8be10f19451cbc",
+        "doc_hash": "dpe1:616ba3fb3c9bdd54260f8fd37ea1fc75d37f46994559425228a5a9df7ed30331",
+        "state_hash": "dpe1:af8d7c72a1274eafbe073d38fa0d3bb33ea48e2e47f56cccd3f62b0a8ed2cf82",
         "pages": [
           {
             "number": 1,
@@ -71,5 +75,25 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "before.pages.0.elements.0",
+        "after.pages.0.elements.1"
+      ]
+    },
+    {
+      "equal": [
+        "before.pages.0.elements.1",
+        "after.pages.0.elements.0"
+      ]
+    },
+    {
+      "distinct": [
+        "before.doc_hash",
+        "after.doc_hash"
+      ]
+    }
+  ]
 }

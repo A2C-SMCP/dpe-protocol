@@ -4,9 +4,11 @@
   "description": "空文档（0 页）与空页（0 元素）均合法；契约 1 没有 doc title（#3 S6）。",
   "documents": {
     "no_pages": {
+      "file_type": "empty",
       "pages": []
     },
     "empty_page": {
+      "file_type": "empty",
       "pages": [
         {
           "number": 1,
@@ -16,6 +18,7 @@
       ]
     },
     "no_pages_with_meta": {
+      "file_type": "empty",
       "pages": [],
       "doc_metadata": {
         "author": "gmq"
@@ -25,13 +28,15 @@
   "expected": {
     "no_pages": {
       "dpe1": {
-        "doc_hash": "dpe1:fc1212e550a498c567b71fa295f8b53100dc88996d7e38d9cdf86f4d198c4256",
+        "doc_hash": "dpe1:682d797d9ecb4536b1e9f8ff0a2144be1d9ac919147f988db98ebe517da4ddc5",
+        "state_hash": "dpe1:10c856c275d564cd6107b8c2d0a469315c4afc90f547c3c91ab1d03baa408af3",
         "pages": []
       }
     },
     "empty_page": {
       "dpe1": {
-        "doc_hash": "dpe1:72626c0f99fce31bad281e8db5d78da2da927b1b4b55a385148681bd625153c5",
+        "doc_hash": "dpe1:9ba8330267b861014a4edca92234dfb835afb19c6e3dc465c5a80818868fa7e5",
+        "state_hash": "dpe1:c856fb6291e61ec3e929e33e5771e2e63d4b604202bb324cd7c5a7c754dbf706",
         "pages": [
           {
             "number": 1,
@@ -43,9 +48,19 @@
     },
     "no_pages_with_meta": {
       "dpe1": {
-        "doc_hash": "dpe1:8de53bbdb30ed6c894c7f25ee372b240e109d04baa052d152487ef5e261f1d3e",
+        "doc_hash": "dpe1:efea82dde373730864579cb793d09f25d78a1aaa6f790312e48da5d0978e0a6f",
+        "state_hash": "dpe1:2f93a8564a4e9a65323326044dd030cf6bf25917cbb6f10af431ef4f8237c7dc",
         "pages": []
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "no_pages.doc_hash",
+        "empty_page.doc_hash",
+        "no_pages_with_meta.doc_hash"
+      ]
+    }
+  ]
 }

@@ -4,6 +4,7 @@
   "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpe2 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
   "documents": {
     "doc": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -31,20 +32,27 @@
               "category": "Image",
               "text": "图",
               "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_mime_type": "image/webp"
+              "image_mime_type": "image/webp",
+              "occurrence": {
+                "image_url": "https://a.cdn/x.webp"
+              }
             }
           ]
         }
       ],
       "doc_metadata": {
         "author": "gmq"
+      },
+      "attributes": {
+        "example/owner": "u-1"
       }
     }
   },
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:d3bc696d01d1afbac265ae4a5bb73c941b17c133bab762d183d9eeab5a26171a",
+        "doc_hash": "dpe1:287ec0a64c065731d29225f04fc8ff19838cd0b99bcfdbe8c9736aec23ad47c9",
+        "state_hash": "dpe1:99fe3347b26502b9bf53b8633a9e4153d7901b355e331f809e49872d17c5c2e0",
         "pages": [
           {
             "number": 1,
@@ -64,7 +72,8 @@
         ]
       },
       "dpe2": {
-        "doc_hash": "dpe2:0523753ce53ab648c638d1da80659004931958fbd124e5c7715524db2b3624b5",
+        "doc_hash": "dpe2:d3e123b68f52896aea5d75263a5bce6af0fcf621325c8945fef4983d27f8cdd3",
+        "state_hash": "dpe2:64b0e8b7ad07b23ec1242f2c22c0472a83415b0d6670ed5796a365564164a822",
         "pages": [
           {
             "number": 1,

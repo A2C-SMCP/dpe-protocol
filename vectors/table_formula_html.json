@@ -4,6 +4,7 @@
   "description": "Table / Formula 的身份包含 text_as_html：text 相同而 html 不同时 hash 不同。",
   "documents": {
     "doc": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -36,7 +37,8 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:6cea47678412225995cdc6113fc801834b6b503b1cf15587d8f044c77f079c6f",
+        "doc_hash": "dpe1:a10047872e79d3a6af6045e6707f8d22b21da2d7ac68f3255d1009fadc896ce1",
+        "state_hash": "dpe1:e980e59d3b2fd9bd39f6ca3859fc4dbf5fb602c43cc1daf97fb95a323ab906a9",
         "pages": [
           {
             "number": 1,
@@ -51,5 +53,14 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.1",
+        "doc.pages.0.elements.3"
+      ]
+    }
+  ]
 }

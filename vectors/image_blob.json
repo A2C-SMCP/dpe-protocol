@@ -4,6 +4,7 @@
   "description": "Image 身份只认 blob：blob_ref = \"blob:\" + sha256 引用。",
   "documents": {
     "doc": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -23,7 +24,8 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:e687a30561e12d6d3dbcb1c48ad93e8821557f7162dd64f189cea8ec7c2fcab5",
+        "doc_hash": "dpe1:59b606a0cd9d4bbea26b8bd4291cf1560e855e6596c2ccd07bfc905ebc6777d9",
+        "state_hash": "dpe1:6ea9c4d002ad5c146abf09c23bb8fe4339f621dc60d520ca2b6ffdf03caacbf5",
         "pages": [
           {
             "number": 1,

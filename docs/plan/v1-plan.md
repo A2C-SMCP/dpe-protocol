@@ -64,6 +64,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 3. 核心模型
 
+> **修订注记**：骨架形态与暂存会话绑定已被 Issue #4 修订——元素 entry 为 `{hash, occurrence?}`，页按 `number` 升序阅读，会话只绑定 `(file_uri, 调用者身份)`，另有投递状态摘要 `state_hash`；Skeleton 中的 doc title 已被 #3 S6 删除。以 [spec/core.md](../../spec/core.md) §1–§3 为准。
+
 | 概念 | 定义 |
 | --- | --- |
 | **Remote** | 一个文档空间的 URL，由服务端定义，协议不关心它的内部结构。对 TFRS 来说，一个 remote 就是一个 robot。所有端点都相对于 remote URL，不使用域名根路径下的 `.well-known`。 |
@@ -109,6 +111,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 5. 写入冲突（CAS）
 
+> **修订注记**：重试恢复规则已被 Issue #4 B1 扩展——比较 `state_hash`（覆盖全部投递字段），并对 commit / delete / move 分别给出判定；幂等去重提升为 MUST。以 [spec/core.md](../../spec/core.md) §5 为准。
+
 | 场景 | 请求 | 结果 |
 | --- | --- | --- |
 | 新建 | `if_absent` | 文档已存在时返回 `DPE_ALREADY_EXISTS` |
@@ -121,6 +125,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 - 前缀授权（哪个调用者能写哪些 URI）**由服务端实现决定**，协议只定义错误语义（403 `DPE_FORBIDDEN`）。
 
 ## 6. 字段三分类
+
+> **修订注记**：本节已被 Issue #3 S2 取代（按「字段由谁产生」分类，源提供的 metadata 与 `file_type` 进 hash，正交属性只剩治理属性），并经 Issue #4 细化保留键分组。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) §2 与 [spec/core.md](../../spec/core.md) §2.4 为准；下文保留作为历史。
 
 规范为每个字段**显式归类**，存在未归类的字段即视为违规。
 
@@ -135,6 +141,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 - 客户端提交的衍生字段一律拒绝，沿用 TFRS 草案的 Rule 0。
 
 ## 7. Hash 契约 1
+
+> **修订注记**：doc_hash 的范围已被 Issue #3 修订（含 `file_type` 与经过滤的 `doc_metadata`，无 doc title），Image 身份只认 blob（#3 S4）。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准。
 
 - **格式**：`dpe1:<64 hex>`，即完整 sha256，不截断，前缀标明契约版本。blob 使用 `sha256:<64hex>`，与 OCI 和 Git SHA-256 的惯例一致。
 - **拼接**：每段前面加 4 字节大端长度前缀，再计算 sha256。null 视为空串。沿用内核的做法，并写成与语言无关的规范文本。
@@ -155,6 +163,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 - 契约升级 **MUST NOT** 引起未变内容的重推或重学。
 
 ## 9. HTTP 绑定（v1 唯一规范性绑定）
+
+> **修订注记**：commit 已按 Issue #4 B5 改为 `PUT {remote}/documents?uri=`（条件头作用于文档资源），move 的前置条件放在请求体中。以 [spec/bindings/http.md](../../spec/bindings/http.md) 为准。
 
 - **路径**都相对于 remote：`GET {remote}/capabilities`、`POST {remote}/negotiate`、`PUT {remote}/staging/{sid}/objects/{hash}`、`PUT {remote}/staging/{sid}/blobs/{sha256}`（分块）、`POST {remote}/commit`、`POST {remote}/heads`、`GET {remote}/documents?uri=…`、`GET {remote}/documents?prefix=…&cursor=…`、`DELETE {remote}/documents?uri=…`、`POST {remote}/move`。具体路径由 `http.md` 定稿。
 - **CAS 映射到 HTTP 原生语义**：
