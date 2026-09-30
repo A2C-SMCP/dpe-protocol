@@ -29,7 +29,7 @@ dpe-protocol 是 DPE（Document / Page / Element）投递链路中的**协议层
                            ▼  dpe-push/1（HTTP）
 ┌─────────────── TFRobotServer / TFRobot 内核 ───────────────┐
 │ /.well-known/dpe-push · :negotiate · :commit                │
-│ UnifiedMemory.upsert_doc（LCS reconcile / 索引 / 学习）        │
+│ 内核 upsert_doc（LCS reconcile / 索引 / 学习）                  │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -253,7 +253,7 @@ dpe-protocol（消费方）：按指定版本拉取向量 → Python / Rust 测�
 
 移交步骤：
 
-1. 与内核团队（TFROB）对齐归属，参见 §9.1-9。
+1. 与内核团队对齐归属，参见 §9.1-9。
 2. 把 `scripts/gen_vectors.py` 整体搬到内核仓库。它只依赖 `tfrobot` 与标准库，不依赖本项目任何代码，可以直接使用。
 3. 内核 CI 增加两个任务：用内核跑向量（防回归），以及算法变更时重新生成并发布。
 4. 本项目改为按版本拉取向量，删除生成脚本；`provenance` 字段保留，用来核对拉取的版本。
@@ -276,12 +276,12 @@ dpe-protocol（消费方）：按指定版本拉取向量 → Python / Rust 测�
 
 | # | 问题 | 影响 | 建议 |
 | --- | --- | --- | --- |
-| 1 | 内核 `DocPage.elements: list[DocElement]` 用 dict 构造时丢失子类，Image / Table / Formula 的 `hash_parts` 多态不生效 | 服务端 commit 时如果直接 `Document(**dict, hash_strategy=…)`，重算出的 content_hash 与 hash-contract-v1 不一致，所有图片 / 表格元素都会报 `DPE_CONTENT_HASH_MISMATCH` | 服务端实现必须逐个 element 经 `create_element` 分派；或由内核修复 |
-| 2 | 内核 `TFDocMetadata.created_at` 默认 `now()` | 服务端重建 metadata 时如果丢弃显式 null，每次 doc_hash 都不同，协商永远不会返回 `unchanged` | 服务端原样使用 manifest 中的 `doc_metadata`（SDK 已发送全量字段，包括 null） |
+| 1 | 服务端重建文档时，元素需要按 `category` 分派为具体类型，Image / Table / Formula 的 hash 规则才会生效 | 如果未分派，服务端重算的 content_hash 与 hash-contract-v1 不一致，图片 / 表格 / 公式元素会被拒绝（`DPE_CONTENT_HASH_MISMATCH`） | 服务端实现时按 category 分派元素，并用 `vectors/v1` 校验 |
+| 2 | 内核 `doc_metadata.created_at` 缺省时取当前时间 | 服务端重建 metadata 时如果丢弃显式 null，每次 doc_hash 都不同，协商永远不会返回 `unchanged` | 服务端原样使用 manifest 中的 `doc_metadata`（SDK 已发送全量字段，包括 null） |
 | 3 | 规范示例中 `file_type: "markdown"` | 内核枚举值是 `"md"`，没有 `"markdown"` | 修正 push-protocol-v1 §3 与 hash-contract-v1 §5.1 的示例 |
 | 4 | manifest 不含 doc / page `keywords`、`page_metadata`、`creator_id` / `group_id` | 这些字段无法经 dpe-push/1 投递 | 确认是否需要，需要的话作为非 hash 字段加入 manifest |
 | 5 | 协议没有删除语义 | 上层能发现源端删除，但无法同步到 Robot（`StatefulPusher.forget` 只清本地状态） | 推动增加 `:delete`，下层再暴露给上层 |
-| 6 | `file_uri` 保留 scheme 待决策 | SDK 暂按 `dpe://{tenant}/{path}` 实现 | 跟随 TFRS 的决策 |
+| 6 | `file_uri` 保留 scheme 待决策 | SDK 暂按 `dpe://{tenant}/{path}` 实现 | 跟随服务端的决策 |
 | 7 | `max_payload_bytes` 未说明按压缩前还是压缩后计算 | SDK 保守地按压缩前计算（分片也按此计算） | 在规范中明确 |
 | 8 | §10.3 的页前缀分片不适用于更新 | 更新时尾部页面会先删后建 | 建议规范改为推荐「按缺失内容分片」（§6.1） |
 | 9 | hash 一致性向量由下游（本项目）托管 | 内核变更时向量可能悄悄过期；内核自身也没有向量回归保护 | 向量与生成脚本移交内核仓库，由内核 CI 生成、校验并发布（§7.1） |
@@ -291,8 +291,9 @@ dpe-protocol（消费方）：按指定版本拉取向量 → Python / Rust 测�
 | # | 问题 | 建议 |
 | --- | --- | --- |
 | 1 | `dpe://` 的 tenant 由谁分配 | 维护一份 tenant 登记表，每个 connector 使用独立的 tenant，不得共用 |
-| 2 | 多个 connector 都要解析 PDF / Office | 共用解析服务（如 TFRSUtilsCelery），归上层 |
+| 2 | 多个 connector 都要解析 PDF / Office | 共用一个解析服务，归上层 |
 | 3 | 两类凭证容易混淆 | 业务系统凭证由 connector 管理；`dpe:push` token 通过 SDK 客户端传入，部署文档中分开说明 |
+| 4 | 元素 hash 只包含 `text`、图片通道（`image_url` / `image_base64` / `image_path` 三选一）与 `image_mime_type`、表格 / 公式的 `text_as_html`；元素的其他 metadata、keywords 只改动时不会被识别为变更 | 确认业务是否依赖这些字段的更新；如果依赖，需要推动 hash-contract 扩展，而不是在 SDK 中单方面修改 hash 规则 |
 
 ## 10. 路线图
 
@@ -302,7 +303,7 @@ dpe-protocol（消费方）：按指定版本拉取向量 → Python / Rust 测�
 - [x] 文档一致性检查 `check_documents`
 - [x] 大文档自动分片（按缺失内容）
 - [x] Rust SDK（与 Python 对等，共享内核向量）
-- [ ] 对接真实 TFRobotServer（等待 TFRS-379 服务端实现）
+- [ ] 对接真实 TFRobotServer（等待服务端实现 dpe-push/1）
 - [ ] 删除同步（依赖协议扩展 `:delete`）
 - [ ] 协议 v2 内容暂存（单个超大 element）
 - [ ] 一致性向量移交内核仓库（§7.1）

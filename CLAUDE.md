@@ -24,7 +24,7 @@ DPE（Document / Page / Element）投递的**协议层**多语言 SDK：以 Docu
 ```bash
 make test | make lint | make format      # 同时覆盖 python/ 与 rust/
 make test-python | make test-rust
-make vectors TFROBOT_PYTHON=/path/to/TFRobotServer/.venv/bin/python
+make vectors TFROBOT_PYTHON=<装有 tfrobot 的 python>
 ```
 
 ## 不可破坏的约束

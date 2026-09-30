@@ -1,4 +1,3 @@
-TFROBOT_PYTHON ?= ../../project/TFRobotServer/.venv/bin/python
 
 .PHONY: test lint format vectors test-python test-rust lint-python lint-rust
 
@@ -23,4 +22,5 @@ format:
 	cd rust && cargo fmt
 
 vectors:
+	@test -n "$(TFROBOT_PYTHON)" || (echo "需要指定装有 tfrobot 的解释器：make vectors TFROBOT_PYTHON=/path/to/python" && exit 1)
 	$(TFROBOT_PYTHON) scripts/gen_vectors.py

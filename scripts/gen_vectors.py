@@ -2,7 +2,7 @@
 
 向量的期望值来自**内核**而非任何 SDK，各 SDK 只是被测对象。需要在装有 ``tfrobot`` 的环境运行，例如：
 
-    /path/to/TFRobotServer/.venv/bin/python scripts/gen_vectors.py
+    <装有 tfrobot 的 python> scripts/gen_vectors.py
 
 **临时托管，待移交**：按 hash-contract-v1 §7，向量应由规范方（TFRobot 内核仓库）生成并发布，
 内核在自己的 CI 中先跑向量，dpe-protocol 只按版本拉取消费。本脚本暂放在 dpe-protocol 以便起步，
@@ -11,9 +11,8 @@
 
 每次生成都会把内核与 pydantic 的版本写入 ``manifest.json`` 的 ``provenance``，用于判断向量是否落后于内核。
 
-注意：内核 ``DocPage.elements`` 声明为基类 ``list[DocElement]``，直接用 dict 构造会丢失
-Image / Table / Formula 的 ``hash_parts`` 多态。这里逐个 element 先经 ``create_element``
-分派为子类实例再装配，得到的才是 hash-contract-v1 规定的值。
+注意：构造内核文档时需要逐个 element 先经 ``create_element`` 按 category 分派为具体类型再装配，
+Image / Table / Formula 的 hash 规则才会生效，得到的才是 hash-contract-v1 规定的值。
 """
 
 import itertools

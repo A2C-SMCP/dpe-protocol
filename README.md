@@ -91,7 +91,7 @@ rust/                   Rust SDK（cargo）
 make test          # 两个 SDK 的全部测试
 make lint          # ruff + mypy --strict / cargo fmt + clippy -D warnings
 make format        # ruff format / cargo fmt
-make vectors TFROBOT_PYTHON=/path/to/TFRobotServer/.venv/bin/python   # 用内核重新生成向量
+make vectors TFROBOT_PYTHON=<装有 tfrobot 的 python>   # 用内核重新生成向量
 ```
 
 ## License
