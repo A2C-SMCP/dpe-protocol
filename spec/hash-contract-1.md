@@ -156,5 +156,6 @@ doc_hash = "dpe1:" + hex( H( text(file_type), meta(doc_metadata), utf8(ph1), …
 - ~~保留键集合~~：按 plan §0.1 P2（源即内容）取消保留键，metadata 全部进 hash（#4 评审中维护者确定，推翻 #3 S2 的过滤方案）。
 - ~~`file_type` 的归属~~：#3 确认按来源规则进 doc_hash（§5）。
 - ~~图片 url 是否进 hash~~：按 P2 作为元素 metadata 进 hash（推翻 #3 S4 中"url 不进 hash"的部分）。
+- ~~category `tfchat` 的命名~~：视为开放标准的格式名保留，属 plan §1 命名规则的登记例外（#4 C1）。
 
 待评审：暂无。

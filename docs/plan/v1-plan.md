@@ -54,6 +54,7 @@ DPE 的目标是：参考 Git 的设计理念，**极简、极速地表征世界
 - 内核与 TFRS 都只是**按规范实现的一方**，在各自的 CI 里跑向量和一致性跑分器。
 - **要改 hash 规则，必须先改规范、升契约版本**。任何实现的现有行为都不能倒逼规范。
 - 定稿后发布到 `doc.turingfocus.cn` 下的独立 path，具体发布策略在撰写过程中制定。**规范正文中的所有标识都不带产品或品牌名**，包括 capability 名、媒体类型、错误码、属性命名空间示例之外的文字。
+  - **例外**（Issue #4 C1，维护者确认）：封闭枚举中的 `tfchat`（category 与 file_type）和 `jira_project` / `jira_issue`（file_type）视为开放标准的格式名，予以保留，不属于本条所禁止的品牌标识。例外仅限这三个值；新增枚举值仍须遵守本条。
 - TFRobotServer `docs/protocol/dpe/` 下现有的 `push-protocol-v1.md` 和 `hash-contract-v1.md` 草案，由本仓库的规范**取代**。TFRS 那边改为引用本仓库，只保留「TFRS 实现说明」（scope 名称、部署、Robot 映射等）。
 
 ## 2. 规范文档结构（本仓库）
