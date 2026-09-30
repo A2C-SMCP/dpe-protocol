@@ -1,9 +1,10 @@
 {
   "name": "page_number_identity",
   "kind": "document",
-  "description": "页号进入 page_hash（待评审，契约 1 §8-1）：内容不动、只改页号，doc_hash 必须变化（否则 head 快路径漏推）。",
+  "description": "页号进入 page_hash（契约 1 §5）：只改页号也是内容变化，doc_hash 必须变化；元素 content_hash 不含骨架位置，故不必重传内容对象（plan §0.1 P3）。",
   "documents": {
     "before": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -28,6 +29,7 @@
       ]
     },
     "after": {
+      "file_type": "md",
       "pages": [
         {
           "number": 10,
@@ -55,7 +57,7 @@
   "expected": {
     "before": {
       "dpe1": {
-        "doc_hash": "dpe1:98a9067009b9413fffbc4f552b6a31e20c2021617a39aaf95987d59587e62e86",
+        "doc_hash": "dpe1:b1cf487949a27df70e6bbe11118a7e071455cb08a43a1489ebfa2c59c1364e26",
         "pages": [
           {
             "number": 1,
@@ -76,7 +78,7 @@
     },
     "after": {
       "dpe1": {
-        "doc_hash": "dpe1:201774909c734bbe07d6ab1952d00355e157ea277d448d09e5769069ec37d4e6",
+        "doc_hash": "dpe1:0492210a64cada3fd6d3ae41e272cec8ab21361c957fa57b2fe8066ae69c2232",
         "pages": [
           {
             "number": 10,
@@ -95,5 +97,19 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "before.pages.0.elements.0",
+        "after.pages.0.elements.0"
+      ]
+    },
+    {
+      "distinct": [
+        "before.doc_hash",
+        "after.doc_hash"
+      ]
+    }
+  ]
 }

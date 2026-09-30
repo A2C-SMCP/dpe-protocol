@@ -4,6 +4,7 @@
   "description": "Unicode 不做规范化（hash 的是投递的字节）：NFC 与 NFD、emoji（代理对）、组合字符都按 UTF-8 原字节参与。",
   "documents": {
     "nfc": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -18,6 +19,7 @@
       ]
     },
     "nfd": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -35,7 +37,7 @@
   "expected": {
     "nfc": {
       "dpe1": {
-        "doc_hash": "dpe1:44d69eabec6e73e9f775515ea7c38b75e57aee41d538181336a69a3259d688b2",
+        "doc_hash": "dpe1:d256e7c4abd70546b7715e757ea41ba12eed345beab23694df0314cf2bb8c4e4",
         "pages": [
           {
             "number": 1,
@@ -49,7 +51,7 @@
     },
     "nfd": {
       "dpe1": {
-        "doc_hash": "dpe1:f09bc4240b431fe0474b5bf09f3f64990ddd961a06edc5d22502a386bb1fba0d",
+        "doc_hash": "dpe1:111503efaa1cfe314b4c3b77e1bea435f9200a7685ad496308242dc81cd595f1",
         "pages": [
           {
             "number": 1,
@@ -61,5 +63,13 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "nfc.doc_hash",
+        "nfd.doc_hash"
+      ]
+    }
+  ]
 }

@@ -1,9 +1,9 @@
 # DPE Hash 契约 1（`dpe1`）
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §7–§8，经 Issue #3（内核输入）修订
+> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、Issue #4 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
-Hash 契约定义**内容身份**的计算方式：给定一篇文档的内容身份视图（§2），任何合规实现都必须逐字节算出相同的 `content_hash` / `page_hash` / `doc_hash`。契约版本与投递协议版本是两个独立的轴；本文是契约 **1**，值前缀为 `dpe1:`。
+Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何合规实现都必须逐字节算出相同的 `content_hash` / `page_hash` / `doc_hash`。doc_hash 同时是文档的版本令牌（core.md §1）。契约版本与投递协议版本是两个独立的轴；本文是契约 **1**，值前缀为 `dpe1:`。
 
 **hash 只由契约版本和 category 决定**：不存在按文件类型或其他条件选择的 hash 策略（#3 S9）。
 
@@ -19,50 +19,34 @@ Hash 契约定义**内容身份**的计算方式：给定一篇文档的内容�
 - hex MUST 为小写。带前缀的完整字符串才是 hash 值；比较、存储、传输 MUST 携带前缀。
 - 实现 MUST 拒绝无前缀或前缀未知的 hash 值（`DPE_CONTRACT_UNSUPPORTED`）。
 
-## 2. 内容身份视图：按来源分类
+## 2. 输入：源即内容
 
-字段按**由谁产生**分类（#3 S2，取代 v1 计划 §6 的三分类），每个字段 MUST 显式可归入一类：
-
-| 类别 | 判定 | 进 hash | 投递 |
-| --- | --- | --- | --- |
-| **源提供** | 正文、category、页 title、doc / page / element 的 metadata——凡由 connector 或数据源给出的 | **进** | 是 |
-| **服务端衍生** | 服务端计算或写回的字段（keywords、各类 id、hash 字段、抽取过程写回的字段） | 不进 | **否**（提交即拒绝） |
-| **寻址坐标** | 绝对位置：元素 metadata 中的页码、页内序号、版面坐标等 | 不进 | 是（随 metadata，按 §2.1 过滤出 hash） |
-| **访问方式** | 获取同一内容的途径（如图片 url）；标识不等于访问方式 | 不进 | 是 |
-| **治理属性** | 访问控制等（creator / group 类） | 不进 | 是（走 attributes + revision CAS，见 core.md） |
+DPE 的每个字段都由源提供（plan §0.1 P2），除身份 `file_uri` 外**全部**进 hash，没有保留键、没有过滤、没有例外：正文、category、`file_type`、页 number / title，以及 doc / page / element 三层 metadata 的全部键（含版面坐标、图片 url 等）。
 
 规范性规则：
 
-- **服务端写入的字段 MUST NOT 进入内容身份**（否则形成"写回 → hash 变 → 重算 → 再写回"的自触发循环）。
+- **服务端衍生物不进 DPE 字段**：服务端计算或写回的数据（keywords、各类服务端 id、抽取过程写回的字段）MUST NOT 写入任何 DPE 字段，因此也永远不会进入 hash（否则形成"写回 → hash 变 → 重算 → 再写回"的自触发循环）。它们存放在服务端自己的存储中（core.md §2.4）。
 - **源提供的字段 MUST NOT 携带会自行变化的默认值**（如 `created_at` 缺省取当前时间）：值由源提供，源给不出就留空。
-- 相对顺序（页序列、页内元素序列）**属于内容身份**，由 page_hash / doc_hash 的序列结构体现；绝对坐标（页码值、版面坐标）不属于。
+- **易变字段不应进入 metadata**：不随内容变化、却会频繁变化的源字段（浏览计数、最近访问时间、在线状态、同步时间戳等）SHOULD NOT 放进任何 metadata。
+- 相对顺序（页按 number 升序的序列、页内元素序列）属于内容，由 page_hash / doc_hash 的序列结构体现。元素在骨架中的位置不进 content_hash——这只为传输去重（同一内容对象可被多处引用、移动不重传），不意味着位置变化不是内容变化（plan §0.1 P3）。
 
 ### 2.1 metadata 的 hash 输入
 
-doc / page / element 各有一个 metadata JSON 对象（源提供，键值自由）。进入 hash 前依次做两步：
+doc / page / element 各有一个 metadata JSON 对象（源提供，键值自由）。进入 hash 前只做一步：
 
-1. **过滤保留键**（顶层键名匹配）：保留键集合是规范的一部分，SDK MUST 以常量导出，实现 MUST NOT 自行维护副本。契约 1 的保留键集合：
-
-   ```
-   寻址坐标：page_number, page_name, seq_in_page, coordinates
-   服务端衍生：keywords
-   ```
-
-   > 集合的完整枚举需内核在 M1 评审中按现有字段确认（#3 S2 的三类反例来自内核实测），定稿后新增保留键需升契约版本。
-
-2. **递归删除值为 null 的键**（#3 S5）：对象中值为 null 的键 MUST 在 JCS 之前删除，即**缺省 ≡ null**。否则实现方给模型新增一个可选字段，所有存量 hash 都会变化，等于一次隐性契约升级。数组元素不受此规则影响（`[null]` 原样保留）。
+- **递归删除值为 null 的键**（#3 S5）：对象中值为 null 的键 MUST 在 JCS 之前删除，即**缺省 ≡ null**。否则实现方给模型新增一个可选字段，所有存量 hash 都会变化，等于一次隐性契约升级。数组元素不受此规则影响（`[null]` 原样保留）。
 
 处理后的对象经 RFC 8785 JCS（§3.3）序列化为 UTF-8 字节，记作 `meta(m)`。metadata 缺省视同空对象：`meta(null) = meta({}) = "{}"` 的字节。
 
 ### 2.2 汇总
 
 ```
-element:  category、按 §4 category 规定的内容字段、metadata（经 §2.1）
-page:     number（见 §5 决策说明）、title、元素序列、metadata（经 §2.1）
-document: 页序列、doc_metadata（经 §2.1）
+element:  category、按 §4 category 规定的内容字段、metadata
+page:     number、title、元素序列、page_metadata
+document: file_type、页序列（number 升序）、doc_metadata
 ```
 
-`file_uri`、`file_type`、`attributes` 不参与 hash（`file_type` 的归属见 §8-3）。契约 1 **没有 doc title**（#3 S6：内核数据结构中不存在该字段，不为悬空字段留位；确有需要由后续契约引入）。
+`file_uri` 不参与任何 hash。契约 1 **没有 doc title**（#3 S6：不为多数实现给不出的悬空字段留位；确有需要由后续契约引入）。
 
 ## 3. 基本原语
 
@@ -92,7 +76,7 @@ metadata 进入 hash（§2.1），JCS 是契约 1 的**必需**组成部分。�
 
 - 对象键按 UTF-16 码元序排序；
 - 数字按 ECMAScript `Number::toString` 序列化（整数不带小数点，指数不带前导零）；
-- 超出 IEEE-754 double 安全整数范围（|n| > 2^53−1）的数字 MUST 拒绝；
+- **整数字面量**（不含小数点与指数）绝对值超过 2^53−1 时 MUST 拒绝；带小数点或指数的数字按 IEEE-754 double 解析后序列化（向量 `jcs_numbers`）；
 - 时间戳一律为 RFC 3339 UTC 字符串（`Z` 结尾），作为字符串参与 JCS，不做时区换算之外的改写。
 
 JCS 实现的正确性由 `kind: "jcs"` 向量单独校验。
@@ -105,7 +89,7 @@ content_hash = "dpe1:" + hex( H( text(category), part1, …, partN, meta(metadat
 
 首段恒为 category 的字符串值（#3 S3：以什么语义角色呈现属于内容本身；`Title("Foo")` 与 `NarrativeText("Foo")` 是不同内容，category 改动不得被静默丢弃）。末段恒为元素 metadata（经 §2.1）。
 
-category 是**封闭枚举**；遇到本契约未列出的 category，实现 MUST 拒绝（`DPE_CATEGORY_UNKNOWN`），MUST NOT 退化为 text-only hash。
+category 是**封闭枚举**；遇到本契约未列出的 category，实现 MUST 拒绝（`DPE_CATEGORY_UNKNOWN`），MUST NOT 退化为 text-only hash。内容对象恰为本节公式的完整原像：出现其 category 未规定的字段 MUST 拒绝（core.md §2.3）。
 
 ### 4.1 category 表与内容字段（part1…partN）
 
@@ -121,21 +105,17 @@ text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement
 
 新增 category 需要升契约次版本，并通过 capabilities 协商（§6）。
 
-### 4.2 Image：身份只认 blob
+### 4.2 Image
 
 ```
 blob_ref = "blob:" + blob 引用       （如 "blob:sha256:ab…"）
-         | null                      （纯占位图片元素）
+         | null                      （无字节的图片元素）
 ```
 
-**图片的内容身份只认 blob hash**（#3 S4）：url 是访问方式，不是身份——同一张图换一个 CDN 地址不是内容变化。规则：
-
-- 只有 url 的图片，由推送侧（SDK / 运行器）取回字节、算出 `sha256:` 引用后再投递；
-- `image_url` MAY 随内容对象投递（供服务端选用的访问方式），但 MUST NOT 进入 hash；
-- 服务端不负责抓取 url；
-- OCR / 抽取出的文字若由服务端生成，属服务端衍生字段，不进 hash（图片型文档不再需要特殊 hash 策略，见 §8-S9 与 #3 S9）。
-
-初版草案的 `path` 通道（服务端本地路径）已移出协议。
+- 图片字节由 blob 承载，`blob_ref` 是字节的身份；图片 url、版面坐标等源信息放在元素 metadata 中，与其他源字段一样进 hash（§2）。同一张图换一个 url 即内容变化（向量 `image_url_is_content`）。
+- **SDK 上传辅助**（非规范性，登记为 M2 SDK 需求）：SDK 应提供辅助函数——给它本地路径或字节，它计算 `sha256:` 引用、上传 blob 并把元素替换为引用。字节只经 `image_blob` 携带，这是正向定义；协议不对 metadata 中的路径类字符串做任何识别或拒收。
+- **字节由持有数据源凭证的一方提供**：需要数据源凭证才能取得的图片，由产出方（connector，或直接调用 SDK 的上游）用自己的凭证取回字节；推送侧（SDK / 运行器）只负责计算 `sha256:` 引用并上传 blob。运行器不持有数据源凭证，MUST NOT 自行解引用数据源 url（connector 契约 §0、§1-2）。字节确实无法取得时，`blob_ref` 为 null。
+- 服务端不负责抓取 url；OCR / 抽取出的文字若由服务端生成，属服务端衍生物，不进 DPE（图片型文档不再需要特殊 hash 策略，#3 S9）。
 
 ## 5. `page_hash` 与 `doc_hash`
 
@@ -144,42 +124,37 @@ page_hash = "dpe1:" + hex( H( ascii(number), text(title), meta(page_metadata), u
 ```
 
 - `ascii(number)`：页号的十进制 ASCII 字符串（如 `12`、`-3`），无前导零、无正号。
-- `ch1…chn`：页内各元素 `content_hash` 的**完整字符串**（含 `dpe1:` 前缀）按数组顺序的 UTF-8 字节。数组顺序即阅读顺序，顺序本身就是内容身份。
-- 重复元素照常重复出现：元素身份是 `content_hash`，**与位置无关**；同一内容在多个位置共用同一个内容对象。
+- `ch1…chn`：页内各元素 `content_hash` 的**完整字符串**（含 `dpe1:` 前缀）按数组顺序的 UTF-8 字节。数组顺序即页内阅读顺序，顺序本身就是内容。
+- 重复元素照常重复出现：内容完全相同的元素共用同一个内容对象。
 
-> 决策说明（与 #3 S2 的"寻址坐标"类目存在张力，待评审裁决）：页号进入 page_hash。页号既是寻址坐标，也是页的配对身份；若不进 hash，纯改页号（内容不动）会得到相同 doc_hash，`head` 快路径漏推，服务端存的页号永久过期。与元素级坐标不同，页号变化只影响 page_hash / doc_hash，不改变任何 content_hash，因此**不会**造成 #3 S2 担心的"插入一页 → 元素连锁重学"（delta 按元素多重集计，保持为零）。
+页号进入 page_hash：页号是页的配对身份，也决定页的阅读顺序；只改页号也是内容变化（plan §0.1 P3）。页号变化不改变任何 content_hash，因此不需要重传内容对象。
 
 ```
-doc_hash = "dpe1:" + hex( H( meta(doc_metadata), utf8(ph1), …, utf8(phm) ) )
+doc_hash = "dpe1:" + hex( H( text(file_type), meta(doc_metadata), utf8(ph1), …, utf8(phm) ) )
 ```
 
-- `ph1…phm`：各页 `page_hash` 完整字符串按 `number` **升序**排列的 UTF-8 字节。
+- `file_type`：core.md §2.5 封闭枚举的字符串值；未知取值 MUST 拒绝。
+- `ph1…phm`：各页 `page_hash` 完整字符串按 `number` **升序**排列的 UTF-8 字节——`number` 升序就是页的阅读顺序（core.md §2.2）。hash 计算对输入数组顺序宽容（向量 `page_array_order_irrelevant`），线上报文则 MUST 按 number 升序排列。
 - `number` 在文档内 MUST 唯一。
-- 空文档（0 页）合法：`doc_hash = "dpe1:" + hex(H(meta(doc_metadata)))`。空页（0 元素）同理。
+- 空文档（0 页）合法：`doc_hash = "dpe1:" + hex(H(text(file_type), meta(doc_metadata)))`。空页（0 元素）同理。
 
 ## 6. 契约演进
 
 - 契约版本在能力发现阶段协商（core.md §3.1）；hash 值自带版本前缀，跨版本的值不可比。
-- **升级对应规则**（#3 S8）：服务端按已存的（页, 页内序号）用新契约**逐元素原位重算**，MUST NOT 重新做差异配对；元素身份（学习产物的归属）保持不变。过渡期 MAY 同时接受多个版本。
+- **升级对应规则**（#3 S8）：服务端按已存的（页, 页内序号）用新契约**逐元素原位重算**，MUST NOT 重新做差异配对；元素身份（学习产物的归属）保持不变。page_hash / doc_hash 随之重算。过渡期 MAY 同时接受多个版本。
+- **升级期的版本令牌**：doc_hash 同时是 CAS 令牌（core.md §5.1）。过渡期内，服务端 MUST 把同一内容在任一受支持契约下的 doc_hash 都视为该文档的当前版本（`If-Match` 按所带值的契约前缀比较、`unchanged` 按请求声明的契约判定），读接口按请求声明的契约返回值（core.md §3.1）；契约升级本身 MUST NOT 让任何写入者的前置条件失效，也 MUST NOT 让快路径筛选把未变内容判为变化。
 - 契约升级 MUST NOT 引起未变内容的重推或重学（判据见 plan §13-7）。
 - 向量包含契约升级演练：同一份内容同时给出 `dpe1` 与假想 `dpe2` 的期望值，两个契约下的逐页、逐元素结果按位置一一对应，即为对应关系断言（`dpe2` 定义见 vectors/README.md，仅用于测试）。
 
-## 7. 与内核现状（TFRobotV2）的差异
+实现方从既有 hash 规则迁移到本契约的对照，见 [docs/migration/kernel-to-dpe1.md](../docs/migration/kernel-to-dpe1.md)（非规范）。
 
-| 项 | 内核现状 | 契约 1 |
-| --- | --- | --- |
-| 值格式 | 截断 32 hex、版本记在旁路字段 | `dpe1:` + 完整 64 hex |
-| doc_hash 范围 | 含 `file_uri`、`file_type`、title（恒空）、`json.dumps(doc_metadata)` | 无 file_uri / file_type / title；doc_metadata 经保留键过滤 + null 键删除 + JCS |
-| category | 不进 hash（基类只有 text） | 进 hash，封闭枚举，未知拒绝 |
-| metadata | 不进 element / page hash | 源提供的 metadata 进全部三层 hash（经 §2.1） |
-| 页号 | 只用于排序 | 进 page_hash（待评审，见 §5） |
-| 图片 | url / base64 / path 取首个非空 | 身份只认 `blob:sha256`，url 为访问方式 |
-| hash 策略 | 按文件类型选择（default / image-source） | 不存在策略，只由契约版本 + category 决定 |
-| 结构化值 | Python `json.dumps` | RFC 8785 JCS |
-| 升级行为 | 策略 URI 不同即全删全建 | 原位重算，身份不变，禁止重新配对 |
+## 7. 待评审决策点
 
-## 8. 待评审决策点
+已关闭：
 
-1. **页号进 page_hash**（§5）：与 #3 S2 的"寻址坐标不进 hash"字面冲突，本文保留并给出理由，请内核侧就"纯改页号如何不被 head 快路径漏掉"表态。
-2. **保留键集合的完整枚举**（§2.1）：初始集合来自 #3 的反例，需内核按现有字段核对补全（如全局指代字典的实际键名）。
-3. **`file_type` 的归属**：#3 S2 按来源分类的字面规则会把它划入"源提供 → 进 hash"，但 v1 计划已明确其为正交属性且 #3 未要求推翻，本文暂维持不进 hash，请评审确认。
+- ~~页号进 page_hash~~：#3 已确认保留，理由见 §5。
+- ~~保留键集合~~：按 plan §0.1 P2（源即内容）取消保留键，metadata 全部进 hash（#4 评审中维护者确定，推翻 #3 S2 的过滤方案）。
+- ~~`file_type` 的归属~~：#3 确认按来源规则进 doc_hash（§5）。
+- ~~图片 url 是否进 hash~~：按 P2 作为元素 metadata 进 hash（推翻 #3 S4 中"url 不进 hash"的部分）。
+
+待评审：暂无。

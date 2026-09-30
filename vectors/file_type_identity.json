@@ -1,9 +1,9 @@
 {
-  "name": "null_vs_empty_page_title",
+  "name": "file_type_identity",
   "kind": "document",
-  "description": "段级 null 与空串产出相同字节：页 title 为 null 与 \"\" 的两篇文档 hash 完全相同。",
+  "description": "file_type 由源提供，进 doc_hash（#3，契约 1 §5）：只改 file_type 时元素与页 hash 不变，doc_hash 变化。",
   "documents": {
-    "null": {
+    "md": {
       "file_type": "md",
       "pages": [
         {
@@ -18,12 +18,12 @@
         }
       ]
     },
-    "empty": {
-      "file_type": "md",
+    "txt": {
+      "file_type": "txt",
       "pages": [
         {
           "number": 1,
-          "title": "",
+          "title": null,
           "elements": [
             {
               "category": "NarrativeText",
@@ -35,7 +35,7 @@
     }
   },
   "expected": {
-    "null": {
+    "md": {
       "dpe1": {
         "doc_hash": "dpe1:23ade24308014e7bac727653902d25e73c8170a9341c46c713cf27178d4546c3",
         "pages": [
@@ -49,9 +49,9 @@
         ]
       }
     },
-    "empty": {
+    "txt": {
       "dpe1": {
-        "doc_hash": "dpe1:23ade24308014e7bac727653902d25e73c8170a9341c46c713cf27178d4546c3",
+        "doc_hash": "dpe1:334a239758b5564a90d8abd76c2a3e710d071d96314bbe4f14d46409cdc13440",
         "pages": [
           {
             "number": 1,
@@ -67,8 +67,14 @@
   "relations": [
     {
       "equal": [
-        "null.doc_hash",
-        "empty.doc_hash"
+        "md.pages.0.page_hash",
+        "txt.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "md.doc_hash",
+        "txt.doc_hash"
       ]
     }
   ]

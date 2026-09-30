@@ -1,9 +1,10 @@
 {
-  "name": "metadata_reserved_and_null",
+  "name": "metadata_null_equivalence",
   "kind": "document",
-  "description": "保留键（寻址坐标 / 服务端衍生）与值为 null 的键不进 hash：三篇文档全部 hash 相同（缺省 ≡ null，#3 S5）。",
+  "description": "值为 null 的键与缺省等价（缺省 ≡ null，#3 S5）：两篇文档的全部 hash 相同。",
   "documents": {
     "plain": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -20,33 +21,8 @@
         }
       ]
     },
-    "with_reserved": {
-      "pages": [
-        {
-          "number": 1,
-          "title": null,
-          "elements": [
-            {
-              "category": "NarrativeText",
-              "text": "x",
-              "metadata": {
-                "lang": "zh",
-                "page_number": 1,
-                "coordinates": {
-                  "x": 0.1,
-                  "y": 0.2
-                },
-                "seq_in_page": 3,
-                "keywords": [
-                  "k"
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    },
     "with_nulls": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -68,21 +44,7 @@
   "expected": {
     "plain": {
       "dpe1": {
-        "doc_hash": "dpe1:0695daec62ad215ee0ac9c15c60a3cafa50d9c9ecc04841a9b099f001de103e3",
-        "pages": [
-          {
-            "number": 1,
-            "page_hash": "dpe1:d779c7e1894e4246246633342d867d2dbddfa938e9475addea4a98d50fa70bb0",
-            "elements": [
-              "dpe1:791ada9c72f35c992c60f4ddd03e25d6ed579df7de93561b81f178c2d3a0104d"
-            ]
-          }
-        ]
-      }
-    },
-    "with_reserved": {
-      "dpe1": {
-        "doc_hash": "dpe1:0695daec62ad215ee0ac9c15c60a3cafa50d9c9ecc04841a9b099f001de103e3",
+        "doc_hash": "dpe1:1f0f5d8878ee11df5ed878801fd156080444b2b48aaa316455f49f68d9c7a1ad",
         "pages": [
           {
             "number": 1,
@@ -96,7 +58,7 @@
     },
     "with_nulls": {
       "dpe1": {
-        "doc_hash": "dpe1:0695daec62ad215ee0ac9c15c60a3cafa50d9c9ecc04841a9b099f001de103e3",
+        "doc_hash": "dpe1:1f0f5d8878ee11df5ed878801fd156080444b2b48aaa316455f49f68d9c7a1ad",
         "pages": [
           {
             "number": 1,
@@ -108,5 +70,13 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "plain.doc_hash",
+        "with_nulls.doc_hash"
+      ]
+    }
+  ]
 }

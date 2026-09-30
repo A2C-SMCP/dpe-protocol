@@ -30,6 +30,18 @@ DPE 是**标准协议，不是 TFRS 的私有接口**。就像 Git 之于 GitHub
 └────────────────────────────────────────────────────────┘
 ```
 
+## 0.1 北极星原则
+
+> 由 Issue #4 评审中维护者确立，是全部规范的指导思想；规范、SDK 与任何实现与之冲突时，以本节为准。
+
+DPE 的目标是：参考 Git 的设计理念，**极简、极速地表征世界上任何文档的内容面及其变化**。协议只处理阅读，不考虑编辑，因此把任意格式转换为便于 LLM 阅读的 DPE 结构是可行的。
+
+- **P1 内容面**：DPE 只表达文档的内容面。编辑、治理（鉴权、ACL、租户）、抽取衍生物等状态都不属于 DPE。
+- **P2 源即内容**：源给出的一切都是内容，全部进 hash，没有例外、没有过滤。范围包括正文、category、file_type、页号、title，以及三层 metadata 的全部键（含坐标、url）。服务端衍生物（如全局指代字典、keywords）MUST NOT 出现在任何 DPE 字段中，由服务端单独存放。
+- **P3 变化即重学**：任何层级的 hash 变化都是该层内容的变化，依赖它的衍生物就应刷新。协议不为规避重学做设计，重学效率由服务端提升。元素 content_hash 不含骨架位置，只为传输去重，不是为了回避重学：类比 Git 中 blob 的 hash 不含路径，但 tree 的 hash 含。
+- **P4 hash 即版本**：doc_hash 完整代表 DPE 中的文档状态，也是唯一的版本令牌与 CAS 依据，没有另设的 revision。重复提交同样的内容，结果不变，因此天然幂等。
+- **P5 同级写入**：所有写入（含服务端自身的修改）都经 commit、经 CAS，同权同级，后写覆盖前写。
+
 ## 1. 规范归属与治理
 
 - **本仓库 `A2C-SMCP/dpe-protocol` 是唯一权威**，负责：
@@ -64,6 +76,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 3. 核心模型
 
+> **修订注记**：已按 §0.1 与 Issue #4 修订——骨架元素 entry 就是 content_hash；页按 `number` 升序阅读；**revision 取消，doc_hash 即版本令牌**（§0.1 P4）；Attributes 移出 DPE 核心（§0.1 P1）；会话只绑定 `(file_uri, 调用者身份)`；doc title 已被 #3 S6 删除。以 [spec/core.md](../../spec/core.md) §1–§3 为准。
+
 | 概念 | 定义 |
 | --- | --- |
 | **Remote** | 一个文档空间的 URL，由服务端定义，协议不关心它的内部结构。对 TFRS 来说，一个 remote 就是一个 robot。所有端点都相对于 remote URL，不使用域名根路径下的 `.well-known`。 |
@@ -77,6 +91,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 | **Staging session** | 暂存会话，由 negotiate 开启，绑定到 `(file_uri, base_revision, 调用者身份)`，有过期时间，暂存期间对外不可见。 |
 
 ## 4. 核心操作
+
+> **修订注记**：本节中的 attributes 与 revision 已按 §0.1 取消——head / list 返回 doc_hash，commit 响应为 `{status, doc_hash, delta}`，doc_hash 未变即 unchanged。以 [spec/core.md](../../spec/core.md) §3 为准。
 
 | 操作 | 语义 | 前置条件 | 写？ |
 | --- | --- | --- | --- |
@@ -109,6 +125,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 5. 写入冲突（CAS）
 
+> **修订注记**：已按 §0.1 与 Issue #4 修订——前置条件为 `base_hash`（doc_hash）/ `if_absent` / `force`；幂等由内容保证（同内容重复提交返回 unchanged），协议不定义幂等键；本节提到的 attributes 与 revision 已取消。以 [spec/core.md](../../spec/core.md) §5 为准。
+
 | 场景 | 请求 | 结果 |
 | --- | --- | --- |
 | 新建 | `if_absent` | 文档已存在时返回 `DPE_ALREADY_EXISTS` |
@@ -121,6 +139,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 - 前缀授权（哪个调用者能写哪些 URI）**由服务端实现决定**，协议只定义错误语义（403 `DPE_FORBIDDEN`）。
 
 ## 6. 字段三分类
+
+> **修订注记**：本节已被取代。先由 Issue #3 S2 改为按来源分类，再由 §0.1 P2（源即内容）收敛为：除 `file_uri` 外 DPE 的全部字段都进 hash，没有保留键；治理属性移出 DPE，服务端衍生物不进任何 DPE 字段。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) §2 与 [spec/core.md](../../spec/core.md) §2.4 为准；下文保留作为历史。
 
 规范为每个字段**显式归类**，存在未归类的字段即视为违规。
 
@@ -135,6 +155,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 - 客户端提交的衍生字段一律拒绝，沿用 TFRS 草案的 Rule 0。
 
 ## 7. Hash 契约 1
+
+> **修订注记**：doc_hash 含 `file_type` 与 `doc_metadata`（#3），无 doc title（#3 S6）；metadata 全部进 hash（§0.1 P2）；图片字节以 blob 进 hash，url 作为元素 metadata 进 hash。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准。
 
 - **格式**：`dpe1:<64 hex>`，即完整 sha256，不截断，前缀标明契约版本。blob 使用 `sha256:<64hex>`，与 OCI 和 Git SHA-256 的惯例一致。
 - **拼接**：每段前面加 4 字节大端长度前缀，再计算 sha256。null 视为空串。沿用内核的做法，并写成与语言无关的规范文本。
@@ -156,6 +178,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 9. HTTP 绑定（v1 唯一规范性绑定）
 
+> **修订注记**：commit 已按 Issue #4 B5 改为 `PUT {remote}/documents?uri=`；ETag 即 doc_hash（§0.1 P4），move 的前置条件放在请求体中；错误码示例中的 `DPE_REVISION_CONFLICT` 已改名为 `DPE_PRECONDITION_FAILED`；每个请求以 `DPE-Hash-Contract` 头声明契约。以 [spec/bindings/http.md](../../spec/bindings/http.md) 为准。
+
 - **路径**都相对于 remote：`GET {remote}/capabilities`、`POST {remote}/negotiate`、`PUT {remote}/staging/{sid}/objects/{hash}`、`PUT {remote}/staging/{sid}/blobs/{sha256}`（分块）、`POST {remote}/commit`、`POST {remote}/heads`、`GET {remote}/documents?uri=…`、`GET {remote}/documents?prefix=…&cursor=…`、`DELETE {remote}/documents?uri=…`、`POST {remote}/move`。具体路径由 `http.md` 定稿。
 - **CAS 映射到 HTTP 原生语义**：
   - revision 对应 `ETag`
@@ -175,6 +199,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 - **不暴露服务端的处理进度**，commit 成功就是协议的终点。
 
 ## 10. SDK
+
+> **修订注记**：「revision 不匹配就重新协商」改为「doc_hash 不匹配（`DPE_PRECONDITION_FAILED`）就重新读取」（§0.1 P4）。
 
 - **两份独立实现**（Python ≥ 3.11，Rust ≥ 1.80），共享同一套向量。两份实现出现分歧，说明规范需要补正。
 - 每个 SDK 内部拆成 **sans-IO 核心**（hash、协议状态机，不做任何 I/O）和**传输适配层**。
@@ -199,6 +225,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 12. 第一个实现：TFRS 与内核的改造清单
 
+> **修订注记**：按 §0.1 调整——K2 中 doc_hash **包含** file_type 与 doc_metadata（与下表原文相反）；K3 取消 revision 列，CAS 直接比较存储的 doc_hash；K4 的 attributes 存储改为服务端自行决定 ACL，不经 DPE。内核待办见 [docs/migration/kernel-to-dpe1.md](../migration/kernel-to-dpe1.md)。
+
 | # | 改造 | 说明 |
 | --- | --- | --- |
 | K1 | 去掉「hash 策略 URI 不同就全量重建」 | `unified_memory.py:2288` 目前按字符串比较策略 URI。改为离线重算新 hash，保持元素身份和学习产物 |
@@ -216,6 +244,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 **约束**：内核**不新增 diff 接口**。一致性只由内核的 upsert 保证，增量推送与全量推送收敛后的结果必须完全一致。学习的去重归内核负责，协议不实现去重。
 
 ## 13. 判据（出现任一即偏离目标）
+
+> **修订注记**：第 6 条中「未声明的 attributes 键」随 attributes 移出 DPE 而失效；其余判据不变。
 
 1. 协议或 SDK 中出现了某个服务端实现的私有概念；或者 connector 必须调用服务端的私有 API 才能完成投递、删除或移动。
 2. SDK 运行时依赖内核，而不是按规范独立实现 hash、用向量逐字节校验。
@@ -263,4 +293,4 @@ sdk/python/  sdk/rust/  # 两份独立实现
 - Issue #2：connector 的运行边界与租户插件沙箱（由 TFRSOperator、TFRS、TFRSUC 回复）。
 - HTTP 绑定的具体路径和媒体类型命名（在 M1 撰写 `http.md` 时定稿）。
 - 规范在 `doc.turingfocus.cn` 上的发布 path 和版本化发布流程。
-- `Idempotency-Key` 的去重窗口，以及暂存会话 TTL 的规范下限。
+- 暂存会话 TTL 的规范下限。（原「`Idempotency-Key` 的去重窗口」已撤销：幂等由内容保证，协议不定义幂等键，见 §0.1 P4。）

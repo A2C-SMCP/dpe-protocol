@@ -4,6 +4,7 @@
   "description": "null 键删除是递归的：嵌套对象中的 null 键同样删除；数组中的 null 保留。",
   "documents": {
     "with_nulls": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -28,6 +29,7 @@
       ]
     },
     "stripped": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -49,12 +51,35 @@
           ]
         }
       ]
+    },
+    "array_null_dropped": {
+      "file_type": "md",
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "a": {
+                  "c": 1
+                },
+                "arr": [
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   },
   "expected": {
     "with_nulls": {
       "dpe1": {
-        "doc_hash": "dpe1:16ffd3921d6f1cb5b8ca41aef84c6bc5ec03a53d2249dc438080d2a252a9aab4",
+        "doc_hash": "dpe1:b984ad58d3a7bb33a619be03a668701be46760901c130324d68c2e3b4f71cd33",
         "pages": [
           {
             "number": 1,
@@ -68,7 +93,7 @@
     },
     "stripped": {
       "dpe1": {
-        "doc_hash": "dpe1:16ffd3921d6f1cb5b8ca41aef84c6bc5ec03a53d2249dc438080d2a252a9aab4",
+        "doc_hash": "dpe1:b984ad58d3a7bb33a619be03a668701be46760901c130324d68c2e3b4f71cd33",
         "pages": [
           {
             "number": 1,
@@ -79,6 +104,34 @@
           }
         ]
       }
+    },
+    "array_null_dropped": {
+      "dpe1": {
+        "doc_hash": "dpe1:78a616d8fdd20fcece5cc30298a53e3e4010fc1ead8c6664e8d545357c260316",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:48de77f613ec8a58660567ee0f317e39625b49af5fa3e6b6d8a76d19e3adefac",
+            "elements": [
+              "dpe1:7f64a229aba086571e819ed27b7f4325e3de3314fc66572ce1707c51711fa1b5"
+            ]
+          }
+        ]
+      }
     }
-  }
+  },
+  "relations": [
+    {
+      "equal": [
+        "with_nulls.doc_hash",
+        "stripped.doc_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "stripped.doc_hash",
+        "array_null_dropped.doc_hash"
+      ]
+    }
+  ]
 }

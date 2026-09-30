@@ -4,6 +4,7 @@
   "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpe2 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
   "documents": {
     "doc": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -31,7 +32,10 @@
               "category": "Image",
               "text": "图",
               "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_mime_type": "image/webp"
+              "image_mime_type": "image/webp",
+              "metadata": {
+                "image_url": "https://a.cdn/x.webp"
+              }
             }
           ]
         }
@@ -44,7 +48,7 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:d3bc696d01d1afbac265ae4a5bb73c941b17c133bab762d183d9eeab5a26171a",
+        "doc_hash": "dpe1:035a15a0bb5372189e46ec964daecb219f5496e900f53c5ce962899e8f80038d",
         "pages": [
           {
             "number": 1,
@@ -56,15 +60,15 @@
           },
           {
             "number": 2,
-            "page_hash": "dpe1:39e616d6cd8ceb35369134992de4457d254a4d41c88336a99a52fe5995ac658d",
+            "page_hash": "dpe1:a63ab6babc6b1abc3e038fa54a9b59ac483c0288bd4ab8343c40896cb4ba3e60",
             "elements": [
-              "dpe1:2869e852403498df546293dab5f03b2d5c637b9bc3a04f01f9bb77778265a2f1"
+              "dpe1:1e870db3385b4cf8daf6b0677710088dee4b8687187017ce2a3b60a0f2a5e38a"
             ]
           }
         ]
       },
       "dpe2": {
-        "doc_hash": "dpe2:0523753ce53ab648c638d1da80659004931958fbd124e5c7715524db2b3624b5",
+        "doc_hash": "dpe2:8598fa8aa1f028cf31f46df3fd433d2a0c10e3a5a3296e6f524737deaf2a0f99",
         "pages": [
           {
             "number": 1,
@@ -76,9 +80,9 @@
           },
           {
             "number": 2,
-            "page_hash": "dpe2:004c0e6526a5fcb2316dfd9c91314eea4f1bef4cf975b52103b6e7f4bf995264",
+            "page_hash": "dpe2:837abed78c2ab7e605edf62583ea04806e6bd444ddb61932e5219b80e7970e81",
             "elements": [
-              "dpe2:84653efaf8eca8ee69b67d8420f34b64ed180af63c8d6d85a66bbe64cf43d6c1"
+              "dpe2:9b26c8f13c030a913d2f7a76ade04f02c3864c5a1328bc89d11d59a90af0b564"
             ]
           }
         ]

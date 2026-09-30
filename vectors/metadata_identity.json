@@ -1,9 +1,10 @@
 {
   "name": "metadata_identity",
   "kind": "document",
-  "description": "源提供的 metadata 是内容身份（#3 S2）：doc / page / element 任一层 metadata 变化，对应层 hash 变化。",
+  "description": "源即内容（plan §0.1 P2）：doc / page / element 任一层 metadata 变化，对应层及以上的 hash 变化，下层不受影响。",
   "documents": {
     "base": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -28,6 +29,7 @@
       }
     },
     "ele_meta_changed": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -52,6 +54,7 @@
       }
     },
     "page_meta_changed": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -76,6 +79,7 @@
       }
     },
     "doc_meta_changed": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -103,7 +107,7 @@
   "expected": {
     "base": {
       "dpe1": {
-        "doc_hash": "dpe1:136a69b561605577293d72d3d1caaee4ad3a6ed4afef8645c47758eaacb08975",
+        "doc_hash": "dpe1:41339f4632ba48a020bbf8320bbf3ad9b5d82d7b1ddd450a7b1cff9f4ba7a0ee",
         "pages": [
           {
             "number": 1,
@@ -117,7 +121,7 @@
     },
     "ele_meta_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:1f9d625661cb5cb0c6a733fff46ff5b41eb241cb4e3268910ea60b2f0e85574e",
+        "doc_hash": "dpe1:0c8e187838d5abd3a86a7187f0f3b077535f1f1b54d55bc9a077d4513c63a626",
         "pages": [
           {
             "number": 1,
@@ -131,7 +135,7 @@
     },
     "page_meta_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:eee050599ec536f6df7b957df5ccb5d1154d54a3a6b72c165d93db05a4446be2",
+        "doc_hash": "dpe1:6f90b002241b4599ee9ea20342099ee228490a49eb6ad4190446acad176b902a",
         "pages": [
           {
             "number": 1,
@@ -145,7 +149,7 @@
     },
     "doc_meta_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:d93b133e9c69a4427f2c0e435d40c78f20ab43c53925bbe9f9a0f97853cdc660",
+        "doc_hash": "dpe1:32cbc2e6c099d181f8c4ca9774ac7c7506747c2416bf76d4c01dd92bab5d562f",
         "pages": [
           {
             "number": 1,
@@ -157,5 +161,33 @@
         ]
       }
     }
-  }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "base.doc_hash",
+        "ele_meta_changed.doc_hash",
+        "page_meta_changed.doc_hash",
+        "doc_meta_changed.doc_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "base.pages.0.elements.0",
+        "ele_meta_changed.pages.0.elements.0"
+      ]
+    },
+    {
+      "equal": [
+        "base.pages.0.elements.0",
+        "page_meta_changed.pages.0.elements.0"
+      ]
+    },
+    {
+      "equal": [
+        "base.pages.0.page_hash",
+        "doc_meta_changed.pages.0.page_hash"
+      ]
+    }
+  ]
 }

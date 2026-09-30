@@ -1,0 +1,107 @@
+{
+  "name": "duplicate_different_coordinates",
+  "kind": "document",
+  "description": "同一文本出现在两处、坐标不同：坐标是内容，两处是不同的内容对象（content_hash 不同）；坐标相同时才共享同一内容对象。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "ListItem",
+              "text": "重复项",
+              "metadata": {
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.1
+                    ],
+                    [
+                      0.4,
+                      0.2
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            },
+            {
+              "category": "ListItem",
+              "text": "重复项",
+              "metadata": {
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.5
+                    ],
+                    [
+                      0.4,
+                      0.6
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            },
+            {
+              "category": "ListItem",
+              "text": "重复项",
+              "metadata": {
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.1
+                    ],
+                    [
+                      0.4,
+                      0.2
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:ac1550f77ec33a3e167c5547f4f0aa4cfd97992139ee0890b0224ba94fda0b92",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:0cad975c6dd108ecf1c7cd5f1d23fc7f3ba4b397dee30b4adbad2bb1a2fba2f2",
+            "elements": [
+              "dpe1:e0e90fb939feb14dfea26f98da1c68b2cfca07a5992c59e045f5101f7c85f541",
+              "dpe1:60cb7cd1a9d6b4e88e7160efb98400e65b8fd486fb7e7961c516638b0addf8cf",
+              "dpe1:e0e90fb939feb14dfea26f98da1c68b2cfca07a5992c59e045f5101f7c85f541"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.1"
+      ]
+    },
+    {
+      "equal": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.2"
+      ]
+    }
+  ]
+}

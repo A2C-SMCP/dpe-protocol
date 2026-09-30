@@ -4,6 +4,7 @@
   "description": "最小文档：单页单 NarrativeText，无 metadata（meta 段为 \"{}\" 的字节）。",
   "documents": {
     "doc": {
+      "file_type": "md",
       "pages": [
         {
           "number": 1,
@@ -21,7 +22,7 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:4f3fb731f6b6e5d6fb96eb03392cd608f35e34498f1effaa3cac83ef9a12044a",
+        "doc_hash": "dpe1:ac8b30623c407e6a8d5faa8e9676b160641c10ba1ae7f243c3085457f5ab1df1",
         "pages": [
           {
             "number": 1,
