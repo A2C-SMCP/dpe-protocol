@@ -1,0 +1,13 @@
+[project]
+name = "dpe-hash"
+version = "0.1.0a0"
+description = "DPE hash 契约 1 的独立 hash 核心（M1 原型：零依赖、纯 Python，预演 #3 S1 的打包形态）"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dpe_hash"]

@@ -13,3 +13,7 @@ site/
 # Environment variables (敏感配置)
 .env
 .env.*
+
+# SDK build artifacts
+sdk/rust/target/
+sdk/rust/Cargo.lock

@@ -1,0 +1,12 @@
+[package]
+name = "dpe-hash"
+version = "0.1.0-alpha.0"
+edition = "2021"
+rust-version = "1.80"
+description = "DPE hash 契约 1 的独立 hash 核心（M1 原型：不绑定运行时，仅 sha2 + serde_json）"
+
+[dependencies]
+sha2 = "0.10"
+# float_roundtrip 必需：JCS 的数字序列化以「正确舍入的 f64」为前提，
+# serde_json 默认解析在极端指数下可差 1 ULP（向量 jcs_numbers 的 1e-30 即抓此坑）
+serde_json = { version = "1", features = ["float_roundtrip"] }
