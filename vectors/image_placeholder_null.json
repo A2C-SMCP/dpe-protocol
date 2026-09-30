@@ -1,0 +1,69 @@
+{
+  "name": "image_placeholder_null",
+  "kind": "document",
+  "description": "占位图片：blob / url / mime 全为 null，各段按空串编码（null 与空串同字节）。",
+  "documents": {
+    "null": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "占位"
+            }
+          ]
+        }
+      ]
+    },
+    "empty": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "占位",
+              "image_url": "",
+              "image_mime_type": ""
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "null": {
+      "dpe1": {
+        "doc_hash": "dpe1:bd631f58eac037275dea0a01110367867bbb528b1efef90103c11c40b6250626",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:cb5efc04d289d4e883473115483e273ab30fd8892a0763a10ace4ade2f92029d",
+            "elements": [
+              "dpe1:5ce6682da1951685515a80d0c605ca629a3bc67cb6fada1be505ab5a9d2d5efa"
+            ]
+          }
+        ]
+      }
+    },
+    "empty": {
+      "dpe1": {
+        "doc_hash": "dpe1:bd631f58eac037275dea0a01110367867bbb528b1efef90103c11c40b6250626",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:cb5efc04d289d4e883473115483e273ab30fd8892a0763a10ace4ade2f92029d",
+            "elements": [
+              "dpe1:5ce6682da1951685515a80d0c605ca629a3bc67cb6fada1be505ab5a9d2d5efa"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "empty_document",
+  "kind": "document",
+  "description": "空文档（0 页）与空页（0 元素）均合法。",
+  "documents": {
+    "no_pages": {
+      "title": "empty",
+      "pages": []
+    },
+    "empty_page": {
+      "title": "empty",
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": []
+        }
+      ]
+    }
+  },
+  "expected": {
+    "no_pages": {
+      "dpe1": {
+        "doc_hash": "dpe1:03b56e23cce08d4bfd22426ee559ec18e75b429aa416760d45fabef028fa3ded",
+        "pages": []
+      }
+    },
+    "empty_page": {
+      "dpe1": {
+        "doc_hash": "dpe1:dbbaa7c2edb61ffd951d1b6f53acd064ecaf4630ab3cfb096d90bc1016bc2f9d",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:165d8ad7a02db50a5941fb420546d3af0e06ae9198a83392ff0edd96af55992a",
+            "elements": []
+          }
+        ]
+      }
+    }
+  }
+}

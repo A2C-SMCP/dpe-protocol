@@ -1,0 +1,101 @@
+{
+  "name": "page_number_identity",
+  "kind": "document",
+  "description": "页号进入 page_hash：内容不动、只改页号，doc_hash 必须变化（否则 head 快路径漏推）。",
+  "documents": {
+    "before": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "title": "q",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "y"
+            }
+          ]
+        }
+      ]
+    },
+    "after": {
+      "title": null,
+      "pages": [
+        {
+          "number": 10,
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        },
+        {
+          "number": 20,
+          "title": "q",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "y"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "before": {
+      "dpe1": {
+        "doc_hash": "dpe1:11ff6678fd27b4c9f9a63626d5ee21eda0ac04ac335319cdee0d31fff41cb842",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:3d9f21cb53c21971df44c3e9fbe7621b08633d11e6674c04f4f319fa18dcc03c",
+            "elements": [
+              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+            ]
+          },
+          {
+            "number": 2,
+            "page_hash": "dpe1:b7012f4e9400b0d5794ff6d38c602ec8ab8096bc4f3b17e7b5dcb27ac882c2d0",
+            "elements": [
+              "dpe1:4180173be2618cffaa558770a462cd156e198377ad9ec78cb15fd8ee42b749d1"
+            ]
+          }
+        ]
+      }
+    },
+    "after": {
+      "dpe1": {
+        "doc_hash": "dpe1:6ac9d33562055c47270835921eb911b8db55b92d12da5968e54d3aef7e86a7f8",
+        "pages": [
+          {
+            "number": 10,
+            "page_hash": "dpe1:8bcd3b024f3bb70a66beef0b1cae05000523ade58beff82d30f0e0bee544a957",
+            "elements": [
+              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+            ]
+          },
+          {
+            "number": 20,
+            "page_hash": "dpe1:039363ed31070055aab3d5450c5256ba27ea995b513ba8c578a31b5e895c3950",
+            "elements": [
+              "dpe1:4180173be2618cffaa558770a462cd156e198377ad9ec78cb15fd8ee42b749d1"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

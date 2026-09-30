@@ -1,0 +1,83 @@
+{
+  "name": "upgrade_drill",
+  "kind": "document",
+  "description": "契约升级演练：同一份内容同时给出 dpe1 与假想 dpe2（定义见 vectors/README.md）的期望值。",
+  "documents": {
+    "doc": {
+      "title": "upgrade",
+      "pages": [
+        {
+          "number": 1,
+          "title": "p1",
+          "elements": [
+            {
+              "category": "Title",
+              "text": "标题"
+            },
+            {
+              "category": "Table",
+              "text": "a",
+              "text_as_html": "<table/>"
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "图",
+              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "image_mime_type": "image/webp"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:9e010e491a69bf870456a602a4cfb1c5e33193dd8b45cd36cf0788728627b8b8",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:b201d998a4f65d110c83cc3820fe9cd1264d704c5ef88760a2daadf771fb877c",
+            "elements": [
+              "dpe1:ec68eaa48e613850714685309b2d76d70e0df5f24c5b8dda1638d65693bf2b84",
+              "dpe1:06206bd17d0c1ff38db1341a73da4a6c8f9e85a99a94365ce2a29aa60ca66418"
+            ]
+          },
+          {
+            "number": 2,
+            "page_hash": "dpe1:c4545c43b68d22d2b4c9d17f9066fb54ad842fa2d7b5ae6d1ee1afb2aeb495ad",
+            "elements": [
+              "dpe1:54fe0ac942013d87ba5f5d716a1e61bfd20a7974e838047fe47d09087393fcca"
+            ]
+          }
+        ]
+      },
+      "dpe2": {
+        "doc_hash": "dpe2:1fa806b4c9ad45c9e235c8bc60fe1fcd77113219f0ad9164e625b7cf0193b548",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe2:2338a0616123d1c64f19795f5dc1847d108df0c7b57cddcc64485f59476bfdf4",
+            "elements": [
+              "dpe2:82c521e9adac4a5006efd0e4e6d12021042b354c2802f104101d8e24925d5603",
+              "dpe2:8b98bf01e72972cd6ee222f2ee8f55dc10f55210d01d04a8e80135ab2370cca5"
+            ]
+          },
+          {
+            "number": 2,
+            "page_hash": "dpe2:3442dada97e6fbc8666239145a7c2f948b75b742fe82a8e12cbccf3bbd007e30",
+            "elements": [
+              "dpe2:e93d4e9944161c660e8aecce44a1ae7c19fc7575e026661a961248aa3b2dc08f"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

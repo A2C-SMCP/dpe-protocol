@@ -1,0 +1,80 @@
+{
+  "name": "jcs_numbers",
+  "kind": "jcs",
+  "description": "ECMAScript Number::toString 边界：整数展开阈值 1e21、指数下界 1e-7、无前导零指数、-0 归一为 0。",
+  "cases": [
+    {
+      "input": 0,
+      "canonical": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "input": -0.0,
+      "canonical": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "input": 1,
+      "canonical": "1",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "input": -1.5,
+      "canonical": "-1.5",
+      "sha256": "37c2b212b94e5372b33df924ea2a91182d90c237d0bf942c1768e794ebef2376"
+    },
+    {
+      "input": 0.1,
+      "canonical": "0.1",
+      "sha256": "14be4b45f18e0d8c67b4f719b5144eee88497e413709d11d85b096d8e2346310"
+    },
+    {
+      "input": 1e-06,
+      "canonical": "0.000001",
+      "sha256": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+    },
+    {
+      "input": 1e-07,
+      "canonical": "1e-7",
+      "sha256": "5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+    },
+    {
+      "input": 1e+20,
+      "canonical": "100000000000000000000",
+      "sha256": "c344e9487bfbd5c4e03c9fb90d62a5dde5e00b54d55c46e9f4a803aea162b80c"
+    },
+    {
+      "input": 1e+21,
+      "canonical": "1e+21",
+      "sha256": "241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c"
+    },
+    {
+      "input": 1.5e+22,
+      "canonical": "1.5e+22",
+      "sha256": "752822a66e195916be9bff7f49c2e2295f7010eca4369e2057a2f9c4d3ba5ed7"
+    },
+    {
+      "input": 9007199254740991,
+      "canonical": "9007199254740991",
+      "sha256": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+    },
+    {
+      "input": 3.141592653589793,
+      "canonical": "3.141592653589793",
+      "sha256": "f0a1b7875844c3ae0d28f3cc44e9a6241da33e2623a69f0a71263158dffb4e87"
+    },
+    {
+      "input": 333333333.3333333,
+      "canonical": "333333333.3333333",
+      "sha256": "6bd9be1c141028789cc35db62f1b43e80d5d4ee24d6d542e775deb16799ff4c7"
+    },
+    {
+      "input": [
+        1e+30,
+        -1e-30
+      ],
+      "canonical": "[1e+30,-1e-30]",
+      "sha256": "31f80169599bcf10ba9f3f4b1128be585cb1221cd35463f368151be4f7c9d902"
+    }
+  ]
+}

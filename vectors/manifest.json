@@ -1,0 +1,79 @@
+{
+  "contract": "dpe1",
+  "spec": "spec/hash-contract-1.md",
+  "status": "draft",
+  "provenance": {
+    "generator": "scripts/gen_vectors.py",
+    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md"
+  },
+  "files": [
+    {
+      "name": "all_text_categories.json",
+      "sha256": "2c687d1cbeb20b78ba5e1ef22d01f3454e7e6914f073c26fdb6d97c67e69ee79"
+    },
+    {
+      "name": "cross_page_move.json",
+      "sha256": "2e8d47dd4dd5ca2d1f4a551a79c00e4609639c3cefb976b2944597e946692783"
+    },
+    {
+      "name": "duplicate_elements.json",
+      "sha256": "f3a5b4bbdf6cc4e22f19c427032c339b7526c5a8ef8fd524eb73b13cdc57ff60"
+    },
+    {
+      "name": "element_text_basic.json",
+      "sha256": "a0aa9cfc14cb737580a3a61bb090a6c203f5e11950940d8695d4eab05699fd2e"
+    },
+    {
+      "name": "empty_document.json",
+      "sha256": "93f0f16703f73fd539155960807bfe564a3eea65ff7d4c6bf359bf195f11e8af"
+    },
+    {
+      "name": "image_blob.json",
+      "sha256": "d7c3cd596f1e981608a5fcf2fa433f4bfcc893185d3d58501497b018f32bfe8c"
+    },
+    {
+      "name": "image_placeholder_null.json",
+      "sha256": "5021f2c437ecad25376d010a4d26e8f38f38ed7a4b7558e9d461fefe4ea3842f"
+    },
+    {
+      "name": "image_url_identity.json",
+      "sha256": "a990b01906016dc7d274b581a70631b86c1687ef271dce9fc92a5d73c984ed88"
+    },
+    {
+      "name": "jcs_basic.json",
+      "sha256": "3ab99251be0d884558ff17238a687deb76c6aafc4cb327e63896f4ba8cc4da43"
+    },
+    {
+      "name": "jcs_numbers.json",
+      "sha256": "e593cc5a8ec34c561b4dfca0bfea11d6b8d6943dc15967f4c938c75dd687b924"
+    },
+    {
+      "name": "negative_page_number.json",
+      "sha256": "14a5a3f4c02af3129046f7c3f0ad18d79bd21bff186ed7f73fb84fe396a8b432"
+    },
+    {
+      "name": "null_vs_empty_title.json",
+      "sha256": "b62f0f81d0bc5f5b55cc40e1424a25e25e11df0b3b2c9e6d34f053a575171a05"
+    },
+    {
+      "name": "page_array_order_irrelevant.json",
+      "sha256": "283810e22096b44f4ed76221de5accf6d43f870b6c7b1870b089c2a9d1698c39"
+    },
+    {
+      "name": "page_number_identity.json",
+      "sha256": "74acd12d3a5dbacf535087bdf1262a2169f3bca463d41721ef9a02dd61a2bd29"
+    },
+    {
+      "name": "table_formula_html.json",
+      "sha256": "a21e22647fdd2ea72ecaf6fbbad6f7261c0b3f1288c3cd4e71b5e0cb4bd76735"
+    },
+    {
+      "name": "unicode_text.json",
+      "sha256": "de90c0f88e5b04ed4f74ce22b9b616b97961afff48c3243521f9e819de3c2d6b"
+    },
+    {
+      "name": "upgrade_drill.json",
+      "sha256": "3fcf7039c115abed38a83fa18e156ea652da2ae34c3368c9d9d67d7b3ca8bd38"
+    }
+  ]
+}

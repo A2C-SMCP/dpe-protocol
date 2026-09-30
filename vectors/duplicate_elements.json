@@ -1,0 +1,48 @@
+{
+  "name": "duplicate_elements",
+  "kind": "document",
+  "description": "同页两个相同元素：content_hash 相同（内容对象共享），page_hash 中按位置重复出现。",
+  "documents": {
+    "doc": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "ListItem",
+              "text": "重复项"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "中间"
+            },
+            {
+              "category": "ListItem",
+              "text": "重复项"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:552224e3696a1acb92ac1c64ed1d074bc90aa71fec3f350d3583185782b6a8e3",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:7815019ef6a5e513061879d712615ace34b30686811c76dfc006aee77f29d6a3",
+            "elements": [
+              "dpe1:c82b948456ffc8484635d6293c05abf12b523a703ca3c00ea02765a5f9616b33",
+              "dpe1:9e055890b4a3f9ac80d143f55a94ac3abf869238783297890da784cb5c251935",
+              "dpe1:c82b948456ffc8484635d6293c05abf12b523a703ca3c00ea02765a5f9616b33"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "element_text_basic",
+  "kind": "document",
+  "description": "最小文档：单页单 NarrativeText。",
+  "documents": {
+    "doc": {
+      "title": "hello",
+      "pages": [
+        {
+          "number": 1,
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "Hello, DPE."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:b3ac186084d44e2ab9ac4f8922ca3f3bbe29715eb1b2a10b3f3abd6f30503d5f",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:7b64ee9a365ea8e5e1864fb3415e2ea742eaba931267d6ab44b698015ef1bbf9",
+            "elements": [
+              "dpe1:d42bcda66d2d72e04e27c3a357b7e6c891b086d0d84105c1989cd566a1ff95a0"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

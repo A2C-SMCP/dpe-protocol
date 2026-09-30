@@ -1,0 +1,118 @@
+{
+  "name": "all_text_categories",
+  "kind": "document",
+  "description": "全部 text-only category 各一个元素，同页排列；category 进入 hash，故同文本不同 category 的值互不相同。",
+  "documents": {
+    "doc": {
+      "title": "categories",
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "Address",
+              "text": "same text"
+            },
+            {
+              "category": "CheckBox",
+              "text": "same text"
+            },
+            {
+              "category": "CodeSnippet",
+              "text": "same text"
+            },
+            {
+              "category": "CompositeElement",
+              "text": "same text"
+            },
+            {
+              "category": "EmailAddress",
+              "text": "same text"
+            },
+            {
+              "category": "FigureCaption",
+              "text": "same text"
+            },
+            {
+              "category": "Footer",
+              "text": "same text"
+            },
+            {
+              "category": "FormKeysValues",
+              "text": "same text"
+            },
+            {
+              "category": "Header",
+              "text": "same text"
+            },
+            {
+              "category": "ListItem",
+              "text": "same text"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "same text"
+            },
+            {
+              "category": "PageBreak",
+              "text": "same text"
+            },
+            {
+              "category": "PageNumber",
+              "text": "same text"
+            },
+            {
+              "category": "TableChunk",
+              "text": "same text"
+            },
+            {
+              "category": "Title",
+              "text": "same text"
+            },
+            {
+              "category": "UncategorizedText",
+              "text": "same text"
+            },
+            {
+              "category": "tfchat",
+              "text": "same text"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:7e7de30e2f477e90e68c2a4c3c7e38df6049fa8a5d71a2a8b5dade1893e413bf",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:5abe638c8349444ad71110887f4ca49dfcd316ed12d1128daeaf01658f99d904",
+            "elements": [
+              "dpe1:b7ae4060ff0cae7d7d8b1770285054d3da04680694b8d008bebcbdf4641a774d",
+              "dpe1:eb0c08c4ae2d603b0d108b1dce680ab1441cf512cfcefcef4dace83fde370fa9",
+              "dpe1:7ec78132c21fa5bf3c8fe6071cf0314e9ead68b8e5097ac00651a15f7b5475c5",
+              "dpe1:54884213ab85f7a5541a8ca0abaaff35139e38906ad0cda85391112024b85f23",
+              "dpe1:191f3836d5d192c29e7636d9db1103d16034a91e6e9d7e3d223a1acda0450142",
+              "dpe1:a95ed5792051f0a51c1a1fce92cb3bafbbf97ee63a802ec44098821ac63269f6",
+              "dpe1:34a7f22dcdf37d7867c3bea52d6b614e1019f145182b43d4654f9a1747820247",
+              "dpe1:19f5297ea7e5ca7e26c3bc09b85b813508f8933f238475967a1982ec0cd06ac5",
+              "dpe1:bcec75337fff018d983dc0ce8204711e2f1a8b40a79a6322513560a7f58c75d1",
+              "dpe1:614fe06575b3b2f29f28e181227caca91d805548c9ff65ad5846c45e176f6f48",
+              "dpe1:ce74bb86b7c23541e575429ea7956b90d746235233bb6b862a464e5174e42ace",
+              "dpe1:3e78d31f00ecc7109d7f1352d07e56ae03009c808fe9be1e91442766d5a66c84",
+              "dpe1:48a53fc9fa301daedbc9a80830103c9a478bca8810033c0c5d45fe4c2aaa10f8",
+              "dpe1:723ef9fffef8862eaad2b6987c6f4ecef1db19a63a10081859e905801d7aef54",
+              "dpe1:fc5235e216a15e2efb3c112dcf4281f34bf3c77aa768747b5c07a160b5a53982",
+              "dpe1:ae933a7b9a2f9bd365c8d05bae450088558a990bd7d9598f56abf9518642ab4c",
+              "dpe1:0e21bac565854f11c0e236b98121f7167114cb1eab15bdf744af9bb214eb6890"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "name": "unicode_text",
+  "kind": "document",
+  "description": "Unicode 不做规范化：NFC 与 NFD、emoji（代理对）、组合字符都按 UTF-8 原字节参与。",
+  "documents": {
+    "nfc": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "café 🚀 中文"
+            }
+          ]
+        }
+      ]
+    },
+    "nfd": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "café 🚀 中文"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "nfc": {
+      "dpe1": {
+        "doc_hash": "dpe1:45afcd3a065ca75c9385227d6537966a72ad30b80f580380c19709b3906b1f34",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:288caa4283326f5f52a4b5ab9f053a63c53b273abc901659f6e109b9104cb5bd",
+            "elements": [
+              "dpe1:7f5c705956dbefb77aa0bcb5b3ccdebcb83a4d863e5b9a0f83de1bb7898f5cda"
+            ]
+          }
+        ]
+      }
+    },
+    "nfd": {
+      "dpe1": {
+        "doc_hash": "dpe1:3ac1daa052875fa9c0fbc32e8c48ab694fbad7effecdf68217ab84c00f68a6ca",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:8df44add778edf5f755cf71049638bbb05c974e9525a7fec071a94c8aea6ff15",
+            "elements": [
+              "dpe1:98a0131db73650f57b9a2d684d2c4c0501f1922ea684d0b8d29e63296b070b36"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

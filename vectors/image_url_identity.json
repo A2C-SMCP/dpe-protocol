@@ -1,0 +1,71 @@
+{
+  "name": "image_url_identity",
+  "kind": "document",
+  "description": "Image 引用外部 URL：URL 原文即身份，不做规范化，差一个字符就是不同内容。",
+  "documents": {
+    "a": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "",
+              "image_url": "https://example.com/a.png",
+              "image_mime_type": "image/png"
+            }
+          ]
+        }
+      ]
+    },
+    "b": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "",
+              "image_url": "https://example.com/A.png",
+              "image_mime_type": "image/png"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "a": {
+      "dpe1": {
+        "doc_hash": "dpe1:199dd3f6a377dfae2e6fe02be8c9be8f8071ac98aa88f8b271a2aaf773d87d0e",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:3376f6e01195b0f4dfa23cf520e7616eb5049fd857d31c6b8c91b8a7f5993caf",
+            "elements": [
+              "dpe1:8bd3dc7173e4c7c07b1a7b303002a0e7801fb4c3ef7fec9c4b91c140d8010739"
+            ]
+          }
+        ]
+      }
+    },
+    "b": {
+      "dpe1": {
+        "doc_hash": "dpe1:23fc3f415fe685f8b8d94cc5ba623bbcea35b5c5bfc284b79ea56d1952ce8919",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:37ead7c756984874a36bc0debf8474454eeb9ed09ab555d6c4c91218f65b449a",
+            "elements": [
+              "dpe1:adebde8a531aff5eba10f3d053de825154a808518162a4c3dc696d4a7b32a56b"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

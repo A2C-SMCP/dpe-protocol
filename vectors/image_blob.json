@@ -1,0 +1,40 @@
+{
+  "name": "image_blob",
+  "kind": "document",
+  "description": "Image 引用 blob：image_ref = \"blob:\" + sha256 引用。",
+  "documents": {
+    "doc": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "架构图",
+              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "image_mime_type": "image/png"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:562996d78aeeceefce5be86537cec7447d6889626e58a7d6d99040254c113267",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:74d3c6154d8433f0c6007673143b1dd123fcc7fe1570c9a3476559f1913417f8",
+            "elements": [
+              "dpe1:e3bdd371d155daee0fadb07eb453f9579a9d5803affa5681e4d4dff897d57d8c"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "name": "cross_page_move",
+  "kind": "document",
+  "description": "元素跨页移动：content_hash 不变，两页 page_hash 与 doc_hash 变化（delta 应为 added=0/removed=0/retained 全保留）。",
+  "documents": {
+    "before": {
+      "title": "move",
+      "pages": [
+        {
+          "number": 1,
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "留守"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "迁徙"
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "title": "p2",
+          "elements": []
+        }
+      ]
+    },
+    "after": {
+      "title": "move",
+      "pages": [
+        {
+          "number": 1,
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "留守"
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "title": "p2",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "迁徙"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "before": {
+      "dpe1": {
+        "doc_hash": "dpe1:8d77f8205438b739b398defaa697d1ab67bc99e25d49624a6de09844808cc51e",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:ab802f7c5d559b6e3f46ee64d7a56cf018f0c75402d0fa667ad45622c4af8ede",
+            "elements": [
+              "dpe1:2d555c7a35624154cb3884d4a8e540ec3865df3a1a41bfde26ca1cf741c36c38",
+              "dpe1:7e9481f176b3d49d5613d3e894f56246b411eaa95da5667015be4d8d4c50f519"
+            ]
+          },
+          {
+            "number": 2,
+            "page_hash": "dpe1:e8c8ec5b17cb27c554001bdeb12b1f4065fc30e0a932571733f29cf7579ab679",
+            "elements": []
+          }
+        ]
+      }
+    },
+    "after": {
+      "dpe1": {
+        "doc_hash": "dpe1:3ab30a34d9be41992ea8755dd6408992e4f6798ba3f00b77f99d1799498f4e3f",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:1db704033fb23903bda91c306fe11011e266165c24a84af8e93fea306461319e",
+            "elements": [
+              "dpe1:2d555c7a35624154cb3884d4a8e540ec3865df3a1a41bfde26ca1cf741c36c38"
+            ]
+          },
+          {
+            "number": 2,
+            "page_hash": "dpe1:fc6134224b6c8fce4686211a8c43af3495539e6c4d2e53f2085a87db80831c86",
+            "elements": [
+              "dpe1:7e9481f176b3d49d5613d3e894f56246b411eaa95da5667015be4d8d4c50f519"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

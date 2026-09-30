@@ -1,0 +1,101 @@
+{
+  "name": "page_array_order_irrelevant",
+  "kind": "document",
+  "description": "doc_hash 按页号升序：pages 数组 [3,1] 与 [1,3] 的 doc_hash 相同（页内元素顺序才是内容身份）。",
+  "documents": {
+    "sorted": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "a"
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "b"
+            }
+          ]
+        }
+      ]
+    },
+    "unsorted": {
+      "title": null,
+      "pages": [
+        {
+          "number": 3,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "b"
+            }
+          ]
+        },
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "a"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "sorted": {
+      "dpe1": {
+        "doc_hash": "dpe1:36f5b0e479938d6153b50ea40ef851b8fbe4be3d81b2bc4774f863a0ab9773fd",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:eb5b7da2fd3ddc9bc38638a84be20d10bb1d74b54205558e3f4f16d4a8faba30",
+            "elements": [
+              "dpe1:be169d132a85544cc82a26f95fbabd8383fb78fb3401c717be41e256ed174cd2"
+            ]
+          },
+          {
+            "number": 3,
+            "page_hash": "dpe1:f15164e1d2f26558563a5bacbf1dec8e7f666a1e08fe2848afea354fdd832bf3",
+            "elements": [
+              "dpe1:9fac5820077d3ac40cdfda26734425a9134f1945c73ab73ca251e617d866b4b2"
+            ]
+          }
+        ]
+      }
+    },
+    "unsorted": {
+      "dpe1": {
+        "doc_hash": "dpe1:36f5b0e479938d6153b50ea40ef851b8fbe4be3d81b2bc4774f863a0ab9773fd",
+        "pages": [
+          {
+            "number": 3,
+            "page_hash": "dpe1:f15164e1d2f26558563a5bacbf1dec8e7f666a1e08fe2848afea354fdd832bf3",
+            "elements": [
+              "dpe1:9fac5820077d3ac40cdfda26734425a9134f1945c73ab73ca251e617d866b4b2"
+            ]
+          },
+          {
+            "number": 1,
+            "page_hash": "dpe1:eb5b7da2fd3ddc9bc38638a84be20d10bb1d74b54205558e3f4f16d4a8faba30",
+            "elements": [
+              "dpe1:be169d132a85544cc82a26f95fbabd8383fb78fb3401c717be41e256ed174cd2"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

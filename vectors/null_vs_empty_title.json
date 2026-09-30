@@ -1,0 +1,67 @@
+{
+  "name": "null_vs_empty_title",
+  "kind": "document",
+  "description": "null 与空串产出相同字节：两文档 doc_hash / page_hash 完全相同。",
+  "documents": {
+    "null": {
+      "title": null,
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "empty": {
+      "title": "",
+      "pages": [
+        {
+          "number": 1,
+          "title": "",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "null": {
+      "dpe1": {
+        "doc_hash": "dpe1:a3cc6b86817dcd39ac7f56807bd01de790b866d4d7c0ee2e599576606f410ccc",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:4d54fb8bba9d1667bd183b6c2e9d1da60710494dfd51e1d73b8d443698fab859",
+            "elements": [
+              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+            ]
+          }
+        ]
+      }
+    },
+    "empty": {
+      "dpe1": {
+        "doc_hash": "dpe1:a3cc6b86817dcd39ac7f56807bd01de790b866d4d7c0ee2e599576606f410ccc",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:4d54fb8bba9d1667bd183b6c2e9d1da60710494dfd51e1d73b8d443698fab859",
+            "elements": [
+              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

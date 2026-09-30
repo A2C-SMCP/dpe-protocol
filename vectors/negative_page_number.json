@@ -1,0 +1,48 @@
+{
+  "name": "negative_page_number",
+  "kind": "document",
+  "description": "页号的十进制 ASCII 编码：负号保留、无前导零。",
+  "documents": {
+    "doc": {
+      "title": null,
+      "pages": [
+        {
+          "number": -3,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        },
+        {
+          "number": 0,
+          "title": null,
+          "elements": []
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:e831fef72fbc38e7decbbfca4995c740ac7ebc90c5501a015d8c7ed3f2a7e8e7",
+        "pages": [
+          {
+            "number": -3,
+            "page_hash": "dpe1:3a751ce8f5491bcf43b546f8b146bc30ef099e676795d4cd6655b386da5b6c80",
+            "elements": [
+              "dpe1:e4146f220b8571552d6ac20b75cf559774bd6ecc8f01a7f7c6a68c2296a1fa36"
+            ]
+          },
+          {
+            "number": 0,
+            "page_hash": "dpe1:b9012d94e1eee7dd246ee5318d0d126a9cd5b87f04e1cf5d43172e3e27192ef8",
+            "elements": []
+          }
+        ]
+      }
+    }
+  }
+}
