@@ -16,7 +16,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 | **doc_hash** | 文档的内容身份（契约 1 §5）。DPE 中文档的全部状态都进 doc_hash，因此它同时是文档的**版本令牌**：判断是否变化、CAS 前置条件（§5）都只用它（plan §0.1 P4）。作用域是单个文档，remote 不存在全局版本。 |
 | **Skeleton** | 文档的 hash 树：`{doc_metadata, pages: [{number, title, page_metadata, elements: ["dpe1:…"]}]}`，元素 entry 是内容对象的 `content_hash`。页的阅读顺序是 `number` 升序；页内元素的阅读顺序是 `elements` 数组顺序。服务端凭骨架加 `file_type` 即可重算并校验 page_hash 与 doc_hash；content_hash 需要内容对象才能重算。 |
 | **Content object** | 元素内容，按 `content_hash` 寻址，恰为 content_hash 的完整原像（§2.3）。内容完全相同的元素共用同一对象。 |
-| **Blob** | 二进制内容（图片等），按 `sha256:<64hex>` 寻址，由内容对象引用（`image_blob`），不直接出现在骨架中。 |
+| **Blob** | 二进制内容（图片等），按 `sha256:<64hex>` 寻址，由内容对象引用（`image_blob`），不直接出现在骨架中。blob 的存储方式由服务端实现决定。 |
 | **Staging session** | 暂存会话。由 negotiate 开启，绑定 `(file_uri, 调用者身份)`，有过期时间；暂存内容对读接口和召回**不可见**（§3.4）。 |
 
 ## 2. 数据模型
