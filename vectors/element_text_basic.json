@@ -1,7 +1,7 @@
 {
   "name": "element_text_basic",
   "kind": "document",
-  "description": "最小文档：单页单 NarrativeText，无 metadata（meta 段为 \"{}\" 的字节），无 attributes 与 occurrence。",
+  "description": "最小文档：单页单 NarrativeText，无 metadata（meta 段为 \"{}\" 的字节）。",
   "documents": {
     "doc": {
       "file_type": "md",
@@ -23,7 +23,6 @@
     "doc": {
       "dpe1": {
         "doc_hash": "dpe1:ac8b30623c407e6a8d5faa8e9676b160641c10ba1ae7f243c3085457f5ab1df1",
-        "state_hash": "dpe1:6711f6d2ebcbfc9a1ea80803720934909cd9728ca22b2b8372f7eba43e877d59",
         "pages": [
           {
             "number": 1,

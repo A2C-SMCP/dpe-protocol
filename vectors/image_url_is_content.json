@@ -1,7 +1,7 @@
 {
-  "name": "image_url_not_identity",
+  "name": "image_url_is_content",
   "kind": "document",
-  "description": "url 是访问方式不是身份（#3 S4）：image_url 在骨架 entry 的 occurrence 上，同一 blob 配不同 url 时 doc_hash 相同、state_hash 不同；blob 变化才是内容变化。",
+  "description": "图片 url 是源提供的元素 metadata，进 hash（plan §0.1 P2）：同一 blob 配不同 url 时 content_hash 不同；blob 变化同样是内容变化。",
   "documents": {
     "url_a": {
       "file_type": "md",
@@ -15,7 +15,7 @@
               "text": "",
               "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
               "image_mime_type": "image/png",
-              "occurrence": {
+              "metadata": {
                 "image_url": "https://a.cdn/x.png"
               }
             }
@@ -35,7 +35,7 @@
               "text": "",
               "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
               "image_mime_type": "image/png",
-              "occurrence": {
+              "metadata": {
                 "image_url": "https://b.cdn/y.png"
               }
             }
@@ -55,7 +55,7 @@
               "text": "",
               "image_blob": "sha256:e37c167d65a03d37aba237a79193900dc65170298167d95e6e61a29766f11900",
               "image_mime_type": "image/png",
-              "occurrence": {
+              "metadata": {
                 "image_url": "https://a.cdn/x.png"
               }
             }
@@ -67,14 +67,13 @@
   "expected": {
     "url_a": {
       "dpe1": {
-        "doc_hash": "dpe1:198b4d097ec56a7c7b04b20509af09dc590f71cc262a9c14f56d7d6c2a87f91d",
-        "state_hash": "dpe1:cb4ff1e36830f905bb53a35c68e199330a7fc79e3593d369e378629d752135bf",
+        "doc_hash": "dpe1:0a259b25a69f78faf36a291611eb69d404c114ca9401b73fe03061e2108d71e6",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:7b8900483454dee8f3cea29d7f0b5f67f3055ce1ac931928bd033a4aa8889b26",
+            "page_hash": "dpe1:ddbb3700516279425634dbd1d9e63c7ff82b9b0a48abdbe656c90d50637ad6db",
             "elements": [
-              "dpe1:654bf1bb604a1d1158b90cd2a6ca182aff19709d6981d31044de4fd8a6fa1224"
+              "dpe1:6b07bb7b434ad52f35d1db3dea5a78bec77864059033be17bee3089d21b1c42e"
             ]
           }
         ]
@@ -82,14 +81,13 @@
     },
     "url_b": {
       "dpe1": {
-        "doc_hash": "dpe1:198b4d097ec56a7c7b04b20509af09dc590f71cc262a9c14f56d7d6c2a87f91d",
-        "state_hash": "dpe1:e82110ef65292c50194d92072f138bcf132abf341870f7bee567f521ed90523f",
+        "doc_hash": "dpe1:55450a7b174150cdc5c9bae10022a54e55dbf963e88905a0c20830b5ded69668",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:7b8900483454dee8f3cea29d7f0b5f67f3055ce1ac931928bd033a4aa8889b26",
+            "page_hash": "dpe1:13df143619f346cf9c0ee21278e585334ac050cc5ff91fcf8f7fbb3380795e65",
             "elements": [
-              "dpe1:654bf1bb604a1d1158b90cd2a6ca182aff19709d6981d31044de4fd8a6fa1224"
+              "dpe1:1e56b3160913d7ad6d7951a8be14039034f3cd143205d075d5ef74d5d3c6501b"
             ]
           }
         ]
@@ -97,14 +95,13 @@
     },
     "blob_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:7723784d8af6390f5fc6699482ea7aa533cf1180ab6ce7a41c695c78bbb38c57",
-        "state_hash": "dpe1:484d37ae7ca59debe7b1084635e4ce5548b8d5e3c38fe942efbe170fbadb7589",
+        "doc_hash": "dpe1:e618cdd7e519583877c36dff9142698492259aaafba2300e57c63ad5fd29a87c",
         "pages": [
           {
             "number": 1,
-            "page_hash": "dpe1:0e41843464592c4d340a37bd8723192fbec25b7d02f84eca384001af17b6f897",
+            "page_hash": "dpe1:4faa6e177a65e1ffd476aa459c609d11b3c7969c6f17dec215c984b0273e9fbe",
             "elements": [
-              "dpe1:4d10b07fac6ea61d3130b5f5be44b223565e29f2acf98e72412e83b9443639b3"
+              "dpe1:447563cf905ba9c6dc4c3636ea29f9504f42b016e796ef18c8de4391729d78ff"
             ]
           }
         ]
@@ -113,27 +110,10 @@
   },
   "relations": [
     {
-      "equal": [
+      "distinct": [
         "url_a.pages.0.elements.0",
-        "url_b.pages.0.elements.0"
-      ]
-    },
-    {
-      "equal": [
-        "url_a.doc_hash",
-        "url_b.doc_hash"
-      ]
-    },
-    {
-      "distinct": [
-        "url_a.state_hash",
-        "url_b.state_hash"
-      ]
-    },
-    {
-      "distinct": [
-        "url_a.doc_hash",
-        "blob_changed.doc_hash"
+        "url_b.pages.0.elements.0",
+        "blob_changed.pages.0.elements.0"
       ]
     }
   ]

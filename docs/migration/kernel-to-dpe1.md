@@ -1,19 +1,27 @@
-# 内核现状（TFRobotV2）迁移到 hash 契约 1 的对照
+# 内核现状（TFRobotV2）迁移到 DPE / hash 契约 1 的对照与待办
 
-> 非规范文档。原为 `spec/hash-contract-1.md` §7，按 Issue #4 C2 移出规范正文：规范只保留与实现无关的内容。
+> 非规范文档。原为 `spec/hash-contract-1.md` §7，按 Issue #4 C2 移出规范正文，并按 plan §0.1 北极星原则（#4 评审中确定）改写。
 > 内核现状基于 TFRobotV2 `a130da93`（见 Issue #3「内核现状速查」）。
+
+## hash 规则对照
 
 | 项 | 内核现状 | 契约 1 |
 | --- | --- | --- |
 | 值格式 | 截断 32 hex、版本记在旁路字段 | `dpe1:` + 完整 64 hex |
-| doc_hash 范围 | 含 `file_uri`、`file_type`、title（恒空）、`json.dumps(doc_metadata)` | 含 `file_type` 与经保留键过滤 + null 键删除 + JCS 的 doc_metadata；无 file_uri / title |
+| doc_hash 范围 | 含 `file_uri`、`file_type`、title（恒空）、`json.dumps(doc_metadata)` | 含 `file_type` 与 doc_metadata（null 键删除 + JCS）；无 file_uri / title |
 | category | 不进 hash（基类只有 text） | 进 hash，封闭枚举，未知拒绝 |
-| metadata | 不进 element / page hash | 源提供的 metadata 进全部三层 hash（经保留键过滤） |
-| 随位字段 | `coordinates`、`image_url`、`parent_id` 等与内容 metadata 存在一处 | 保留键过滤后不进内容 hash；线上经骨架 entry 的 `occurrence` 投递，进 state_hash。内核适配层按 SDK 导出的 `occurrence_keys` 拆分 / 合并 |
-| 投递状态 | 无；只改访问控制字段时 doc_hash 相等，走「只写 creator_id / group_id」分支 | 新增 state_hash 覆盖 attributes 与 occurrence；unchanged ⇔ state_hash 相等 |
+| metadata | 不进 element / page hash | 三层 metadata 的**全部键**都进 hash，不设保留键、不做过滤 |
 | 页号 | 只用于排序 | 进 page_hash |
-| 图片 | url / base64 / path 取首个非空 | 身份只认 `blob:sha256`，url 为随位访问方式 |
+| 图片 | url / base64 / path 取首个非空 | 字节以 `blob:sha256` 进 hash；url 等作为元素 metadata 进 hash |
 | hash 策略 | 按文件类型选择（default / image-source） | 不存在策略，只由契约版本 + category 决定 |
 | 结构化值 | Python `json.dumps` | RFC 8785 JCS |
 | 升级行为 | 策略 URI 不同即全删全建 | 原位重算，身份不变，禁止重新配对 |
-| 私有衍生键 | 全局指代字典等写在 doc_metadata / page_metadata | 由内核在适配层以「SDK 保留键 ∪ 内核私有衍生键」过滤；私有集合只能含服务端自己写入的键（契约 1 §2.1） |
+| 并发控制 | 按 file_uri 的 advisory lock，无版本 | doc_hash 即版本令牌（`If-Match: doc_hash`），不另设 revision 列 |
+
+## 内核待办（北极星原则带来的变化）
+
+- **衍生物移出 metadata**：全局指代字典、keywords、学习状态、会话键等服务端衍生数据，从 doc / page / element metadata 中移到独立的衍生物存储。DPE 字段中只留源内容，读回时除 core.md §2.7 的内容等价外一字不差。不再需要"SDK 保留键 ∪ 私有衍生键"的过滤集合。
+- **元素 metadata 去掉位置冗余**：`page_number`、`seq_in_page` 等由骨架表达的位置，不再写入元素 metadata；否则它们会进 hash，插入一页时后续内容对象全部重传。版面坐标、图片 url 作为源内容保留在 metadata 中并进 hash。
+- **补全页级 / 文档级刷新**：OntoIndex 的 `update_doc` / `update_page` 目前是空操作，这是缺陷。page_hash 或 doc_hash 变化（页号、title、metadata、顺序）都是内容变化，应刷新依赖该层的衍生物，重学效率由内核优化（plan §0.1 P3）。
+- **治理属性由服务端决定**：creator / group 等 ACL 不属于 DPE，由服务端依据调用者身份或 connector 实例配置写入，不经 commit、也不进 hash。
+- **写入入口收窄**：DPE 字段只能经 commit 写入（服务端自身的修改也一样）；`aupdate_doc` 等绕过 commit 修改内容字段的入口应收掉。

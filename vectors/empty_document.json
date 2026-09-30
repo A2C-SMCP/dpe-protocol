@@ -29,14 +29,12 @@
     "no_pages": {
       "dpe1": {
         "doc_hash": "dpe1:682d797d9ecb4536b1e9f8ff0a2144be1d9ac919147f988db98ebe517da4ddc5",
-        "state_hash": "dpe1:10c856c275d564cd6107b8c2d0a469315c4afc90f547c3c91ab1d03baa408af3",
         "pages": []
       }
     },
     "empty_page": {
       "dpe1": {
         "doc_hash": "dpe1:9ba8330267b861014a4edca92234dfb835afb19c6e3dc465c5a80818868fa7e5",
-        "state_hash": "dpe1:c856fb6291e61ec3e929e33e5771e2e63d4b604202bb324cd7c5a7c754dbf706",
         "pages": [
           {
             "number": 1,
@@ -49,7 +47,6 @@
     "no_pages_with_meta": {
       "dpe1": {
         "doc_hash": "dpe1:efea82dde373730864579cb793d09f25d78a1aaa6f790312e48da5d0978e0a6f",
-        "state_hash": "dpe1:2f93a8564a4e9a65323326044dd030cf6bf25917cbb6f10af431ef4f8237c7dc",
         "pages": []
       }
     }

@@ -38,7 +38,6 @@
     "md": {
       "dpe1": {
         "doc_hash": "dpe1:23ade24308014e7bac727653902d25e73c8170a9341c46c713cf27178d4546c3",
-        "state_hash": "dpe1:51dd5a31ec8a266f0c5e735685735cb4ea68f24ca6a6b98202a1523547cc2d4a",
         "pages": [
           {
             "number": 1,
@@ -53,7 +52,6 @@
     "txt": {
       "dpe1": {
         "doc_hash": "dpe1:334a239758b5564a90d8abd76c2a3e710d071d96314bbe4f14d46409cdc13440",
-        "state_hash": "dpe1:585af6623f16e7f91feca2c52f9a40991bfecb07f54da786ca63201362708c6a",
         "pages": [
           {
             "number": 1,

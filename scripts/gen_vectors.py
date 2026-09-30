@@ -18,7 +18,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -53,42 +52,13 @@ TEXT_ONLY_CATEGORIES = frozenset(
 )
 HTML_CATEGORIES = frozenset({"Table", "Formula"})
 
-#: 保留键集合（契约 1 §2.1）分两组，每个键只属于一组。SDK 须以常量导出同一集合。
-#: 随位投递：该内容在某个位置出现时附带、不进 hash 的字段，线上只能出现在骨架 entry 的 occurrence 里。
-OCCURRENCE_KEYS = frozenset(
-    {
-        "coordinates",  # 寻址坐标
-        "image_url",  # 访问方式（仅 Image）
-        "parent_id",  # 分区关系
-        "related_ids",  # 分区关系
-    }
-)
-#: 不投递：由骨架位置派生、服务端衍生或推送侧本地的字段，线上出现在任何位置即拒绝。
-UNDELIVERED_KEYS = frozenset(
-    {
-        "page_number",  # 骨架位置派生
-        "page_name",  # 骨架位置派生
-        "seq_in_page",  # 骨架位置派生
-        "keywords",  # 服务端衍生
-        "image_path",  # 推送侧本地
-        "image_base64",  # 须转成 blob
-        "file_directory",  # 推送侧本地
-    }
-)
-#: hash 核心过滤的顶层键 = 两组的并集。
-RESERVED_METADATA_KEYS = OCCURRENCE_KEYS | UNDELIVERED_KEYS
-assert not OCCURRENCE_KEYS & UNDELIVERED_KEYS
-
-#: file_type 封闭枚举（core.md §2.6），由源提供，进 doc_hash（契约 1 §5）。
+#: file_type 封闭枚举（core.md §2.5），由源提供，进 doc_hash（契约 1 §5）。
 FILE_TYPES = (
     "bmp", "csv", "doc", "docx", "eml", "epub", "heic", "html", "jpg", "json", "md", "msg", "ndjson",
     "odt", "org", "pdf", "png", "ppt", "pptx", "rst", "rtf", "tiff", "tsv", "txt", "wav", "xls", "xlsx",
     "xml", "zip", "java_repo", "python_repo", "javascript_repo", "typescript_repo", "unk", "empty",
     "tfchat", "jira_project", "jira_issue",
 )  # fmt: skip
-
-#: attributes 键形如 <ns>/<key>（core.md §2.5）。
-ATTRIBUTE_KEY = re.compile(r"[a-z0-9_-]+/[a-z0-9_-]+")
 
 #: dpe2 是**仅用于契约升级演练的假想契约**（vectors/README.md）：
 #: 算法与 dpe1 相同，但每次摘要额外前置一个内容为 b"dpe2" 的段。
@@ -121,9 +91,8 @@ def strip_nulls(value: Any) -> Any:
 
 
 def meta(m: dict[str, Any] | None) -> bytes:
-    """metadata 的 hash 输入：过滤保留键（顶层）→ 递归删 null 键 → JCS → UTF-8。"""
-    filtered = {k: v for k, v in (m or {}).items() if k not in RESERVED_METADATA_KEYS}
-    return jcs(strip_nulls(filtered)).encode("utf-8")
+    """metadata 的 hash 输入（§2.1）：源即内容，全部键参与，不做过滤；递归删 null 键 → JCS → UTF-8。"""
+    return jcs(strip_nulls(m or {})).encode("utf-8")
 
 
 def content_fields(cat: str) -> frozenset[str]:
@@ -139,16 +108,11 @@ def content_fields(cat: str) -> frozenset[str]:
 
 
 def validate_element(el: dict[str, Any]) -> None:
-    """向量元素 = 内容对象 + 可选 occurrence（骨架 entry 上的随位字段）；多余字段即违规。"""
+    """向量元素就是一个内容对象（content_hash 的完整原像）；多余字段即违规。"""
     cat = el["category"]
-    extra = set(el) - content_fields(cat) - {"occurrence"}
+    extra = set(el) - content_fields(cat)
     if extra:
         raise ValueError(f"{cat}: fields outside content object: {sorted(extra)}")
-    occ = el.get("occurrence") or {}
-    if set(occ) - OCCURRENCE_KEYS:
-        raise ValueError(f"occurrence keys not allowed: {sorted(set(occ) - OCCURRENCE_KEYS)}")
-    if "image_url" in occ and cat != "Image":
-        raise ValueError("image_url is only allowed on Image entries")
 
 
 def content_hash(el: dict[str, Any], contract: str) -> str:
@@ -157,7 +121,7 @@ def content_hash(el: dict[str, Any], contract: str) -> str:
     parts = [text(cat)]
     if cat == "Image":
         blob = el.get("image_blob")
-        # image_url 是访问方式，在 occurrence 上，不进 hash（§4.2，#3 S4）
+        # 图片 url 等随源 metadata 进 hash（§4.2）；blob 引用是字节的身份
         blob_ref = f"blob:{blob}" if blob else None
         parts += [text(el.get("text")), text(blob_ref), text(el.get("image_mime_type"))]
     elif cat in HTML_CATEGORIES:
@@ -171,21 +135,6 @@ def content_hash(el: dict[str, Any], contract: str) -> str:
 def page_hash(page: dict[str, Any], element_hashes: list[str], contract: str) -> str:
     parts = [str(page["number"]).encode("ascii"), text(page.get("title")), meta(page.get("page_metadata"))]
     parts += [h.encode("utf-8") for h in element_hashes]
-    return hval(parts, contract)
-
-
-def state_hash(doc: dict[str, Any], doc_hash_: str, contract: str) -> str:
-    """投递状态摘要（§6）：doc_hash + attributes + 各位置的 occurrence（页按 number 升序）。"""
-    attributes = doc.get("attributes") or {}
-    bad = [k for k in attributes if not ATTRIBUTE_KEY.fullmatch(k)]
-    if bad:
-        raise ValueError(f"invalid attribute keys: {bad}")
-    pages = sorted(doc.get("pages", []), key=lambda p: p["number"])
-    surface = {
-        "attributes": attributes,
-        "occurrences": [[el.get("occurrence") or {} for el in p.get("elements", [])] for p in pages],
-    }
-    parts = [text("state"), doc_hash_.encode("utf-8"), jcs(strip_nulls(surface)).encode("utf-8")]
     return hval(parts, contract)
 
 
@@ -206,8 +155,7 @@ def doc_hashes(doc: dict[str, Any], contract: str) -> dict[str, Any]:
         pages_out.append({"number": page["number"], "page_hash": ph, "elements": ehashes})
     parts = [text(file_type), meta(doc.get("doc_metadata"))]
     parts += [ph_by_number[n].encode("utf-8") for n in sorted(ph_by_number)]
-    dh = hval(parts, contract)
-    return {"doc_hash": dh, "state_hash": state_hash(doc, dh, contract), "pages": pages_out}
+    return {"doc_hash": hval(parts, contract), "pages": pages_out}
 
 
 # ---------------------------------------------------------------------------
@@ -293,17 +241,10 @@ def el(category: str, text_: str | None = None, **kw: Any) -> dict[str, Any]:
     return out
 
 
-def doc(
-    *pages: dict[str, Any],
-    file_type: str = "md",
-    doc_metadata: dict[str, Any] | None = None,
-    attributes: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def doc(*pages: dict[str, Any], file_type: str = "md", doc_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     out: dict[str, Any] = {"file_type": file_type, "pages": list(pages)}
     if doc_metadata is not None:
         out["doc_metadata"] = doc_metadata
-    if attributes is not None:
-        out["attributes"] = attributes
     return out
 
 
@@ -329,7 +270,7 @@ _BOX_B = {"points": [[0.1, 0.5], [0.4, 0.6]], "system": "PixelSpace"}
 DOCUMENT_VECTORS: list[dict[str, Any]] = [
     {
         "name": "element_text_basic",
-        "description": "最小文档：单页单 NarrativeText，无 metadata（meta 段为 \"{}\" 的字节），无 attributes 与 occurrence。",
+        "description": "最小文档：单页单 NarrativeText，无 metadata（meta 段为 \"{}\" 的字节）。",
         "documents": {"doc": doc(page(1, "p1", el("NarrativeText", "Hello, DPE.")))},
     },
     {
@@ -359,7 +300,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "metadata_identity",
-        "description": "源提供的 metadata 是内容身份（#3 S2）：doc / page / element 任一层 metadata 变化，对应层及以上的 hash 变化，下层不受影响。",
+        "description": "源即内容（plan §0.1 P2）：doc / page / element 任一层 metadata 变化，对应层及以上的 hash 变化，下层不受影响。",
         "documents": {
             "base": doc(
                 page(1, "p", el("NarrativeText", "x", metadata={"lang": "zh"}), page_metadata={"src": "b1"}),
@@ -386,43 +327,27 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "metadata_reserved_and_null",
-        "description": "hash 核心按保留键全集（随位投递 + 不投递，契约 1 §2.1）过滤顶层键，并删除值为 null 的键（缺省 ≡ null，#3 S5）：三篇文档的全部 hash 相同。"
-        "注意这是 hash 核心的输入视图：线上报文的 metadata 出现任一保留键都会被拒绝；计算 state_hash 前，随位键须先从 metadata 移入 occurrence（契约 1 §6），故本向量不对 state_hash 作断言。",
+        "name": "metadata_null_equivalence",
+        "description": "值为 null 的键与缺省等价（缺省 ≡ null，#3 S5）：两篇文档的全部 hash 相同。",
         "documents": {
             "plain": doc(page(1, None, el("NarrativeText", "x", metadata={"lang": "zh"}))),
-            "with_reserved": doc(
-                page(
-                    1,
-                    None,
-                    el(
-                        "NarrativeText",
-                        "x",
-                        metadata={
-                            "lang": "zh",
-                            "coordinates": _BOX_A,
-                            "image_url": "https://a.cdn/x.png",
-                            "parent_id": "e-1",
-                            "related_ids": ["e-2"],
-                            "page_number": 1,
-                            "page_name": "Sheet1",
-                            "seq_in_page": 3,
-                            "keywords": ["k"],
-                            "image_path": "/tmp/x.png",
-                            "image_base64": "aGk=",
-                            "file_directory": "/tmp",
-                        },
-                    ),
-                    page_metadata={"page_number": 1, "keywords": ["k"]},
-                ),
-                doc_metadata={"keywords": ["k"]},
-            ),
             "with_nulls": doc(page(1, None, el("NarrativeText", "x", metadata={"lang": "zh", "new_optional": None}))),
         },
+        "relations": [eq("plain.doc_hash", "with_nulls.doc_hash")],
+    },
+    {
+        "name": "metadata_all_content",
+        "description": "源即内容（plan §0.1 P2）：metadata 的每个键都进 hash，没有保留键、没有过滤；坐标、页码等任一键变化，content_hash 都变化。",
+        "documents": {
+            "base": doc(page(1, None, el("NarrativeText", "x", metadata={"lang": "zh", "coordinates": _BOX_A}))),
+            "coords_changed": doc(page(1, None, el("NarrativeText", "x", metadata={"lang": "zh", "coordinates": _BOX_B}))),
+            "page_number_added": doc(
+                page(1, None, el("NarrativeText", "x", metadata={"lang": "zh", "coordinates": _BOX_A, "page_number": 1}))
+            ),
+        },
         "relations": [
-            eq("plain.doc_hash", "with_reserved.doc_hash", "with_nulls.doc_hash"),
-            # 不断言 state_hash：state_hash 的输入是线上 occurrence 视图（契约 1 §6），
-            # 随位键须先从 metadata 移入 occurrence，留在 metadata 里不代表它们不属于投递状态。
+            ne("base.pages.0.elements.0", "coords_changed.pages.0.elements.0", "page_number_added.pages.0.elements.0"),
+            ne("base.doc_hash", "coords_changed.doc_hash", "page_number_added.doc_hash"),
         ],
     },
     {
@@ -442,25 +367,20 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "image_blob",
-        "description": "Image 身份只认 blob：blob_ref = \"blob:\" + sha256 引用。",
+        "description": "Image 的字节以 blob_ref = \"blob:\" + sha256 引用进 hash；url 等源信息作为元素 metadata 另进 hash（见 image_url_is_content）。",
         "documents": {
             "doc": doc(page(1, None, el("Image", "架构图", image_blob=_BLOB, image_mime_type="image/png")))
         },
     },
     {
-        "name": "image_url_not_identity",
-        "description": "url 是访问方式不是身份（#3 S4）：image_url 在骨架 entry 的 occurrence 上，同一 blob 配不同 url 时 doc_hash 相同、state_hash 不同；blob 变化才是内容变化。",
+        "name": "image_url_is_content",
+        "description": "图片 url 是源提供的元素 metadata，进 hash（plan §0.1 P2）：同一 blob 配不同 url 时 content_hash 不同；blob 变化同样是内容变化。",
         "documents": {
-            "url_a": doc(page(1, None, el("Image", "", image_blob=_BLOB, image_mime_type="image/png", occurrence={"image_url": "https://a.cdn/x.png"}))),
-            "url_b": doc(page(1, None, el("Image", "", image_blob=_BLOB, image_mime_type="image/png", occurrence={"image_url": "https://b.cdn/y.png"}))),
-            "blob_changed": doc(page(1, None, el("Image", "", image_blob=_BLOB2, image_mime_type="image/png", occurrence={"image_url": "https://a.cdn/x.png"}))),
+            "url_a": doc(page(1, None, el("Image", "", image_blob=_BLOB, image_mime_type="image/png", metadata={"image_url": "https://a.cdn/x.png"}))),
+            "url_b": doc(page(1, None, el("Image", "", image_blob=_BLOB, image_mime_type="image/png", metadata={"image_url": "https://b.cdn/y.png"}))),
+            "blob_changed": doc(page(1, None, el("Image", "", image_blob=_BLOB2, image_mime_type="image/png", metadata={"image_url": "https://a.cdn/x.png"}))),
         },
-        "relations": [
-            eq("url_a.pages.0.elements.0", "url_b.pages.0.elements.0"),
-            eq("url_a.doc_hash", "url_b.doc_hash"),
-            ne("url_a.state_hash", "url_b.state_hash"),
-            ne("url_a.doc_hash", "blob_changed.doc_hash"),
-        ],
+        "relations": [ne("url_a.pages.0.elements.0", "url_b.pages.0.elements.0", "blob_changed.pages.0.elements.0")],
     },
     {
         "name": "image_placeholder_null",
@@ -480,58 +400,22 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
         "relations": [eq("doc.pages.0.elements.0", "doc.pages.0.elements.2")],
     },
     {
-        "name": "duplicate_occurrence",
-        "description": "同一内容出现在两个位置、各带不同坐标（A1）：两处共用一个内容对象（content_hash 相同），坐标分别记在各自 entry 的 occurrence 上；对调两处坐标不改变 doc_hash，但改变 state_hash。",
+        "name": "duplicate_different_coordinates",
+        "description": "同一文本出现在两处、坐标不同：坐标是内容，两处是不同的内容对象（content_hash 不同）；坐标相同时才共享同一内容对象。",
         "documents": {
-            "ab": doc(page(1, None, el("ListItem", "重复项", occurrence={"coordinates": _BOX_A}), el("ListItem", "重复项", occurrence={"coordinates": _BOX_B}))),
-            "ba": doc(page(1, None, el("ListItem", "重复项", occurrence={"coordinates": _BOX_B}), el("ListItem", "重复项", occurrence={"coordinates": _BOX_A}))),
+            "doc": doc(
+                page(
+                    1,
+                    None,
+                    el("ListItem", "重复项", metadata={"coordinates": _BOX_A}),
+                    el("ListItem", "重复项", metadata={"coordinates": _BOX_B}),
+                    el("ListItem", "重复项", metadata={"coordinates": _BOX_A}),
+                )
+            ),
         },
         "relations": [
-            eq("ab.pages.0.elements.0", "ab.pages.0.elements.1", "ba.pages.0.elements.0"),
-            eq("ab.doc_hash", "ba.doc_hash"),
-            ne("ab.state_hash", "ba.state_hash"),
-        ],
-    },
-    {
-        "name": "state_surface",
-        "description": "state_hash 覆盖全部不进 hash 的投递字段（A2，契约 1 §6）：只改 occurrence 或 attributes 时 doc_hash 不变、state_hash 变化；"
-        "null 与缺省等价，attributes 缺省视同 {}。",
-        "documents": {
-            "base": doc(
-                page(1, None, el("NarrativeText", "x", occurrence={"coordinates": _BOX_A, "parent_id": "e-0"})),
-                attributes={"example/owner": "u-1"},
-            ),
-            "coords_changed": doc(
-                page(1, None, el("NarrativeText", "x", occurrence={"coordinates": _BOX_B, "parent_id": "e-0"})),
-                attributes={"example/owner": "u-1"},
-            ),
-            "parent_changed": doc(
-                page(1, None, el("NarrativeText", "x", occurrence={"coordinates": _BOX_A, "parent_id": "e-9"})),
-                attributes={"example/owner": "u-1"},
-            ),
-            "attributes_changed": doc(
-                page(1, None, el("NarrativeText", "x", occurrence={"coordinates": _BOX_A, "parent_id": "e-0"})),
-                attributes={"example/owner": "u-2"},
-            ),
-            "with_nulls": doc(
-                page(1, None, el("NarrativeText", "x", occurrence={"coordinates": _BOX_A, "parent_id": "e-0", "related_ids": None})),
-                attributes={"example/owner": "u-1", "example/group": None},
-            ),
-            "bare": doc(page(1, None, el("NarrativeText", "x"))),
-            "bare_empty": doc(page(1, None, el("NarrativeText", "x", occurrence={})), attributes={}),
-        },
-        "relations": [
-            eq(
-                "base.doc_hash",
-                "coords_changed.doc_hash",
-                "parent_changed.doc_hash",
-                "attributes_changed.doc_hash",
-                "with_nulls.doc_hash",
-                "bare.doc_hash",
-            ),
-            ne("base.state_hash", "coords_changed.state_hash", "parent_changed.state_hash", "attributes_changed.state_hash", "bare.state_hash"),
-            eq("base.state_hash", "with_nulls.state_hash"),
-            eq("bare.state_hash", "bare_empty.state_hash"),
+            ne("doc.pages.0.elements.0", "doc.pages.0.elements.1"),
+            eq("doc.pages.0.elements.0", "doc.pages.0.elements.2"),
         ],
     },
     {
@@ -602,7 +486,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "page_number_identity",
-        "description": "页号进入 page_hash（契约 1 §5）：内容不动、只改页号，doc_hash 必须变化（否则 head 快路径漏推）；content_hash 不变，不构成刷新衍生物的理由（core §3.3）。",
+        "description": "页号进入 page_hash（契约 1 §5）：只改页号也是内容变化，doc_hash 必须变化；元素 content_hash 不含骨架位置，故不必重传内容对象（plan §0.1 P3）。",
         "documents": {
             "before": doc(page(1, "p", el("NarrativeText", "x")), page(2, "q", el("NarrativeText", "y"))),
             "after": doc(page(10, "p", el("NarrativeText", "x")), page(20, "q", el("NarrativeText", "y"))),
@@ -614,19 +498,13 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "page_array_order_irrelevant",
-        "description": "页的阅读顺序是 number 升序（core §2.2）：hash 核心对输入数组顺序宽容，pages 数组 [3,1] 与 [1,3] 的 doc_hash 与 state_hash 均相同"
+        "description": "页的阅读顺序是 number 升序（core §2.2）：hash 核心对输入数组顺序宽容，pages 数组 [3,1] 与 [1,3] 的 doc_hash 相同"
         "（线上报文仍 MUST 升序）。",
         "documents": {
-            "sorted": doc(
-                page(1, None, el("NarrativeText", "a", occurrence={"coordinates": _BOX_A})),
-                page(3, None, el("NarrativeText", "b", occurrence={"coordinates": _BOX_B})),
-            ),
-            "unsorted": doc(
-                page(3, None, el("NarrativeText", "b", occurrence={"coordinates": _BOX_B})),
-                page(1, None, el("NarrativeText", "a", occurrence={"coordinates": _BOX_A})),
-            ),
+            "sorted": doc(page(1, None, el("NarrativeText", "a")), page(3, None, el("NarrativeText", "b"))),
+            "unsorted": doc(page(3, None, el("NarrativeText", "b")), page(1, None, el("NarrativeText", "a"))),
         },
-        "relations": [eq("sorted.doc_hash", "unsorted.doc_hash"), eq("sorted.state_hash", "unsorted.state_hash")],
+        "relations": [eq("sorted.doc_hash", "unsorted.doc_hash")],
     },
     {
         "name": "negative_page_number",
@@ -640,9 +518,8 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
         "documents": {
             "doc": doc(
                 page(1, "p1", el("Title", "标题"), el("Table", "a", text_as_html="<table/>"), page_metadata={"src": "b1"}),
-                page(2, None, el("Image", "图", image_blob=_BLOB, image_mime_type="image/webp", occurrence={"image_url": "https://a.cdn/x.webp"})),
+                page(2, None, el("Image", "图", image_blob=_BLOB, image_mime_type="image/webp", metadata={"image_url": "https://a.cdn/x.webp"})),
                 doc_metadata={"author": "gmq"},
-                attributes={"example/owner": "u-1"},
             )
         },
     },
@@ -758,9 +635,6 @@ def build_files() -> dict[str, str]:
         "contract": "dpe1",
         "spec": "spec/hash-contract-1.md",
         "status": "draft",
-        "reserved_metadata_keys": sorted(RESERVED_METADATA_KEYS),
-        "occurrence_keys": sorted(OCCURRENCE_KEYS),
-        "undelivered_keys": sorted(UNDELIVERED_KEYS),
         "file_types": list(FILE_TYPES),
         "provenance": {
             "generator": "scripts/gen_vectors.py",

@@ -40,7 +40,6 @@
     "absent": {
       "dpe1": {
         "doc_hash": "dpe1:5445afc7a51530231766ae5120a09a69bc600f3cd37d3ac986a137e7aec8bda8",
-        "state_hash": "dpe1:4764adafd4f134cd20d765acfe0f45be71b16a96c8a5bdcc30973d87d16b13a9",
         "pages": [
           {
             "number": 1,
@@ -55,7 +54,6 @@
     "null_fields": {
       "dpe1": {
         "doc_hash": "dpe1:5445afc7a51530231766ae5120a09a69bc600f3cd37d3ac986a137e7aec8bda8",
-        "state_hash": "dpe1:4764adafd4f134cd20d765acfe0f45be71b16a96c8a5bdcc30973d87d16b13a9",
         "pages": [
           {
             "number": 1,

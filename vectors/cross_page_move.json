@@ -57,7 +57,6 @@
     "before": {
       "dpe1": {
         "doc_hash": "dpe1:57b6332ef33ae3a4f202c5e1b1e37e173cce69dff42b602764ffc75148c46516",
-        "state_hash": "dpe1:b04ee96bb0fe0e3999e40fbfd4d49cedd114862b01bbd3e8e763f5cf69684521",
         "pages": [
           {
             "number": 1,
@@ -78,7 +77,6 @@
     "after": {
       "dpe1": {
         "doc_hash": "dpe1:472d1c4bbe84a8a099b549cd0807a063590c975af2d29aa182d071ece26510e9",
-        "state_hash": "dpe1:59906cd7b03ccc2641c3e542de33059fc0c3bfcad388d8ca0349af8e075aaeaf",
         "pages": [
           {
             "number": 1,

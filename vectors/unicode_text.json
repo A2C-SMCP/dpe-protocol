@@ -38,7 +38,6 @@
     "nfc": {
       "dpe1": {
         "doc_hash": "dpe1:d256e7c4abd70546b7715e757ea41ba12eed345beab23694df0314cf2bb8c4e4",
-        "state_hash": "dpe1:663286437470d60e8ff57902605b52d003c60c9aea194f17ff0acf90d3cd8b8d",
         "pages": [
           {
             "number": 1,
@@ -53,7 +52,6 @@
     "nfd": {
       "dpe1": {
         "doc_hash": "dpe1:111503efaa1cfe314b4c3b77e1bea435f9200a7685ad496308242dc81cd595f1",
-        "state_hash": "dpe1:91f60a29a5acd5e6874030dd22572334d5514d022ebf3fbc6e7d45a38a54ee2f",
         "pages": [
           {
             "number": 1,

@@ -1,7 +1,7 @@
 {
   "name": "page_array_order_irrelevant",
   "kind": "document",
-  "description": "页的阅读顺序是 number 升序（core §2.2）：hash 核心对输入数组顺序宽容，pages 数组 [3,1] 与 [1,3] 的 doc_hash 与 state_hash 均相同（线上报文仍 MUST 升序）。",
+  "description": "页的阅读顺序是 number 升序（core §2.2）：hash 核心对输入数组顺序宽容，pages 数组 [3,1] 与 [1,3] 的 doc_hash 相同（线上报文仍 MUST 升序）。",
   "documents": {
     "sorted": {
       "file_type": "md",
@@ -12,22 +12,7 @@
           "elements": [
             {
               "category": "NarrativeText",
-              "text": "a",
-              "occurrence": {
-                "coordinates": {
-                  "points": [
-                    [
-                      0.1,
-                      0.1
-                    ],
-                    [
-                      0.4,
-                      0.2
-                    ]
-                  ],
-                  "system": "PixelSpace"
-                }
-              }
+              "text": "a"
             }
           ]
         },
@@ -37,22 +22,7 @@
           "elements": [
             {
               "category": "NarrativeText",
-              "text": "b",
-              "occurrence": {
-                "coordinates": {
-                  "points": [
-                    [
-                      0.1,
-                      0.5
-                    ],
-                    [
-                      0.4,
-                      0.6
-                    ]
-                  ],
-                  "system": "PixelSpace"
-                }
-              }
+              "text": "b"
             }
           ]
         }
@@ -67,22 +37,7 @@
           "elements": [
             {
               "category": "NarrativeText",
-              "text": "b",
-              "occurrence": {
-                "coordinates": {
-                  "points": [
-                    [
-                      0.1,
-                      0.5
-                    ],
-                    [
-                      0.4,
-                      0.6
-                    ]
-                  ],
-                  "system": "PixelSpace"
-                }
-              }
+              "text": "b"
             }
           ]
         },
@@ -92,22 +47,7 @@
           "elements": [
             {
               "category": "NarrativeText",
-              "text": "a",
-              "occurrence": {
-                "coordinates": {
-                  "points": [
-                    [
-                      0.1,
-                      0.1
-                    ],
-                    [
-                      0.4,
-                      0.2
-                    ]
-                  ],
-                  "system": "PixelSpace"
-                }
-              }
+              "text": "a"
             }
           ]
         }
@@ -118,7 +58,6 @@
     "sorted": {
       "dpe1": {
         "doc_hash": "dpe1:e5ab20d7c3f790e8bef315dbf3553a88ef52bdaf0094b9de29bf74f7b3c8230c",
-        "state_hash": "dpe1:c774d7384b942104ab5a8068365830312aa3a4d8adf9af4bb1266bc79fd15dd2",
         "pages": [
           {
             "number": 1,
@@ -140,7 +79,6 @@
     "unsorted": {
       "dpe1": {
         "doc_hash": "dpe1:e5ab20d7c3f790e8bef315dbf3553a88ef52bdaf0094b9de29bf74f7b3c8230c",
-        "state_hash": "dpe1:c774d7384b942104ab5a8068365830312aa3a4d8adf9af4bb1266bc79fd15dd2",
         "pages": [
           {
             "number": 3,
@@ -165,12 +103,6 @@
       "equal": [
         "sorted.doc_hash",
         "unsorted.doc_hash"
-      ]
-    },
-    {
-      "equal": [
-        "sorted.state_hash",
-        "unsorted.state_hash"
       ]
     }
   ]

@@ -80,7 +80,6 @@
     "with_nulls": {
       "dpe1": {
         "doc_hash": "dpe1:b984ad58d3a7bb33a619be03a668701be46760901c130324d68c2e3b4f71cd33",
-        "state_hash": "dpe1:716af6b4684bfb84620aa66c7a411631ccd71efcf7af47454b7df83a1a775f67",
         "pages": [
           {
             "number": 1,
@@ -95,7 +94,6 @@
     "stripped": {
       "dpe1": {
         "doc_hash": "dpe1:b984ad58d3a7bb33a619be03a668701be46760901c130324d68c2e3b4f71cd33",
-        "state_hash": "dpe1:716af6b4684bfb84620aa66c7a411631ccd71efcf7af47454b7df83a1a775f67",
         "pages": [
           {
             "number": 1,
@@ -110,7 +108,6 @@
     "array_null_dropped": {
       "dpe1": {
         "doc_hash": "dpe1:78a616d8fdd20fcece5cc30298a53e3e4010fc1ead8c6664e8d545357c260316",
-        "state_hash": "dpe1:cb260d2bb96dbb1d848fe4a7bf8c4f3d0d368c039d4e5729161cf5d16ca76110",
         "pages": [
           {
             "number": 1,

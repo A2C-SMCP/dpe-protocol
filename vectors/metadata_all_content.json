@@ -1,0 +1,161 @@
+{
+  "name": "metadata_all_content",
+  "kind": "document",
+  "description": "源即内容（plan §0.1 P2）：metadata 的每个键都进 hash，没有保留键、没有过滤；坐标、页码等任一键变化，content_hash 都变化。",
+  "documents": {
+    "base": {
+      "file_type": "md",
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh",
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.1
+                    ],
+                    [
+                      0.4,
+                      0.2
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "coords_changed": {
+      "file_type": "md",
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh",
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.5
+                    ],
+                    [
+                      0.4,
+                      0.6
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "page_number_added": {
+      "file_type": "md",
+      "pages": [
+        {
+          "number": 1,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh",
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.1
+                    ],
+                    [
+                      0.4,
+                      0.2
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                },
+                "page_number": 1
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "base": {
+      "dpe1": {
+        "doc_hash": "dpe1:f9c8f95ec34bdedb624fc269588fe0a61be21640c9bddbabe56464cf9040899e",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:bd48ad2002492e46e9b8ff2c08061179c4d41cdd1aefabfc2d43d74fb1e9248f",
+            "elements": [
+              "dpe1:ef23e7db6727fe5121e2f23e30a773d66622c4c2d4ab29e094428fea0633223b"
+            ]
+          }
+        ]
+      }
+    },
+    "coords_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:ddcb862d726c4a8e02748873b811917e31d872e6a7c6b0a4bf3eee771421e23e",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:b3ff6bff6daaf175259e30b245c668c6c44daf457d79015c3c8fc3bda70d4956",
+            "elements": [
+              "dpe1:8f154549378cbbe4e1d15428456ec0350b75b24f208da4b036805639f3974ba9"
+            ]
+          }
+        ]
+      }
+    },
+    "page_number_added": {
+      "dpe1": {
+        "doc_hash": "dpe1:fb4e28a72c9f102327cf8763fcedc9e88217a7ecb08dee0a6debf5561f78f87d",
+        "pages": [
+          {
+            "number": 1,
+            "page_hash": "dpe1:2b210c1e6f4a14a80c2e953dc9a7cb9c623cc5e71d0dda9eb9ae41186c0d7963",
+            "elements": [
+              "dpe1:de9d48ea37deb624391e49d0b0fcc6d704da20e635b7e2c1fe4a6137b98284ae"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "base.pages.0.elements.0",
+        "coords_changed.pages.0.elements.0",
+        "page_number_added.pages.0.elements.0"
+      ]
+    },
+    {
+      "distinct": [
+        "base.doc_hash",
+        "coords_changed.doc_hash",
+        "page_number_added.doc_hash"
+      ]
+    }
+  ]
+}

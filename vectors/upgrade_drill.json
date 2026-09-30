@@ -33,7 +33,7 @@
               "text": "图",
               "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
               "image_mime_type": "image/webp",
-              "occurrence": {
+              "metadata": {
                 "image_url": "https://a.cdn/x.webp"
               }
             }
@@ -42,17 +42,13 @@
       ],
       "doc_metadata": {
         "author": "gmq"
-      },
-      "attributes": {
-        "example/owner": "u-1"
       }
     }
   },
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:287ec0a64c065731d29225f04fc8ff19838cd0b99bcfdbe8c9736aec23ad47c9",
-        "state_hash": "dpe1:99fe3347b26502b9bf53b8633a9e4153d7901b355e331f809e49872d17c5c2e0",
+        "doc_hash": "dpe1:035a15a0bb5372189e46ec964daecb219f5496e900f53c5ce962899e8f80038d",
         "pages": [
           {
             "number": 1,
@@ -64,16 +60,15 @@
           },
           {
             "number": 2,
-            "page_hash": "dpe1:39e616d6cd8ceb35369134992de4457d254a4d41c88336a99a52fe5995ac658d",
+            "page_hash": "dpe1:a63ab6babc6b1abc3e038fa54a9b59ac483c0288bd4ab8343c40896cb4ba3e60",
             "elements": [
-              "dpe1:2869e852403498df546293dab5f03b2d5c637b9bc3a04f01f9bb77778265a2f1"
+              "dpe1:1e870db3385b4cf8daf6b0677710088dee4b8687187017ce2a3b60a0f2a5e38a"
             ]
           }
         ]
       },
       "dpe2": {
-        "doc_hash": "dpe2:d3e123b68f52896aea5d75263a5bce6af0fcf621325c8945fef4983d27f8cdd3",
-        "state_hash": "dpe2:64b0e8b7ad07b23ec1242f2c22c0472a83415b0d6670ed5796a365564164a822",
+        "doc_hash": "dpe2:8598fa8aa1f028cf31f46df3fd433d2a0c10e3a5a3296e6f524737deaf2a0f99",
         "pages": [
           {
             "number": 1,
@@ -85,9 +80,9 @@
           },
           {
             "number": 2,
-            "page_hash": "dpe2:004c0e6526a5fcb2316dfd9c91314eea4f1bef4cf975b52103b6e7f4bf995264",
+            "page_hash": "dpe2:837abed78c2ab7e605edf62583ea04806e6bd444ddb61932e5219b80e7970e81",
             "elements": [
-              "dpe2:84653efaf8eca8ee69b67d8420f34b64ed180af63c8d6d85a66bbe64cf43d6c1"
+              "dpe2:9b26c8f13c030a913d2f7a76ade04f02c3864c5a1328bc89d11d59a90af0b564"
             ]
           }
         ]

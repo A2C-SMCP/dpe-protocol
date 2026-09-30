@@ -1,7 +1,7 @@
 {
   "name": "page_number_identity",
   "kind": "document",
-  "description": "页号进入 page_hash（契约 1 §5）：内容不动、只改页号，doc_hash 必须变化（否则 head 快路径漏推）；content_hash 不变，不构成刷新衍生物的理由（core §3.3）。",
+  "description": "页号进入 page_hash（契约 1 §5）：只改页号也是内容变化，doc_hash 必须变化；元素 content_hash 不含骨架位置，故不必重传内容对象（plan §0.1 P3）。",
   "documents": {
     "before": {
       "file_type": "md",
@@ -58,7 +58,6 @@
     "before": {
       "dpe1": {
         "doc_hash": "dpe1:b1cf487949a27df70e6bbe11118a7e071455cb08a43a1489ebfa2c59c1364e26",
-        "state_hash": "dpe1:ac8c5ee170deae3101dfa7f91464340b2aa57875eecd82bcdcb850018d007e8e",
         "pages": [
           {
             "number": 1,
@@ -80,7 +79,6 @@
     "after": {
       "dpe1": {
         "doc_hash": "dpe1:0492210a64cada3fd6d3ae41e272cec8ab21361c957fa57b2fe8066ae69c2232",
-        "state_hash": "dpe1:a2a7e17116dbfb64118feb1b7ec3d72dfff9e667590a6e738effd39f00bc481a",
         "pages": [
           {
             "number": 10,
