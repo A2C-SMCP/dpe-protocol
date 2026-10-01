@@ -18,7 +18,7 @@ DPE 是**标准协议，不是 TFRS 的私有接口**。就像 Git 之于 GitHub
 
 ```
 ┌─ Connector（中立契约，§11）─────────────────────────────┐
-│ 飞书 / COS / Jira / 用户自研 …   产出变更与 Document       │
+│ Git（官方）/ 用户自研 …          产出变更与 Document       │
 └──────────────────────┬─────────────────────────────────┘
                        │ Document / 删除意图 / 移动意图
 ┌──────────────────────▼─ 运行器 + DPE SDK（§10）─────────┐
@@ -214,15 +214,17 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 11. Connector 契约（独立中立规范，不属于 Core）
 
-- 类比 git remote-helper：核心投递协议完全不知道 connector 的存在。同一个 connector 既可以由用户自己部署（SDK 自带独立运行器 `dpe-run`），也可以托管在 TFRS/TFRSUC 的宿主里运行，**宿主只是这份契约的另一个运行器**。
+> **修订注记**：按 Issue #2 关闭结论调整——平台不引入 connector 运行环境（不托管在 TFRS/TFRSUC），connector 由用户自行开发、自行部署；将来确有需要，托管运行作为独立产品另立。v1 只交付**官方 Git connector**（本仓 `connectors/git/`），TFRS 现有的飞书、COS 同步保持不变、不重构为 connector。下文原有的「宿主」表述保留为契约角色，不代表本平台提供宿主。
+
+- 类比 git remote-helper：核心投递协议完全不知道 connector 的存在。同一个 connector 既可以由用户自己部署（SDK 自带独立运行器 `dpe-run`），也可以托管在某个宿主里运行，**宿主只是这份契约的另一个运行器**。
 - **运行器负责推送，插件只负责产出**：
   - connector 产出变更、Document、删除意图和移动意图。
   - 协商、暂存、CAS、状态缓存和 DPE 凭证全部由运行器掌握。
   - 插件**拿不到 robot 凭证**。
 - **内容源实例绑定 URI 前缀**：创建实例时由宿主分配前缀，运行器拒绝越界的 Document，服务端的前缀授权再兜底一次。
 - connector 用 JSON Schema 声明自己的配置，宿主据此渲染配置表单；数据源凭证由宿主的密钥存储注入。
-- 官方 connector 以插件形式提供（先从飞书、COS 开始），用户选择启用；用户也可以自研、自己部署，投递到对应 robot 的 remote 即可。
-- **运行边界（进程边界 + 语言无关的线协议？）待定**，见 Issue #2。v1 **不开放**租户自定义 connector 在我们的环境中运行，但要确保将来开放时只需要扩展，不需要重构。
+- 官方 connector 以插件形式提供，v1 只交付 Git connector（以 Git 仓库为真实数据源，位于本仓 `connectors/git/`，依赖 SDK 与 `dpe-run`）；用户也可以自研、自己部署，投递到对应的 remote 即可。
+- **运行边界**：Issue #2 已关闭，平台不运行租户 connector。插件与运行器之间的进程边界与线协议随 `dpe-run`（M2）定稿；设计须保证将来出现托管产品时只需要扩展，不需要重构。
 
 ## 12. 第一个实现：TFRS 与内核的改造清单
 
@@ -239,7 +241,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 | K7 | 按 category 分派 | 服务端重建文档时，按 category 实例化成 Image、Table、Formula（Issue #1 第 1 条） |
 | K8 | 暂存区 | 存储介质由 TFRS 决定，需要支持 TTL 回收，并按文档隔离 |
 | S1 | DPE 端点 | 实现 Core 和 HTTP 绑定，在 CI 中通过跑分器 |
-| S2 | 存量同步重构 | 飞书和 COS 的 Celery 同步（`add_dpe_to_robot`）改为基于 SDK 和运行器，所有写入都经过同一套协议语义 |
+| S2 | ~~存量同步重构~~ | **已撤销**（Issue #2）：飞书和 COS 的现有同步保持不变，不重构为 connector |
 | S3 | TFRS 实现说明 | scope `dpe:push`、remote URL 与 robot 的映射、前缀授权策略 |
 
 **约束**：内核**不新增 diff 接口**。一致性只由内核的 upsert 保证，增量推送与全量推送收敛后的结果必须完全一致。学习的去重归内核负责，协议不实现去重。
@@ -264,7 +266,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 | **M1 规范** | core、http 绑定、hash-contract-1、connector 契约大纲、向量；评审定稿 | 规范评审通过；向量同时由两个 SDK 原型校验通过 |
 | **M2 SDK + 跑分器** | 同事按规范改造 Python 和 Rust SDK（初版代码先推到分支供参考）；实现黑盒跑分器；参考服务端通过跑分器 | 两个 SDK 通过全部向量；参考服务端跑分全部通过 |
 | **M3 TFRS + 内核** | K1–K8、S1、S3 | TFRS 端点在 CI 中跑分全部通过 |
-| **M4 E2E** | S2；飞书 connector 走运行器 | 在 test 集群上，以飞书为真实数据源，端到端跑通增量推送、删除和移动，结果与全量推送收敛后一致 |
+| **M4 E2E** | 官方 Git connector 走运行器 `dpe-run` | 在 test 集群上，以 Git 仓库为真实数据源，对 TFRS 端点端到端跑通增量推送、删除和移动，结果与全量推送收敛后一致 |
 
 ## 15. 对 Issue #1 的处置
 
@@ -291,7 +293,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 16. 未决项
 
-- Issue #2：connector 的运行边界与租户插件沙箱（由 TFRSOperator、TFRS、TFRSUC 回复）。
+- ~~Issue #2：connector 的运行边界与租户插件沙箱~~（已关闭：平台不引入 connector 运行环境，见 §11 修订注记）。
 - HTTP 绑定的具体路径和媒体类型命名（在 M1 撰写 `http.md` 时定稿）。
 - 规范在 `doc.turingfocus.cn` 上的发布 path 和版本化发布流程。
 - 暂存会话 TTL 的规范下限。（原「`Idempotency-Key` 的去重窗口」已撤销：幂等由内容保证，协议不定义幂等键，见 §0.1 P4。）

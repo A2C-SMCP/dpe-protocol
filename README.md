@@ -62,4 +62,4 @@ Connector（中立契约）→ 运行器 + SDK（hash·协商·暂存·CAS·重�
 | M1 | 规范（core / http / hash-contract-1 / connector 大纲 / 向量） | **草案，待评审** |
 | M2 | 两份 SDK（sans-IO）+ 黑盒跑分器 + 参考服务端 | 未开始 |
 | M3 | 第一个服务端实现（TFRS + 内核改造） | 未开始 |
-| M4 | 飞书真实数据端到端验收 | 未开始 |
+| M4 | 官方 Git connector 真实数据端到端验收 | 未开始 |
