@@ -36,7 +36,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 
 | 字段 | 说明 |
 | --- | --- |
-| `number` | 整数，文档内唯一。页的阅读顺序就是 `number` 升序；`pages` 数组 MUST 按 `number` 严格升序排列，否则 `DPE_VALIDATION`（数组顺序不承载独立语义） |
+| `number` | 整数，文档内唯一，取值范围见 §2.6（安全整数）。页的阅读顺序就是 `number` 升序；`pages` 数组 MUST 按 `number` 严格升序排列，否则 `DPE_VALIDATION`（数组顺序不承载独立语义） |
 | `title` | 可为 null |
 | `elements[]` | 元素 `content_hash` 数组；数组顺序即页内阅读顺序 |
 | `page_metadata` | JSON 对象，进 page_hash |
@@ -77,7 +77,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 
 ### 2.6 数值
 
-metadata 中整数字面量（不含小数点与指数）的绝对值 MUST NOT 超过 2^53−1（与 JCS 一致，契约 1 §3.3；超大 id 请用字符串），否则 `DPE_VALIDATION`；带小数点或指数的数字按 IEEE-754 double 处理。
+整数字面量（不含小数点与指数）的绝对值 MUST NOT 超过 2^53−1（与 JCS 一致，契约 1 §3.3），否则 `DPE_VALIDATION`。该范围统一适用于页 `number` 与 metadata 中的整数（#6 F4）——否则不同语言的实现会在此分歧（任意精度整数 / i64 / 丢失精度的 double）。超大 id 请用字符串。metadata 中带小数点或指数的数字按 IEEE-754 double 处理。
 
 ### 2.7 内容等价
 
@@ -87,14 +87,16 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 
 只读操作无前置条件；写操作（commit / delete / move）受 §5 CAS 约束，且 MUST 是**单文档原子**的。协议不提供批量 commit，也不提供集合级清单同步。
 
+**授权先于一切**（#6 F3）：所有写操作 MUST 先完成授权判定，再做任何依赖文档状态的判定或响应；move 对源与目标 URI 都要判定，任一侧无写授权即 `DPE_FORBIDDEN`。因此对无写授权的 URI，delete / move / commit 无论文档是否存在、内容是否相同，一律得到 `DPE_FORBIDDEN`（探测面见 §9）。
+
 | 操作 | 语义 | 写？ |
 | --- | --- | --- |
 | `capabilities` | 返回协议版本、接受的 hash 契约版本、限额（`max_payload_bytes`、`staging_ttl`、blob 上限与分块参数）、`dedup_scope`（§3.3）、`content_encodings`、可选能力 | 否 |
 | `head` / `batch_head` | 按 URI 返回 `{doc_hash}`；不存在返回 null。批量版只读，不涉及原子性 | 否 |
 | `get_skeleton` | 返回 `doc_hash`、`file_type` 与骨架（含 doc / page metadata），不含内容对象。返回值 MUST 与最近一次写入的值**内容等价**（§2.7）——据此重算的 doc_hash 必须等于返回值 | 否 |
 | `list` | 按 file_uri 前缀（码点前缀匹配规范化后的 URI）分页返回 `{file_uri, doc_hash}` | 否 |
-| `negotiate` | 提交骨架，返回 `missing_content_hashes`、`missing_blobs` 与一个 `staging_session` | 否（只开会话） |
-| `upload` | 向暂存会话上传内容对象或 blob。幂等；服务端 MUST 校验字段（§2.3）并重算 hash，不符返回 `DPE_HASH_MISMATCH`；blob 支持分块与断点续传 | 暂存 |
+| `negotiate` | 提交骨架，返回 `missing_content_hashes`、`missing_blobs` 与一个 `staging_session`；骨架超限时可不带骨架只开会话（§3.2 大骨架） | 否（只开会话） |
+| `upload` | 向暂存会话上传内容对象、blob 或**页骨架片段**（#6 F2）。幂等；内容对象 MUST 校验字段（§2.3）并重算 hash，不符返回 `DPE_HASH_MISMATCH`；blob 支持分块与断点续传；页片段按 `number` 幂等替换，响应给出该页的 `missing_*` | 暂存 |
 | `commit` | 提交 `file_type` + 骨架（内容可内联或引用暂存会话）。**原子切换**：要么完整生效，要么没有任何变化 | 是 |
 | `delete` | 按 URI 删除整篇文档 | 是 |
 | `move` | `from_uri → to_uri` 原子改名，学习产物原样保留。前置：源满足 CAS，目标不存在（否则 `DPE_ALREADY_EXISTS`） | 是 |
@@ -110,22 +112,25 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 - **快路径**：小文档 MAY 跳过 negotiate，直接内联完整内容 commit，一次往返完成。
 - **大量小文档**：用 `batch_head` 比对 doc_hash 筛选需要推送的文档（本地算出的 doc_hash 与服务端返回值不同即推送），再并发快路径提交。筛选不依赖任何本地缓存，缓存丢失时结果不变。DPE 的全部字段都进 doc_hash，因此任何字段的变化都会被这一步发现。
 - **大文档**：分批 `upload` 到暂存会话，最后一次 `commit` 原子切换。中途失败不影响召回，暂存内容过期回收。
+- **大骨架**（#6 F2）：骨架本身超过 `max_payload_bytes` 时（每个元素 entry 约 72 字节，8 MiB 限额下约 11 万元素即超限），negotiate 与 commit 都无法内联携带。路径：negotiate 不带骨架只开会话 → 逐页 `upload` 页骨架片段（每页的响应即该页的 `missing_*`，等价于分页的 negotiate）→ 上传缺失内容 → 以**会话骨架**形式 commit（§3.3）。因此对任意页数的文档协议都能完成 commit；**单页片段**超过 `max_payload_bytes` 时返回 `DPE_PAYLOAD_TOO_LARGE`——页是分批的最小单位，单页超限（约 11 万元素一页）如何拆分是上游的内容决策，与超大文本同理。
 - 单个内容对象超过 `max_payload_bytes` 时（只可能是超大文本；二进制走 blob），返回 `DPE_PAYLOAD_TOO_LARGE`，协议不提供文本切分，切分是上游的内容决策。
 
 ### 3.3 commit 语义
 
-请求：`file_type` 与骨架（含 doc / page metadata）、CAS 前置条件（§5）、内联内容对象和/或 `staging_session` 引用。
+请求：`file_type`、骨架、CAS 前置条件（§5）、内联内容对象和/或 `staging_session` 引用。骨架二选一（同时出现或都缺 → `DPE_VALIDATION`）：
 
-服务端 MUST 按以下顺序求值，前一步失败即返回，后续步骤不执行：
+- **内联骨架**：请求体直接携带骨架（含 doc / page metadata）；
+- **会话骨架**（#6 F2，大骨架路径）：请求体携带 `doc_metadata` 与**本次提交的目标 `doc_hash`**，页片段取自引用的暂存会话（§3.4）。目标 doc_hash 由客户端按同一契约算出——客户端本来就为 negotiate 算过全部 hash。
 
-1. **授权**：调用者对该 URI 的写授权；带 `force` 时还包括 force 权限 → `DPE_FORBIDDEN`。
-2. **报文校验**（§2）→ `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`。
+服务端 MUST 按以下顺序求值，前一步失败即返回，后续步骤不执行（每个错误码只属于唯一一步）：
+
+1. **授权**（§3，先于一切）：调用者对该 URI 的写授权；带 `force` 时还包括 force 权限 → `DPE_FORBIDDEN`。
+2. **报文校验**（§2）→ `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`。内联内容对象在这一步完成**字段校验与 content_hash 重算**（Rule 0：不信任客户端提交的 hash；#6 F5）——重算只依赖请求体本身：字段不合法 → `DPE_VALIDATION`；重算出的 hash 未被内联骨架引用 → `DPE_VALIDATION`（多余对象）。
 3. **前置条件存在性**：既无 `base_hash`、`if_absent` 也无 `force` → `DPE_PRECONDITION_REQUIRED`（即使内容未变也拒绝，保持"写操作必须带前置条件"的形式要求）。
-4. **unchanged**：由骨架与 `file_type` 算出本次提交的 doc_hash（不需要内容对象）；当前 doc_hash 已等于它时返回 `unchanged`，**不论前置条件是否满足**（§5.2），MUST NOT 产生任何写入或学习动作，也不检查、不消费所引用的暂存会话。
+4. **unchanged**：内联骨架时由骨架与 `file_type` 算出本次提交的 doc_hash（不需要内容对象）；会话骨架时直接取请求声明的目标 doc_hash。当前 doc_hash 已等于它时返回 `unchanged`，**不论前置条件是否满足**（§5.2），MUST NOT 产生任何写入或学习动作，也不检查、不消费所引用的暂存会话，不处理内联对象（它们已通过第 2 步校验，但不入库）。会话骨架的 commit 因此在会话被消费后原样重试仍得到 `unchanged`。
 5. **前置条件求值**（§5.1）→ `DPE_PRECONDITION_FAILED` / `DPE_ALREADY_EXISTS` / `DPE_NOT_FOUND`。
-6. **会话与可得性**：引用的暂存会话须有效（§3.4，否则 `DPE_SESSION_EXPIRED`；会话属于调用者但 file_uri 不符的 `DPE_VALIDATION` 也在这一步判定）；骨架引用的每个 `content_hash`，以及这些内容对象引用的每个 blob，MUST 能在「去重范围内的已存内容 ∪ 暂存会话 ∪ 内联」中找到，否则 `DPE_MISSING_CONTENT`，本次 commit 无任何效果。
+6. **会话与可得性**：引用的暂存会话须有效（§3.4，否则 `DPE_SESSION_EXPIRED`；会话属于调用者但 file_uri 不符的 `DPE_VALIDATION` 也在这一步判定）。会话骨架时，由会话中的页片段（按 `number` 升序）与请求体的 `doc_metadata`、`file_type` 装配骨架并重算 doc_hash，与声明的目标 doc_hash 不符 → `DPE_HASH_MISMATCH`。骨架引用的每个 `content_hash`，以及这些内容对象引用的每个 blob，MUST 能在「去重范围内的已存内容 ∪ 暂存会话 ∪ 内联」中找到，否则 `DPE_MISSING_CONTENT`，本次 commit 无任何效果。
   - **去重范围**由 capabilities 的 `dedup_scope` 声明：`document`（仅该文档当前状态引用的内容，所有实现 MUST 支持的最小范围）或 `writable`（调用者有写授权的全部文档）。范围 MUST NOT 超出调用者的写授权范围；negotiate 的 `missing_*` 与 commit 的可得性判定 MUST 使用同一范围（§9）。
-- 服务端 MUST 对每个新内容对象校验字段（§2.3）并重算 hash（Rule 0：不信任客户端提交的 hash）。
 - 服务端 MUST 按 category 实例化元素，MUST NOT 全部按纯文本处理。
 
 响应：
@@ -158,7 +163,8 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 - 引用的会话已过期、已消费、不存在或不属于该调用者时，upload / commit 一律返回 `DPE_SESSION_EXPIRED`（不区分原因，避免泄露他人会话是否存在）；会话属于该调用者但 file_uri 不符时返回 `DPE_VALIDATION`。
 - **失败的 commit（任何错误）MUST NOT 消费会话**。并发写入导致 `DPE_PRECONDITION_FAILED` 时，客户端重新读取后，以新的前置条件引用**同一会话**重新 commit，已上传内容无需重传。
 - 会话过期后重开 negotiate：已传内容是否仍可复用由服务端决定，通过 `missing_*` 如实反映。
-- upload 幂等：同一 hash 重复上传 MUST 成功且无副作用。upload 的一切可观察结果（"新写入 / 重复"的区分、blob 断点续传的已收字节数）MUST 只按**本会话内**已收到的内容判定，与服务端其他位置是否已存该内容无关（§9）。
+- 会话内可暂存三种东西：内容对象、blob、**页骨架片段**（#6 F2）。页片段按 `number` 寻址、幂等替换（重传同页覆盖前值）；片段未被最终的会话骨架 commit 使用时随会话回收。
+- upload 幂等：同一 hash 重复上传 MUST 成功且无副作用。upload 的一切可观察结果（"新写入 / 重复"的区分、blob 断点续传的已收字节数、页片段的 `missing_*`）MUST 只按**本会话内**已收到的内容与去重范围判定，与服务端其他位置是否已存该内容无关（§9；页片段的 `missing_*` 按 `dedup_scope ∪ 本会话` 计算，与 negotiate 一致）。
 - commit 以 `created` / `updated` 成功后会话即消费完毕；`unchanged` 不消费会话（会话随 TTL 回收）。未引用的暂存对象随会话回收。
 
 ## 4. 删除与移动
@@ -188,11 +194,13 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 
 - **commit**：当前 doc_hash 已等于提交内容时一律返回 `unchanged`（§3.3）。响应丢失后原样重试，首次已生效则得到 `unchanged`，未生效则正常执行。
 - **move**：求值顺序为：
-  1. 源不存在时：若目标存在且其 doc_hash 等于 `base_hash`，返回成功（与首次成功的响应相同）；否则 `DPE_NOT_FOUND`。
-  2. 源存在时：doc_hash 不等于 `base_hash` → `DPE_PRECONDITION_FAILED`；目标已存在 → `DPE_ALREADY_EXISTS`；否则执行移动。
+  1. **授权**（§3，先于一切）：调用者对源与目标 URI 的写授权 → `DPE_FORBIDDEN`。
+  2. 报文校验（含 `base_hash` 存在性 → `DPE_PRECONDITION_REQUIRED`）。
+  3. 源不存在时：若目标存在且其 doc_hash 等于 `base_hash`，返回成功（与首次成功的响应相同）；否则 `DPE_NOT_FOUND`。
+  4. 源存在时：doc_hash 不等于 `base_hash` → `DPE_PRECONDITION_FAILED`；目标已存在 → `DPE_ALREADY_EXISTS`；否则执行移动。
 
-  第 1 步是"目标状态已达成即成功"：服务端不区分重试与首次请求，因此若源恰好已被他人删除、而目标恰好是另一份内容相同的文档，也返回成功——此时协议只保证状态（源不存在、目标内容为 H），不保证目标的学习产物来自源。首次 move 成功后目标又被他人改写或删除的，重试得到 `DPE_NOT_FOUND`，SDK 如实上报，由上层重新读取后决定。
-- **delete**：响应丢失后重试得到 `DPE_NOT_FOUND` 时，SDK MUST 视为成功（目标状态"不存在"已达成）。
+  第 3 步是"目标状态已达成即成功"：服务端不区分重试与首次请求，因此若源恰好已被他人删除、而目标恰好是另一份内容相同的文档，也返回成功——此时协议只保证状态（源不存在、目标内容为 H），不保证目标的学习产物来自源。首次 move 成功后目标又被他人改写或删除的，重试得到 `DPE_NOT_FOUND`，SDK 如实上报，由上层重新读取后决定。
+- **delete**：求值顺序为：授权（§3，先于一切）→ 报文校验（含前置条件存在性）→ 前置条件求值（§5.1）→ 执行。响应丢失后重试得到 `DPE_NOT_FOUND` 时，SDK MUST 视为成功（目标状态"不存在"已达成）。
 - **force commit**：重放 force 会覆盖首次提交之后他人的写入。响应丢失后 SDK MUST NOT 自动重放：先 `head`，doc_hash 等于提交内容即成功，否则上报，由上层决定是否重新发起。
 
 重试后得到 `DPE_PRECONDITION_FAILED`，说明首次写入之后（或之前）有他人写入。按同级写入规则（§2.4），SDK 如实上报，由上层重新读取后决定；SDK 绝不自动改用 force。commit 恢复为 `unchanged` 时，首次写入的 delta 不可得，这是预期行为。
@@ -211,7 +219,7 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 | `DPE_ALREADY_EXISTS` | 否 | `if_absent` 冲突 / move 目标已存在 | 交上层决定 |
 | `DPE_NOT_FOUND` | 否 | 文档不存在（含已删除） | delete 重试视为成功（§5.2）；commit 时交上层决定是否以 `if_absent` 重建（§4） |
 | `DPE_SESSION_EXPIRED` | 否 | 暂存会话失效：过期、已消费、不存在或不属于调用者（§3.4） | 重新 negotiate，上传 `missing_*` 后重新 commit |
-| `DPE_HASH_MISMATCH` | 否 | 上传内容与声明的 hash 不符 | 修正内容或 hash |
+| `DPE_HASH_MISMATCH` | 否 | 上传内容与声明的 hash 不符；会话骨架 commit 装配重算的 doc_hash 与声明的目标值不符（§3.3 第 6 步）。内联对象没有声明 hash（由服务端重算得出），不产生此错误 | 修正内容或 hash |
 | `DPE_MISSING_CONTENT` | 否 | commit 引用了去重范围内不可得的 content_hash / blob | 上传缺失内容后重新 commit |
 | `DPE_PAYLOAD_TOO_LARGE` | 否 | 单请求或单对象超过 `max_payload_bytes`（按压缩前计算） | 改走暂存分批；单对象超限由上游切分 |
 | `DPE_FORBIDDEN` | 否 | 无权限（含前缀授权、force 权限） | — |
@@ -245,4 +253,5 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 - **上传侧信道**：upload 的"新写入 / 重复"状态与断点续传偏移只按本会话判定（§3.4），否则上传一个猜测的内容对象即可从响应得知它是否存在于别处。
 - **会话隔离**：会话绑定调用者身份；引用他人会话与引用不存在的会话返回同一错误（§3.4），不泄露会话是否存在。
 - **unchanged 不是探测口**：§3.3 的 unchanged 判定只比较目标文档自身的 doc_hash，调用者对该 URI 有写授权才会走到这一步。
+- **delete / move 不是探测口**（#6 F3）：授权先于一切状态判定（§3）。若先判存在性再判授权，`DPE_NOT_FOUND` / `DPE_FORBIDDEN` 的差异会泄露文档是否存在；move 的"目标已达成"判定（§5.2 第 3 步）若先于授权执行，无目标写权限的调用者可借 `base_hash` 探测目标是否存在、内容是否为某值。
 - **凭证边界**：数据源凭证与 remote 凭证分属 connector 与运行器（connector 契约 §0），协议不提供由服务端代为抓取 url 的通道（契约 1 §4.2）。

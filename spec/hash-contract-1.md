@@ -123,7 +123,7 @@ blob_ref = "blob:" + blob 引用       （如 "blob:sha256:ab…"）
 page_hash = "dpe1:" + hex( H( ascii(number), text(title), meta(page_metadata), utf8(ch1), …, utf8(chn) ) )
 ```
 
-- `ascii(number)`：页号的十进制 ASCII 字符串（如 `12`、`-3`），无前导零、无正号。
+- `ascii(number)`：页号的十进制 ASCII 字符串（如 `12`、`-3`），无前导零、无正号。页号的取值范围是安全整数 [−(2^53−1), 2^53−1]（core.md §2.6，#6 F4）——这是报文校验规则，不改变本公式。
 - `ch1…chn`：页内各元素 `content_hash` 的**完整字符串**（含 `dpe1:` 前缀）按数组顺序的 UTF-8 字节。数组顺序即页内阅读顺序，顺序本身就是内容。
 - 重复元素照常重复出现：内容完全相同的元素共用同一个内容对象。
 

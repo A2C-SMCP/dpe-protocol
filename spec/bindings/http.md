@@ -18,6 +18,7 @@
 | `negotiate` | `POST {remote}/negotiate` |
 | `upload`（内容对象） | `PUT {remote}/staging/{sid}/objects/{content_hash}` |
 | `upload`（blob） | `PUT {remote}/staging/{sid}/blobs/{sha256}` |
+| `upload`（页骨架片段） | `PUT {remote}/staging/{sid}/pages/{number}` |
 | `commit` | `PUT {remote}/documents?uri={file_uri}` |
 | `delete` | `DELETE {remote}/documents?uri={file_uri}` |
 | `move` | `POST {remote}/move` |
@@ -52,7 +53,7 @@
 
 - move 的 CAS 对象是请求体中的 `from_uri`，不是 `/move` 这个目标资源，因此前置条件放在请求体中，不使用条件头；条件不满足返回 `409`（`412` 专指条件头求值失败）。
 - 带 `force: true` 的请求同时带条件头时返回 `DPE_VALIDATION`。
-- **commit 的 unchanged 先于条件求值**（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 `200` + `unchanged`，即使条件头不满足。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。
+- **commit 的 unchanged 先于条件求值**（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 `200` + `unchanged`，即使条件头不满足。这符合 RFC 9110 §13.1.1：状态变更请求的效果已经生效时，源服务器 MAY 返回 2xx 成功而非 412——并非对 HTTP 条件请求语义的偏离。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。
 - 同一个 `code` 在不同端点可能映射到不同状态码（如 `DPE_PRECONDITION_FAILED` 在 PUT 上是 412、在 move 上是 409）。**客户端 MUST 依据 problem 体中的 `code` 分派**，MUST NOT 依据状态码分派。
 - 若仍收到不带 problem 体的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定：
   - PUT：doc_hash 等于提交内容 → 成功；不存在 → `DPE_NOT_FOUND`；否则 → `DPE_PRECONDITION_FAILED`（`If-None-Match: *` 时为 `DPE_ALREADY_EXISTS`）。
@@ -133,7 +134,7 @@
 ```json
 // 请求
 { "file_uri": "feishu://doc/a",
-  "skeleton": { …同 4.3… },
+  "skeleton": { …同 4.3… },        // 可选；缺省时只开会话（大骨架路径，core.md §3.2）
   "blobs": ["sha256:…"] }
 // 响应 200
 { "missing_content_hashes": ["dpe1:…"],
@@ -144,8 +145,26 @@
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
 - `blobs` 列出骨架所引用内容对象中出现的全部 blob（服务端此时尚未收到缺失的内容对象，无法自行得知）。
 - `missing_*` 按 `dedup_scope` 计算（core.md §3.3）。
+- 不带 `skeleton` 时响应中的 `missing_*` 为空数组，缺失清单改由逐页上传骨架片段时按页返回（§4.6）。
 
-### 4.6 `PUT {remote}/staging/{sid}/objects/{content_hash}`
+### 4.6 `PUT {remote}/staging/{sid}/pages/{number}`（页骨架片段，#6 F2）
+
+请求体为一页的骨架片段（同 4.3 中 `pages[]` 的一项）：
+
+```json
+// 请求
+{ "number": 3, "title": "第三页", "page_metadata": {},
+  "elements": [ "dpe1:…", "dpe1:…" ],
+  "blobs": ["sha256:…"] }
+// 响应 201（本会话新页）/ 200（幂等替换）
+{ "missing_content_hashes": ["dpe1:…"], "missing_blobs": [] }
+```
+
+- 路径中的 `number` MUST 等于体内 `number`，否则 `DPE_VALIDATION`；按 `number` 幂等替换（重传同页覆盖前值）。
+- 响应即该页的 `missing_*`（按 `dedup_scope ∪ 本会话` 计算），等价于分页的 negotiate。
+- 单页片段超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
+
+### 4.7 `PUT {remote}/staging/{sid}/objects/{content_hash}`
 
 请求体为一个内容对象 JSON，恰为 content_hash 的完整原像（core.md §2.3）：只含其 category 规定的字段与 `metadata`。服务端依次：
 
@@ -154,29 +173,37 @@
 
 响应 `201`（本会话内新写入）或 `200`（本会话内重复）。201 / 200 MUST 只按本会话已收到的内容判定，不反映服务端其他位置是否已存该内容（core.md §3.4、§9）。
 
-### 4.7 `PUT {remote}/staging/{sid}/blobs/{sha256}`（分块与断点续传）
+### 4.8 `PUT {remote}/staging/{sid}/blobs/{sha256}`（分块与断点续传）
 
 - 整体上传：不带 `Content-Range` 的 `PUT`，体为完整字节。
 - 分块上传：`PUT` + `Content-Range: bytes {from}-{to}/{total}`，块大小不超过 `blob_chunk_bytes`，MUST 按序追加；全部字节到齐后服务端校验 sha256。
 - 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该 blob）。
 - 校验失败返回 `DPE_HASH_MISMATCH` 并丢弃已收内容。
 
-### 4.8 `PUT {remote}/documents?uri=…`（commit）
+### 4.9 `PUT {remote}/documents?uri=…`（commit）
 
 ```json
+// 内联骨架
 { "file_type": "md",
   "skeleton": { …同 4.3（含 doc / page metadata）… },
   "staging_session": "st-…",          // 可选
   "objects": [ { …内联内容对象… } ],   // 可选（快路径）
   "force": false }
+// 会话骨架（大骨架路径，core.md §3.3）
+{ "file_type": "md",
+  "doc_metadata": { … },
+  "doc_hash": "dpe1:…",               // 本次提交的目标值，由客户端算出
+  "staging_session": "st-…",          // 必填：页片段所在会话
+  "force": false }
 ```
 
 - 文档身份取自查询参数 `uri`，请求体不重复 `file_uri`。
+- `skeleton` 与 `doc_hash` 恰取其一（同时出现或都缺 → `DPE_VALIDATION`）；会话骨架装配重算与声明不符 → `400` + `DPE_HASH_MISMATCH`（core.md §3.3 第 6 步）。
 - CAS 前置条件走 `If-Match` / `If-None-Match: *`（§3.2）。
 - 响应 `201`（created）或 `200`（updated / unchanged），体为 core.md §3.3 的 commit 响应，头带文档当前的 `DPE-Doc-Hash` 与 `ETag`。
 - 失败的 commit 不消费 `staging_session`（core.md §3.4）。
 
-### 4.9 `DELETE {remote}/documents?uri=…` 与 `POST {remote}/move`
+### 4.10 `DELETE {remote}/documents?uri=…` 与 `POST {remote}/move`
 
 - delete：CAS 走 `If-Match`，成功 `204`。
 - move：
@@ -185,7 +212,7 @@
   { "from_uri": "…", "to_uri": "…", "base_hash": "dpe1:…" }
   ```
 
-  按 core.md §5.2 的求值顺序：源不存在且目标 doc_hash 等于 `base_hash` → 视为已完成，返回成功；源不存在的其他情况 → `404` + `DPE_NOT_FOUND`；源 doc_hash 不符 → `409` + `DPE_PRECONDITION_FAILED`；目标已存在 → `409` + `DPE_ALREADY_EXISTS`。成功 `200`，体为 `{ "doc_hash": "dpe1:…" }`，头带 `DPE-Doc-Hash` 与 `Content-Location: {remote}/documents?uri={to_uri}`（§3.3）。
+  按 core.md §5.2 的求值顺序（授权先于一切，源与目标任一侧无写授权 → `403` + `DPE_FORBIDDEN`）：源不存在且目标 doc_hash 等于 `base_hash` → 视为已完成，返回成功；源不存在的其他情况 → `404` + `DPE_NOT_FOUND`；源 doc_hash 不符 → `409` + `DPE_PRECONDITION_FAILED`；目标已存在 → `409` + `DPE_ALREADY_EXISTS`。成功 `200`，体为 `{ "doc_hash": "dpe1:…" }`，头带 `DPE-Doc-Hash` 与 `Content-Location: {remote}/documents?uri={to_uri}`（§3.3）。
 
 写操作不需要幂等键：幂等由内容保证（core.md §5.2）。
 

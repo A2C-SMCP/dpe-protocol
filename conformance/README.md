@@ -23,7 +23,17 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
   - 未定义的字段；
   - 内容对象带其 category 未规定的字段（如 NarrativeText 带 `text_as_html`）；
   - pages 未按 number 严格升序；
-  - 整数字面量超过 2^53−1。
+  - 整数字面量超过 2^53−1（含页 `number` 越界，#6 F4）；
+  - commit 的 `skeleton` 与 `doc_hash` 同时出现或都缺；
+  - commit 的内联对象未被骨架引用（#6 F5）。
+
+## 大骨架（#6 F2）
+
+- 不带骨架的 negotiate 开出会话，`missing_*` 为空数组；
+- 逐页 `PUT staging/{sid}/pages/{number}` 返回该页的 `missing_*`（按 `dedup_scope ∪ 本会话` 计算）；路径与体内 `number` 不符返回 `DPE_VALIDATION`；重传同页幂等替换（200）；
+- 以会话骨架 commit（`doc_hash` 声明目标值）成功；装配重算与声明不符返回 `400` + `DPE_HASH_MISMATCH`；
+- 会话骨架 commit 成功后原样重试返回 `200` + `unchanged`（不读会话，#6 F2 × B1）；
+- 单页片段超过 `max_payload_bytes` 返回 `413` + `DPE_PAYLOAD_TOO_LARGE`。
 
 ## 幂等与重试（#4 B1 / B4 / B7）
 
@@ -53,3 +63,4 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
   - A 在 commit 中引用 X 而不上传，必须返回 `DPE_MISSING_CONTENT`；
   - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于 Q 而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
 - 对无写授权的 URI 提交与其当前内容相同的 commit，必须返回 `403`，而不是 `unchanged`。
+- **授权先于一切**（#6 F3）：对无写授权的 URI 做 delete / move（含 move 仅目标越权的情况），无论文档是否存在、`base_hash` 是否等于目标内容，一律返回 `403` + `DPE_FORBIDDEN`，而不是 `404` / `409` / 成功。

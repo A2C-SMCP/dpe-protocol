@@ -133,7 +133,10 @@ def content_hash(el: dict[str, Any], contract: str) -> str:
 
 
 def page_hash(page: dict[str, Any], element_hashes: list[str], contract: str) -> str:
-    parts = [str(page["number"]).encode("ascii"), text(page.get("title")), meta(page.get("page_metadata"))]
+    number = page["number"]
+    if abs(number) > 2**53 - 1:  # 页号与 metadata 整数同范围（core §2.6，#6 F4）
+        raise ValueError(f"page number out of IEEE-754 safe range: {number}")
+    parts = [str(number).encode("ascii"), text(page.get("title")), meta(page.get("page_metadata"))]
     parts += [h.encode("utf-8") for h in element_hashes]
     return hval(parts, contract)
 
@@ -495,6 +498,17 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
             eq("before.pages.0.elements.0", "after.pages.0.elements.0"),
             ne("before.doc_hash", "after.doc_hash"),
         ],
+    },
+    {
+        "name": "page_number_bounds",
+        "description": "页号的取值范围是安全整数 ±(2^53−1)（core §2.6，#6 F4）：边界值合法并照常进 hash；越界属报文校验（DPE_VALIDATION），不在向量范围内。",
+        "documents": {
+            "doc": doc(
+                page(-(2**53 - 1), None, el("NarrativeText", "min")),
+                page(2**53 - 1, None, el("NarrativeText", "max")),
+            )
+        },
+        "relations": [ne("doc.pages.0.page_hash", "doc.pages.1.page_hash")],
     },
     {
         "name": "page_array_order_irrelevant",

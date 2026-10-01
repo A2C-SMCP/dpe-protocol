@@ -128,6 +128,10 @@
       "sha256": "b2929aab4ed486a80bd81f6525563e89096bf4aa17b589bed167bb4bcce45513"
     },
     {
+      "name": "page_number_bounds.json",
+      "sha256": "a98863618e705717ebb34afc14ff279580bf66a16c37dc84ea43fa718d57cd9d"
+    },
+    {
       "name": "page_number_identity.json",
       "sha256": "310d9f93a71aad9fe8f779a1c26f1bbb01d696c8a058283e0fa465fd70010efd"
     },

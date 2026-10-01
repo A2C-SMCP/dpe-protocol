@@ -1,0 +1,63 @@
+{
+  "name": "page_number_bounds",
+  "kind": "document",
+  "description": "页号的取值范围是安全整数 ±(2^53−1)（core §2.6，#6 F4）：边界值合法并照常进 hash；越界属报文校验（DPE_VALIDATION），不在向量范围内。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "number": -9007199254740991,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "min"
+            }
+          ]
+        },
+        {
+          "number": 9007199254740991,
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "max"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:2e350b08eacb738180c63a769da043d1cdc30788548b5d0d512f1bb7d4775f2f",
+        "pages": [
+          {
+            "number": -9007199254740991,
+            "page_hash": "dpe1:4a29fcea828c0bef0eef58d696daac4b346dd78d64038409f15f26c3e4546fd6",
+            "elements": [
+              "dpe1:dee961f4f5abd459908671f8b2368c88f30efd7bbadb7ecb0945ed8af8b387fe"
+            ]
+          },
+          {
+            "number": 9007199254740991,
+            "page_hash": "dpe1:21c787460d95ae5a27b671d9f96811466866ca570cd0dd43a4f3c8d4e0f7021d",
+            "elements": [
+              "dpe1:78e4159d4fa6fbf13600cd5357f579f2180858946283f565bea43d4635a0c667"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "doc.pages.0.page_hash",
+        "doc.pages.1.page_hash"
+      ]
+    }
+  ]
+}
