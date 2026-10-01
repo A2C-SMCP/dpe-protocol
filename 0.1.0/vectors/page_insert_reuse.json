@@ -1,0 +1,164 @@
+{
+  "name": "page_insert_reuse",
+  "kind": "document",
+  "description": "在中间插入一页（plan §0.1 P3）：其余各页的 page_hash 全部不变、无需重传（页不含位置，如同 Git 的 tree 条目移动不改变子树），只有 doc_hash 变化。",
+  "documents": {
+    "before": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "A",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "a"
+            }
+          ]
+        },
+        {
+          "title": "B",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "b"
+            }
+          ]
+        },
+        {
+          "title": "C",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "c"
+            }
+          ]
+        }
+      ]
+    },
+    "after": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "A",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "a"
+            }
+          ]
+        },
+        {
+          "title": "新页",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "new"
+            }
+          ]
+        },
+        {
+          "title": "B",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "b"
+            }
+          ]
+        },
+        {
+          "title": "C",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "c"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "before": {
+      "dpe1": {
+        "doc_hash": "dpe1:0f37c386776cddc882d15a7910255db614605805a61b42cd567c8b5f01adb47d",
+        "pages": [
+          {
+            "page_hash": "dpe1:9899b7d1edb72c14fedc4254c433e8aa8e39c42a304379bf43a00f6b18bf3c6d",
+            "elements": [
+              "dpe1:2ebc9afc0b5249592c331e15702f5ff6ed355bc8cb08f4ae19fb822e90113174"
+            ]
+          },
+          {
+            "page_hash": "dpe1:8725e3ed57a8a6c72d1d86500c6f4b6c022690c32ad5d504f4d1f4cfcad35b7d",
+            "elements": [
+              "dpe1:63159b33935f45c731fdbf089aff85c52b89e377efee190693e17167f44a44a6"
+            ]
+          },
+          {
+            "page_hash": "dpe1:0eadfa00a3dbbb878ffe263290b6a6a72f541043c1e05289a3d173f58ec203f2",
+            "elements": [
+              "dpe1:6a0cd0f1ddd0aa0eb873d7620904d498d32f5dc41588f48b8a2deec1778d1359"
+            ]
+          }
+        ]
+      }
+    },
+    "after": {
+      "dpe1": {
+        "doc_hash": "dpe1:4bf58eacba3c9282f0f81d1c74ca3517f9c5290a7d9cd59b979d29c71e9c18e1",
+        "pages": [
+          {
+            "page_hash": "dpe1:9899b7d1edb72c14fedc4254c433e8aa8e39c42a304379bf43a00f6b18bf3c6d",
+            "elements": [
+              "dpe1:2ebc9afc0b5249592c331e15702f5ff6ed355bc8cb08f4ae19fb822e90113174"
+            ]
+          },
+          {
+            "page_hash": "dpe1:ff06a6f36d8a35cae54d45cd3ca7fe59e15d19bde04432cb1560b2dc13ff8fad",
+            "elements": [
+              "dpe1:878c71d84bb28e560a9a8b7c341fab2a6bb0609b31aa31015ac45ddec944aea0"
+            ]
+          },
+          {
+            "page_hash": "dpe1:8725e3ed57a8a6c72d1d86500c6f4b6c022690c32ad5d504f4d1f4cfcad35b7d",
+            "elements": [
+              "dpe1:63159b33935f45c731fdbf089aff85c52b89e377efee190693e17167f44a44a6"
+            ]
+          },
+          {
+            "page_hash": "dpe1:0eadfa00a3dbbb878ffe263290b6a6a72f541043c1e05289a3d173f58ec203f2",
+            "elements": [
+              "dpe1:6a0cd0f1ddd0aa0eb873d7620904d498d32f5dc41588f48b8a2deec1778d1359"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "before.pages.0.page_hash",
+        "after.pages.0.page_hash"
+      ]
+    },
+    {
+      "equal": [
+        "before.pages.1.page_hash",
+        "after.pages.2.page_hash"
+      ]
+    },
+    {
+      "equal": [
+        "before.pages.2.page_hash",
+        "after.pages.3.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "before.doc_hash",
+        "after.doc_hash"
+      ]
+    }
+  ]
+}

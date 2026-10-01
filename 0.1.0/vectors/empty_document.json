@@ -1,0 +1,61 @@
+{
+  "name": "empty_document",
+  "kind": "document",
+  "description": "空文档（0 页）与空页（0 元素）均合法；契约 1 没有 doc title（#3 S6）。",
+  "documents": {
+    "no_pages": {
+      "file_type": "empty",
+      "pages": []
+    },
+    "empty_page": {
+      "file_type": "empty",
+      "pages": [
+        {
+          "title": null,
+          "elements": []
+        }
+      ]
+    },
+    "no_pages_with_meta": {
+      "file_type": "empty",
+      "pages": [],
+      "doc_metadata": {
+        "author": "gmq"
+      }
+    }
+  },
+  "expected": {
+    "no_pages": {
+      "dpe1": {
+        "doc_hash": "dpe1:5044788699fbc5362d08cae535a0c6ba274b6d6c9a8d7e8179366163b22f05ee",
+        "pages": []
+      }
+    },
+    "empty_page": {
+      "dpe1": {
+        "doc_hash": "dpe1:7adb96d8e45cc30252d570174a5879f75b1e45e654a83f93e98d7f03ea909fa8",
+        "pages": [
+          {
+            "page_hash": "dpe1:d804d2827e3513251fddc13be8471285251f1d307ebbf7087bc8428b841b00e4",
+            "elements": []
+          }
+        ]
+      }
+    },
+    "no_pages_with_meta": {
+      "dpe1": {
+        "doc_hash": "dpe1:e1c5710078a8eca804ce783ebde3702b41f7e4c0c5338888bdeb0d1c69ed8afa",
+        "pages": []
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "no_pages.doc_hash",
+        "empty_page.doc_hash",
+        "no_pages_with_meta.doc_hash"
+      ]
+    }
+  ]
+}

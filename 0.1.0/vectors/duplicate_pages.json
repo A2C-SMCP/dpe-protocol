@@ -1,0 +1,59 @@
+{
+  "name": "duplicate_pages",
+  "kind": "document",
+  "description": "两页内容完全相同：page_hash 相同（页对象共享，如同 Git 中相同的 tree），root 的 pages 列表中按位置重复出现。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "同页",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        },
+        {
+          "title": "同页",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:45920383f2f5995072326bea1edc901427bea0c3b5c322e6835986826bcd1a4e",
+        "pages": [
+          {
+            "page_hash": "dpe1:66d7fcedd5b42ab836df72bb43c3fdd037a0ae1443d01ef9bbef81eb9607ae7a",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          },
+          {
+            "page_hash": "dpe1:66d7fcedd5b42ab836df72bb43c3fdd037a0ae1443d01ef9bbef81eb9607ae7a",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "doc.pages.0.page_hash",
+        "doc.pages.1.page_hash"
+      ]
+    }
+  ]
+}
