@@ -1,10 +1,12 @@
 //! hash 契约 1（`dpe1:`）——spec/hash-contract-1.md 的 SDK 实现。
 //!
-//! 输入是文档的内容身份视图（`serde_json::Value`，形状同 vectors/README.md）。
+//! 输入是文档的 hash 输入视图（`serde_json::Value`，形状同 vectors/README.md）。
+//! **源即内容**（plan §0.1 P2）：除 `file_uri` 外全部进 hash，没有保留键、
+//! 没有过滤；三层 metadata 只做「递归删 null 键 + JCS」。
 //! `dpe2` 仅用于契约升级演练：算法与 dpe1 相同，但每次摘要额外前置一个
 //! 内容为 `b"dpe2"` 的段。
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::jcs::jcs;
@@ -12,14 +14,50 @@ use crate::jcs::jcs;
 /// 契约版本（hash 值前缀）
 pub const CONTRACT: &str = "dpe1";
 
-/// metadata 保留键集合（契约 1 §2.1）。与 `vectors/manifest.json` 的
-/// `reserved_metadata_keys` 一致，内核 / 上层直接使用本常量。
-pub const RESERVED_METADATA_KEYS: &[&str] = &[
-    "coordinates",
-    "keywords",
-    "page_name",
-    "page_number",
-    "seq_in_page",
+/// 安全整数范围（core.md §2.6；页号与 metadata 整数共用）
+pub const MAX_SAFE_INT: i64 = (1 << 53) - 1;
+
+/// file_type 封闭枚举（core.md §2.5，进 doc_hash；与 `vectors/manifest.json`
+/// 的 `file_types` 一致，消费方直接使用本常量）。
+pub const FILE_TYPES: &[&str] = &[
+    "bmp",
+    "csv",
+    "doc",
+    "docx",
+    "eml",
+    "epub",
+    "heic",
+    "html",
+    "jpg",
+    "json",
+    "md",
+    "msg",
+    "ndjson",
+    "odt",
+    "org",
+    "pdf",
+    "png",
+    "ppt",
+    "pptx",
+    "rst",
+    "rtf",
+    "tiff",
+    "tsv",
+    "txt",
+    "wav",
+    "xls",
+    "xlsx",
+    "xml",
+    "zip",
+    "java_repo",
+    "python_repo",
+    "javascript_repo",
+    "typescript_repo",
+    "unk",
+    "empty",
+    "tfchat",
+    "jira_project",
+    "jira_issue",
 ];
 
 const TEXT_ONLY_CATEGORIES: &[&str] = &[
@@ -83,18 +121,13 @@ fn strip_nulls(value: &Value) -> Value {
     }
 }
 
-/// metadata 的 hash 输入：过滤保留键（顶层）→ 递归删 null 键 → JCS → UTF-8。
+/// metadata 的 hash 输入：递归删 null 键 → JCS → UTF-8。没有保留键、没有过滤。
 fn meta(m: Option<&Value>) -> Result<Vec<u8>, String> {
-    let filtered: Map<String, Value> = match m {
-        None | Some(Value::Null) => Map::new(),
-        Some(Value::Object(map)) => map
-            .iter()
-            .filter(|(k, _)| !RESERVED_METADATA_KEYS.contains(&k.as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        Some(other) => return Err(format!("metadata must be object or null, got {other}")),
-    };
-    Ok(jcs(&strip_nulls(&Value::Object(filtered)))?.into_bytes())
+    match m {
+        None | Some(Value::Null) => Ok(b"{}".to_vec()),
+        Some(obj @ Value::Object(_)) => Ok(jcs(&strip_nulls(obj))?.into_bytes()),
+        Some(other) => Err(format!("metadata must be object or null, got {other}")),
+    }
 }
 
 /// 元素 `content_hash`（契约 1 §4）：首段 category，末段 metadata。
@@ -104,7 +137,7 @@ pub fn content_hash(element: &Value, contract: &str) -> Result<String, String> {
         .ok_or("element.category must be string")?;
     let mut parts: Vec<Vec<u8>> = vec![cat.as_bytes().to_vec()];
     if cat == "Image" {
-        // image_url 是访问方式，不进 hash（§4.2）
+        // 身份只认 blob（契约 1 §4.2）；图片 url 等源信息在 metadata 中照常进 hash
         let blob_ref = match element.get("image_blob") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(Value::String(format!("blob:{s}"))),
@@ -135,6 +168,10 @@ pub fn page_hash(
     let number = page["number"]
         .as_i64()
         .ok_or("page.number must be integer")?;
+    if number.unsigned_abs() > MAX_SAFE_INT as u64 {
+        // core.md §2.6（#6 F4）：页号与 metadata 整数共用安全整数范围
+        return Err(format!("page number out of IEEE-754 safe range: {number}"));
+    }
     let mut parts: Vec<Vec<u8>> = vec![
         number.to_string().into_bytes(),
         text(page.get("title"))?,
@@ -147,6 +184,12 @@ pub fn page_hash(
 /// 整篇文档的三层 hash，返回与向量 `expected` 同形的 JSON：
 /// `{"doc_hash": …, "pages": [{"number", "page_hash", "elements"}…]}`。
 pub fn document_hashes(document: &Value, contract: &str) -> Result<Value, String> {
+    let file_type = document["file_type"]
+        .as_str()
+        .ok_or("document.file_type must be string")?;
+    if !FILE_TYPES.contains(&file_type) {
+        return Err(format!("unknown file_type: {file_type}"));
+    }
     let empty = Vec::new();
     let pages = match document.get("pages") {
         None => &empty,
@@ -178,7 +221,10 @@ pub fn document_hashes(document: &Value, contract: &str) -> Result<Value, String
         pages_out.push(json!({"number": number, "page_hash": ph, "elements": ehashes}));
     }
     ph_by_number.sort_by_key(|(n, _)| *n);
-    let mut parts: Vec<Vec<u8>> = vec![meta(document.get("doc_metadata"))?];
+    let mut parts: Vec<Vec<u8>> = vec![
+        file_type.as_bytes().to_vec(),
+        meta(document.get("doc_metadata"))?,
+    ];
     parts.extend(ph_by_number.iter().map(|(_, ph)| ph.as_bytes().to_vec()));
     Ok(json!({"doc_hash": hval(&parts, contract)?, "pages": pages_out}))
 }

@@ -1,5 +1,6 @@
-//! 向量一致性：dpe-hash 必须逐字节通过 vectors/ 全部向量（含 dpe2 升级演练）。
+//! 向量一致性：dpe-hash 必须逐字节通过 vectors/ 全部向量（含 dpe2 升级演练与 relations）。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -25,6 +26,18 @@ fn load_vectors() -> Vec<Value> {
         .collect()
 }
 
+/// 按 vectors/README.md 的引用语法取值：`<文档键>.<路径>`。
+fn resolve<'a>(computed: &'a Value, reference: &str) -> &'a Value {
+    let mut node = computed;
+    for part in reference.split('.') {
+        node = match part.parse::<usize>() {
+            Ok(i) => &node[i],
+            Err(_) => &node[part],
+        };
+    }
+    node
+}
+
 #[test]
 fn document_vectors() {
     let mut count = 0;
@@ -33,12 +46,49 @@ fn document_vectors() {
             continue;
         }
         let name = vec["name"].as_str().unwrap();
-        for (key, document) in vec["documents"].as_object().unwrap() {
-            for (contract, expected) in vec["expected"][key].as_object().unwrap() {
+        let first_key = vec["documents"].as_object().unwrap().keys().next().unwrap();
+        let contracts: Vec<String> = vec["expected"][first_key]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        for contract in &contracts {
+            let mut computed = serde_json::Map::new();
+            for (key, document) in vec["documents"].as_object().unwrap() {
                 let got = dpe_hash::document_hashes(document, contract)
                     .unwrap_or_else(|e| panic!("{name}/{key}/{contract}: {e}"));
-                assert_eq!(&got, expected, "{name}/{key}/{contract}");
+                assert_eq!(
+                    &got, &vec["expected"][key][contract],
+                    "{name}/{key}/{contract}"
+                );
+                computed.insert(key.clone(), got);
                 count += 1;
+            }
+            // relations 是向量要证明的规范性质，消费方一并断言（vectors/README.md）
+            let computed = Value::Object(computed);
+            for rel in vec["relations"].as_array().unwrap_or(&Vec::new()) {
+                if let Some(refs) = rel["equal"].as_array() {
+                    let values: Vec<&Value> = refs
+                        .iter()
+                        .map(|r| resolve(&computed, r.as_str().unwrap()))
+                        .collect();
+                    assert!(
+                        values.windows(2).all(|w| w[0] == w[1]),
+                        "{name}/{contract}: equal 不成立 {refs:?}"
+                    );
+                } else if let Some(refs) = rel["distinct"].as_array() {
+                    let values: Vec<String> = refs
+                        .iter()
+                        .map(|r| resolve(&computed, r.as_str().unwrap()).to_string())
+                        .collect();
+                    let unique: HashSet<&String> = values.iter().collect();
+                    assert_eq!(
+                        unique.len(),
+                        values.len(),
+                        "{name}/{contract}: distinct 不成立 {refs:?}"
+                    );
+                }
             }
         }
     }
@@ -69,16 +119,17 @@ fn jcs_vectors() {
 }
 
 #[test]
-fn manifest_reserved_keys_match() {
-    // manifest 导出的保留键集合必须与 SDK 常量一致（#3 S1）
+fn manifest_constants_match() {
+    // manifest 导出的契约常量必须与 SDK 常量一致（#3 S1）；manifest 按规范声明顺序，比较集合
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(vectors_dir().join("manifest.json")).unwrap())
             .unwrap();
-    let from_manifest: Vec<&str> = manifest["reserved_metadata_keys"]
+    let from_manifest: HashSet<&str> = manifest["file_types"]
         .as_array()
         .unwrap()
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(from_manifest, dpe_hash::RESERVED_METADATA_KEYS);
+    let from_sdk: HashSet<&str> = dpe_hash::FILE_TYPES.iter().copied().collect();
+    assert_eq!(from_manifest, from_sdk);
 }

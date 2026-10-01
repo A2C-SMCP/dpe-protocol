@@ -6,5 +6,5 @@
 mod contract1;
 mod jcs;
 
-pub use contract1::{content_hash, document_hashes, page_hash, CONTRACT, RESERVED_METADATA_KEYS};
+pub use contract1::{content_hash, document_hashes, page_hash, CONTRACT, FILE_TYPES};
 pub use jcs::jcs;

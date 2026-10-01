@@ -6,8 +6,8 @@
 
 from dpe_hash.contract1 import (
     CONTRACT,
+    FILE_TYPES,
     HTML_CATEGORIES,
-    RESERVED_METADATA_KEYS,
     TEXT_ONLY_CATEGORIES,
     content_hash,
     document_hashes,
@@ -19,7 +19,7 @@ __all__ = [
     "CONTRACT",
     "TEXT_ONLY_CATEGORIES",
     "HTML_CATEGORIES",
-    "RESERVED_METADATA_KEYS",
+    "FILE_TYPES",
     "content_hash",
     "page_hash",
     "document_hashes",
