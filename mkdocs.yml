@@ -1,0 +1,107 @@
+# DPE Protocol Specification - MkDocs 配置
+# 启用严格模式，在构建时发现死链和错误
+strict: true
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+site_name: DPE Protocol
+site_description: DPE（Document / Page / Element）标准协议规范
+site_url: https://doc.turingfocus.cn/dpe/
+repo_url: https://github.com/A2C-SMCP/dpe-protocol
+repo_name: dpe-protocol
+edit_uri: ""
+
+# 仓库内文档按原目录组织（spec/ docs/ vectors/ conformance/），website/ 下用符号链接聚合，
+# 文档间的相对链接因此在仓库浏览与站点中都成立
+docs_dir: website
+
+theme:
+  name: material
+  language: zh
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/lightbulb-outline
+        name: "切换到深色模式"
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/lightbulb
+        name: "切换到浅色模式"
+  features:
+    - content.code.copy
+    - announce.dismiss
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      lang: zh
+  - mike:
+      alias_type: symlink
+      version_selector: true
+      canonical_version: latest
+
+extra:
+  version:
+    provider: mike
+    alias: true
+  announce: "DPE 协议规范文档 - 本文档版本：0.1.0-dev"
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/A2C-SMCP/dpe-protocol
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
+      title: 页面目录
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      pygments_lang_class: true
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.extra
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
+
+nav:
+  - 首页: index.md
+  - 协议规范:
+      - Core v1: spec/core.md
+      - Hash 契约 1: spec/hash-contract-1.md
+      - HTTP 绑定: spec/bindings/http.md
+      - Connector 契约: spec/connector-contract.md
+  - 一致性:
+      - 一致性向量: vectors/README.md
+      - 服务端跑分器: conformance/README.md
+  - 计划与迁移:
+      - v1 计划: docs/plan/v1-plan.md
+      - 内核迁移对照: docs/migration/kernel-to-dpe1.md

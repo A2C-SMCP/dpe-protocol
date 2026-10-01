@@ -3,3 +3,13 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Python / uv
+.venv/
+
+# MkDocs build output
+site/
+
+# Environment variables (敏感配置)
+.env
+.env.*
