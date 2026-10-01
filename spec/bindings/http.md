@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4（评审）修订
+> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 > 具体路径与媒体类型命名属于 plan §16 未决项，本文给出草案值，定稿前可能调整。
 
@@ -16,6 +16,7 @@
 | `get_skeleton` | `GET {remote}/documents?uri={file_uri}` |
 | `list` | `GET {remote}/documents?prefix={p}&cursor={c}&limit={n}` |
 | `negotiate` | `POST {remote}/negotiate` |
+| `upload`（页对象） | `PUT {remote}/staging/{sid}/pages/{page_hash}` |
 | `upload`（内容对象） | `PUT {remote}/staging/{sid}/objects/{content_hash}` |
 | `upload`（blob） | `PUT {remote}/staging/{sid}/blobs/{sha256}` |
 | `commit` | `PUT {remote}/documents?uri={file_uri}` |
@@ -28,7 +29,7 @@
 
 - 请求与响应主体：`application/dpe+json`（草案值；版本通过媒体类型参数 `; version=1` 或 capabilities 协商，定稿见 plan §16）。服务端 SHOULD 同时接受 `application/json`。
 - 错误：`application/problem+json`（§5）。
-- 内容对象与 blob 上传：`application/dpe.object+json` 与 blob 自身的媒体类型（未知时 `application/octet-stream`）。
+- 页对象与内容对象上传：`application/dpe.object+json`；blob 上传：blob 自身的媒体类型（未知时 `application/octet-stream`）。
 - 命名保持中性：媒体类型、头字段、错误码中 MUST NOT 出现具体产品名。
 
 ## 3. 并发控制：doc_hash 即 ETag
@@ -52,7 +53,7 @@
 
 - move 的 CAS 对象是请求体中的 `from_uri`，不是 `/move` 这个目标资源，因此前置条件放在请求体中，不使用条件头；条件不满足返回 `409`（`412` 专指条件头求值失败）。
 - 带 `force: true` 的请求同时带条件头时返回 `DPE_VALIDATION`。
-- **commit 的 unchanged 先于条件求值**（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 `200` + `unchanged`，即使条件头不满足。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。
+- **commit 的 unchanged 先于条件求值**（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 `200` + `unchanged`，即使条件头不满足。对 `If-Match`，这符合 RFC 9110 §13.1.1：状态变更请求所要求的结果已经生效时，源服务器可以返回 2xx 而不是 412。对 `If-None-Match: *`，RFC 9110 §13.1.2 要求条件不满足时返回 412，这里是**有意偏离**：内容已经是提交的值时，DPE 以内容幂等（core.md §5.2）为准返回 `unchanged`。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。
 - 同一个 `code` 在不同端点可能映射到不同状态码（如 `DPE_PRECONDITION_FAILED` 在 PUT 上是 412、在 move 上是 409）。**客户端 MUST 依据 problem 体中的 `code` 分派**，MUST NOT 依据状态码分派。
 - 若仍收到不带 problem 体的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定：
   - PUT：doc_hash 等于提交内容 → 成功；不存在 → `DPE_NOT_FOUND`；否则 → `DPE_PRECONDITION_FAILED`（`If-None-Match: *` 时为 `DPE_ALREADY_EXISTS`）。
@@ -74,6 +75,7 @@
   "hash_contracts": ["dpe1"],
   "limits": {
     "max_payload_bytes": 8388608,
+    "page_max_bytes": 268435456,
     "staging_ttl_seconds": 86400,
     "blob_max_bytes": 104857600,
     "blob_chunk_bytes": 8388608,
@@ -106,18 +108,19 @@
 {
   "file_uri": "feishu://doc/a",
   "doc_hash": "dpe1:…",
-  "file_type": "md",
-  "skeleton": {
+  "root": {
+    "file_type": "md",
     "doc_metadata": { "created_at": "2026-09-01T02:03:04Z", "author": "…" },
-    "pages": [
-      { "number": 1, "title": "第一页", "page_metadata": { "source_block": "blk-1" },
-        "elements": [ "dpe1:…", "dpe1:…" ] }
-    ]
-  }
+    "pages": [ "dpe1:…", "dpe1:…" ]
+  },
+  "pages": [
+    { "title": "第一页", "page_metadata": { "page_label": "i" }, "elements": [ "dpe1:…", "dpe1:…" ] },
+    { "page_metadata": {}, "elements": [ "dpe1:…" ] }
+  ]
 }
 ```
 
-`pages` 按 `number` 严格升序。返回值与最近一次写入的值内容等价（core.md §2.7），不含任何服务端衍生数据。
+`pages` 按根对象 `pages` 的顺序给出全部页对象（重复的页 hash 对应重复的页对象）。返回值与最近一次写入的值内容等价（core.md §2.7），不含任何服务端衍生数据。
 
 ### 4.4 `GET {remote}/documents?prefix=…&cursor=…&limit=…`（list）
 
@@ -133,43 +136,59 @@
 ```json
 // 请求
 { "file_uri": "feishu://doc/a",
-  "skeleton": { …同 4.3… },
-  "blobs": ["sha256:…"] }
+  "root": { …同 4.3 的 root… },
+  "pages": [ { …页对象… } ] }        // 可选：附带部分或全部页对象
 // 响应 200
-{ "missing_content_hashes": ["dpe1:…"],
-  "missing_blobs": ["sha256:…"],
+{ "missing_pages": ["dpe1:…"],
+  "missing_content_hashes": ["dpe1:…"],
   "staging_session": { "id": "st-…", "expires_at": "2026-10-01T00:00:00Z" } }
 ```
 
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
-- `blobs` 列出骨架所引用内容对象中出现的全部 blob（服务端此时尚未收到缺失的内容对象，无法自行得知）。
-- `missing_*` 按 `dedup_scope` 计算（core.md §3.3）。
+- `missing_pages`：根对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的内容对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
+- 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交根对象即可，根对象只含页 hash 列表）。
+- 缺失清单按 `dedup_scope` 计算（core.md §3.3）。
 
-### 4.6 `PUT {remote}/staging/{sid}/objects/{content_hash}`
+### 4.6 `PUT {remote}/staging/{sid}/pages/{page_hash}` 与 `…/objects/{content_hash}`
 
-请求体为一个内容对象 JSON，恰为 content_hash 的完整原像（core.md §2.3）：只含其 category 规定的字段与 `metadata`。服务端依次：
+请求体为一个页对象或内容对象 JSON，即该 hash 的原像对象（core.md §2.2、§2.3）。服务端依次：
 
-1. 校验字段：出现多余字段 → `DPE_VALIDATION`；未知 category → `DPE_CATEGORY_UNKNOWN`；
-2. 重算 content_hash，与路径不符 → `DPE_HASH_MISMATCH`。
+1. 校验字段：出现未定义字段 → `DPE_VALIDATION`；未知 category → `DPE_CATEGORY_UNKNOWN`；
+2. 重算 hash，与路径不符 → `DPE_HASH_MISMATCH`。
 
-响应 `201`（本会话内新写入）或 `200`（本会话内重复）。201 / 200 MUST 只按本会话已收到的内容判定，不反映服务端其他位置是否已存该内容（core.md §3.4、§9）。
+响应 `201`（本会话内新写入）或 `200`（本会话内重复），体为下一层的缺失清单：
+
+```json
+// 页对象的响应
+{ "missing_content_hashes": ["dpe1:…"] }
+// 内容对象的响应
+{ "missing_blobs": ["sha256:…"] }
+```
+
+201 / 200 MUST 只按本会话已收到的内容判定，不反映服务端其他位置是否已存该对象；缺失清单按 `dedup_scope` 计算（core.md §3.4、§9）。
+
+**页对象可分块**：单个页对象超过 `max_payload_bytes` 时，按 §4.7 的方式分块上传与断点续传，总大小不超过 `page_max_bytes`。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。内容对象不分块，超限返回 `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
 
 ### 4.7 `PUT {remote}/staging/{sid}/blobs/{sha256}`（分块与断点续传）
 
 - 整体上传：不带 `Content-Range` 的 `PUT`，体为完整字节。
 - 分块上传：`PUT` + `Content-Range: bytes {from}-{to}/{total}`，块大小不超过 `blob_chunk_bytes`，MUST 按序追加；全部字节到齐后服务端校验 sha256。
-- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该 blob）。
-- 校验失败返回 `DPE_HASH_MISMATCH` 并丢弃已收内容。
+- 中间块：响应 `202`，带 `DPE-Upload-Offset: {n}`（已收字节数），无体；最后一块到齐并校验通过后，按 §4.6 返回 `201` / `200`。
+- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该对象）。
+- 校验失败返回 `DPE_HASH_MISMATCH` 并丢弃已收内容。blob 校验的是原始字节的 sha256。
+- 以上分块规则同样适用于 §4.6 的页对象，只是校验方式不同（见 §4.6），总大小上限为 `page_max_bytes`。
 
 ### 4.8 `PUT {remote}/documents?uri=…`（commit）
 
 ```json
-{ "file_type": "md",
-  "skeleton": { …同 4.3（含 doc / page metadata）… },
+{ "root": { …同 4.3 的 root… },
+  "pages": [ { …内联页对象… } ],       // 可选
+  "objects": [ { …内联内容对象… } ],   // 可选
   "staging_session": "st-…",          // 可选
-  "objects": [ { …内联内容对象… } ],   // 可选（快路径）
   "force": false }
 ```
+
+- 快路径：内联根对象引用的全部页对象与内容对象，一次往返完成。大文档：只带根对象并引用会话。
 
 - 文档身份取自查询参数 `uri`，请求体不重复 `file_uri`。
 - CAS 前置条件走 `If-Match` / `If-None-Match: *`（§3.2）。
@@ -201,16 +220,16 @@
 ```
 
 - `type` 是规范中稳定的 URI。草案使用 `urn:dpe:error:<kebab-case>`；定稿后若规范发布到固定域名，MAY 改为该域名下的 URL（plan §16）。
-- 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。
+- 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。`DPE_MISSING_CONTENT` 另带 `missing: {pages: […], content_hashes: […], blobs: […]}` 与 `missing_truncated: true|false`（core.md §3.3）。
 - HTTP 状态映射（每个 code 在给定端点上只有一个状态码；客户端按 `code` 分派，§3.2）：
 
 | code | 状态码 |
 | --- | --- |
 | `DPE_VALIDATION`、`DPE_CONTRACT_UNSUPPORTED`、`DPE_CATEGORY_UNKNOWN`、`DPE_HASH_MISMATCH`、`DPE_MISSING_CONTENT` | 400 |
-| `DPE_FORBIDDEN` | 403 |
+| `DPE_FORBIDDEN` | 403（所有写操作都先判定授权，core.md §5 总则） |
 | `DPE_NOT_FOUND` | 404；带 `If-Match` 的 PUT / DELETE documents 为 412（§3.2） |
 | `DPE_PRECONDITION_FAILED`、`DPE_ALREADY_EXISTS` | 412（条件头：PUT / DELETE documents）；409（请求体前置条件：move） |
-| `DPE_SESSION_EXPIRED` | 410（会话过期、已消费、不存在或不属于调用者，一律如此） |
+| `DPE_SESSION_EXPIRED` | 410（会话过期、已消费、不存在、不属于调用者或不属于该 file_uri，一律如此） |
 | `DPE_PAYLOAD_TOO_LARGE` | 413 |
 | `DPE_PRECONDITION_REQUIRED` | 428 |
 | `DPE_RATE_LIMITED` | 429 |

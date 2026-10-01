@@ -7,7 +7,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -27,7 +26,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -47,7 +45,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -67,13 +64,12 @@
   "expected": {
     "url_a": {
       "dpe1": {
-        "doc_hash": "dpe1:0a259b25a69f78faf36a291611eb69d404c114ca9401b73fe03061e2108d71e6",
+        "doc_hash": "dpe1:e7fbb58a70b8ac37f188587396f943e912257a927c7bce10132ed2384416f1e2",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:ddbb3700516279425634dbd1d9e63c7ff82b9b0a48abdbe656c90d50637ad6db",
+            "page_hash": "dpe1:6038bff0bd6761ed6cbc68014d1fe7bf5049e117fe0d4c04cb6f4b4086324ffb",
             "elements": [
-              "dpe1:6b07bb7b434ad52f35d1db3dea5a78bec77864059033be17bee3089d21b1c42e"
+              "dpe1:7bf41e89bda1a3d49e48c428029bab7f1b4639322b1c72b896996b2279314708"
             ]
           }
         ]
@@ -81,13 +77,12 @@
     },
     "url_b": {
       "dpe1": {
-        "doc_hash": "dpe1:55450a7b174150cdc5c9bae10022a54e55dbf963e88905a0c20830b5ded69668",
+        "doc_hash": "dpe1:3d9af68cf4acb7b0a9346fc78a041537d595caf2061aa29b739c4f099ce17d48",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:13df143619f346cf9c0ee21278e585334ac050cc5ff91fcf8f7fbb3380795e65",
+            "page_hash": "dpe1:47f58d3ca474acb7a2a0a0d7bb200ed1a3fb922ebb7c9aa7f7ee1fcc2bb50cd7",
             "elements": [
-              "dpe1:1e56b3160913d7ad6d7951a8be14039034f3cd143205d075d5ef74d5d3c6501b"
+              "dpe1:4896537803ee41fb72883c6005c09e628ce1c3a50ef6bd5cbffe261e1c015593"
             ]
           }
         ]
@@ -95,13 +90,12 @@
     },
     "blob_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:e618cdd7e519583877c36dff9142698492259aaafba2300e57c63ad5fd29a87c",
+        "doc_hash": "dpe1:9da4be7cbe2721695918c47b1120afd09e5834b18ad00ff6b14cabed52120f35",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:4faa6e177a65e1ffd476aa459c609d11b3c7969c6f17dec215c984b0273e9fbe",
+            "page_hash": "dpe1:de5e776f8562802575f3424a016b6751521dc2ed94613f5dc725d2b97b191cfc",
             "elements": [
-              "dpe1:447563cf905ba9c6dc4c3636ea29f9504f42b016e796ef18c8de4391729d78ff"
+              "dpe1:d63d9050b8605da960199aeb0db89a393dfcff3595f4be28f851e6920e25bc70"
             ]
           }
         ]

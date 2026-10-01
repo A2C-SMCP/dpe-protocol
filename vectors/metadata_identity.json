@@ -7,7 +7,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": "p",
           "elements": [
             {
@@ -32,7 +31,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": "p",
           "elements": [
             {
@@ -57,7 +55,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": "p",
           "elements": [
             {
@@ -82,7 +79,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": "p",
           "elements": [
             {
@@ -107,13 +103,12 @@
   "expected": {
     "base": {
       "dpe1": {
-        "doc_hash": "dpe1:41339f4632ba48a020bbf8320bbf3ad9b5d82d7b1ddd450a7b1cff9f4ba7a0ee",
+        "doc_hash": "dpe1:1a9a5005686aa2d076a40ec14f58f25f3354d48084a12b7106cf40f05844c4c6",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:11f4fe031cc5a192d0bdfa41ad8c83db100cac61d2f444f56d12744d092fb1c1",
+            "page_hash": "dpe1:841a3361fa27efc49ed9444d1d039d80ee50819e734213d6c3ebe58fc6decb51",
             "elements": [
-              "dpe1:791ada9c72f35c992c60f4ddd03e25d6ed579df7de93561b81f178c2d3a0104d"
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
             ]
           }
         ]
@@ -121,13 +116,12 @@
     },
     "ele_meta_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:0c8e187838d5abd3a86a7187f0f3b077535f1f1b54d55bc9a077d4513c63a626",
+        "doc_hash": "dpe1:38c04158188d9ac7248f1d7c19f1ef58ff96bc4389226e4a5264435cfba96902",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:3fdfdf1df46b7128e94c6cb99f38f7316c48f9220e795f379a777b72b2a62acf",
+            "page_hash": "dpe1:03ae364c7649fc634e07a0ec4501c3897b721a2da1279952917ef68acc4ee02f",
             "elements": [
-              "dpe1:e8aa516f1e85f75b73868076061554772c68b858b12a219ccdad280fbbf004d1"
+              "dpe1:d1994b738de4003eb47e094f9fb7124a8f377825521308c7c119aef916a05c7b"
             ]
           }
         ]
@@ -135,13 +129,12 @@
     },
     "page_meta_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:6f90b002241b4599ee9ea20342099ee228490a49eb6ad4190446acad176b902a",
+        "doc_hash": "dpe1:16dc20673ee3bea599a76e31b5f0528110c416553ea6baee7b09bbe6c93bc362",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:765d805f9e2b9b40b75c2b16513a19faabc093f0d825e167ece3a7e2f63bc524",
+            "page_hash": "dpe1:e898b79e20762c64694142f7c6af13b502b6344b0cb36ddcf690fbb504641c5f",
             "elements": [
-              "dpe1:791ada9c72f35c992c60f4ddd03e25d6ed579df7de93561b81f178c2d3a0104d"
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
             ]
           }
         ]
@@ -149,13 +142,12 @@
     },
     "doc_meta_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:32cbc2e6c099d181f8c4ca9774ac7c7506747c2416bf76d4c01dd92bab5d562f",
+        "doc_hash": "dpe1:e8a7680f67976bc313b68845e45be39dd643329939c2f75dd02150069a322c23",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:11f4fe031cc5a192d0bdfa41ad8c83db100cac61d2f444f56d12744d092fb1c1",
+            "page_hash": "dpe1:841a3361fa27efc49ed9444d1d039d80ee50819e734213d6c3ebe58fc6decb51",
             "elements": [
-              "dpe1:791ada9c72f35c992c60f4ddd03e25d6ed579df7de93561b81f178c2d3a0104d"
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
             ]
           }
         ]

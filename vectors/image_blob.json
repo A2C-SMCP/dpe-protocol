@@ -1,13 +1,12 @@
 {
   "name": "image_blob",
   "kind": "document",
-  "description": "Image 的字节以 blob_ref = \"blob:\" + sha256 引用进 hash；url 等源信息作为元素 metadata 另进 hash（见 image_url_is_content）。",
+  "description": "Image 的字节以 image_blob（sha256 引用）进 hash；url 等源信息作为元素 metadata 另进 hash（见 image_url_is_content）。",
   "documents": {
     "doc": {
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -24,13 +23,12 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:59b606a0cd9d4bbea26b8bd4291cf1560e855e6596c2ccd07bfc905ebc6777d9",
+        "doc_hash": "dpe1:65a1dfbb441ecf69088470e7411e0bf872ac125281c0e1ac72043a3263171bc6",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:9db9312372a5207564df5b32a4a40c3a67b2084165e9d91f54c118a314554eba",
+            "page_hash": "dpe1:3c2ef2b26983c2d0087d372f7fed47def0850ce227c60e4d2b0f8622e81c1051",
             "elements": [
-              "dpe1:1dd8057f00f8d02a73e04898f7f450bebb5aa59217c117a9bc15acdac48099f8"
+              "dpe1:21cf3a47d3545da67c77a36ed421bb7cb764c560ca78d72c5ccdce9cb8a25950"
             ]
           }
         ]

@@ -7,7 +7,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": "p1",
           "elements": [
             {
@@ -25,7 +24,6 @@
           }
         },
         {
-          "number": 2,
           "title": null,
           "elements": [
             {
@@ -48,41 +46,37 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:035a15a0bb5372189e46ec964daecb219f5496e900f53c5ce962899e8f80038d",
+        "doc_hash": "dpe1:5cd8d5806c003291422d9fdd86d103362e0493fea0f4c9c263292ad7b524a6a0",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:e390803c1ecb8796928d8c162f494d738a1b6c8d2ea35b14bb7fc8b3f7085ca0",
+            "page_hash": "dpe1:3ccb12363f1ec428609656c8e98a59e73cb7a70c5e46ba1b912648d28d6ef07e",
             "elements": [
-              "dpe1:b4749dac3ec6c641a24d6ec915391a773ac7db5a7a814a31107a70942ad02b00",
-              "dpe1:2643cefbe2e9378872a6a586f3178b861a21fcc2ef23b36807339b2f1bbe353c"
+              "dpe1:37d9893b3e57261761092d257f5ad247e593ba1964c0e5da4e17f6ec7e2fd9f2",
+              "dpe1:fd9ca6d627bfd341cddfcf490538f84c39f744b8f17c1dd6cede47013a5fadf6"
             ]
           },
           {
-            "number": 2,
-            "page_hash": "dpe1:a63ab6babc6b1abc3e038fa54a9b59ac483c0288bd4ab8343c40896cb4ba3e60",
+            "page_hash": "dpe1:1779d04cbb0390e62222d74eaeaa82ac5b1a1f50d49f5602732d33936a24c2d5",
             "elements": [
-              "dpe1:1e870db3385b4cf8daf6b0677710088dee4b8687187017ce2a3b60a0f2a5e38a"
+              "dpe1:6affa14aca10439e6aafa7e3a3a9afcd4f41564f4909e7342f76c0e769984ef2"
             ]
           }
         ]
       },
       "dpe2": {
-        "doc_hash": "dpe2:8598fa8aa1f028cf31f46df3fd433d2a0c10e3a5a3296e6f524737deaf2a0f99",
+        "doc_hash": "dpe2:6e6027c45e583a454570a357a5ed20253e4ed33e5659ca9523eafa4a3dec4a36",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe2:62f377cde865ae300b4f1296e9687478692cdcf85174926d5dcbab6c39d9caa3",
+            "page_hash": "dpe2:fd0e86cd9ee277758330707c377c46a6f2f5fbc01c63cb97111c4eb2f96595c4",
             "elements": [
-              "dpe2:efa9192c3ec8faeabb38d6465e06fca3602d9e31b4e182958c7e53e2dd2d72d8",
-              "dpe2:739e2a246cdbe81c2c2a91f113d27b5fe6739fa38e436301aacdd855fff46c5c"
+              "dpe2:c21be9f00ed65d75aac63600c0ad4e8bd3f45a39928280b81c6c54de5a438b29",
+              "dpe2:0fba7f464605a04a14ebbbac90874a8b26181f3850c6efa0f048aeab85263b1b"
             ]
           },
           {
-            "number": 2,
-            "page_hash": "dpe2:837abed78c2ab7e605edf62583ea04806e6bd444ddb61932e5219b80e7970e81",
+            "page_hash": "dpe2:84025e70fcb000ffb9da352c212620d5d087c658ca6c86039b0b6e474621360c",
             "elements": [
-              "dpe2:9b26c8f13c030a913d2f7a76ade04f02c3864c5a1328bc89d11d59a90af0b564"
+              "dpe2:f047df1f112b401ae6a0bcd436ed58b99cff2b3f579b7f8ede19e8eb05cb81eb"
             ]
           }
         ]

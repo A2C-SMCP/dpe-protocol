@@ -1,13 +1,12 @@
 {
   "name": "metadata_all_content",
   "kind": "document",
-  "description": "源即内容（plan §0.1 P2）：metadata 的每个键都进 hash，没有保留键、没有过滤；坐标、页码等任一键变化，content_hash 都变化。",
+  "description": "源即内容（plan §0.1 P2）：metadata 的每个键都进 hash，没有保留键、没有过滤；坐标、页码标签等任一键变化，content_hash 都变化。",
   "documents": {
     "base": {
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -38,7 +37,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -65,11 +63,10 @@
         }
       ]
     },
-    "page_number_added": {
+    "label_added": {
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -90,7 +87,7 @@
                   ],
                   "system": "PixelSpace"
                 },
-                "page_number": 1
+                "page_label": "iv"
               }
             }
           ]
@@ -101,13 +98,12 @@
   "expected": {
     "base": {
       "dpe1": {
-        "doc_hash": "dpe1:f9c8f95ec34bdedb624fc269588fe0a61be21640c9bddbabe56464cf9040899e",
+        "doc_hash": "dpe1:3962206bbc57db86bab9757eb30e9b1ffa76c9453e3b6c4b836e8375d9919960",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:bd48ad2002492e46e9b8ff2c08061179c4d41cdd1aefabfc2d43d74fb1e9248f",
+            "page_hash": "dpe1:2c75a41007bd44a01b14576685bf743e96fb1d828ae808e242b223560c5d10dd",
             "elements": [
-              "dpe1:ef23e7db6727fe5121e2f23e30a773d66622c4c2d4ab29e094428fea0633223b"
+              "dpe1:011406c86e5b61b851fb839c6450c00d6a37509b632892c58fb16f67baead29e"
             ]
           }
         ]
@@ -115,27 +111,25 @@
     },
     "coords_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:ddcb862d726c4a8e02748873b811917e31d872e6a7c6b0a4bf3eee771421e23e",
+        "doc_hash": "dpe1:64f815834ce45b98c572eac86f6d961c62211dad4ad9fecfb87f02f69bf588fe",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:b3ff6bff6daaf175259e30b245c668c6c44daf457d79015c3c8fc3bda70d4956",
+            "page_hash": "dpe1:17262261ff88f0b8d06bc179c157923b33b5544108e6a4d8d15c0346d4fbe2d3",
             "elements": [
-              "dpe1:8f154549378cbbe4e1d15428456ec0350b75b24f208da4b036805639f3974ba9"
+              "dpe1:4b7cae7cb895e1af7e6e01ed9c09abc2708ae5e9a966aeec594180674560ac24"
             ]
           }
         ]
       }
     },
-    "page_number_added": {
+    "label_added": {
       "dpe1": {
-        "doc_hash": "dpe1:fb4e28a72c9f102327cf8763fcedc9e88217a7ecb08dee0a6debf5561f78f87d",
+        "doc_hash": "dpe1:49d38801f68d3356460b96611c2a899a80fb8c6ea8171b24c9bed0ee1c0b76bb",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:2b210c1e6f4a14a80c2e953dc9a7cb9c623cc5e71d0dda9eb9ae41186c0d7963",
+            "page_hash": "dpe1:a3f986f1d752fcce0399f3f878e3c1557ec0bd3cb6bdfe71f1344dce9b116e99",
             "elements": [
-              "dpe1:de9d48ea37deb624391e49d0b0fcc6d704da20e635b7e2c1fe4a6137b98284ae"
+              "dpe1:f4ddff154de1fb8a0f5911f971df75d5c6563583024db3a84a0843ee9db3a39c"
             ]
           }
         ]
@@ -147,14 +141,14 @@
       "distinct": [
         "base.pages.0.elements.0",
         "coords_changed.pages.0.elements.0",
-        "page_number_added.pages.0.elements.0"
+        "label_added.pages.0.elements.0"
       ]
     },
     {
       "distinct": [
         "base.doc_hash",
         "coords_changed.doc_hash",
-        "page_number_added.doc_hash"
+        "label_added.doc_hash"
       ]
     }
   ]

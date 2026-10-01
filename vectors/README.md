@@ -13,10 +13,10 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
 - **`document`**：
   - `documents` 是一到多篇文档的 hash 输入：
-    - 文档：`file_type`、可选 `doc_metadata`、`pages[{number,title,page_metadata,elements[]}]`；契约 1 没有 doc title。
-    - 元素：内容对象，即 category 规定的字段加 `metadata`。
-    - 与线上报文的唯一差别：线上骨架中元素是 `content_hash` 字符串，内容对象单独投递；hash 核心对 pages 数组顺序宽容，线上 MUST 按 number 升序。
-  - `expected` 给出每篇文档在各契约下的 `doc_hash`、逐页的 `page_hash`，以及逐元素的 `content_hash`（`pages[i].elements[j]`，i 为输入数组下标）。
+    - 文档：`file_type`、可选 `doc_metadata`、`pages[{title, page_metadata, elements[]}]`；页没有页号，数组顺序即阅读顺序；契约 1 没有 doc title。
+    - 元素：内容对象，即 category 允许的字段加 `metadata`。
+    - 这是三层对象的**展开视图**：线上的根对象 `pages` 与页对象 `elements` 是子对象 hash 列表，子对象单独投递（契约 1 §5）。
+  - `expected` 给出每篇文档在各契约下的 `doc_hash`、逐页的 `page_hash`，以及逐元素的 `content_hash`（`pages[i].elements[j]`，i 为输入数组下标）。`preimage_basic` 另给出 `preimages`：根对象、各页对象、各元素对象规范化后的 JCS 原像字符串，hash 即其 UTF-8 字节的 SHA-256。
   - `relations`（可选）是本向量要证明的**规范性质**，生成器在生成时断言其成立，消费方 SHOULD 一并断言：
     - `{"equal": [ref…]}`：所列值两两相等；
     - `{"distinct": [ref…]}`：所列值两两不同。
@@ -30,4 +30,4 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
 ## 假想契约 `dpe2`
 
-`upgrade_drill.json` 用于契约升级演练（同一份内容在两个契约下的期望值）。`dpe2` **不是真实契约，仅用于测试**，定义：与 `dpe1` 完全相同，但每次摘要在长度前缀拼接时额外前置一个内容为 ASCII `dpe2` 的段，值前缀为 `dpe2:`。实现的多契约管线应能同时算出两者；两契约 `expected` 中逐页、逐元素结果按位置一一对应，即契约升级"原位重算、不重新配对"的对应关系断言（契约 1 §6）。
+`upgrade_drill.json` 用于契约升级演练（同一份内容在两个契约下的期望值）。`dpe2` **不是真实契约，仅用于测试**，定义：与 `dpe1` 完全相同，但每个对象的摘要输入是 ASCII `dpe2` 后接 JCS 原像字节，即 `sha256(utf8("dpe2") ‖ utf8(JCS(norm(obj))))`，值前缀为 `dpe2:`。实现的多契约管线应能同时算出两者；两契约 `expected` 中逐页、逐元素结果按位置一一对应，即契约升级"原位重算、不重新配对"的对应关系断言（契约 1 §6）。
