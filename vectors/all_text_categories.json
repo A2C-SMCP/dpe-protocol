@@ -7,7 +7,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -86,29 +85,28 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:b3367cd31bbe5738f4d2b9b36b9eed5545d00c5d31ebf84f80a717b41574bed7",
+        "doc_hash": "dpe1:ab110056e8ff3d14e3b6e829304efba888609758e9ac72dd3c37b982a3e4b516",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:b1eb6f6e0c82b325e6aa63cbf1fcf02062a17b735fbc0682e68250d29341b1a3",
+            "page_hash": "dpe1:413df5dd91dd38446884c049750b1b94017909abc69e917b7f90ee5c0b19630a",
             "elements": [
-              "dpe1:0fbaa90cce1a6f0b4dd0e74213fdf7e0e0472065c5e4cdc5f4bbb53d5c99c9f6",
-              "dpe1:151e992efbc9e9182f57e98b57873653ed175122425f0dfaf93862cf3d0db46c",
-              "dpe1:3b48a83389c4765b38d1f77e27ce75b6691c5b6a74ac067f1238f5dc2933c0b0",
-              "dpe1:e554200b930bd65b1f7d27e9d0494731e0a55134f5f42baf816703c16abca16f",
-              "dpe1:e1ae8f3c5aae4deb2498a555dc0b71b6cc969ce1b0d43b0a86d81021f0a580fa",
-              "dpe1:4ba2172df278f091f454b64d9337c7151f17a19f7dd24c4028962f9297cc9720",
-              "dpe1:6c3836488175fe144829c7b1f7cb07b8e2c0783136fd4df32ffefc5e7cdcd6ca",
-              "dpe1:7cf4d45796417c466da53ce8d81f5530d52c63e1446e55446f74cee20e55821d",
-              "dpe1:8427e3a6bb974696e0e722b6e391f5dce829767f8a47e24aecf043c18875e09d",
-              "dpe1:5bd77472fd38c265a4166be009844d335e06d7cc1f85b60d4101f6367d83bd7d",
-              "dpe1:13f46366472c4f75da57a2fc70b5b7341c21a5d6da54a4652de0d9b9322975b1",
-              "dpe1:10bd64d34eaf627a73c9593bda31c6bdc4111bd792257ffce2f01eadac95b258",
-              "dpe1:b258ffed9285400083f6c24a66efd79babd4a87f480a7c5d90c50c9eb4c51ada",
-              "dpe1:4b52f2cf9fcc5360e88f5d418bf9cd0fe2300a3d3debcb451d31a2b337fc8248",
-              "dpe1:a6295844a8af2a7a785a57e06f1174995471f11b98f4daca9f2902315de31dc8",
-              "dpe1:f7d40df6d487e2b09c332b5639befc065dfcc2589d1d72670efee81a2770a1c3",
-              "dpe1:985a78fc33c719836981cf3f8112277efa094ef8c60e7bf8f3f5a35cb1386330"
+              "dpe1:31bd2198335e4fc54201030a33c2ba544e023be0e53fb7e2bbf8d32b0d6cc503",
+              "dpe1:f82bbb0f91180aae6254da1801a4650be532aee0a9f73c32d1ff0b0dfc12ed60",
+              "dpe1:80c1dbc4de8d228c9c79f051985e71108a07ba970a52c7c285865271b30fbfe3",
+              "dpe1:f84bcd39f15f035c7d88c43ef159de5584be5b06c38590d691f50b51fda3146b",
+              "dpe1:dff36f7f6efd099e16240e26510c9379f4fa2c814e77368a3c0390845a69f97e",
+              "dpe1:ca8c45577100159d0deba32157d9034518a9685170baeb8e512a1727614d50fe",
+              "dpe1:59600c2e4e9eff53017a39fc81c7099a3b1a18cd76ad97addfa96aa5bf822786",
+              "dpe1:f501d1e2339d590e1afc6f68156695a6d16f78ce90dc5a48b5f59596af1ab95d",
+              "dpe1:7f035583ec2810323993bb8e68e462a1867aade4725a3ba227c188cfeb40a521",
+              "dpe1:0a996ffa91b263bab5714f8aec53d9ba6677d7e91b1f316628e2cca3ebbe1f2e",
+              "dpe1:3d15850bfc67649334d4f75f2e543b7ec0629340b5c86dfa5bff164f7e7dcfe5",
+              "dpe1:fe8bb134eae3473175a430e8dafca64962ba2ed914f9eb8fbef85d801d0e649a",
+              "dpe1:f09291580117b2f3c423d88e2e4c1b1d29a8028bda47ac6979f18b6d8098adde",
+              "dpe1:cf109fa4a7f08cfd3b835d4ed3e98dba63be5f8cbbecaf9a332baa84f7bc77fb",
+              "dpe1:3570a3d66f68826715856f74702da3193a3c8874a6036ed79876a853b3861c0b",
+              "dpe1:975df92fc5326e05f95fc4b83a63d617a757e88431374b7d2c972c8bbf6460e7",
+              "dpe1:824b0d52d163c191e76ff6e4acc016a3a9c83a18db2705ffb1429ad247fa584b"
             ]
           }
         ]

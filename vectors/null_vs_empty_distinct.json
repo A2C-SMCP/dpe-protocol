@@ -1,0 +1,109 @@
+{
+  "name": "null_vs_empty_distinct",
+  "kind": "document",
+  "description": "null（等价于缺省）与空串 \"\" 是不同的值（hash 的是投递的内容）：元素 text、页 title 为 null 与为 \"\" 时 hash 都不同。",
+  "documents": {
+    "null": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText"
+            }
+          ]
+        }
+      ]
+    },
+    "empty_text": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": ""
+            }
+          ]
+        }
+      ]
+    },
+    "empty_title": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "",
+          "elements": [
+            {
+              "category": "NarrativeText"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "null": {
+      "dpe1": {
+        "doc_hash": "dpe1:cee13cc4fc58744cdc7016396e939ac6981fdf6ff129a2b17b0cf5d7f4883906",
+        "pages": [
+          {
+            "page_hash": "dpe1:05c4b4ff6debf9ccf5f59b9387e8655e57d2fceb2b47eb82400cab677eab17af",
+            "elements": [
+              "dpe1:7ffe0bd3d29420f699328125b703047877b6061ff436474577373ac8fb91cf57"
+            ]
+          }
+        ]
+      }
+    },
+    "empty_text": {
+      "dpe1": {
+        "doc_hash": "dpe1:59df04fef7411ac7be69359437d598e1971249ee2a29e98287b4e1e971f9977e",
+        "pages": [
+          {
+            "page_hash": "dpe1:19bc138ee85adcfe0ceee7a7aa392febac968735bc2d5e4656617b9dcdbebce9",
+            "elements": [
+              "dpe1:1324a9850839340c0caa3a2f2149e60f9a24d4c796a47138a92d45225095305d"
+            ]
+          }
+        ]
+      }
+    },
+    "empty_title": {
+      "dpe1": {
+        "doc_hash": "dpe1:a611e6ba8f50429aa0c14e515697c9bae62eecb5082720431d146a900f02d93e",
+        "pages": [
+          {
+            "page_hash": "dpe1:88468e082f7a4ac124d4c82a58aea62574dbcb9fd0b55586fdb35838547fee8f",
+            "elements": [
+              "dpe1:7ffe0bd3d29420f699328125b703047877b6061ff436474577373ac8fb91cf57"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "null.pages.0.elements.0",
+        "empty_text.pages.0.elements.0"
+      ]
+    },
+    {
+      "distinct": [
+        "null.pages.0.page_hash",
+        "empty_title.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "null.doc_hash",
+        "empty_text.doc_hash",
+        "empty_title.doc_hash"
+      ]
+    }
+  ]
+}

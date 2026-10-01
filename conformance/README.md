@@ -22,8 +22,17 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 - **报文校验**：以下情况都返回 `DPE_VALIDATION`：
   - 未定义的字段；
   - 内容对象带其 category 未规定的字段（如 NarrativeText 带 `text_as_html`）；
-  - pages 未按 number 严格升序；
   - 整数字面量超过 2^53−1。
+
+## 大文档与逐层协商（#6 F2）
+
+- 页数与元素数足以让展开骨架远超 `max_payload_bytes` 的文档，经「negotiate 只交根对象 → 上传缺失页 → 上传缺失内容 → 上传缺失 blob → commit 只带根对象」完成提交；negotiate 与 commit 的请求体都不超限。
+- 单个页对象超过 `max_payload_bytes` 时，按分块上传与断点续传完成：中间块返回 `202` + `DPE-Upload-Offset`，最后一块的响应给出该页缺失的内容对象；分块页对象超过 `page_max_bytes` 返回 `DPE_PAYLOAD_TOO_LARGE`。
+- 根对象超过 `max_payload_bytes` 时，negotiate 与 commit 都返回 `413` + `DPE_PAYLOAD_TOO_LARGE`（v1 的规模边界，core.md §3.2）。
+- commit 缺少对象时，`DPE_MISSING_CONTENT` 的 problem 体按层列出缺失的 hash；补传到同一会话后重新 commit 成功。
+- 在中间插入一页后再次提交：`missing_pages` 只含新页，其余页对象不重传；doc_hash 变化。
+- 对调两页：`missing_pages` 为空，commit 返回 `updated`，delta 为零。
+- 页对象上传响应的 `missing_content_hashes`、内容对象上传响应的 `missing_blobs` 与实际缺失一致。
 
 ## 幂等与重试（#4 B1 / B4 / B7）
 
@@ -33,7 +42,8 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 - **move 幂等**：move 成功后原样重试，返回成功（源不存在、目标 doc_hash 等于 `base_hash`）；首次成功后目标被他人改写，重试返回 `DPE_NOT_FOUND`。
 - **delete**：删除后原样重试，返回 `DPE_NOT_FOUND`。
 - **会话失效**：过期、已消费、伪造 id、他人会话一律返回 `410` + `DPE_SESSION_EXPIRED`，`retryable: false`；会话不存在不得返回 404。
-- **会话跨版本复用**：开会话并上传后，他人写入该文档；原 commit 得到 `DPE_PRECONDITION_FAILED`，以新 `If-Match` 引用同一会话重新 commit 成功，无需重传内容。
+- **会话跨版本复用**：开会话并上传后，他人写入该文档（未移除本次提交依赖的对象）；原 commit 得到 `DPE_PRECONDITION_FAILED`，以新 `If-Match` 引用同一会话重新 commit 成功，无需重传内容。
+- 引用属于同一调用者、但属于另一 file_uri 的会话，返回 `410` + `DPE_SESSION_EXPIRED`。
 - **同级写入**：服务端经自身入口修改内容后，`head` 的 doc_hash 变化；来源基于新 doc_hash 的 commit 成功覆盖。
 
 ## 契约升级期
@@ -49,7 +59,15 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 ## 安全（#4 B9）
 
 - 调用者 A 只对前缀 P 有写授权，前缀 Q 下的文档含内容 X：
-  - A 对 P 下文档 negotiate 时，X 必须出现在 `missing_*` 中；
+  - 缺失清单必须把 X 列为缺失，按 X 所在的层核对：X 是页对象时，出现在 negotiate 的 `missing_pages` 中；X 是内容对象时，出现在附带了引用它的页的 negotiate 响应、或该页对象上传响应的 `missing_content_hashes` 中；X 是 blob 时，出现在引用它的内容对象上传响应的 `missing_blobs` 中；
   - A 在 commit 中引用 X 而不上传，必须返回 `DPE_MISSING_CONTENT`；
   - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于 Q 而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
 - 对无写授权的 URI 提交与其当前内容相同的 commit，必须返回 `403`，而不是 `unchanged`。
+- 对无写授权的 URI 做 delete，无论文档是否存在都返回 `403`；对源或目标任一侧无写授权的 move，无论两侧状态如何都返回 `403`（#6 F3）。
+
+## 求值顺序（#6 F5）
+
+- 第 0 步：超过 `max_payload_bytes` 的请求，无论调用者是否有写授权，都返回 `413`；缺少或声明不受支持的 `DPE-Hash-Contract` 返回 `DPE_CONTRACT_UNSUPPORTED`（第 2 步，晚于授权）。
+- commit 的每个错误码都只出自 core.md §3.3 中唯一的一步：例如同时存在「内联对象字段非法」与「前置条件不满足」时返回 `DPE_VALIDATION`；同时存在「前置条件不满足」与「内容缺失」时返回 `DPE_PRECONDITION_FAILED`。
+- 内容未变的 commit 即使带有非法的内联对象也返回 `DPE_VALIDATION`（第 2 步先于第 4 步）；带有合法但多余的内联对象时返回 `unchanged`，且不处理这些对象。
+- commit 的内联对象永远不会得到 `DPE_HASH_MISMATCH`；暂存上传中路径 hash 不符才会。

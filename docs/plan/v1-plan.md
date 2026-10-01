@@ -37,7 +37,7 @@ DPE 是**标准协议，不是 TFRS 的私有接口**。就像 Git 之于 GitHub
 DPE 的目标是：参考 Git 的设计理念，**极简、极速地表征世界上任何文档的内容面及其变化**。协议只处理阅读，不考虑编辑，因此把任意格式转换为便于 LLM 阅读的 DPE 结构是可行的。
 
 - **P1 内容面**：DPE 只表达文档的内容面。编辑、治理（鉴权、ACL、租户）、抽取衍生物等状态都不属于 DPE。
-- **P2 源即内容**：源给出的一切都是内容，全部进 hash，没有例外、没有过滤。范围包括正文、category、file_type、页号、title，以及三层 metadata 的全部键（含坐标、url）。服务端衍生物（如全局指代字典、keywords）MUST NOT 出现在任何 DPE 字段中，由服务端单独存放。
+- **P2 源即内容**：源给出的一切都是内容，全部进 hash，没有例外、没有过滤。范围包括正文、category、file_type、title、页序与元素序，以及三层 metadata 的全部键（含坐标、url、源页码标签）。服务端衍生物（如全局指代字典、keywords）MUST NOT 出现在任何 DPE 字段中，由服务端单独存放。
 - **P3 变化即重学**：任何层级的 hash 变化都是该层内容的变化，依赖它的衍生物就应刷新。协议不为规避重学做设计，重学效率由服务端提升。元素 content_hash 不含骨架位置，只为传输去重，不是为了回避重学：类比 Git 中 blob 的 hash 不含路径，但 tree 的 hash 含。
 - **P4 hash 即版本**：doc_hash 完整代表 DPE 中的文档状态，也是唯一的版本令牌与 CAS 依据，没有另设的 revision。重复提交同样的内容，结果不变，因此天然幂等。
 - **P5 同级写入**：所有写入（含服务端自身的修改）都经 commit、经 CAS，同权同级，后写覆盖前写。
@@ -77,7 +77,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 3. 核心模型
 
-> **修订注记**：已按 §0.1 与 Issue #4 修订——骨架元素 entry 就是 content_hash；页按 `number` 升序阅读；**revision 取消，doc_hash 即版本令牌**（§0.1 P4）；Attributes 移出 DPE 核心（§0.1 P1）；会话只绑定 `(file_uri, 调用者身份)`；doc title 已被 #3 S6 删除。以 [spec/core.md](../../spec/core.md) §1–§3 为准。
+> **修订注记**：已按 §0.1 与 Issue #4、#6 修订——文档是三层同构 tree（根对象 / 页对象 / 内容对象，各自 `sha256(JCS)`，对应 Git 的 tree / blob）；页没有页号，页序即数组顺序（#6 推翻 #4 B2 的"按 number 升序"）；骨架按页增量传输；**revision 取消，doc_hash 即版本令牌**（§0.1 P4）；Attributes 移出 DPE 核心（§0.1 P1）；会话只绑定 `(file_uri, 调用者身份)`；doc title 已被 #3 S6 删除。以 [spec/core.md](../../spec/core.md) §1–§3 为准；下文保留作为历史。
 
 | 概念 | 定义 |
 | --- | --- |
@@ -157,7 +157,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 7. Hash 契约 1
 
-> **修订注记**：doc_hash 含 `file_type` 与 `doc_metadata`（#3），无 doc title（#3 S6）；metadata 全部进 hash（§0.1 P2）；图片字节以 blob 进 hash，url 作为元素 metadata 进 hash。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准。
+> **修订注记**：hash 结构已按 #6 改为三层同构 tree，原语统一为 `sha256(JCS(对象))`，取消长度前缀拼接与页号；doc_hash 含 `file_type` 与 `doc_metadata`（#3），无 doc title（#3 S6）；metadata 全部进 hash（§0.1 P2）；图片字节以 blob 进 hash，url 作为元素 metadata 进 hash。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准；下文保留作为历史。
 
 - **格式**：`dpe1:<64 hex>`，即完整 sha256，不截断，前缀标明契约版本。blob 使用 `sha256:<64hex>`，与 OCI 和 Git SHA-256 的惯例一致。
 - **拼接**：每段前面加 4 字节大端长度前缀，再计算 sha256。null 视为空串。沿用内核的做法，并写成与语言无关的规范文本。

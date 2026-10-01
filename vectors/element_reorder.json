@@ -1,13 +1,12 @@
 {
   "name": "element_reorder",
   "kind": "document",
-  "description": "顺序属于内容身份（#3 S7）：同页元素对调，content_hash 多重集不变（delta 为 0），但 page_hash / doc_hash 变化。",
+  "description": "顺序属于内容（#3 S7）：同页元素对调，content_hash 多重集不变（delta 为 0），但 page_hash / doc_hash 变化。",
   "documents": {
     "before": {
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -26,7 +25,6 @@
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -45,14 +43,13 @@
   "expected": {
     "before": {
       "dpe1": {
-        "doc_hash": "dpe1:77b2f037b162626d73adfe6240545961f975a696d2ebdab1010657ff7ff42e85",
+        "doc_hash": "dpe1:ec6aa64b53ecccb429a0cb6e5b5ecfabb0e84a47e84c7331f44bb5e35af71400",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:bd46116770ab5452402b104bccfb9975101884c668fb3c68060e5f6c0b672b1f",
+            "page_hash": "dpe1:d423c8cb4b1623fbefb2ed43d9248cb1f536e966f58c9f973615664dfd98a7fa",
             "elements": [
-              "dpe1:5cd21d74830921bcad407c9306b5f58d9ea31fc727da70443cbef0a3aff5a73d",
-              "dpe1:3e3541e0033e1630da52fac37329666784b3ac20f4f151138901b7c00d080d6a"
+              "dpe1:28d18f4723bbee54dfb52b9f0eb93a241a5276a4228528f512565eca1ea8856c",
+              "dpe1:9a1c7163980c126ae2fa1be28d022119335dec6775fa22de32b4b57326678f17"
             ]
           }
         ]
@@ -60,14 +57,13 @@
     },
     "after": {
       "dpe1": {
-        "doc_hash": "dpe1:616ba3fb3c9bdd54260f8fd37ea1fc75d37f46994559425228a5a9df7ed30331",
+        "doc_hash": "dpe1:51c674e262ff7684c6c1e7d331e63b18879d2f837ec0cda55022733d62eb08e6",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:8d3d6e788751ededa7a88ebcd2edc39dd4d5882835933b1ea0dce6c1a8c3a846",
+            "page_hash": "dpe1:29f3ce78f602eed6425dc2b27c92b0c489fdf4774c5d32c0c869ab200e5572b5",
             "elements": [
-              "dpe1:3e3541e0033e1630da52fac37329666784b3ac20f4f151138901b7c00d080d6a",
-              "dpe1:5cd21d74830921bcad407c9306b5f58d9ea31fc727da70443cbef0a3aff5a73d"
+              "dpe1:9a1c7163980c126ae2fa1be28d022119335dec6775fa22de32b4b57326678f17",
+              "dpe1:28d18f4723bbee54dfb52b9f0eb93a241a5276a4228528f512565eca1ea8856c"
             ]
           }
         ]

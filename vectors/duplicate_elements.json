@@ -1,13 +1,12 @@
 {
   "name": "duplicate_elements",
   "kind": "document",
-  "description": "同页两个相同元素：content_hash 相同（内容对象共享），page_hash 中按位置重复出现。",
+  "description": "同页两个相同元素：content_hash 相同（内容对象共享），page 的 elements 列表中按位置重复出现。",
   "documents": {
     "doc": {
       "file_type": "md",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": [
             {
@@ -30,15 +29,14 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:4e277a17ac8b0cfc267cd21272d11dbe8e55570a439c0021d57ad31f6606f355",
+        "doc_hash": "dpe1:f65a7ef435f4ae795fabd06fe547d9985d0f80c0a5dcee23418195eae297ebb1",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:f80c97dc7762d2bafddb0d0efbfa12cc0f407c700db98b3f52ccc06b39025cd6",
+            "page_hash": "dpe1:6a592e334f7a9740a03993d588395d391b42f0b81e8d0b94edb5bfae3ab523fd",
             "elements": [
-              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b",
-              "dpe1:5c1ce7307294df729c44b5c749c64d92dd7fb8e836667bd75583552ef03bf004",
-              "dpe1:cafbe6b484503f22ccfe67437ede34203cef188d2122f93b87932a14373b4f7b"
+              "dpe1:6cd9a41c74a75af901a87523b88cc9ab9dace53ae197291d65f48f5da6dd38c6",
+              "dpe1:75e15d312ca6182a525d8d0fe8a056a8096c59d03b6dc4f757d87ee2f2d9a163",
+              "dpe1:6cd9a41c74a75af901a87523b88cc9ab9dace53ae197291d65f48f5da6dd38c6"
             ]
           }
         ]

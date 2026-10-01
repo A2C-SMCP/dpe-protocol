@@ -11,7 +11,6 @@
       "file_type": "empty",
       "pages": [
         {
-          "number": 1,
           "title": null,
           "elements": []
         }
@@ -28,17 +27,16 @@
   "expected": {
     "no_pages": {
       "dpe1": {
-        "doc_hash": "dpe1:682d797d9ecb4536b1e9f8ff0a2144be1d9ac919147f988db98ebe517da4ddc5",
+        "doc_hash": "dpe1:5044788699fbc5362d08cae535a0c6ba274b6d6c9a8d7e8179366163b22f05ee",
         "pages": []
       }
     },
     "empty_page": {
       "dpe1": {
-        "doc_hash": "dpe1:9ba8330267b861014a4edca92234dfb835afb19c6e3dc465c5a80818868fa7e5",
+        "doc_hash": "dpe1:7adb96d8e45cc30252d570174a5879f75b1e45e654a83f93e98d7f03ea909fa8",
         "pages": [
           {
-            "number": 1,
-            "page_hash": "dpe1:671c0a607b842b8aea016547bb3a9de64757356bf5defd0c32568f75468b11e4",
+            "page_hash": "dpe1:d804d2827e3513251fddc13be8471285251f1d307ebbf7087bc8428b841b00e4",
             "elements": []
           }
         ]
@@ -46,7 +44,7 @@
     },
     "no_pages_with_meta": {
       "dpe1": {
-        "doc_hash": "dpe1:efea82dde373730864579cb793d09f25d78a1aaa6f790312e48da5d0978e0a6f",
+        "doc_hash": "dpe1:e1c5710078a8eca804ce783ebde3702b41f7e4c0c5338888bdeb0d1c69ed8afa",
         "pages": []
       }
     }
