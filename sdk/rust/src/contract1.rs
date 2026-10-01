@@ -1,12 +1,13 @@
 //! hash 契约 1（`dpe1:`）——spec/hash-contract-1.md 的 SDK 实现。
 //!
-//! 输入是文档的 hash 输入视图（`serde_json::Value`，形状同 vectors/README.md）。
-//! **源即内容**（plan §0.1 P2）：除 `file_uri` 外全部进 hash，没有保留键、
-//! 没有过滤；三层 metadata 只做「递归删 null 键 + JCS」。
-//! `dpe2` 仅用于契约升级演练：算法与 dpe1 相同，但每次摘要额外前置一个
-//! 内容为 `b"dpe2"` 的段。
+//! 契约 1 是三层同构的 tree hash（PR #9）：元素、页、根三层对象统一为
+//! `H(obj) = "dpe1:" + hex(sha256(utf8(JCS(norm(obj)))))`。
+//! `norm`：递归删除值为 null 的键（缺省 ≡ null）；三层 metadata 字段缺省视同 `{}`。
+//! 页没有页号字段，页序即 `pages` 数组顺序。
+//!
+//! `dpe2` 仅用于契约升级演练：摘要输入为 ASCII `dpe2` 后接 JCS 原像字节。
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::jcs::jcs;
@@ -14,8 +15,29 @@ use crate::jcs::jcs;
 /// 契约版本（hash 值前缀）
 pub const CONTRACT: &str = "dpe1";
 
-/// 安全整数范围（core.md §2.6；页号与 metadata 整数共用）
-pub const MAX_SAFE_INT: i64 = (1 << 53) - 1;
+/// category → 允许的内容字段（契约 1 §4.1；#7 要求的统一映射表）
+pub const CATEGORY_CONTENT_FIELDS: &[(&str, &[&str])] = &[
+    ("UncategorizedText", &["text"]),
+    ("CheckBox", &["text"]),
+    ("CompositeElement", &["text"]),
+    ("FigureCaption", &["text"]),
+    ("NarrativeText", &["text"]),
+    ("ListItem", &["text"]),
+    ("Title", &["text"]),
+    ("Address", &["text"]),
+    ("EmailAddress", &["text"]),
+    ("PageBreak", &["text"]),
+    ("TableChunk", &["text"]),
+    ("Header", &["text"]),
+    ("Footer", &["text"]),
+    ("CodeSnippet", &["text"]),
+    ("PageNumber", &["text"]),
+    ("FormKeysValues", &["text"]),
+    ("tfchat", &["text"]),
+    ("Table", &["text", "text_as_html"]),
+    ("Formula", &["text", "text_as_html"]),
+    ("Image", &["text", "image_blob", "image_mime_type"]),
+];
 
 /// file_type 封闭枚举（core.md §2.5，进 doc_hash；与 `vectors/manifest.json`
 /// 的 `file_types` 一致，消费方直接使用本常量）。
@@ -60,54 +82,19 @@ pub const FILE_TYPES: &[&str] = &[
     "jira_issue",
 ];
 
-const TEXT_ONLY_CATEGORIES: &[&str] = &[
-    "UncategorizedText",
-    "CheckBox",
-    "CompositeElement",
-    "FigureCaption",
-    "NarrativeText",
-    "ListItem",
-    "Title",
-    "Address",
-    "EmailAddress",
-    "PageBreak",
-    "TableChunk",
-    "Header",
-    "Footer",
-    "CodeSnippet",
-    "PageNumber",
-    "FormKeysValues",
-    "tfchat",
-];
-const HTML_CATEGORIES: &[&str] = &["Table", "Formula"];
-
-fn hval(parts: &[Vec<u8>], contract: &str) -> Result<String, String> {
+fn hval(obj: &Value, contract: &str) -> Result<String, String> {
+    let preimage = jcs(obj)?;
     let mut hasher = Sha256::new();
     match contract {
         "dpe1" => {}
-        "dpe2" => {
-            hasher.update(4u32.to_be_bytes());
-            hasher.update(b"dpe2");
-        }
+        "dpe2" => hasher.update(b"dpe2"),
         other => return Err(format!("unsupported hash contract: {other}")),
     }
-    for p in parts {
-        hasher.update((p.len() as u32).to_be_bytes());
-        hasher.update(p);
-    }
+    hasher.update(preimage.as_bytes());
     Ok(format!("{contract}:{:x}", hasher.finalize()))
 }
 
-/// 文本段：null 与缺省取空字节串（段级规则，契约 1 §3.2）。
-fn text(v: Option<&Value>) -> Result<Vec<u8>, String> {
-    match v {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::String(s)) => Ok(s.as_bytes().to_vec()),
-        Some(other) => Err(format!("text segment must be string or null, got {other}")),
-    }
-}
-
-/// 递归删除对象中值为 null 的键（缺省 ≡ null）；数组元素不受影响。
+/// 递归删除对象中值为 null 的键（缺省 ≡ null，契约 1 §3.2）；数组元素不受影响。
 fn strip_nulls(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
@@ -121,69 +108,92 @@ fn strip_nulls(value: &Value) -> Value {
     }
 }
 
-/// metadata 的 hash 输入：递归删 null 键 → JCS → UTF-8。没有保留键、没有过滤。
-fn meta(m: Option<&Value>) -> Result<Vec<u8>, String> {
+/// metadata 规范化：缺省视同 `{}`，递归删 null 键。在原像中总是出现（§3.2）。
+fn meta(m: Option<&Value>) -> Result<Value, String> {
     match m {
-        None | Some(Value::Null) => Ok(b"{}".to_vec()),
-        Some(obj @ Value::Object(_)) => Ok(jcs(&strip_nulls(obj))?.into_bytes()),
+        None | Some(Value::Null) => Ok(Value::Object(Map::new())),
+        Some(obj @ Value::Object(_)) => Ok(strip_nulls(obj)),
         Some(other) => Err(format!("metadata must be object or null, got {other}")),
     }
 }
 
-/// 元素 `content_hash`（契约 1 §4）：首段 category，末段 metadata。
+fn str_or_none<'a>(obj: &'a Value, field: &str) -> Result<Option<&'a str>, String> {
+    match obj.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(other) => Err(format!("{field} must be string or null, got {other}")),
+    }
+}
+
+fn check_closed(obj: &Value, allowed: &[&str], what: &str) -> Result<(), String> {
+    for key in obj.as_object().into_iter().flat_map(|m| m.keys()) {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!("field not allowed on {what}: {key}"));
+        }
+    }
+    Ok(())
+}
+
+/// 元素 `content_hash`（契约 1 §4）：`H({category, 内容字段…, metadata})`。
 pub fn content_hash(element: &Value, contract: &str) -> Result<String, String> {
     let cat = element["category"]
         .as_str()
         .ok_or("element.category must be string")?;
-    let mut parts: Vec<Vec<u8>> = vec![cat.as_bytes().to_vec()];
-    if cat == "Image" {
-        // 身份只认 blob（契约 1 §4.2）；图片 url 等源信息在 metadata 中照常进 hash
-        let blob_ref = match element.get("image_blob") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(s)) => Some(Value::String(format!("blob:{s}"))),
-            Some(other) => return Err(format!("image_blob must be string or null, got {other}")),
-        };
-        parts.push(text(element.get("text"))?);
-        parts.push(text(blob_ref.as_ref())?);
-        parts.push(text(element.get("image_mime_type"))?);
-    } else if HTML_CATEGORIES.contains(&cat) {
-        parts.push(text(element.get("text"))?);
-        parts.push(text(element.get("text_as_html"))?);
-    } else if TEXT_ONLY_CATEGORIES.contains(&cat) {
-        parts.push(text(element.get("text"))?);
-    } else {
+    let content_fields = CATEGORY_CONTENT_FIELDS
+        .iter()
+        .find(|(c, _)| *c == cat)
+        .map(|(_, fields)| *fields)
         // 封闭枚举，禁止退化为 text-only
-        return Err(format!("unknown category: {cat}"));
+        .ok_or(format!("unknown category: {cat}"))?;
+    let allowed: Vec<&str> = ["category", "metadata"]
+        .iter()
+        .chain(content_fields)
+        .copied()
+        .collect();
+    check_closed(element, &allowed, &format!("category {cat}"))?;
+    let mut obj = Map::new();
+    obj.insert("category".into(), Value::String(cat.into()));
+    for field in content_fields {
+        if let Some(value) = str_or_none(element, field)? {
+            obj.insert((*field).into(), Value::String(value.into()));
+        }
     }
-    parts.push(meta(element.get("metadata"))?);
-    hval(&parts, contract)
+    obj.insert("metadata".into(), meta(element.get("metadata"))?);
+    hval(&Value::Object(obj), contract)
 }
 
-/// `page_hash`（契约 1 §5）：页号 ASCII、title、metadata、元素 hash 序列。
+/// `page_hash`（契约 1 §5）：`H({title?, page_metadata, elements})`。页没有页号字段。
 pub fn page_hash(
     page: &Value,
     element_hashes: &[String],
     contract: &str,
 ) -> Result<String, String> {
-    let number = page["number"]
-        .as_i64()
-        .ok_or("page.number must be integer")?;
-    if number.unsigned_abs() > MAX_SAFE_INT as u64 {
-        // core.md §2.6（#6 F4）：页号与 metadata 整数共用安全整数范围
-        return Err(format!("page number out of IEEE-754 safe range: {number}"));
+    check_closed(page, &["title", "page_metadata", "elements"], "page")?;
+    let mut obj = Map::new();
+    if let Some(title) = str_or_none(page, "title")? {
+        obj.insert("title".into(), Value::String(title.into()));
     }
-    let mut parts: Vec<Vec<u8>> = vec![
-        number.to_string().into_bytes(),
-        text(page.get("title"))?,
-        meta(page.get("page_metadata"))?,
-    ];
-    parts.extend(element_hashes.iter().map(|h| h.as_bytes().to_vec()));
-    hval(&parts, contract)
+    obj.insert("page_metadata".into(), meta(page.get("page_metadata"))?);
+    obj.insert(
+        "elements".into(),
+        Value::Array(
+            element_hashes
+                .iter()
+                .map(|h| Value::String(h.clone()))
+                .collect(),
+        ),
+    );
+    hval(&Value::Object(obj), contract)
 }
 
 /// 整篇文档的三层 hash，返回与向量 `expected` 同形的 JSON：
-/// `{"doc_hash": …, "pages": [{"number", "page_hash", "elements"}…]}`。
+/// `{"doc_hash": …, "pages": [{"page_hash", "elements"}…]}`。页序即数组顺序。
 pub fn document_hashes(document: &Value, contract: &str) -> Result<Value, String> {
+    check_closed(
+        document,
+        &["file_type", "doc_metadata", "pages"],
+        "document",
+    )?;
     let file_type = document["file_type"]
         .as_str()
         .ok_or("document.file_type must be string")?;
@@ -197,16 +207,8 @@ pub fn document_hashes(document: &Value, contract: &str) -> Result<Value, String
         Some(other) => return Err(format!("pages must be array, got {other}")),
     };
     let mut pages_out = Vec::new();
-    let mut ph_by_number: Vec<(i64, String)> = Vec::new();
+    let mut page_hashes = Vec::new();
     for page in pages {
-        let number = page["number"]
-            .as_i64()
-            .ok_or("page.number must be integer")?;
-        if ph_by_number.iter().any(|(n, _)| *n == number) {
-            return Err(format!(
-                "page numbers must be unique, got duplicate {number}"
-            ));
-        }
         let elements = match page.get("elements") {
             None => &empty,
             Some(Value::Array(items)) => items,
@@ -217,14 +219,13 @@ pub fn document_hashes(document: &Value, contract: &str) -> Result<Value, String
             .map(|el| content_hash(el, contract))
             .collect::<Result<_, _>>()?;
         let ph = page_hash(page, &ehashes, contract)?;
-        ph_by_number.push((number, ph.clone()));
-        pages_out.push(json!({"number": number, "page_hash": ph, "elements": ehashes}));
+        page_hashes.push(Value::String(ph.clone()));
+        pages_out.push(json!({"page_hash": ph, "elements": ehashes}));
     }
-    ph_by_number.sort_by_key(|(n, _)| *n);
-    let mut parts: Vec<Vec<u8>> = vec![
-        file_type.as_bytes().to_vec(),
-        meta(document.get("doc_metadata"))?,
-    ];
-    parts.extend(ph_by_number.iter().map(|(_, ph)| ph.as_bytes().to_vec()));
-    Ok(json!({"doc_hash": hval(&parts, contract)?, "pages": pages_out}))
+    let root = json!({
+        "file_type": file_type,
+        "doc_metadata": meta(document.get("doc_metadata"))?,
+        "pages": page_hashes,
+    });
+    Ok(json!({"doc_hash": hval(&root, contract)?, "pages": pages_out}))
 }

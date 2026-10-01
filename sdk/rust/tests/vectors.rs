@@ -58,10 +58,35 @@ fn document_vectors() {
             for (key, document) in vec["documents"].as_object().unwrap() {
                 let got = dpe_hash::document_hashes(document, contract)
                     .unwrap_or_else(|e| panic!("{name}/{key}/{contract}: {e}"));
-                assert_eq!(
-                    &got, &vec["expected"][key][contract],
-                    "{name}/{key}/{contract}"
-                );
+                let mut expected = vec["expected"][key][contract].clone();
+                // preimages 是调试字段，不属于 SDK 输出；其 SHA-256 必须等于对应 hash（契约 1 §3.1）
+                if let Some(preimages) = expected.as_object_mut().unwrap().remove("preimages") {
+                    let digest = |s: &str| {
+                        let mut hasher = Sha256::new();
+                        if *contract == "dpe2" {
+                            hasher.update(b"dpe2");
+                        }
+                        hasher.update(s.as_bytes());
+                        format!("{contract}:{:x}", hasher.finalize())
+                    };
+                    assert_eq!(
+                        digest(preimages["root"].as_str().unwrap()),
+                        got["doc_hash"].as_str().unwrap()
+                    );
+                    for (i, page) in got["pages"].as_array().unwrap().iter().enumerate() {
+                        assert_eq!(
+                            digest(preimages["pages"][i].as_str().unwrap()),
+                            page["page_hash"].as_str().unwrap()
+                        );
+                        for (j, eh) in page["elements"].as_array().unwrap().iter().enumerate() {
+                            assert_eq!(
+                                digest(preimages["elements"][i][j].as_str().unwrap()),
+                                eh.as_str().unwrap()
+                            );
+                        }
+                    }
+                }
+                assert_eq!(&got, &expected, "{name}/{key}/{contract}");
                 computed.insert(key.clone(), got);
                 count += 1;
             }

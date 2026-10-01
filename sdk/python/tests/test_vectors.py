@@ -44,7 +44,15 @@ def test_document_vectors() -> None:
             for key, document in vec["documents"].items():
                 got = document_hashes(document, contract)
                 expected = vec["expected"][key][contract]
+                preimages = expected.pop("preimages", None)  # 调试字段，不属于 SDK 输出
                 assert got == expected, f"{vec['name']}/{key}/{contract}:\n got {got}\n exp {expected}"
+                if preimages:  # 原像的 SHA-256 必须等于对应 hash（契约 1 §3.1）
+                    prefix = b"dpe2" if contract == "dpe2" else b""
+                    digest = lambda s: f"{contract}:{hashlib.sha256(prefix + s.encode('utf-8')).hexdigest()}"  # noqa: E731
+                    assert digest(preimages["root"]) == got["doc_hash"]
+                    for page, page_pre, ele_pres in zip(got["pages"], preimages["pages"], preimages["elements"]):
+                        assert digest(page_pre) == page["page_hash"]
+                        assert [digest(p) for p in ele_pres] == page["elements"]
                 computed[key] = got
                 count += 1
             # relations 是向量要证明的规范性质，消费方一并断言（vectors/README.md）

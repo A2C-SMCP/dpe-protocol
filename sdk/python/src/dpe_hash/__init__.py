@@ -5,6 +5,7 @@
 """
 
 from dpe_hash.contract1 import (
+    CATEGORY_CONTENT_FIELDS,
     CONTRACT,
     FILE_TYPES,
     HTML_CATEGORIES,
@@ -19,6 +20,7 @@ __all__ = [
     "CONTRACT",
     "TEXT_ONLY_CATEGORIES",
     "HTML_CATEGORIES",
+    "CATEGORY_CONTENT_FIELDS",
     "FILE_TYPES",
     "content_hash",
     "page_hash",
