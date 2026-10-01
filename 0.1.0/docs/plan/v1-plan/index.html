@@ -1372,7 +1372,7 @@
 - <strong>Connector</strong>：接哪些数据源、何时推送、删除哪个文档。
 - <strong>服务端实现</strong>：鉴权、租户、ACL、学习、召回。</p>
 <div class="language-text highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>┌─ Connector（中立契约，§11）─────────────────────────────┐
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>│ 飞书 / COS / Jira / 用户自研 …   产出变更与 Document       │
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>│ Git（官方）/ 用户自研 …          产出变更与 Document       │
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>└──────────────────────┬─────────────────────────────────┘
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>                       │ Document / 删除意图 / 移动意图
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>┌──────────────────────▼─ 运行器 + DPE SDK（§10）─────────┐
@@ -1696,16 +1696,19 @@
 <li>提供 <code>testing</code> 模块：内存版的<strong>参考服务端</strong>，命名中性，不叫 Robot。</li>
 </ul>
 <h2 id="11-connector-契约独立中立规范不属于-core">11. Connector 契约（独立中立规范，不属于 Core）<a class="headerlink" href="#11-connector-契约独立中立规范不属于-core" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p><strong>修订注记</strong>：按 Issue #2 关闭结论调整——平台不引入 connector 运行环境（不托管在 TFRS/TFRSUC），connector 由用户自行开发、自行部署；将来确有需要，托管运行作为独立产品另立。v1 只交付<strong>官方 Git connector</strong>（本仓 <code>connectors/git/</code>），TFRS 现有的飞书、COS 同步保持不变、不重构为 connector。下文原有的「宿主」表述保留为契约角色，不代表本平台提供宿主。</p>
+</blockquote>
 <ul>
-<li>类比 git remote-helper：核心投递协议完全不知道 connector 的存在。同一个 connector 既可以由用户自己部署（SDK 自带独立运行器 <code>dpe-run</code>），也可以托管在 TFRS/TFRSUC 的宿主里运行，<strong>宿主只是这份契约的另一个运行器</strong>。</li>
+<li>类比 git remote-helper：核心投递协议完全不知道 connector 的存在。同一个 connector 既可以由用户自己部署（SDK 自带独立运行器 <code>dpe-run</code>），也可以托管在某个宿主里运行，<strong>宿主只是这份契约的另一个运行器</strong>。</li>
 <li><strong>运行器负责推送，插件只负责产出</strong>：</li>
 <li>connector 产出变更、Document、删除意图和移动意图。</li>
 <li>协商、暂存、CAS、状态缓存和 DPE 凭证全部由运行器掌握。</li>
 <li>插件<strong>拿不到 robot 凭证</strong>。</li>
 <li><strong>内容源实例绑定 URI 前缀</strong>：创建实例时由宿主分配前缀，运行器拒绝越界的 Document，服务端的前缀授权再兜底一次。</li>
 <li>connector 用 JSON Schema 声明自己的配置，宿主据此渲染配置表单；数据源凭证由宿主的密钥存储注入。</li>
-<li>官方 connector 以插件形式提供（先从飞书、COS 开始），用户选择启用；用户也可以自研、自己部署，投递到对应 robot 的 remote 即可。</li>
-<li><strong>运行边界（进程边界 + 语言无关的线协议？）待定</strong>，见 Issue #2。v1 <strong>不开放</strong>租户自定义 connector 在我们的环境中运行，但要确保将来开放时只需要扩展，不需要重构。</li>
+<li>官方 connector 以插件形式提供，v1 只交付 Git connector（以 Git 仓库为真实数据源，位于本仓 <code>connectors/git/</code>，依赖 SDK 与 <code>dpe-run</code>）；用户也可以自研、自己部署，投递到对应的 remote 即可。</li>
+<li><strong>运行边界</strong>：Issue #2 已关闭，平台不运行租户 connector。插件与运行器之间的进程边界与线协议随 <code>dpe-run</code>（M2）定稿；设计须保证将来出现托管产品时只需要扩展，不需要重构。</li>
 </ul>
 <h2 id="12-第一个实现tfrs-与内核的改造清单">12. 第一个实现：TFRS 与内核的改造清单<a class="headerlink" href="#12-第一个实现tfrs-与内核的改造清单" title="Permanent link">&para;</a></h2>
 <blockquote>
@@ -1767,8 +1770,8 @@
 </tr>
 <tr>
 <td>S2</td>
-<td>存量同步重构</td>
-<td>飞书和 COS 的 Celery 同步（<code>add_dpe_to_robot</code>）改为基于 SDK 和运行器，所有写入都经过同一套协议语义</td>
+<td>~~存量同步重构~~</td>
+<td><strong>已撤销</strong>（Issue #2）：飞书和 COS 的现有同步保持不变，不重构为 connector</td>
 </tr>
 <tr>
 <td>S3</td>
@@ -1819,8 +1822,8 @@
 </tr>
 <tr>
 <td><strong>M4 E2E</strong></td>
-<td>S2；飞书 connector 走运行器</td>
-<td>在 test 集群上，以飞书为真实数据源，端到端跑通增量推送、删除和移动，结果与全量推送收敛后一致</td>
+<td>官方 Git connector 走运行器 <code>dpe-run</code></td>
+<td>在 test 集群上，以 Git 仓库为真实数据源，对 TFRS 端点端到端跑通增量推送、删除和移动，结果与全量推送收敛后一致</td>
 </tr>
 </tbody>
 </table>
@@ -1909,7 +1912,7 @@
 </table>
 <h2 id="16-未决项">16. 未决项<a class="headerlink" href="#16-未决项" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Issue #2：connector 的运行边界与租户插件沙箱（由 TFRSOperator、TFRS、TFRSUC 回复）。</li>
+<li>~~Issue #2：connector 的运行边界与租户插件沙箱~~（已关闭：平台不引入 connector 运行环境，见 §11 修订注记）。</li>
 <li>HTTP 绑定的具体路径和媒体类型命名（在 M1 撰写 <code>http.md</code> 时定稿）。</li>
 <li>规范在 <code>doc.turingfocus.cn</code> 上的发布 path 和版本化发布流程。</li>
 <li>暂存会话 TTL 的规范下限。（原「<code>Idempotency-Key</code> 的去重窗口」已撤销：幂等由内容保证，协议不定义幂等键，见 §0.1 P4。）</li>

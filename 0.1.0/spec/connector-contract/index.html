@@ -998,7 +998,7 @@
 <blockquote>
 <p>状态：<strong>大纲</strong>（M1 只交付大纲，全文另行撰写）｜ 依据：<a href="../../docs/plan/v1-plan/">docs/plan/v1-plan.md</a> §11
 这是独立的中立规范，<strong>不属于 Core</strong>：核心投递协议完全不知道 connector 的存在（类比 git 与 remote-helper）。
-运行边界与租户插件沙箱在 Issue #2 讨论，本文相关章节在其结论前保持待定。</p>
+Issue #2 已关闭：平台不引入 connector 运行环境，connector 由用户自行开发、自行部署；托管运行若将来需要，另立独立产品。v1 官方 connector 只有 Git connector（本仓 <code>connectors/git/</code>）。</p>
 </blockquote>
 <h2 id="0-定位">0. 定位<a class="headerlink" href="#0-定位" title="Permanent link">&para;</a></h2>
 <ul>
@@ -1023,13 +1023,13 @@
 <li>数据源凭证由宿主密钥存储注入，MUST NOT 进入插件配置明文；</li>
 <li>DPE remote 凭证只属于运行器；数据源凭证只属于插件——需要数据源凭证才能取得的字节（如需鉴权的图片 url）一律由插件产出（见 2）。</li>
 <li><strong>生命周期与调度</strong>：实例创建 / 校验 / 同步一轮（scan→produce）/ 暂停 / 删除；调度策略属于运行器，不属于契约。</li>
-<li><strong>运行边界（待定，Issue #2）</strong>：进程边界、语言无关线协议（stdio JSON-RPC？，含 <code>read_blob</code> 回调的承载方式）、资源与网络隔离、插件分发与签名。</li>
+<li><strong>运行边界（随 <code>dpe-run</code> 在 M2 定稿）</strong>：进程边界、语言无关线协议（stdio JSON-RPC？，含 <code>read_blob</code> 回调的承载方式）、资源与网络隔离、插件分发与签名。</li>
 <li><strong>错误与可观测</strong>：插件错误分类（源端不可达 / 内容不合法 / 越界）、运行器重试责任边界。</li>
 <li><strong>一致性要求</strong>：同一源的增量产出与全量枚举收敛后 MUST 一致（对应 M4 验收）。</li>
 </ol>
 <h2 id="2-非目标">2. 非目标<a class="headerlink" href="#2-非目标" title="Permanent link">&para;</a></h2>
 <ul>
-<li>不定义任何具体数据源（飞书、COS 等官方 connector 以插件形式另行交付）；</li>
+<li>不定义任何具体数据源（官方 Git connector 以插件形式另行交付）；</li>
 <li>不定义宿主的多租户、计费、权限模型；</li>
 <li>不复制 Core 的投递语义——运行器直接遵循 core.md 与 HTTP 绑定。</li>
 </ul>
