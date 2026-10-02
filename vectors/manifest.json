@@ -42,6 +42,72 @@
     "jira_project",
     "jira_issue"
   ],
+  "category_content_fields": {
+    "Address": [
+      "text"
+    ],
+    "CheckBox": [
+      "text"
+    ],
+    "CodeSnippet": [
+      "text"
+    ],
+    "CompositeElement": [
+      "text"
+    ],
+    "EmailAddress": [
+      "text"
+    ],
+    "FigureCaption": [
+      "text"
+    ],
+    "Footer": [
+      "text"
+    ],
+    "FormKeysValues": [
+      "text"
+    ],
+    "Formula": [
+      "text",
+      "text_as_html"
+    ],
+    "Header": [
+      "text"
+    ],
+    "Image": [
+      "text",
+      "image_blob",
+      "image_mime_type"
+    ],
+    "ListItem": [
+      "text"
+    ],
+    "NarrativeText": [
+      "text"
+    ],
+    "PageBreak": [
+      "text"
+    ],
+    "PageNumber": [
+      "text"
+    ],
+    "Table": [
+      "text",
+      "text_as_html"
+    ],
+    "TableChunk": [
+      "text"
+    ],
+    "Title": [
+      "text"
+    ],
+    "UncategorizedText": [
+      "text"
+    ],
+    "tfchat": [
+      "text"
+    ]
+  },
   "provenance": {
     "generator": "scripts/gen_vectors.py",
     "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md"
@@ -57,19 +123,19 @@
     },
     {
       "name": "doc_title.json",
-      "sha256": "d25aa3c0e068501166bc6b02e47aeab61a40d61d27c17e4c3983d50c915dc8e5"
+      "sha256": "da4a675ffe52a67548ce7680dac765ef9d17396655e745bbb2d3fd0d26b98b33"
     },
     {
       "name": "duplicate_different_coordinates.json",
-      "sha256": "be5b1ef39ffcb10abf90f42822ec4ca267d59d3c72550f8e24ca095f749a690b"
+      "sha256": "d923604d3c0d117ed68b8e5fb0f64b354516ec9b6666e05b50d5c1a71ed4203c"
     },
     {
       "name": "duplicate_elements.json",
-      "sha256": "3452d44549d6b84ea9062a13c17c97e58f74f4719191dccd5e71bd8727257cf6"
+      "sha256": "22f5ecb94250e8bc5ea793f973cddc74c3c20085c53a977e9fc8e43b1fadc75a"
     },
     {
       "name": "duplicate_pages.json",
-      "sha256": "cabaed3dfed85b03c8fbc59991ed232430092ec75c0e840d4327e3e82c78530c"
+      "sha256": "23e5ee393e2c0d7e27876ba2eec3264a1cd2ac0a466f2836456de95297b3ec23"
     },
     {
       "name": "element_reorder.json",
@@ -85,7 +151,7 @@
     },
     {
       "name": "file_type_identity.json",
-      "sha256": "6f3d2c1958b6a435dff9efb6727326bda38f1513d0dc310dc0f5e00c2384d1b6"
+      "sha256": "37d597688ca1bf9dec5ebdb237c69dc9806a357e1a852ba08ff6294265ae4443"
     },
     {
       "name": "image_blob.json",
@@ -141,7 +207,7 @@
     },
     {
       "name": "preimage_basic.json",
-      "sha256": "487cf12f57ebbb1bcd28800c44635161ba339700afdefffc72ea3c5251f932f9"
+      "sha256": "5dc13cf3606b65e73e2c32cbbd118d4c87c5873974d18bcb6e31d1a0c92ce8f0"
     },
     {
       "name": "table_formula_html.json",

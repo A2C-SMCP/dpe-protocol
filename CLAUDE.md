@@ -26,7 +26,7 @@ uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失�
 
 ## 版本管理
 
-- **当前文档版本**：0.1.4
+- **当前文档版本**：0.1.5-dev
 - 文档版本单一来源是 `pyproject.toml`，只用 `bump-my-version` 修改（发布 `bump pre_l`，开周期 `bump patch|minor|major`）；它与协议版本（DPE v1）、hash 契约版本（`dpe1:`）独立，升契约版本不等于升文档版本。
 - 多版本站点由 mike 管理在 `gh-pages` 分支，`inv docs.deploy` 发布到 doc.turingfocus.cn/dpe（默认 mode=upload）；`-dev` 版本只占 `dev` 别名，不得顶替 `latest`。
 - **SDK 版本是独立的第四条轴**：Python SDK 两包同版本，由 `sdk/python/` 自己的 bump-my-version 管理（同样 dev/final 两态），发布标签 `py-vX.Y.Z` 触发 `release-python.yml`（PyPI Trusted Publishing），`py-v*-dev` 不发布；文档发版不牵动 SDK 版本。
@@ -39,7 +39,7 @@ uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失�
 - **依赖方向：内核 → Python SDK（#3 S1），SDK 运行时不依赖内核**。内核不保留自有 hash 实现，直接 import Python SDK 的 hash 核心；因此 M2 的 Python SDK 必须：hash 核心可单独安装（或主包零重依赖）、纯 Python（3.11 / 3.12）、导出契约常量（category 封闭枚举及各 category 允许的内容字段、file_type 枚举），PyPI 发布是内核 K2 的前置门禁。
 - **规范与 SDK 中不出现任何服务端私有概念**：Robot、`vnd.tfrs`、`X-TFRS-Robot-Id`、tenant、TFRS 错误信封、JWT/scope 细节都不能进。SDK 只接受 remote URL + 可插拔 `CredentialProvider`。治理属性（ACL 等）不属于 DPE。
 - **北极星原则（plan §0.1）优先于一切**：DPE 只表达内容面（P1）；源即内容，除 `file_uri` 外全部字段进 hash，不设保留键、不做过滤（P2）；hash 变化即内容变化，协议不为规避重学做设计（P3）；doc_hash 即版本令牌，不另设 revision（P4）；所有写入同级、经 commit 与 CAS（P5）。
-- **字段只有一类：源内容**，组织为三层同构 tree（core §2、契约 1 §4–§5，对应 Git 的 tree / blob）：根对象 `{file_type, title?, doc_metadata, pages: [page_hash…]}`、页对象 `{title?, page_metadata, elements: [content_hash…]}`、元素对象 `{category, 按 category 允许的内容字段, metadata}`，每层 hash = `sha256(JCS(norm(对象)))`。三层都是封闭 schema，新增字段必须先进规范，未定义字段一律拒绝；位置只由数组顺序表达（页没有页号），对象 hash 不含自身位置。`file_uri` 是身份、不进 hash；治理属性（ACL）与服务端衍生物（keywords、抽取产物、学习状态）不是 DPE 字段，由服务端在 DPE 之外独立存储；源字段不得带会自行变化的默认值。
+- **字段只有一类：源内容**，组织为三层同构 tree（core §2、契约 1 §4–§5，对应 Git 的 tree / blob）：文档对象 `{file_type, title?, doc_metadata, pages: [page_hash…]}`、页对象 `{title?, page_metadata, elements: [content_hash…]}`、元素对象 `{category, 按 category 允许的内容字段, metadata}`，每层 hash = `sha256(JCS(norm(对象)))`。三层都是封闭 schema，新增字段必须先进规范，未定义字段一律拒绝；位置只由数组顺序表达（页没有页号），对象 hash 不含自身位置。`file_uri` 是身份、不进 hash；治理属性（ACL）与服务端衍生物（keywords、抽取产物、学习状态）不是 DPE 字段，由服务端在 DPE 之外独立存储；源字段不得带会自行变化的默认值。
 - **hash 值始终带契约前缀**（`dpe1:`），不暴露接受裸 hash 的公共 API；结构化值一律 RFC 8785 JCS，时间戳一律 RFC 3339 UTC。
 - **写操作默认拒绝无 CAS 前置条件**（`DPE_PRECONDITION_REQUIRED`）；本地状态只作缓存，缓存丢失也必须正确，**绝不自动 force**。
 - **两个 SDK 行为对等**（M2 起）：改一个 SDK 的协议行为必须同步另一个并补齐双方测试；两份实现出现分歧说明规范需要补正——修规范，而不是互相对齐。

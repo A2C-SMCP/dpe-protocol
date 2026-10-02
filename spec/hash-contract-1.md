@@ -1,11 +1,11 @@
 # DPE Hash 契约 1（`dpe1`）
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6 修订
+> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何合规实现都必须逐字节算出相同的 `content_hash` / `page_hash` / `doc_hash`。doc_hash 同时是文档的版本令牌（core.md §1）。契约版本与投递协议版本是两个独立的轴；本文是契约 **1**，值前缀为 `dpe1:`。
 
-契约 1 是一棵三层同构的 tree，与 Git 的对象模型一一对应：元素对象 ↔ blob，页对象与根对象 ↔ tree。每一层都是「自身内容 + 子对象 hash 的有序列表」，hash 的原像就是该对象本身。
+契约 1 是一棵三层同构的 tree，与 Git 的对象模型一一对应：元素对象 ↔ blob，页对象与文档对象 ↔ tree。每一层都是「自身内容 + 子对象 hash 的有序列表」，hash 的原像就是该对象本身。
 
 **hash 只由契约版本和对象内容决定**：不存在按文件类型或其他条件选择的 hash 策略（#3 S9）。
 
@@ -30,7 +30,7 @@ DPE 的每个字段都由源提供（plan §0.1 P2），除身份 `file_uri` 外
 - **服务端衍生物不进 DPE 字段**：服务端计算或写回的数据（keywords、各类服务端 id、抽取过程写回的字段）MUST NOT 写入任何 DPE 字段，因此也永远不会进入 hash（否则形成"写回 → hash 变 → 重算 → 再写回"的自触发循环）。它们存放在服务端自己的存储中（core.md §2.4）。
 - **源提供的字段 MUST NOT 携带会自行变化的默认值**（如 `created_at` 缺省取当前时间）：值由源提供，源给不出就留空。
 - **易变字段不应进入 metadata**：不随内容变化、却会频繁变化的源字段（浏览计数、最近访问时间、在线状态、同步时间戳等）SHOULD NOT 放进任何 metadata。
-- **顺序属于内容，位置不属于对象身份**：页序（根对象 `pages` 的数组顺序）与页内元素序（页对象 `elements` 的数组顺序）都是内容，由上层对象体现；任何对象的 hash 都不含它自己在上层中的位置。因此插入、删除、移动一页时，只有根对象变化，其余页对象与内容对象都不变、无需重传——这只为传输去重，不意味着位置变化不是内容变化（plan §0.1 P3）。
+- **顺序属于内容，位置不属于对象身份**：页序（文档对象 `pages` 的数组顺序）与页内元素序（页对象 `elements` 的数组顺序）都是内容，由上层对象体现；任何对象的 hash 都不含它自己在上层中的位置。因此插入、删除、移动一页时，只有文档对象变化，其余页对象与元素对象都不变、无需重传——这只为传输去重，不意味着位置变化不是内容变化（plan §0.1 P3）。
 
 ## 3. 原语
 
@@ -45,7 +45,7 @@ H(obj) = "dpe1:" + hex( SHA-256( utf8( JCS( norm(obj) ) ) ) )
 ### 3.2 规范化 `norm`
 
 1. **递归删除值为 null 的键**（#3 S5）：对象中值为 null 的键 MUST 在 JCS 之前删除，即**缺省 ≡ null**。否则实现方给模型新增一个可选字段，所有存量 hash 都会变化，等于一次隐性契约升级。数组元素不受此规则影响（`[null]` 原样保留）。
-2. **metadata 字段缺省视同 `{}`**：元素的 `metadata`、页对象的 `page_metadata`、根对象的 `doc_metadata` 缺省或为 null 时，取 `{}`；即这三个字段在原像中总是出现。
+2. **metadata 字段缺省视同 `{}`**：元素的 `metadata`、页对象的 `page_metadata`、文档对象的 `doc_metadata` 缺省或为 null 时，取 `{}`；即这三个字段在原像中总是出现。
 
 除此之外不做任何改写。空串 `""` 是一个值，与 null（缺省）不等价（向量 `null_vs_empty_distinct`）。
 
@@ -64,7 +64,7 @@ JCS 实现的正确性由 `kind: "jcs"` 向量单独校验；向量 `preimage_ba
 
 ### 3.4 层间不会混淆
 
-三层对象都是**封闭 schema**：出现未定义的字段 MUST 拒绝（core.md §2）。三层各有一个必有、且只有它有的键——元素的 `category`、页对象的 `elements`、根对象的 `pages`——因此不同层的对象不可能有相同的原像，不需要额外的类型标签（作用相当于 Git 的对象头）。
+三层对象都是**封闭 schema**：出现未定义的字段 MUST 拒绝（core.md §2）。三层各有一个必有、且只有它有的键——元素的 `category`、页对象的 `elements`、文档对象的 `pages`——因此不同层的对象不可能有相同的原像，不需要额外的类型标签（作用相当于 Git 的对象头）。
 
 ## 4. `content_hash`（元素对象）
 
@@ -87,7 +87,7 @@ text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement
 
 内容字段的值均为字符串（`image_blob` 为 §1 的 blob 引用）。出现其 category 未允许的字段 MUST 拒绝。`FormKeysValues` 的键值对如由源随元素 metadata 提供，则自然进入 hash，无需专门的内容字段。
 
-新增 category 需要升契约次版本，并通过 capabilities 协商（§6）。
+新增 category 需要升契约次版本，并通过 capabilities 协商（§6）。本表以机器可读形式随向量发布（`vectors/manifest.json` 的 `category_content_fields`），SDK MUST 以常量导出，并与之一致。
 
 ### 4.2 Image
 
@@ -99,13 +99,13 @@ text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement
 ## 5. `page_hash` 与 `doc_hash`（tree 对象）
 
 ```
-page_hash = H(page)     page = { "title"?: …, "page_metadata": {…}, "elements": [content_hash…] }
-doc_hash  = H(root)     root = { "file_type": …, "title"?: …, "doc_metadata": {…}, "pages": [page_hash…] }
+page_hash = H(page)         page     = { "title"?: …, "page_metadata": {…}, "elements": [content_hash…] }
+doc_hash  = H(document)     document = { "file_type": …, "title"?: …, "doc_metadata": {…}, "pages": [page_hash…] }
 ```
 
-- `elements` / `pages` 是子对象 hash 完整字符串（含 `dpe1:` 前缀）的数组，**数组顺序即阅读顺序**。重复出现照常重复：内容完全相同的元素共用同一个内容对象，内容完全相同的页共用同一个页对象（向量 `duplicate_pages`）。
+- `elements` / `pages` 是子对象 hash 完整字符串（含 `dpe1:` 前缀）的数组，**数组顺序即阅读顺序**。子对象 hash 的契约 MUST 与本对象相同：前缀缺失或为不受支持的契约时拒绝（`DPE_CONTRACT_UNSUPPORTED`，§1）；前缀为受支持、但与本对象不同的契约时（契约混用）拒绝（`DPE_VALIDATION`）。重复出现照常重复：内容完全相同的元素共用同一个元素对象，内容完全相同的页共用同一个页对象（向量 `duplicate_pages`）。
 - 页没有页号字段：页的位置就是它在 `pages` 中的下标。源文件自带的页码标签（印刷页码、PDF PageLabels，如 `iv`）是源内容，放进 `page_metadata`。由位置算出的序号 SHOULD NOT 写进 `page_metadata`——它会让插入一页后，后续每一页的页对象都变化，页层重新出现连锁重传。
-- 根与页的 `title` 为字符串，可缺省（缺省与 null 等价，`""` 是独立的值）；`file_type` 为 core.md §2.5 封闭枚举的字符串值，未知取值 MUST 拒绝。
+- 文档对象与页对象的 `title` 为字符串，可缺省（缺省与 null 等价，`""` 是独立的值）；`file_type` 为 core.md §2.5 封闭枚举的字符串值，未知取值 MUST 拒绝。
 - 空文档（0 页）与空页（0 元素）均合法：`pages` / `elements` 为 `[]`。
 
 ## 6. 契约演进

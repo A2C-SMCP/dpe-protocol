@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）修订
+> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -16,7 +16,7 @@
 | `list` | `GET {remote}/documents?prefix={p}&cursor={c}&limit={n}` |
 | `negotiate` | `POST {remote}/negotiate` |
 | `upload`（页对象） | `PUT {remote}/staging/{sid}/pages/{page_hash}` |
-| `upload`（内容对象） | `PUT {remote}/staging/{sid}/objects/{content_hash}` |
+| `upload`（元素对象） | `PUT {remote}/staging/{sid}/objects/{content_hash}` |
 | `upload`（blob） | `PUT {remote}/staging/{sid}/blobs/{sha256}` |
 | `commit` | `PUT {remote}/documents?uri={file_uri}` |
 | `delete` | `DELETE {remote}/documents?uri={file_uri}` |
@@ -26,7 +26,7 @@
 
 ## 2. 媒体类型
 
-- JSON 主体（含页对象与内容对象的上传）一律 `application/json`；错误为 `application/problem+json`（§5）；blob 上传用 blob 自身的媒体类型（未知时 `application/octet-stream`）。
+- JSON 主体（含页对象与元素对象的上传）一律 `application/json`；错误为 `application/problem+json`（§5）；blob 上传用 blob 自身的媒体类型（未知时 `application/octet-stream`）。
 - 媒体类型不承载版本：协议版本以 capabilities 的 `protocol` 为准，hash 契约由 `DPE-Hash-Contract` 头声明（§3.1）。
 - 命名保持中性：媒体类型、头字段、错误码中 MUST NOT 出现具体产品名。
 
@@ -106,7 +106,7 @@
 {
   "file_uri": "feishu://doc/a",
   "doc_hash": "dpe1:…",
-  "root": {
+  "document": {
     "file_type": "md",
     "title": "季度报告",
     "doc_metadata": { "created_at": "2026-09-01T02:03:04Z", "author": "…" },
@@ -119,7 +119,7 @@
 }
 ```
 
-`pages` 按根对象 `pages` 的顺序给出全部页对象（重复的页 hash 对应重复的页对象）。返回值与最近一次写入的值内容等价（core.md §2.7），不含任何服务端衍生数据。
+`pages` 按文档对象 `pages` 的顺序给出全部页对象（重复的页 hash 对应重复的页对象）。返回值与最近一次写入的值内容等价（core.md §2.7），不含任何服务端衍生数据。
 
 ### 4.4 `GET {remote}/documents?prefix=…&cursor=…&limit=…`（list）
 
@@ -135,7 +135,7 @@
 ```json
 // 请求
 { "file_uri": "feishu://doc/a",
-  "root": { …同 4.3 的 root… },
+  "document": { …同 4.3 的 document… },
   "pages": [ { …页对象… } ] }        // 可选：附带部分或全部页对象
 // 响应 200
 { "missing_pages": ["dpe1:…"],
@@ -144,13 +144,13 @@
 ```
 
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
-- `missing_pages`：根对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的内容对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
-- 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交根对象即可，根对象只含页 hash 列表）。
+- `missing_pages`：文档对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的元素对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
+- 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交文档对象即可，文档对象只含页 hash 列表）。
 - 缺失清单按去重范围计算（core.md §3.3）。
 
 ### 4.6 `PUT {remote}/staging/{sid}/pages/{page_hash}` 与 `…/objects/{content_hash}`
 
-请求体为一个页对象或内容对象 JSON，即该 hash 的原像对象（core.md §2.2、§2.3）。服务端依次：
+请求体为一个页对象或元素对象 JSON，即该 hash 的原像对象（core.md §2.2、§2.3）。服务端依次：
 
 1. 校验字段：出现未定义字段 → `DPE_VALIDATION`；未知 category → `DPE_CATEGORY_UNKNOWN`；
 2. 重算 hash，与路径不符 → `DPE_HASH_MISMATCH`。
@@ -160,7 +160,7 @@
 ```json
 // 页对象的响应
 { "missing_content_hashes": ["dpe1:…"] }
-// 内容对象的响应
+// 元素对象的响应
 { "missing_blobs": ["sha256:…"] }
 ```
 
@@ -168,7 +168,7 @@
 
 会话的每个成功操作都会续期（core.md §3.4）：negotiate 响应的 `expires_at` 与 upload 各响应（含 `202` 中间块）的 `DPE-Session-Expires: <RFC 3339 UTC>` 头给出续期后的过期时间。
 
-**页对象可分块**：单个页对象超过 `max_payload_bytes` 时，按 §4.7 的方式分块上传与断点续传，总大小不超过 `page_max_bytes`。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。内容对象不分块，超限返回 `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
+**页对象可分块**：单个页对象超过 `max_payload_bytes` 时，按 §4.7 的方式分块上传与断点续传，总大小不超过 `page_max_bytes`。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。元素对象不分块，超限返回 `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
 
 ### 4.7 `PUT {remote}/staging/{sid}/blobs/{sha256}`（分块与断点续传）
 
@@ -182,14 +182,14 @@
 ### 4.8 `PUT {remote}/documents?uri=…`（commit）
 
 ```json
-{ "root": { …同 4.3 的 root… },
+{ "document": { …同 4.3 的 document… },
   "pages": [ { …内联页对象… } ],       // 可选
-  "objects": [ { …内联内容对象… } ],   // 可选
+  "objects": [ { …内联元素对象… } ],   // 可选
   "staging_session": "st-…",          // 可选
   "force": false }
 ```
 
-- 快路径：内联根对象引用的全部页对象与内容对象，一次往返完成。大文档：只带根对象并引用会话。
+- 快路径：内联文档对象引用的全部页对象与元素对象，一次往返完成。大文档：只带文档对象并引用会话。
 
 - 文档身份取自查询参数 `uri`，请求体不重复 `file_uri`。
 - CAS 前置条件走 `If-Match` / `If-None-Match: *`（§3.2）。

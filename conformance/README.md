@@ -23,18 +23,18 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 - **unchanged 判定**：完全相同的重复 commit 返回 `unchanged`，doc_hash 不变。
 - **报文校验**：以下情况都返回 `DPE_VALIDATION`：
   - 未定义的字段；
-  - 内容对象带其 category 未规定的字段（如 NarrativeText 带 `text_as_html`）；
+  - 元素对象带其 category 未规定的字段（如 NarrativeText 带 `text_as_html`）；
   - 整数字面量超过 2^53−1。
 
 ## 大文档与逐层协商（#6 F2）
 
-- 页数与元素数足以让展开骨架远超 `max_payload_bytes` 的文档，经「negotiate 只交根对象 → 上传缺失页 → 上传缺失内容 → 上传缺失 blob → commit 只带根对象」完成提交；negotiate 与 commit 的请求体都不超限。
-- 单个页对象超过 `max_payload_bytes` 时，按分块上传与断点续传完成：中间块返回 `202` + `DPE-Upload-Offset`，最后一块的响应给出该页缺失的内容对象；分块页对象超过 `page_max_bytes` 返回 `DPE_PAYLOAD_TOO_LARGE`。
-- 根对象超过 `max_payload_bytes` 时，negotiate 与 commit 都返回 `413` + `DPE_PAYLOAD_TOO_LARGE`（v1 的规模边界，core.md §3.2）。
+- 页数与元素数足以让展开骨架远超 `max_payload_bytes` 的文档，经「negotiate 只交文档对象 → 上传缺失页对象 → 上传缺失元素对象 → 上传缺失 blob → commit 只带文档对象」完成提交；negotiate 与 commit 的请求体都不超限。
+- 单个页对象超过 `max_payload_bytes` 时，按分块上传与断点续传完成：中间块返回 `202` + `DPE-Upload-Offset`，最后一块的响应给出该页缺失的元素对象；分块页对象超过 `page_max_bytes` 返回 `DPE_PAYLOAD_TOO_LARGE`。
+- 文档对象超过 `max_payload_bytes` 时，negotiate 与 commit 都返回 `413` + `DPE_PAYLOAD_TOO_LARGE`（v1 的规模边界，core.md §3.2）。
 - commit 缺少对象时，`DPE_MISSING_CONTENT` 的 problem 体按层列出缺失的 hash；补传到同一会话后重新 commit 成功。
 - 在中间插入一页后再次提交：`missing_pages` 只含新页，其余页对象不重传；doc_hash 变化。
 - 对调两页：`missing_pages` 为空，commit 返回 `updated`，delta 为零。
-- 页对象上传响应的 `missing_content_hashes`、内容对象上传响应的 `missing_blobs` 与实际缺失一致。
+- 页对象上传响应的 `missing_content_hashes`、元素对象上传响应的 `missing_blobs` 与实际缺失一致。
 
 ## 幂等与重试（#4 B1 / B4 / B7）
 
@@ -61,7 +61,7 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 ## 安全（#4 B9）
 
 - 调用者 A 只对前缀 P 有写授权，前缀 Q 下的文档含内容 X：
-  - 缺失清单必须把 X 列为缺失，按 X 所在的层核对：X 是页对象时，出现在 negotiate 的 `missing_pages` 中；X 是内容对象时，出现在附带了引用它的页的 negotiate 响应、或该页对象上传响应的 `missing_content_hashes` 中；X 是 blob 时，出现在引用它的内容对象上传响应的 `missing_blobs` 中；
+  - 缺失清单必须把 X 列为缺失，按 X 所在的层核对：X 是页对象时，出现在 negotiate 的 `missing_pages` 中；X 是元素对象时，出现在附带了引用它的页的 negotiate 响应、或该页对象上传响应的 `missing_content_hashes` 中；X 是 blob 时，出现在引用它的元素对象上传响应的 `missing_blobs` 中；
   - A 在 commit 中引用 X 而不上传，必须返回 `DPE_MISSING_CONTENT`；
   - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于 Q 而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
 - 对无写授权的 URI 提交与其当前内容相同的 commit，必须返回 `403`，而不是 `unchanged`。

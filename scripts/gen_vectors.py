@@ -52,6 +52,17 @@ TEXT_ONLY_CATEGORIES = frozenset(
 )
 HTML_CATEGORIES = frozenset({"Table", "Formula"})
 
+#: category → 允许的内容字段（契约 1 §4.1，按表中顺序），写入 manifest 供各实现互校。
+CATEGORY_CONTENT_FIELDS: dict[str, tuple[str, ...]] = dict(
+    sorted(
+        {
+            **{c: ("text",) for c in TEXT_ONLY_CATEGORIES},
+            **{c: ("text", "text_as_html") for c in HTML_CATEGORIES},
+            "Image": ("text", "image_blob", "image_mime_type"),
+        }.items()
+    )
+)
+
 #: file_type 封闭枚举（core.md §2.5），由源提供，进 doc_hash（契约 1 §5）。
 FILE_TYPES = (
     "bmp", "csv", "doc", "docx", "eml", "epub", "heic", "html", "jpg", "json", "md", "msg", "ndjson",
@@ -96,19 +107,14 @@ def metadata(m: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def content_fields(cat: str) -> frozenset[str]:
-    """内容对象允许的字段 = content_hash 的完整原像（core.md §2.3）；未知 category 拒绝。"""
-    base = frozenset({"category", "text", "metadata"})
-    if cat == "Image":
-        return base | {"image_blob", "image_mime_type"}
-    if cat in HTML_CATEGORIES:
-        return base | {"text_as_html"}
-    if cat in TEXT_ONLY_CATEGORIES:
-        return base
-    raise ValueError(f"unknown category: {cat}")
+    """元素对象允许的字段 = content_hash 的完整原像（core.md §2.3）；未知 category 拒绝。"""
+    if cat not in CATEGORY_CONTENT_FIELDS:
+        raise ValueError(f"unknown category: {cat}")
+    return frozenset({"category", "metadata", *CATEGORY_CONTENT_FIELDS[cat]})
 
 
 def validate_element(el: dict[str, Any]) -> None:
-    """向量元素就是一个内容对象（content_hash 的完整原像）；多余字段即违规。"""
+    """向量元素就是一个元素对象（content_hash 的完整原像）；多余字段即违规。"""
     cat = el["category"]
     extra = set(el) - content_fields(cat)
     if extra:
@@ -126,7 +132,7 @@ def element_object(el: dict[str, Any]) -> dict[str, Any]:
 
 
 PAGE_FIELDS = frozenset({"title", "page_metadata", "elements"})
-ROOT_FIELDS = frozenset({"file_type", "title", "doc_metadata", "pages"})
+DOCUMENT_FIELDS = frozenset({"file_type", "title", "doc_metadata", "pages"})
 
 
 def page_object(page: dict[str, Any], element_hashes: list[str]) -> dict[str, Any]:
@@ -145,10 +151,10 @@ def page_object(page: dict[str, Any], element_hashes: list[str]) -> dict[str, An
     return obj
 
 
-def root_object(doc: dict[str, Any], page_hashes: list[str]) -> dict[str, Any]:
-    extra = set(doc) - ROOT_FIELDS
+def document_object(doc: dict[str, Any], page_hashes: list[str]) -> dict[str, Any]:
+    extra = set(doc) - DOCUMENT_FIELDS
     if extra:
-        raise ValueError(f"root: undefined fields: {sorted(extra)}")
+        raise ValueError(f"document: undefined fields: {sorted(extra)}")
     if doc["file_type"] not in FILE_TYPES:
         raise ValueError(f"unknown file_type: {doc['file_type']}")
     title = doc.get("title")
@@ -180,10 +186,10 @@ def doc_hashes(
         pages_out.append({"page_hash": ph, "elements": ehs})
         pre_pages.append(ppre)
         pre_elements.append([p for _, p in hashed])
-    dh, dpre = obj_hash(root_object(doc, page_hashes), contract)
+    dh, dpre = obj_hash(document_object(doc, page_hashes), contract)
     out: dict[str, Any] = {"doc_hash": dh, "pages": pages_out}
     if with_preimages:
-        out["preimages"] = {"root": dpre, "pages": pre_pages, "elements": pre_elements}
+        out["preimages"] = {"document": dpre, "pages": pre_pages, "elements": pre_elements}
     return out
 
 
@@ -643,7 +649,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "doc_title",
-        "description": '根对象可选 title 与页 title 对称：缺省与 null 等价，"" 是独立的值；title 变化只改变 doc_hash，页与元素 hash 不变；title 与 doc_metadata 中的 filename 是不同的源属性。',
+        "description": '文档对象可选 title 与页 title 对称：缺省与 null 等价，"" 是独立的值；title 变化只改变 doc_hash，页与元素 hash 不变；title 与 doc_metadata 中的 filename 是不同的源属性。',
         "documents": {
             "absent": doc(
                 page("p1", el("NarrativeText", "正文")),
@@ -697,7 +703,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "duplicate_elements",
-        "description": "同页两个相同元素：content_hash 相同（内容对象共享），page 的 elements 列表中按位置重复出现。",
+        "description": "同页两个相同元素：content_hash 相同（元素对象共享），page 的 elements 列表中按位置重复出现。",
         "documents": {
             "doc": doc(
                 page(
@@ -712,7 +718,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "duplicate_pages",
-        "description": "两页内容完全相同：page_hash 相同（页对象共享，如同 Git 中相同的 tree），root 的 pages 列表中按位置重复出现。",
+        "description": "两页内容完全相同：page_hash 相同（页对象共享，如同 Git 中相同的 tree），文档对象的 pages 列表中按位置重复出现。",
         "documents": {
             "doc": doc(
                 page("同页", el("NarrativeText", "x")),
@@ -723,7 +729,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "duplicate_different_coordinates",
-        "description": "同一文本出现在两处、坐标不同：坐标是内容，两处是不同的内容对象（content_hash 不同）；坐标相同时才共享同一内容对象。",
+        "description": "同一文本出现在两处、坐标不同：坐标是内容，两处是不同的元素对象（content_hash 不同）；坐标相同时才共享同一元素对象。",
         "documents": {
             "doc": doc(
                 page(
@@ -741,7 +747,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "file_type_identity",
-        "description": "file_type 由源提供，属于 root 对象，进 doc_hash：只改 file_type 时页与元素 hash 不变，doc_hash 变化。",
+        "description": "file_type 由源提供，属于文档对象，进 doc_hash：只改 file_type 时页与元素 hash 不变，doc_hash 变化。",
         "documents": {
             "md": doc(page(None, el("NarrativeText", "x")), file_type="md"),
             "txt": doc(page(None, el("NarrativeText", "x")), file_type="txt"),
@@ -1016,6 +1022,7 @@ def build_files() -> dict[str, str]:
         "spec": "spec/hash-contract-1.md",
         "status": "draft",
         "file_types": list(FILE_TYPES),
+        "category_content_fields": {c: list(f) for c, f in CATEGORY_CONTENT_FIELDS.items()},
         "provenance": {
             "generator": "scripts/gen_vectors.py",
             "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md",
