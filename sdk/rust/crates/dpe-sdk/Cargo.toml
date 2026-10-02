@@ -1,0 +1,25 @@
+[package]
+name = "dpe-sdk"
+description = "DPE 协议 Rust SDK：sans-IO 协议核心与传输适配（默认 reqwest / tokio）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[features]
+# 默认提供 HTTP 传输适配；协议核心不依赖任何异步运行时，关掉默认 feature 也能编译（CI 有断言）
+default = ["http"]
+http = ["dep:reqwest", "dep:tokio"]
+
+[dependencies]
+# 与 dpe-hash 锁步发布、精确同版本（版本串由 bump-my-version 与工作区版本一并维护）
+dpe-hash.workspace = true
+serde = { version = "1", features = ["derive"] }
+# 传输适配随 #22 落地；TLS 等 feature 细节届时再定
+reqwest = { version = "0.12", optional = true, default-features = false }
+tokio = { version = "1", optional = true, features = ["rt"] }

@@ -1,0 +1,19 @@
+[package]
+name = "dpe-hash"
+# 依赖预算（硬约束）：hash 核心不绑定运行时，只允许 sha2 + serde_json，改动前先过评审
+description = "DPE hash 契约的独立 hash 核心：不绑定运行时，仅依赖 sha2 与 serde_json"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[dependencies]
+sha2 = "0.10"
+# float_roundtrip 必需：JCS 数字序列化以「正确舍入的 f64」为前提，serde_json 默认解析
+# 在极端指数下可差 1 ULP（向量 jcs_numbers 的 1e-30 用例即为此而设，见 sdk/README.md）
+serde_json = { version = "1", features = ["float_roundtrip"] }

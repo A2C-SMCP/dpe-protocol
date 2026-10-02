@@ -1,0 +1,24 @@
+# Rust SDK workspace 根：本身不是 crate，只承载成员、共享元数据与版本管理。
+# 与 Python SDK（sdk/python/）行为对等：两份实现直接读取仓库根目录 vectors/ 的一致性
+# 向量（不复制），逐字节校验。
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# 共享元数据：两个 crate 同版本（由本目录的 bump-my-version 管理，dev / final 两态）。
+[workspace.package]
+version = "0.1.6-dev"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+# 许可文本不逐 crate 复制：每个 crate 目录下有一个指向仓库根 LICENSE 的符号链接，
+# cargo 打包时会把符号链接解析为真实内容收入包内（单一来源，无拷贝漂移）
+repository = "https://github.com/A2C-SMCP/dpe-protocol"
+homepage = "https://github.com/A2C-SMCP/dpe-protocol"
+documentation = "https://doc.turingfocus.cn/dpe/"
+authors = ["TuringFocus Team <dev@turingfocus.cn>"]
+
+[workspace.dependencies]
+# 内部依赖：两个 crate 锁步发布、精确同版本（与 Python 的 dpe-hash==X.Y.Z 对等）。
+# 版本串由 bump-my-version 与 [workspace.package].version 一并维护。
+dpe-hash = { path = "crates/dpe-hash", version = "=0.1.6-dev" }

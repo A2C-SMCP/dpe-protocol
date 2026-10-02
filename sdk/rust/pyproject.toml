@@ -1,0 +1,46 @@
+# Rust SDK 的版本管理：SDK 版本是独立的一条轴，与文档版本、Python SDK 版本互不牵动。
+# 版本工具是 Python 的 bump-my-version（与 sdk/python/ 同款两态约定），所以这里放一个
+# 只承载版本工具链的 pyproject.toml；本目录本身不是 Python 包。
+[project]
+name = "dpe-rust-sdk-workspace"
+version = "0"
+requires-python = ">=3.11"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["bump-my-version>=0.28.0"]
+
+# 当前版本由 Cargo.toml 的 [workspace.package].version 承载；两个 crate 始终同版本。
+[tool.bumpversion]
+current_version = "0.1.6-dev"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)(?:-(?P<pre_l>dev))?"
+serialize = [
+    "{major}.{minor}.{patch}-{pre_l}",
+    "{major}.{minor}.{patch}",
+]
+commit = true
+message = "Bump rust-sdk version: {current_version} → {new_version}"
+tag = true
+tag_name = "rs-v{new_version}"
+tag_message = "rust-sdk {new_version}"
+# Cargo.lock 里两个 crate 的版本随 Cargo.toml 变化，由 cargo 重算
+pre_commit_hooks = ["cargo update --workspace --quiet", "git add Cargo.lock"]
+
+# 两态与文档、Python SDK 一致：X.Y.Z-dev = 开发中（不发布）；X.Y.Z = 发布
+# （标签 rs-vX.Y.Z 触发 release-rust.yml；rs-v*-dev 不触发）
+[tool.bumpversion.parts.pre_l]
+values = ["dev", "final"]
+optional_value = "final"
+
+[[tool.bumpversion.files]]
+filename = "Cargo.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+# dpe-sdk 精确依赖同版本的 dpe-hash：两个 crate 同一标签发布，hash 行为必须一致
+[[tool.bumpversion.files]]
+filename = "Cargo.toml"
+search = 'version = "={current_version}"'
+replace = 'version = "={new_version}"'
