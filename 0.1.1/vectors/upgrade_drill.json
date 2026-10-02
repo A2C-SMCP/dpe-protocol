@@ -1,0 +1,86 @@
+{
+  "name": "upgrade_drill",
+  "kind": "document",
+  "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpe2 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "Title",
+              "text": "标题"
+            },
+            {
+              "category": "Table",
+              "text": "a",
+              "text_as_html": "<table/>"
+            }
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
+        },
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "图",
+              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "image_mime_type": "image/webp",
+              "metadata": {
+                "image_url": "https://a.cdn/x.webp"
+              }
+            }
+          ]
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq"
+      }
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:5cd8d5806c003291422d9fdd86d103362e0493fea0f4c9c263292ad7b524a6a0",
+        "pages": [
+          {
+            "page_hash": "dpe1:3ccb12363f1ec428609656c8e98a59e73cb7a70c5e46ba1b912648d28d6ef07e",
+            "elements": [
+              "dpe1:37d9893b3e57261761092d257f5ad247e593ba1964c0e5da4e17f6ec7e2fd9f2",
+              "dpe1:fd9ca6d627bfd341cddfcf490538f84c39f744b8f17c1dd6cede47013a5fadf6"
+            ]
+          },
+          {
+            "page_hash": "dpe1:1779d04cbb0390e62222d74eaeaa82ac5b1a1f50d49f5602732d33936a24c2d5",
+            "elements": [
+              "dpe1:6affa14aca10439e6aafa7e3a3a9afcd4f41564f4909e7342f76c0e769984ef2"
+            ]
+          }
+        ]
+      },
+      "dpe2": {
+        "doc_hash": "dpe2:6e6027c45e583a454570a357a5ed20253e4ed33e5659ca9523eafa4a3dec4a36",
+        "pages": [
+          {
+            "page_hash": "dpe2:fd0e86cd9ee277758330707c377c46a6f2f5fbc01c63cb97111c4eb2f96595c4",
+            "elements": [
+              "dpe2:c21be9f00ed65d75aac63600c0ad4e8bd3f45a39928280b81c6c54de5a438b29",
+              "dpe2:0fba7f464605a04a14ebbbac90874a8b26181f3850c6efa0f048aeab85263b1b"
+            ]
+          },
+          {
+            "page_hash": "dpe2:84025e70fcb000ffb9da352c212620d5d087c658ca6c86039b0b6e474621360c",
+            "elements": [
+              "dpe2:f047df1f112b401ae6a0bcd436ed58b99cff2b3f579b7f8ede19e8eb05cb81eb"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

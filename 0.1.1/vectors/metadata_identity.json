@@ -1,0 +1,185 @@
+{
+  "name": "metadata_identity",
+  "kind": "document",
+  "description": "源即内容（plan §0.1 P2）：doc / page / element 任一层 metadata 变化，对应层及以上的 hash 变化，下层不受影响。",
+  "documents": {
+    "base": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-01T02:03:04Z"
+      }
+    },
+    "ele_meta_changed": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "en"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-01T02:03:04Z"
+      }
+    },
+    "page_meta_changed": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b2"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-01T02:03:04Z"
+      }
+    },
+    "doc_meta_changed": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh"
+              }
+            }
+          ],
+          "page_metadata": {
+            "src": "b1"
+          }
+        }
+      ],
+      "doc_metadata": {
+        "author": "gmq",
+        "created_at": "2026-09-02T00:00:00Z"
+      }
+    }
+  },
+  "expected": {
+    "base": {
+      "dpe1": {
+        "doc_hash": "dpe1:1a9a5005686aa2d076a40ec14f58f25f3354d48084a12b7106cf40f05844c4c6",
+        "pages": [
+          {
+            "page_hash": "dpe1:841a3361fa27efc49ed9444d1d039d80ee50819e734213d6c3ebe58fc6decb51",
+            "elements": [
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
+            ]
+          }
+        ]
+      }
+    },
+    "ele_meta_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:38c04158188d9ac7248f1d7c19f1ef58ff96bc4389226e4a5264435cfba96902",
+        "pages": [
+          {
+            "page_hash": "dpe1:03ae364c7649fc634e07a0ec4501c3897b721a2da1279952917ef68acc4ee02f",
+            "elements": [
+              "dpe1:d1994b738de4003eb47e094f9fb7124a8f377825521308c7c119aef916a05c7b"
+            ]
+          }
+        ]
+      }
+    },
+    "page_meta_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:16dc20673ee3bea599a76e31b5f0528110c416553ea6baee7b09bbe6c93bc362",
+        "pages": [
+          {
+            "page_hash": "dpe1:e898b79e20762c64694142f7c6af13b502b6344b0cb36ddcf690fbb504641c5f",
+            "elements": [
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
+            ]
+          }
+        ]
+      }
+    },
+    "doc_meta_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:e8a7680f67976bc313b68845e45be39dd643329939c2f75dd02150069a322c23",
+        "pages": [
+          {
+            "page_hash": "dpe1:841a3361fa27efc49ed9444d1d039d80ee50819e734213d6c3ebe58fc6decb51",
+            "elements": [
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "base.doc_hash",
+        "ele_meta_changed.doc_hash",
+        "page_meta_changed.doc_hash",
+        "doc_meta_changed.doc_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "base.pages.0.elements.0",
+        "ele_meta_changed.pages.0.elements.0"
+      ]
+    },
+    {
+      "equal": [
+        "base.pages.0.elements.0",
+        "page_meta_changed.pages.0.elements.0"
+      ]
+    },
+    {
+      "equal": [
+        "base.pages.0.page_hash",
+        "doc_meta_changed.pages.0.page_hash"
+      ]
+    }
+  ]
+}
