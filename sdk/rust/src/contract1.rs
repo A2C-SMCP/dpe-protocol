@@ -191,7 +191,7 @@ pub fn page_hash(
 pub fn document_hashes(document: &Value, contract: &str) -> Result<Value, String> {
     check_closed(
         document,
-        &["file_type", "doc_metadata", "pages"],
+        &["file_type", "title", "doc_metadata", "pages"],
         "document",
     )?;
     let file_type = document["file_type"]
@@ -222,10 +222,13 @@ pub fn document_hashes(document: &Value, contract: &str) -> Result<Value, String
         page_hashes.push(Value::String(ph.clone()));
         pages_out.push(json!({"page_hash": ph, "elements": ehashes}));
     }
-    let root = json!({
-        "file_type": file_type,
-        "doc_metadata": meta(document.get("doc_metadata"))?,
-        "pages": page_hashes,
-    });
-    Ok(json!({"doc_hash": hval(&root, contract)?, "pages": pages_out}))
+    let mut root = Map::new();
+    root.insert("file_type".into(), Value::String(file_type.into()));
+    // 根对象可选 title，与页对称（规范 0.1.3，撤回 #3 S6）
+    if let Some(title) = str_or_none(document, "title")? {
+        root.insert("title".into(), Value::String(title.into()));
+    }
+    root.insert("doc_metadata".into(), meta(document.get("doc_metadata"))?);
+    root.insert("pages".into(), Value::Array(page_hashes));
+    Ok(json!({"doc_hash": hval(&Value::Object(root), contract)?, "pages": pages_out}))
 }

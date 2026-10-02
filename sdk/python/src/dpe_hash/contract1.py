@@ -149,7 +149,7 @@ def document_hashes(document: dict[str, Any], contract: str = CONTRACT) -> dict[
 
     页序即 ``pages`` 数组顺序（契约 1 §5）。
     """
-    extra = set(document) - {"file_type", "doc_metadata", "pages"}
+    extra = set(document) - {"file_type", "title", "doc_metadata", "pages"}
     if extra:
         raise ValueError(f"fields not allowed on document: {sorted(extra)}")
     file_type = document["file_type"]
@@ -162,5 +162,10 @@ def document_hashes(document: dict[str, Any], contract: str = CONTRACT) -> dict[
         ph = page_hash(page, ehashes, contract)
         page_hashes.append(ph)
         pages_out.append({"page_hash": ph, "elements": ehashes})
-    root = {"file_type": file_type, "doc_metadata": _meta(document.get("doc_metadata")), "pages": page_hashes}
+    root: dict[str, Any] = {"file_type": file_type}
+    title = _str_or_none(document, "title")  # 根对象可选 title，与页对称（规范 0.1.3，撤回 #3 S6）
+    if title is not None:
+        root["title"] = title
+    root["doc_metadata"] = _meta(document.get("doc_metadata"))
+    root["pages"] = page_hashes
     return {"doc_hash": _hval(root, contract), "pages": pages_out}
