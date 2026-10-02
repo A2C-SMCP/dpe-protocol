@@ -7,7 +7,7 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 ## 通用检查面
 
 - capabilities 协商与限额如实声明（`staging_ttl_seconds` ≥ 3600）；
-- 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
+- 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出；断点查询（`HEAD`）带 `DPE-Session-Expires` 但不续期；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
 - 去重范围的上下界：只靠该文档当前状态即可得的对象不出现在缺失清单中；调用者无写授权的文档中的对象一律视为缺失；
 - 快路径 / 暂存路径的 commit 语义与原子性（分批期间读接口不可见中间态）；
 - delta 与 `get_skeleton` 读回结果互相印证（不制造伪变更）；

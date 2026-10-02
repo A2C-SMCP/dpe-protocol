@@ -175,7 +175,7 @@
 - 整体上传：不带 `Content-Range` 的 `PUT`，体为完整字节。
 - 分块上传：`PUT` + `Content-Range: bytes {from}-{to}/{total}`，块大小不超过 `blob_chunk_bytes`，MUST 按序追加；全部字节到齐后服务端校验 sha256。
 - 中间块：响应 `202`，带 `DPE-Upload-Offset: {n}`（已收字节数），无体；最后一块到齐并校验通过后，按 §4.6 返回 `201` / `200`。
-- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该对象）。
+- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该对象），并带 `DPE-Session-Expires` 给出会话当前的过期时间。断点查询只读，**不续期**（core.md §3.4）。
 - 校验失败返回 `DPE_HASH_MISMATCH` 并丢弃已收内容。blob 校验的是原始字节的 sha256。
 - 以上分块规则同样适用于 §4.6 的页对象，只是校验方式不同（见 §4.6），总大小上限为 `page_max_bytes`。
 
