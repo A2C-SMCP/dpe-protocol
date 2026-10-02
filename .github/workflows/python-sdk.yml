@@ -50,7 +50,7 @@ jobs:
         working-directory: sdk/python
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0  # 上游自 v8 起不再提供浮动主版本标签
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
@@ -67,7 +67,7 @@ jobs:
         working-directory: sdk/python
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.2.0  # 上游自 v8 起不再提供浮动主版本标签
         with:
           python-version: "3.12"
       - run: uv build --all-packages -o dist
