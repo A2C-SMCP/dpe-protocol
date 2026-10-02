@@ -51,10 +51,17 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 
 ## 异常
 
-全部继承 `DpeHashError`（它是 `ValueError` 的子类）。每个异常带两个属性：`.code` 是规范错误码，`.path` 是出错位置的 RFC 6901 JSON Pointer（相对于传入的对象），可直接映射为 problem 体。
+校验按规范 [core §2.8](https://doc.turingfocus.cn/dpe/latest/spec/core/) 的顺序进行：形状 → category → 封闭 schema → 逐字段。因此同一输入的错误码与其他实现一致，并由规范的拒绝类向量 `invalid_objects` 校验。
+
+全部继承 `DpeHashError`（它是 `ValueError` 的子类）。每个异常带两个属性：`.code` 是规范错误码，`.path` 是出错位置的 RFC 6901 JSON Pointer（相对于传入的对象），可用于日志或 problem 的 `detail` 文本（HTTP problem 体不携带违例位置，core §2.8）。
 
 | 异常 | `code` |
 | --- | --- |
-| `ValidationError`，及其子类 `UndefinedFieldError`、`FileTypeUnknownError`、`IntegerOutOfRangeError` | `DPE_VALIDATION` |
+| `ValidationError`，及其子类 `UndefinedFieldError`、`FileTypeUnknownError`、`IntegerOutOfRangeError`、`InvalidUnicodeError`（I-JSON：孤立代理项） | `DPE_VALIDATION` |
 | `CategoryUnknownError` | `DPE_CATEGORY_UNKNOWN` |
 | `ContractUnsupportedError` | `DPE_CONTRACT_UNSUPPORTED` |
+
+本包接收的是已解析的对象。core §2.8 第 0 步要求整个请求体是 I-JSON，这一步先于契约头判定，由服务端负责：
+
+- **重复键**：解析时用拒绝重复键的解析器，例如 `json.loads(..., object_pairs_hook=...)`；
+- **孤立代理项**：解析后先用 `has_invalid_unicode(body)` 检查整个请求体（含 `staging_session` 等信封字段），命中即返回 `DPE_VALIDATION`。Python 的 `json` 会放行孤立代理项。

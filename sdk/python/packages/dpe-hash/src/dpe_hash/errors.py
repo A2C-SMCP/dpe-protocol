@@ -15,6 +15,7 @@ __all__ = [
     "DpeHashError",
     "FileTypeUnknownError",
     "IntegerOutOfRangeError",
+    "InvalidUnicodeError",
     "UndefinedFieldError",
     "ValidationError",
 ]
@@ -43,6 +44,10 @@ class UndefinedFieldError(ValidationError):
 
 class FileTypeUnknownError(ValidationError):
     """file_type 不在封闭枚举内（core.md §2.5）。"""
+
+
+class InvalidUnicodeError(ValidationError):
+    """报文不是 I-JSON：字符串或对象键含孤立代理项（core §2.8 第 0 步，先于其他所有校验）。"""
 
 
 class IntegerOutOfRangeError(ValidationError):

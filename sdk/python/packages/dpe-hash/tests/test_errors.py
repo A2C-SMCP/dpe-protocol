@@ -12,6 +12,7 @@ from dpe_hash import (
     DpeHashError,
     FileTypeUnknownError,
     IntegerOutOfRangeError,
+    InvalidUnicodeError,
     UndefinedFieldError,
     ValidationError,
     children,
@@ -97,9 +98,9 @@ def _raises(error: type[DpeHashError], code: str, path: str, fn: Any, *args: Any
             "element",
         ),
         (
-            ValidationError,
+            InvalidUnicodeError,
             "DPE_VALIDATION",
-            "/text",
+            "",
             {"category": "Title", "text": "bad \ud800"},
             "element",
         ),
@@ -229,7 +230,7 @@ def test_jcs_rejects_non_json() -> None:
     _raises(ValidationError, "DPE_VALIDATION", "", jcs, math.inf)
     _raises(IntegerOutOfRangeError, "DPE_VALIDATION", "/0", jcs, [-(2**53)])
     _raises(ValidationError, "DPE_VALIDATION", "", jcs, {1: "x"})
-    _raises(ValidationError, "DPE_VALIDATION", "/\ud800", jcs, {"\ud800": 1})
+    _raises(InvalidUnicodeError, "DPE_VALIDATION", "/\ud800", jcs, {"\ud800": 1})
     assert jcs(2**53 - 1) == "9007199254740991"
 
 
@@ -241,3 +242,55 @@ def test_parse_hash_contracts_must_be_a_collection() -> None:
         parse_hash(":" + "a" * 64, ("dpe1",))
     with pytest.raises(ContractUnsupportedError):
         parse_hash("dpe9:" + "a" * 64, ("dpe1", "dpe9"))  # 本包不认识的契约
+
+
+def test_expanded_view_checks_document_fields_before_pages() -> None:
+    """展开视图同样按 core §2.8：文档自身字段先于各页，页自身字段先于元素。"""
+    bad_element = {"category": "Video"}
+    _raises(
+        FileTypeUnknownError,
+        "DPE_VALIDATION",
+        "/file_type",
+        document_hashes,
+        {"file_type": "markdown", "pages": [{"elements": [bad_element]}]},
+    )
+    _raises(
+        IntegerOutOfRangeError,
+        "DPE_VALIDATION",
+        "/pages/0/page_metadata/n",
+        document_hashes,
+        {"file_type": "md", "pages": [{"page_metadata": {"n": 2**53}, "elements": [bad_element]}]},
+    )
+
+
+def test_ijson_precedes_category_and_contract_checks() -> None:
+    """core §2.8 第 0 步：孤立代理项先于 category / 子 hash 前缀判定，位置为对象自身。"""
+    _raises(
+        InvalidUnicodeError,
+        "DPE_VALIDATION",
+        "",
+        object_hash,
+        {"category": "Video", "text": "\ud800"},
+        "element",
+    )
+    _raises(InvalidUnicodeError, "DPE_VALIDATION", "", page_hash, {"title": "\ud800"}, ["a" * 64])
+    _raises(
+        InvalidUnicodeError,
+        "DPE_VALIDATION",
+        "",
+        document_hashes,
+        {"file_type": "md", "pages": [{"elements": [{"category": "Video", "text": "\ud800"}]}]},
+    )
+
+
+def test_required_field_null_is_missing() -> None:
+    _raises(ValidationError, "DPE_VALIDATION", "", object_hash, {"elements": None}, "page")
+    _raises(ValidationError, "DPE_VALIDATION", "", object_hash, {"category": None}, "element")
+    _raises(
+        ValidationError,
+        "DPE_VALIDATION",
+        "",
+        object_hash,
+        {"file_type": None, "pages": []},
+        "document",
+    )

@@ -15,9 +15,14 @@ from collections.abc import Mapping
 from json.encoder import encode_basestring
 from typing import Any
 
-from dpe_hash.errors import DpeHashError, IntegerOutOfRangeError, ValidationError
+from dpe_hash.errors import (
+    DpeHashError,
+    IntegerOutOfRangeError,
+    InvalidUnicodeError,
+    ValidationError,
+)
 
-__all__ = ["jcs"]
+__all__ = ["has_invalid_unicode", "jcs"]
 
 _MAX_SAFE_INTEGER = 2**53 - 1
 _SURROGATE = re.compile("[\ud800-\udfff]")
@@ -30,6 +35,24 @@ class _Invalid(Exception):
         self.error = error
         self.message = message
         self.segments: list[str | int] = []
+
+
+def has_invalid_unicode(value: Any) -> bool:
+    """I-JSON 检查：字符串或对象键中是否含孤立代理项（core §2.8 第 0 步）。"""
+    if isinstance(value, str):
+        return _SURROGATE.search(value) is not None
+    if isinstance(value, Mapping):
+        return any(
+            (isinstance(k, str) and _SURROGATE.search(k) is not None) or has_invalid_unicode(v)
+            for k, v in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(has_invalid_unicode(v) for v in value)
+    return False
+
+
+def utf16_key(key: str) -> bytes:
+    return key.encode("utf-16-be", "surrogatepass")  # 大端字节序比较 = UTF-16 码元序
 
 
 def pointer(*segments: str | int) -> str:
@@ -76,14 +99,10 @@ def _number(x: int | float) -> str:
 
 def _string(s: str) -> str:
     if _SURROGATE.search(s):
-        raise _Invalid(ValidationError, "字符串含孤立代理项，不是合法的 Unicode")
+        raise _Invalid(InvalidUnicodeError, "字符串含孤立代理项，不是合法的 Unicode")
     # 标准库（ensure_ascii=False 时）的转义恰好是 JCS 要求的集合：
     # " \ \b \f \n \r \t 与其余 < 0x20 的小写 \u00XX，其他字符原样输出
     return encode_basestring(s)
-
-
-def _utf16_key(key: str) -> bytes:
-    return key.encode("utf-16-be")  # 大端字节序比较 = UTF-16 码元序
 
 
 def _serialize(value: Any, strip_nulls: bool) -> str:
@@ -104,11 +123,11 @@ def _serialize(value: Any, strip_nulls: bool) -> str:
                     ValidationError, f"对象的键必须是字符串，实际为 {type(key).__name__}"
                 )
             if _SURROGATE.search(key):
-                err = _Invalid(ValidationError, "键含孤立代理项，不是合法的 Unicode")
+                err = _Invalid(InvalidUnicodeError, "键含孤立代理项，不是合法的 Unicode")
                 err.segments.append(key)
                 raise err
         keys = sorted(
-            (k for k, v in value.items() if not (strip_nulls and v is None)), key=_utf16_key
+            (k for k, v in value.items() if not (strip_nulls and v is None)), key=utf16_key
         )
         parts = []
         for key in keys:

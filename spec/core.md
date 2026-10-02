@@ -1,6 +1,6 @@
 # DPE Core v1（抽象模型与操作语义）
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30 修订
+> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 DPE（Document / Page / Element）是把任意格式文档的**内容面**——面向 LLM 阅读的内容——**正确、增量、可靠**地投递到一个远端的标准协议。本文定义与传输无关的核心语义；v1 唯一的规范性传输绑定是 HTTP（[bindings/http.md](bindings/http.md)）；内容身份的计算见 [hash-contract-1.md](hash-contract-1.md)。
@@ -26,7 +26,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 
 ## 2. 数据模型
 
-三层对象都是**封闭 schema**：每个字段 MUST 显式属于下文定义，未定义的字段 MUST 拒绝（`DPE_VALIDATION`）。可选字段缺省与 null 等价（契约 1 §3.2）。
+三层对象都是**封闭 schema**：每个字段 MUST 显式属于下文定义，未定义的字段 MUST 拒绝（`DPE_VALIDATION`）。可选字段缺省与 null 等价（契约 1 §3.2）。校验顺序见 §2.8。
 
 ### 2.1 Document object（文档）
 
@@ -82,11 +82,48 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 
 ### 2.6 数值
 
-对象中任何位置的整数字面量（不含小数点与指数）的绝对值 MUST NOT 超过 2^53−1（与 JCS 一致，契约 1 §3.3；超大 id 请用字符串），否则 `DPE_VALIDATION`；带小数点或指数的数字按 IEEE-754 double 处理。
+对象中任何位置的整数字面量（不含小数点与指数）的绝对值 MUST NOT 超过 2^53−1（与 JCS 一致，契约 1 §3.3；超大 id 请用字符串），否则 `DPE_VALIDATION`；带小数点或指数的数字按 IEEE-754 double 处理，超出 double 范围的（如 `1e400`）同样 `DPE_VALIDATION`。数值检查属于 §2.8 第 4 步。
 
 ### 2.7 内容等价
 
 hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内容。契约 1 下的等价关系恰好包括：值为 null 的键与缺省等价；metadata 字段缺省与 `{}` 等价；JSON 数字按 JCS 规范化（如 `1.0` 与 `1`）。等价关系之外的任何差异都是内容变化——包括空串 `""` 与 null、Unicode 与 URL 的不同写法。服务端读回时 MAY 返回等价类中的任一表示，SHOULD 返回最近一次写入的原样表示。
+
+### 2.8 校验顺序
+
+一个对象可能同时有多处违例。为使任何实现对同一输入给出**相同的错误码**，校验 MUST 按以下顺序进行，遇到第一处违例即拒绝：
+
+0. **I-JSON**：报文 MUST 是 [I-JSON](https://www.rfc-editor.org/rfc/rfc7493)，否则 `DPE_VALIDATION`。本步对整个报文做检查，先于下列所有步骤，只检查两件事：
+   - 字符串与对象键都是合法的 Unicode 字符序列，不含孤立代理项；
+   - 同一对象内没有重复的键。
+
+   本步对应解析阶段。常见解析器默认放行重复键，有的也放行孤立代理项，实现 MUST 选用或配置能拒绝这两类输入的解析器（如 Python `json` 的 `object_pairs_hook`、serde 的自定义 `Visitor`）。
+
+   数值范围不在本步检查，按第 4 步执行（§2.6）。解析器 MUST NOT 在解析阶段因数值越界而拒绝报文（如 serde_json 需启用 `arbitrary_precision`），以便按顺序在出错的值上报告。
+1. **形状**：值必须是 JSON 对象，必有字段（元素的 `category`，页对象的 `elements`，文档对象的 `file_type` 与 `pages`）必须出现且不为 null（null 视同缺省，契约 1 §3.2），否则 `DPE_VALIDATION`。
+2. **category**（仅元素对象）：不是字符串 → `DPE_VALIDATION`；不在契约 1 §4.1 的封闭枚举内 → `DPE_CATEGORY_UNKNOWN`。category 先于封闭 schema 判定，因为允许哪些字段由 category 决定。
+3. **封闭 schema**：出现未定义的字段 → `DPE_VALIDATION`。其 category 未允许的内容字段同样算未定义字段；字段值为 null 也同样拒绝。
+4. **逐字段**：按 §2.1–§2.3 表中的字段顺序逐个校验，一个字段完整校验后才校验下一个字段。完整校验包括：
+   - 值的类型；
+   - file_type 枚举（§2.5）；
+   - `image_blob` 的引用格式（契约 1 §1）；
+   - metadata 中的全部值（§2.6）；
+   - 子对象 hash 列表的每一项，按数组顺序。每一项依次判定：
+     1. 是字符串，否则 `DPE_VALIDATION`；
+     2. 带 `:` 分隔的前缀，且前缀是受支持的契约，否则 `DPE_CONTRACT_UNSUPPORTED`（契约 1 §1）；
+     3. 前缀之后是 64 位小写 hex，否则 `DPE_VALIDATION`；
+     4. 前缀与本对象的契约相同，否则 `DPE_VALIDATION`（契约混用，契约 1 §5）。
+
+一次请求携带多个对象时，按「文档对象 → 页对象（按数组顺序）→ 元素对象（按数组顺序）」逐个校验（commit 见 §3.3 第 2 步）。
+
+**违例位置**（RFC 6901 JSON Pointer，相对于被校验的对象）：
+- 第 0、1 步：对象自身（`""`）；
+- 第 2 步：`/category`；
+- 第 3 步：未定义字段的键。有多个未定义字段时，取 UTF-16 码元序最小的键；
+- 第 4 步：出错的字段。metadata 中的值出错时，指向该值本身（如 `/metadata/a/0`）；子 hash 列表出错时，指向出错的那一项（如 `/elements/2`）；该字段本身类型不对时，指向字段（如 `/elements`）。
+
+违例位置是 SDK 与诊断层面的要求，用于开发者定位问题。HTTP problem 体不携带违例位置（HTTP 绑定 §5）。
+
+按此顺序，错误码在各实现间唯一确定。只有一处违例时，违例位置也唯一确定。多处违例且错误码相同时，报告哪一处由实现决定。一致性向量 `vectors/invalid_objects.json` 给出规范性用例：错误码必须一致；用例声明了位置时，位置也必须一致。
 
 ## 3. 操作
 
@@ -137,7 +174,11 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 
 0. **传输层**（与文档状态无关）：请求体超过 `max_payload_bytes` → `DPE_PAYLOAD_TOO_LARGE`。认证（401）、限流（`DPE_RATE_LIMITED`）、不可用（`DPE_UNAVAILABLE`）同属传输层，可在任何时刻发生，不在求值顺序之内。
 1. **授权**（§5 总则）：调用者对该 URI 的写授权；带 `force` 时还包括 force 权限 → `DPE_FORBIDDEN`。
-2. **报文校验**（§2）：契约声明（`DPE_CONTRACT_UNSUPPORTED`）；文档对象，以及每个内联页对象、内联元素对象的字段校验，force 与 `base_hash` / `if_absent` 不得并存（`DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN`）。
+2. **报文校验**（§2），依次为：
+   1. 整个请求体是 I-JSON（§2.8 第 0 步，`DPE_VALIDATION`）；
+   2. 契约声明（`DPE_CONTRACT_UNSUPPORTED`）；
+   3. 按 §2.8 校验文档对象，然后是内联页对象（按数组顺序），然后是内联元素对象（按数组顺序），错误码为 `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`；
+   4. force 与 `base_hash` / `if_absent` 不得并存（`DPE_VALIDATION`）。
 3. **前置条件存在性**：既无 `base_hash`、`if_absent` 也无 `force` → `DPE_PRECONDITION_REQUIRED`（即使内容未变也拒绝，保持"写操作必须带前置条件"的形式要求）。
 4. **unchanged**：对文档对象算出本次提交的 doc_hash（只需文档对象）；当前 doc_hash 已等于它时返回 `unchanged`，**不论前置条件是否满足**（§5.2），MUST NOT 产生任何写入或学习动作，也不处理内联对象、不检查也不消费所引用的暂存会话。
 5. **前置条件求值**（§5.1）→ `DPE_PRECONDITION_FAILED` / `DPE_ALREADY_EXISTS` / `DPE_NOT_FOUND`。

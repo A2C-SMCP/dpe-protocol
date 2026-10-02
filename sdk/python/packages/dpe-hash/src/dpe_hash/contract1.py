@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Collection, Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Collection, Mapping, Sequence
+from typing import Any, TypeVar
 
 from dpe_hash.constants import (
     CATEGORY_CONTENT_FIELDS,
@@ -35,10 +35,11 @@ from dpe_hash.errors import (
     CategoryUnknownError,
     ContractUnsupportedError,
     FileTypeUnknownError,
+    InvalidUnicodeError,
     UndefinedFieldError,
     ValidationError,
 )
-from dpe_hash.jcs import canonical, pointer
+from dpe_hash.jcs import canonical, has_invalid_unicode, pointer, utf16_key
 from dpe_hash.models import (
     DocumentFields,
     DocumentHashes,
@@ -150,25 +151,30 @@ def _mapping(value: object, at: str, what: str) -> Mapping[str, Any]:
 
 
 def _closed(obj: Mapping[str, Any], allowed: frozenset[str], at: str, what: str) -> None:
-    extra = sorted(str(k) for k in obj if k not in allowed)
+    extra = sorted((str(k) for k in obj if k not in allowed), key=utf16_key)
     if extra:
         raise UndefinedFieldError(f"{what}不允许字段 {extra[0]!r}", at + pointer(extra[0]))
 
 
-def _opt_str(obj: Mapping[str, Any], field: str, at: str) -> str | None:
+def _string_part(obj: Mapping[str, Any], field: str, at: str) -> str | None:
+    """可选字符串字段的 JCS 片段；缺省或 null 返回 None（不进原像）。"""
     value = obj.get(field)
-    if value is not None and not isinstance(value, str):
+    if value is None:
+        return None
+    if not isinstance(value, str):
         raise ValidationError(
             f"{field} 必须是字符串或 null，实际为 {type(value).__name__}", at + pointer(field)
         )
-    return value
+    return canonical(value, at=at + pointer(field))
 
 
-def _metadata(obj: Mapping[str, Any], field: str, at: str) -> Mapping[str, Any]:
+def _metadata_part(obj: Mapping[str, Any], field: str, at: str) -> str:
+    """metadata 字段的 JCS 片段：缺省视同 ``{}``，递归删 null 键，并完整校验全部值（§3.2）。"""
     value = obj.get(field)
     if value is None:
-        return {}  # 缺省视同 {}（§3.2）
-    return _mapping(value, at + pointer(field), f"{field} ")
+        return "{}"
+    _mapping(value, at + pointer(field), f"{field} ")
+    return canonical(value, strip_nulls=True, at=at + pointer(field))
 
 
 def _hash_list(value: object, contract: str, at: str) -> list[str]:
@@ -191,76 +197,102 @@ def _hash_list(value: object, contract: str, at: str) -> list[str]:
     return list(value)
 
 
+def _hash_list_part(value: object, contract: str, at: str) -> str:
+    """子 hash 列表的 JCS 片段（已校验的 hash 值只含 ASCII 字母数字与冒号，无需转义）。"""
+    return "[" + ",".join(f'"{h}"' for h in _hash_list(value, contract, at)) + "]"
+
+
+def _assemble(parts: Mapping[str, str]) -> str:
+    """把各字段的 JCS 片段拼成对象原像。键都是规范定义的 ASCII 字段名，码点序即 UTF-16 码元序。"""
+    return "{" + ",".join(f'"{k}":{parts[k]}' for k in sorted(parts)) + "}"
+
+
+# 以下按 core.md §2.8 的顺序校验：形状 → category（元素）→ 封闭 schema → 按表中字段顺序
+# 逐字段完整校验。每个字段校验通过即产出 JCS 片段，最后拼装原像，不对对象做第二遍遍历。
+
+
 def _element_preimage(element: object, at: str) -> str:
     el = _mapping(element, at, "元素对象")
-    if "category" not in el:
+    if el.get("category") is None:  # 必有字段为 null 视同缺省（§2.8 第 1 步）
         raise ValidationError("元素对象缺少 category", at)
     category = el["category"]
     if not isinstance(category, str):
         raise ValidationError("category 必须是字符串", at + pointer("category"))
     allowed = CATEGORY_CONTENT_FIELDS.get(category)
-    if allowed is None:  # 封闭枚举，禁止退化为 text-only（§4）
+    if allowed is None:  # 封闭枚举，禁止退化为 text-only（§4）；先于封闭 schema（§2.8）
         raise CategoryUnknownError(f"未知 category：{category!r}", at + pointer("category"))
     _closed(el, frozenset({"category", "metadata", *allowed}), at, f"{category} 元素")
-    obj: dict[str, Any] = {"category": category}
+    parts = {"category": canonical(category, at=at + pointer("category"))}
     for field in allowed:
-        value = _opt_str(el, field, at)
-        if value is not None:
-            obj[field] = value
-    if "image_blob" in obj:
-        _blob_hex(obj["image_blob"], at + pointer("image_blob"))
-    obj["metadata"] = _metadata(el, "metadata", at)
-    return canonical(obj, strip_nulls=True, at=at)
+        part = _string_part(el, field, at)
+        if part is None:
+            continue
+        if field == "image_blob":
+            _blob_hex(el[field], at + pointer(field))
+        parts[field] = part
+    parts["metadata"] = _metadata_part(el, "metadata", at)
+    return _assemble(parts)
 
 
-def _page_preimage(
-    page: Mapping[str, Any], element_hashes: object, contract: str, at: str, *, with_children: bool
-) -> str:
-    """``with_children``：``page`` 自带 ``elements`` 键（线上原像或展开视图），其值由调用方处理。"""
-    allowed = _PAGE_FIELDS | {"elements"} if with_children else _PAGE_FIELDS
+def _page_parts(page: Mapping[str, Any], at: str, *, with_children: bool) -> dict[str, str]:
+    """页对象除 ``elements`` 外的字段片段。``with_children``：``page`` 自带 ``elements`` 键
+    （线上原像或展开视图），其值由调用方处理。"""
     if not with_children and "elements" in page:
         raise UndefinedFieldError(
             "page_hash 的页字段不得带 elements（子 hash 单独传入；线上原像请用 object_hash）",
             at + pointer("elements"),
         )
-    _closed(page, allowed, at, "页对象")
-    obj: dict[str, Any] = {}
-    title = _opt_str(page, "title", at)
+    _closed(page, _PAGE_FIELDS | {"elements"} if with_children else _PAGE_FIELDS, at, "页对象")
+    parts: dict[str, str] = {}
+    title = _string_part(page, "title", at)
     if title is not None:
-        obj["title"] = title
-    obj["page_metadata"] = _metadata(page, "page_metadata", at)
-    obj["elements"] = _hash_list(element_hashes, contract, at + pointer("elements"))
-    return canonical(obj, strip_nulls=True, at=at)
+        parts["title"] = title
+    parts["page_metadata"] = _metadata_part(page, "page_metadata", at)
+    return parts
 
 
-def _document_preimage(
-    document: Mapping[str, Any], page_hashes: object, contract: str, at: str, *, with_children: bool
+def _page_preimage(
+    page: Mapping[str, Any], element_hashes: object, contract: str, at: str, *, with_children: bool
 ) -> str:
-    allowed = _DOCUMENT_FIELDS | {"pages"} if with_children else _DOCUMENT_FIELDS
+    parts = _page_parts(page, at, with_children=with_children)
+    parts["elements"] = _hash_list_part(element_hashes, contract, at + pointer("elements"))
+    return _assemble(parts)
+
+
+def _document_parts(document: Mapping[str, Any], at: str, *, with_children: bool) -> dict[str, str]:
+    """文档对象除 ``pages`` 外的字段片段（``with_children`` 同 ``_page_parts``）。"""
+    if document.get("file_type") is None:  # 形状先于封闭 schema；null 视同缺省
+        raise ValidationError("文档对象缺少 file_type", at)
     if not with_children and "pages" in document:
         raise UndefinedFieldError(
             "doc_hash 的文档字段不得带 pages（子 hash 单独传入；线上原像请用 object_hash）",
             at + pointer("pages"),
         )
+    allowed = _DOCUMENT_FIELDS | {"pages"} if with_children else _DOCUMENT_FIELDS
     _closed(document, allowed, at, "文档对象")
-    if "file_type" not in document:
-        raise ValidationError("文档对象缺少 file_type", at)
     file_type = document["file_type"]
     if not isinstance(file_type, str):
         raise ValidationError("file_type 必须是字符串", at + pointer("file_type"))
     if file_type not in _FILE_TYPES:
         raise FileTypeUnknownError(f"未知 file_type：{file_type!r}", at + pointer("file_type"))
-    obj: dict[str, Any] = {"file_type": file_type}
-    title = _opt_str(document, "title", at)
+    parts = {"file_type": canonical(file_type)}
+    title = _string_part(document, "title", at)
     if title is not None:
-        obj["title"] = title
-    obj["doc_metadata"] = _metadata(document, "doc_metadata", at)
-    obj["pages"] = _hash_list(page_hashes, contract, at + pointer("pages"))
-    return canonical(obj, strip_nulls=True, at=at)
+        parts["title"] = title
+    parts["doc_metadata"] = _metadata_part(document, "doc_metadata", at)
+    return parts
+
+
+def _document_preimage(
+    document: Mapping[str, Any], page_hashes: object, contract: str, at: str, *, with_children: bool
+) -> str:
+    parts = _document_parts(document, at, with_children=with_children)
+    parts["pages"] = _hash_list_part(page_hashes, contract, at + pointer("pages"))
+    return _assemble(parts)
 
 
 def _required(obj: Mapping[str, Any], field: str, at: str, what: str) -> Any:
-    if field not in obj:
+    if obj.get(field) is None:  # null 视同缺省（§2.8 第 1 步）
         raise ValidationError(f"{what}缺少 {field}", at)
     return obj[field]
 
@@ -280,6 +312,27 @@ def _preimage(obj: object, kind: ObjectKind, contract: str) -> str:
     raise ValueError(f"未知的对象层级：{kind!r}")
 
 
+_T = TypeVar("_T")
+
+
+def _ijson_first(top: object, compute: Callable[[], _T]) -> _T:
+    """core §2.8 第 0 步：I-JSON 违例先于其他所有校验，位置为对象自身。
+
+    孤立代理项在逐字段序列化时才会遇到。若在此之前已因 ``DPE_CATEGORY_UNKNOWN`` /
+    ``DPE_CONTRACT_UNSUPPORTED`` 失败，再整体扫描一次输入；只在出错时扫描，合法输入不多花一遍。
+    （同为 ``DPE_VALIDATION`` 的更早违例无需改判：多处违例时报告哪一处由实现决定。）
+    """
+    message = "字符串或对象键含孤立代理项，报文不是 I-JSON（core §2.8 第 0 步）"
+    try:
+        return compute()
+    except InvalidUnicodeError:
+        raise InvalidUnicodeError(message) from None
+    except (CategoryUnknownError, ContractUnsupportedError):
+        if has_invalid_unicode(top):
+            raise InvalidUnicodeError(message) from None
+        raise
+
+
 # ---------------------------------------------------------------------------
 # 公开入口
 # ---------------------------------------------------------------------------
@@ -288,7 +341,7 @@ def _preimage(obj: object, kind: ObjectKind, contract: str) -> str:
 def content_hash(element: ElementObject, contract: str = CONTRACT) -> str:
     """元素对象的 ``content_hash``（契约 1 §4）。"""
     salt = _salt(contract)
-    return _digest(_element_preimage(element, ""), contract, salt)
+    return _digest(_ijson_first(element, lambda: _element_preimage(element, "")), contract, salt)
 
 
 def page_hash(page: PageFields, element_hashes: Sequence[str], contract: str = CONTRACT) -> str:
@@ -298,8 +351,11 @@ def page_hash(page: PageFields, element_hashes: Sequence[str], contract: str = C
     路径记为 ``/elements/<i>``。
     """
     salt = _salt(contract)
-    pre = _page_preimage(
-        _mapping(page, "", "页对象"), element_hashes, contract, "", with_children=False
+    pre = _ijson_first(
+        (page, element_hashes),
+        lambda: _page_preimage(
+            _mapping(page, "", "页对象"), element_hashes, contract, "", with_children=False
+        ),
     )
     return _digest(pre, contract, salt)
 
@@ -311,8 +367,11 @@ def doc_hash(document: DocumentFields, page_hashes: Sequence[str], contract: str
     ``/pages/<i>``。
     """
     salt = _salt(contract)
-    pre = _document_preimage(
-        _mapping(document, "", "文档对象"), page_hashes, contract, "", with_children=False
+    pre = _ijson_first(
+        (document, page_hashes),
+        lambda: _document_preimage(
+            _mapping(document, "", "文档对象"), page_hashes, contract, "", with_children=False
+        ),
     )
     return _digest(pre, contract, salt)
 
@@ -324,7 +383,7 @@ def object_hash(obj: Mapping[str, Any], kind: ObjectKind, contract: str = CONTRA
     对同一文档，结果与 ``content_hash`` / ``page_hash`` / ``doc_hash`` 逐层相等。
     """
     salt = _salt(contract)
-    return _digest(_preimage(obj, kind, contract), contract, salt)
+    return _digest(_ijson_first(obj, lambda: _preimage(obj, kind, contract)), contract, salt)
 
 
 def children(obj: Mapping[str, Any], kind: ObjectKind, contract: str = CONTRACT) -> list[str]:
@@ -334,7 +393,7 @@ def children(obj: Mapping[str, Any], kind: ObjectKind, contract: str = CONTRACT)
     引用（没有则为空）。按出现顺序返回，重复保留，去重由调用方决定。
     """
     _salt(contract)
-    _preimage(obj, kind, contract)
+    _ijson_first(obj, lambda: _preimage(obj, kind, contract))
     if kind == "element":
         blob = obj.get("image_blob")
         return [blob] if isinstance(blob, str) else []
@@ -350,28 +409,36 @@ def document_hashes(document: ExpandedDocument, contract: str = CONTRACT) -> Doc
     的原位重算（按任一受支持契约重算已存的骨架与内容，结果按位置一一对应）。
     """
     salt = _salt(contract)
+    return _ijson_first(document, lambda: _document_hashes(document, contract, salt))
+
+
+def _document_hashes(document: object, contract: str, salt: bytes) -> DocumentHashes:
+    """与线上请求同序（core §2.8）：文档自身字段 → 各页自身字段 → 各页的元素。"""
     doc = _mapping(document, "", "文档")
     pages = _required(doc, "pages", "", "文档")
+    doc_parts = _document_parts(doc, "", with_children=True)
     if not isinstance(pages, (list, tuple)):
         raise ValidationError("pages 必须是数组", pointer("pages"))
-    out_pages: list[PageHashes] = []
-    page_hashes: list[str] = []
+    page_inputs: list[tuple[str, dict[str, str], Sequence[object]]] = []
     for i, raw_page in enumerate(pages):
         at = pointer("pages", i)
         page = _mapping(raw_page, at, "页")
         elements = _required(page, "elements", at, "页")
+        page_parts = _page_parts(page, at, with_children=True)
         if not isinstance(elements, (list, tuple)):
             raise ValidationError("elements 必须是数组", at + pointer("elements"))
+        page_inputs.append((at, page_parts, elements))
+    out_pages: list[PageHashes] = []
+    page_hashes: list[str] = []
+    for at, page_parts, elements in page_inputs:
         element_hashes = [
             _digest(_element_preimage(el, at + pointer("elements", j)), contract, salt)
             for j, el in enumerate(elements)
         ]
-        ph = _digest(
-            _page_preimage(page, element_hashes, contract, at, with_children=True), contract, salt
-        )
+        page_parts["elements"] = _hash_list_part(element_hashes, contract, at + pointer("elements"))
+        ph = _digest(_assemble(page_parts), contract, salt)
         page_hashes.append(ph)
         out_pages.append({"page_hash": ph, "elements": element_hashes})
-    dh = _digest(
-        _document_preimage(doc, page_hashes, contract, "", with_children=True), contract, salt
-    )
+    doc_parts["pages"] = _hash_list_part(page_hashes, contract, pointer("pages"))
+    dh = _digest(_assemble(doc_parts), contract, salt)
     return {"doc_hash": dh, "pages": out_pages}

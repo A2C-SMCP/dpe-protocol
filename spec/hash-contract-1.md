@@ -1,6 +1,6 @@
 # DPE Hash 契约 1（`dpe1`）
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30 修订
+> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何合规实现都必须逐字节算出相同的 `content_hash` / `page_hash` / `doc_hash`。doc_hash 同时是文档的版本令牌（core.md §1）。契约版本与投递协议版本是两个独立的轴；本文是契约 **1**，值前缀为 `dpe1:`。
@@ -64,7 +64,7 @@ JCS 实现的正确性由 `kind: "jcs"` 向量单独校验；向量 `preimage_ba
 
 ### 3.4 层间不会混淆
 
-三层对象都是**封闭 schema**：出现未定义的字段 MUST 拒绝（core.md §2）。三层各有一个必有、且只有它有的键——元素的 `category`、页对象的 `elements`、文档对象的 `pages`——因此不同层的对象不可能有相同的原像，不需要额外的类型标签（作用相当于 Git 的对象头）。
+三层对象都是**封闭 schema**：出现未定义的字段 MUST 拒绝（core.md §2）。三层各有一个必有、且只有它有的键——元素的 `category`、页对象的 `elements`、文档对象的 `pages`——因此不同层的对象不可能有相同的原像，不需要额外的类型标签（作用相当于 Git 的对象头）。多处违例时的校验顺序与错误码见 core.md §2.8。
 
 ## 4. `content_hash`（元素对象）
 

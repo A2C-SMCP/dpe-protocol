@@ -77,7 +77,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 3. 核心模型
 
-> **修订注记**：已按 §0.1 与 Issue #4、#6 修订——文档是三层同构 tree（根对象 / 页对象 / 内容对象，各自 `sha256(JCS)`，对应 Git 的 tree / blob）；页没有页号，页序即数组顺序（#6 推翻 #4 B2 的"按 number 升序"）；骨架按页增量传输；**revision 取消，doc_hash 即版本令牌**（§0.1 P4）；Attributes 移出 DPE 核心（§0.1 P1）；会话只绑定 `(file_uri, 调用者身份)`；根对象有可选 `title`，与页对称（撤回 #3 S6）；术语按 DPE 对齐（#30）：根对象改称**文档对象**（Document object，线上字段 `root` → `document`）、内容对象改称**元素对象**（Element object），hash 名称不变。以 [spec/core.md](../../spec/core.md) §1–§3 为准；下文保留作为历史。
+> **修订注记**：已按 §0.1 与 Issue #4、#6 修订——文档是三层同构 tree（根对象 / 页对象 / 内容对象，各自 `sha256(JCS)`，对应 Git 的 tree / blob）；页没有页号，页序即数组顺序（#6 推翻 #4 B2 的"按 number 升序"）；骨架按页增量传输；**revision 取消，doc_hash 即版本令牌**（§0.1 P4）；Attributes 移出 DPE 核心（§0.1 P1）；会话只绑定 `(file_uri, 调用者身份)`；根对象有可选 `title`，与页对称（撤回 #3 S6）；术语按 DPE 对齐（#30）：根对象改称**文档对象**（Document object，线上字段 `root` → `document`）、内容对象改称**元素对象**（Element object），hash 名称不变。新增校验顺序（#31，core §2.8）：多处违例时错误码跨实现唯一，含 I-JSON 前置、子 hash 逐项判定顺序与违例位置规则，并以拒绝类向量固定。以 [spec/core.md](../../spec/core.md) §1–§3 为准；下文保留作为历史。
 
 | 概念 | 定义 |
 | --- | --- |
