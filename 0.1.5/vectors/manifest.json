@@ -1,0 +1,225 @@
+{
+  "contract": "dpe1",
+  "spec": "spec/hash-contract-1.md",
+  "status": "draft",
+  "file_types": [
+    "bmp",
+    "csv",
+    "doc",
+    "docx",
+    "eml",
+    "epub",
+    "heic",
+    "html",
+    "jpg",
+    "json",
+    "md",
+    "msg",
+    "ndjson",
+    "odt",
+    "org",
+    "pdf",
+    "png",
+    "ppt",
+    "pptx",
+    "rst",
+    "rtf",
+    "tiff",
+    "tsv",
+    "txt",
+    "wav",
+    "xls",
+    "xlsx",
+    "xml",
+    "zip",
+    "java_repo",
+    "python_repo",
+    "javascript_repo",
+    "typescript_repo",
+    "unk",
+    "empty",
+    "tfchat",
+    "jira_project",
+    "jira_issue"
+  ],
+  "category_content_fields": {
+    "Address": [
+      "text"
+    ],
+    "CheckBox": [
+      "text"
+    ],
+    "CodeSnippet": [
+      "text"
+    ],
+    "CompositeElement": [
+      "text"
+    ],
+    "EmailAddress": [
+      "text"
+    ],
+    "FigureCaption": [
+      "text"
+    ],
+    "Footer": [
+      "text"
+    ],
+    "FormKeysValues": [
+      "text"
+    ],
+    "Formula": [
+      "text",
+      "text_as_html"
+    ],
+    "Header": [
+      "text"
+    ],
+    "Image": [
+      "text",
+      "image_blob",
+      "image_mime_type"
+    ],
+    "ListItem": [
+      "text"
+    ],
+    "NarrativeText": [
+      "text"
+    ],
+    "PageBreak": [
+      "text"
+    ],
+    "PageNumber": [
+      "text"
+    ],
+    "Table": [
+      "text",
+      "text_as_html"
+    ],
+    "TableChunk": [
+      "text"
+    ],
+    "Title": [
+      "text"
+    ],
+    "UncategorizedText": [
+      "text"
+    ],
+    "tfchat": [
+      "text"
+    ]
+  },
+  "provenance": {
+    "generator": "scripts/gen_vectors.py",
+    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md"
+  },
+  "files": [
+    {
+      "name": "all_text_categories.json",
+      "sha256": "e5befd384e2e4612e107eb73e85726a5654b4e54c97ec67ae02346334ff8649d"
+    },
+    {
+      "name": "cross_page_move.json",
+      "sha256": "a346ecb11d9221942ccd883cc5a0743353f988b8a8ddab9eeae7079c826a4fb5"
+    },
+    {
+      "name": "doc_title.json",
+      "sha256": "da4a675ffe52a67548ce7680dac765ef9d17396655e745bbb2d3fd0d26b98b33"
+    },
+    {
+      "name": "duplicate_different_coordinates.json",
+      "sha256": "d923604d3c0d117ed68b8e5fb0f64b354516ec9b6666e05b50d5c1a71ed4203c"
+    },
+    {
+      "name": "duplicate_elements.json",
+      "sha256": "22f5ecb94250e8bc5ea793f973cddc74c3c20085c53a977e9fc8e43b1fadc75a"
+    },
+    {
+      "name": "duplicate_pages.json",
+      "sha256": "23e5ee393e2c0d7e27876ba2eec3264a1cd2ac0a466f2836456de95297b3ec23"
+    },
+    {
+      "name": "element_reorder.json",
+      "sha256": "a408f3af4ecb7f08410a7e1d5f51e0a2c86dc0dbf37691aeee3f37d933f18864"
+    },
+    {
+      "name": "element_text_basic.json",
+      "sha256": "c3a07ab8edcd737e278ee9248cdf41de3f7449a90751b186591b233ab7625e4a"
+    },
+    {
+      "name": "empty_document.json",
+      "sha256": "e54acccd8860e596de4efbd9afd340f33991eac834550ecd0d96ad3857a50082"
+    },
+    {
+      "name": "file_type_identity.json",
+      "sha256": "37d597688ca1bf9dec5ebdb237c69dc9806a357e1a852ba08ff6294265ae4443"
+    },
+    {
+      "name": "image_blob.json",
+      "sha256": "748e5dac232d98e9b21f15cdcc7aebdd97137e2fc42315bc9c4107976817e7cd"
+    },
+    {
+      "name": "image_placeholder_null.json",
+      "sha256": "36ff4f260195dbf4c98d2e1df156df0dc2e5dce619680cf2ee656af5e9b0d3be"
+    },
+    {
+      "name": "image_url_is_content.json",
+      "sha256": "932b1fb7c3c0be167f5c6459548d3f8d0f8480aeabc4410aa0a318a194ec5fd1"
+    },
+    {
+      "name": "jcs_basic.json",
+      "sha256": "3ab99251be0d884558ff17238a687deb76c6aafc4cb327e63896f4ba8cc4da43"
+    },
+    {
+      "name": "jcs_numbers.json",
+      "sha256": "e593cc5a8ec34c561b4dfca0bfea11d6b8d6943dc15967f4c938c75dd687b924"
+    },
+    {
+      "name": "metadata_all_content.json",
+      "sha256": "4ec812d9f31dda38e3689d1aaf9f5ff6dddc3b88d975241993c33ba8cb274566"
+    },
+    {
+      "name": "metadata_empty_equivalence.json",
+      "sha256": "66c82e27c1dd7eca700ed8535f9a2d908ce35b7d18da90ad4db58d87d612c75e"
+    },
+    {
+      "name": "metadata_identity.json",
+      "sha256": "57f78dfa1e3167c7adb5c4a24036343c6de5de6fb28a54881a84a1df8471abe2"
+    },
+    {
+      "name": "metadata_null_equivalence.json",
+      "sha256": "afa91822f603d24ea555a155dd2602b6522feb5f9c0f2d45b5c2f325eea60f7a"
+    },
+    {
+      "name": "metadata_null_nested.json",
+      "sha256": "afc7d67a24b518baa0a278b63021aefdda8326e026e75ded639d32c1531a507c"
+    },
+    {
+      "name": "null_vs_empty_distinct.json",
+      "sha256": "e18f44245bdc7bd83ff8e8d158677057bc4e5a66debbeaf825a2bab605e68cb7"
+    },
+    {
+      "name": "page_insert_reuse.json",
+      "sha256": "4f6cf8b3ac3f938cf553320c04e27328c7cd923602651f8bedcce8a110426b19"
+    },
+    {
+      "name": "page_reorder.json",
+      "sha256": "115e89cb108d6da50eb0a59bbb1fe3923b848a4a2a56a0d19c26e1bb2a1c4716"
+    },
+    {
+      "name": "preimage_basic.json",
+      "sha256": "5dc13cf3606b65e73e2c32cbbd118d4c87c5873974d18bcb6e31d1a0c92ce8f0"
+    },
+    {
+      "name": "table_formula_html.json",
+      "sha256": "8a354ed0f358ac3dd35c703eb40f3a6c28000c7b3904d0ee8a9707d2b1bf3da7"
+    },
+    {
+      "name": "unicode_text.json",
+      "sha256": "5bad2760ddcb639260383a8fc0e796b277f55c3f1a562e4e84b0c0f89b75dbdb"
+    },
+    {
+      "name": "upgrade_drill.json",
+      "sha256": "9d14ef73f10862b6c350c72caaee01243e1080c389d045afcc531f70086620b2"
+    }
+  ]
+}

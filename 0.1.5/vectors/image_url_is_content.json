@@ -1,0 +1,114 @@
+{
+  "name": "image_url_is_content",
+  "kind": "document",
+  "description": "图片 url 是源提供的元素 metadata，进 hash（plan §0.1 P2）：同一 blob 配不同 url 时 content_hash 不同；blob 变化同样是内容变化。",
+  "documents": {
+    "url_a": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "",
+              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "image_mime_type": "image/png",
+              "metadata": {
+                "image_url": "https://a.cdn/x.png"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "url_b": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "",
+              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "image_mime_type": "image/png",
+              "metadata": {
+                "image_url": "https://b.cdn/y.png"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "blob_changed": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "",
+              "image_blob": "sha256:e37c167d65a03d37aba237a79193900dc65170298167d95e6e61a29766f11900",
+              "image_mime_type": "image/png",
+              "metadata": {
+                "image_url": "https://a.cdn/x.png"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "url_a": {
+      "dpe1": {
+        "doc_hash": "dpe1:e7fbb58a70b8ac37f188587396f943e912257a927c7bce10132ed2384416f1e2",
+        "pages": [
+          {
+            "page_hash": "dpe1:6038bff0bd6761ed6cbc68014d1fe7bf5049e117fe0d4c04cb6f4b4086324ffb",
+            "elements": [
+              "dpe1:7bf41e89bda1a3d49e48c428029bab7f1b4639322b1c72b896996b2279314708"
+            ]
+          }
+        ]
+      }
+    },
+    "url_b": {
+      "dpe1": {
+        "doc_hash": "dpe1:3d9af68cf4acb7b0a9346fc78a041537d595caf2061aa29b739c4f099ce17d48",
+        "pages": [
+          {
+            "page_hash": "dpe1:47f58d3ca474acb7a2a0a0d7bb200ed1a3fb922ebb7c9aa7f7ee1fcc2bb50cd7",
+            "elements": [
+              "dpe1:4896537803ee41fb72883c6005c09e628ce1c3a50ef6bd5cbffe261e1c015593"
+            ]
+          }
+        ]
+      }
+    },
+    "blob_changed": {
+      "dpe1": {
+        "doc_hash": "dpe1:9da4be7cbe2721695918c47b1120afd09e5834b18ad00ff6b14cabed52120f35",
+        "pages": [
+          {
+            "page_hash": "dpe1:de5e776f8562802575f3424a016b6751521dc2ed94613f5dc725d2b97b191cfc",
+            "elements": [
+              "dpe1:d63d9050b8605da960199aeb0db89a393dfcff3595f4be28f851e6920e25bc70"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "url_a.pages.0.elements.0",
+        "url_b.pages.0.elements.0",
+        "blob_changed.pages.0.elements.0"
+      ]
+    }
+  ]
+}
