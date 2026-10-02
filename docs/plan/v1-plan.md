@@ -294,6 +294,8 @@ sdk/python/  sdk/rust/  # 两份独立实现
 ## 16. 未决项
 
 - ~~Issue #2：connector 的运行边界与租户插件沙箱~~（已关闭：平台不引入 connector 运行环境，见 §11 修订注记）。
-- HTTP 绑定的具体路径和媒体类型命名（在 M1 撰写 `http.md` 时定稿）。
-- 规范在 `doc.turingfocus.cn` 上的发布 path 和版本化发布流程。
-- 暂存会话 TTL 的规范下限。（原「`Idempotency-Key` 的去重窗口」已撤销：幂等由内容保证，协议不定义幂等键，见 §0.1 P4。）
+- ~~HTTP 绑定的具体路径和媒体类型命名~~（已定稿：路径按 http.md §1；JSON 主体一律 `application/json`，不设自定义媒体类型）。
+- ~~规范的发布 path 和版本化发布流程~~（已落地：doc.turingfocus.cn/dpe，mike 多版本 + bump-my-version）。
+- ~~暂存会话 TTL 的规范下限~~（已定：从最近一次成功的会话操作起算，下限 1 小时，见 core.md §3.4）。（原「`Idempotency-Key` 的去重窗口」已撤销：幂等由内容保证，协议不定义幂等键，见 §0.1 P4。）
+
+当前无未决项。

@@ -2,7 +2,6 @@
 
 > 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
-> 具体路径与媒体类型命名属于 plan §16 未决项，本文给出草案值，定稿前可能调整。
 
 ## 1. Remote 与路径
 
@@ -27,9 +26,8 @@
 
 ## 2. 媒体类型
 
-- 请求与响应主体：`application/dpe+json`（草案值；版本通过媒体类型参数 `; version=1` 或 capabilities 协商，定稿见 plan §16）。服务端 SHOULD 同时接受 `application/json`。
-- 错误：`application/problem+json`（§5）。
-- 页对象与内容对象上传：`application/dpe.object+json`；blob 上传：blob 自身的媒体类型（未知时 `application/octet-stream`）。
+- JSON 主体（含页对象与内容对象的上传）一律 `application/json`；错误为 `application/problem+json`（§5）；blob 上传用 blob 自身的媒体类型（未知时 `application/octet-stream`）。
+- 媒体类型不承载版本：协议版本以 capabilities 的 `protocol` 为准，hash 契约由 `DPE-Hash-Contract` 头声明（§3.1）。
 - 命名保持中性：媒体类型、头字段、错误码中 MUST NOT 出现具体产品名。
 
 ## 3. 并发控制：doc_hash 即 ETag
@@ -82,13 +80,13 @@
     "batch_head_max": 500,
     "list_page_max": 1000
   },
-  "dedup_scope": "document",
   "content_encodings": ["gzip"],
   "features": ["move"]
 }
 ```
 
-- `dedup_scope`：`document` 或 `writable`（core.md §3.3）。
+- `staging_ttl_seconds`：暂存会话从最近一次成功操作起算的过期时间，MUST ≥ 3600（core.md §3.4）。
+- 去重范围不在此声明（core.md §3.3）。
 - `features` 列出可选能力；v1 内 `move` 为 MUST 实现，此处保留位置供扩展。
 
 ### 4.2 `POST {remote}/heads`（batch_head）
@@ -148,7 +146,7 @@
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
 - `missing_pages`：根对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的内容对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
 - 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交根对象即可，根对象只含页 hash 列表）。
-- 缺失清单按 `dedup_scope` 计算（core.md §3.3）。
+- 缺失清单按去重范围计算（core.md §3.3）。
 
 ### 4.6 `PUT {remote}/staging/{sid}/pages/{page_hash}` 与 `…/objects/{content_hash}`
 
@@ -166,7 +164,9 @@
 { "missing_blobs": ["sha256:…"] }
 ```
 
-201 / 200 MUST 只按本会话已收到的内容判定，不反映服务端其他位置是否已存该对象；缺失清单按 `dedup_scope` 计算（core.md §3.4、§9）。
+201 / 200 MUST 只按本会话已收到的内容判定，不反映服务端其他位置是否已存该对象；缺失清单按去重范围计算（core.md §3.3、§9）。
+
+会话的每个成功操作都会续期（core.md §3.4）：negotiate 响应的 `expires_at` 与 upload 各响应（含 `202` 中间块）的 `DPE-Session-Expires: <RFC 3339 UTC>` 头给出续期后的过期时间。
 
 **页对象可分块**：单个页对象超过 `max_payload_bytes` 时，按 §4.7 的方式分块上传与断点续传，总大小不超过 `page_max_bytes`。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。内容对象不分块，超限返回 `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
 
