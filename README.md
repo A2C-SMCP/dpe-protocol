@@ -2,7 +2,7 @@
 
 DPE（Document / Page / Element）：把结构化文档**正确、增量、可靠**地投递到一个远端的**标准协议**。本仓库是规范的唯一权威——就像 Git 之于 GitHub / GitLab / CNB，任何服务端都能实现 DPE，任何开发者都能用 SDK 接入自己的系统；TFRS 端点只是第一个实现。
 
-**文档版本**：0.1.1（[doc.turingfocus.cn/dpe](https://doc.turingfocus.cn/dpe/)）｜**当前状态**：M1 规范草案（见 [docs/plan/v1-plan.md](docs/plan/v1-plan.md)，即 CTO 对 #1 的评审结论）。初版 SDK 代码保留在 `archive/initial-sdk` 分支供参考，M1 定稿后按规范改造（M2）。
+**文档版本**：0.1.2-dev（[doc.turingfocus.cn/dpe](https://doc.turingfocus.cn/dpe/)）｜**当前状态**：M1 规范草案（见 [docs/plan/v1-plan.md](docs/plan/v1-plan.md)，即 CTO 对 #1 的评审结论）。初版 SDK 代码保留在 `archive/initial-sdk` 分支供参考，M1 定稿后按规范改造（M2）。
 
 ## 仓库结构
 
