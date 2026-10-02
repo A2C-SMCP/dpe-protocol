@@ -1,0 +1,38 @@
+{
+  "name": "image_blob",
+  "kind": "document",
+  "description": "Image 的字节以 image_blob（sha256 引用）进 hash；url 等源信息作为元素 metadata 另进 hash（见 image_url_is_content）。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "架构图",
+              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "image_mime_type": "image/png"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:65a1dfbb441ecf69088470e7411e0bf872ac125281c0e1ac72043a3263171bc6",
+        "pages": [
+          {
+            "page_hash": "dpe1:3c2ef2b26983c2d0087d372f7fed47def0850ce227c60e4d2b0f8622e81c1051",
+            "elements": [
+              "dpe1:21cf3a47d3545da67c77a36ed421bb7cb764c560ca78d72c5ccdce9cb8a25950"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
