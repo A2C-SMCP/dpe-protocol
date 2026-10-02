@@ -1,0 +1,93 @@
+# Rust crate 发布（crates.io）。
+# 推送 rs-vX.Y.Z 标签触发（由 sdk/rust/ 下的 bump-my-version 生成）；开发版标签 rs-v*-dev 不触发。
+# 认证：CARGO_REGISTRY_TOKEN 存在时走 token（crates.io 首发必须如此：crate 不存在时无法登记
+# Trusted Publishing）；为空时用 rust-lang/crates-io-auth-action 以 OIDC 换短时 token。
+# 首发成功后按 sdk/rust/README.md 登记 TP 并删除 secret，此后发布全程无长期凭证。
+# 发布门是 environment crates-io（可设 required reviewers）；其名称是 crates.io 侧 TP 配置的一部分。
+name: release-rust
+
+on:
+  push:
+    tags:
+      - "rs-v*"
+      - "!rs-v*-dev"
+
+permissions:
+  contents: read
+
+jobs:
+  # 完整质量门禁（向量、lint、1.80 / stable 矩阵测试、打包检查），与 PR 上跑的是同一份
+  ci:
+    uses: ./.github/workflows/rust-sdk.yml
+
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: 标签必须指向 main 上的提交
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - name: 标签版本必须与 Cargo.toml 一致
+        run: |
+          test "$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "dpe-hash") | .version')" = "${GITHUB_REF_NAME#rs-v}"
+      - name: dpe-hash 发布面演练
+        run: cargo publish --dry-run -p dpe-hash --locked
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/dpe-hash
+    permissions:
+      contents: read
+      id-token: write # OIDC（Trusted Publishing）
+    defaults:
+      run:
+        working-directory: sdk/rust
+    env:
+      # 非空走 API token（首发 bootstrap），为空走 Trusted Publishing
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - name: 换取 crates.io 短时 token（Trusted Publishing）
+        id: auth
+        if: ${{ env.CARGO_REGISTRY_TOKEN == '' }}
+        uses: rust-lang/crates-io-auth-action@v1.0.5 # 上游无浮动主版本标签，写完整版本
+      - name: 注入 Trusted Publishing token
+        if: ${{ steps.auth.outputs.token != '' }}
+        run: echo "CARGO_REGISTRY_TOKEN=${{ steps.auth.outputs.token }}" >> "$GITHUB_ENV"
+      # cargo publish 会等待 crate 进入索引后再返回，顺序发布不需要轮询/等待；
+      # 发布幂等：该版本已存在时视为跳过，部分失败后可安全重跑（版本已由 build 与标签核对）。
+      - name: 建立幂等发布脚本
+        run: |
+          cat > /tmp/publish.sh <<'EOF'
+          #!/bin/bash
+          set -o pipefail
+          crate="$1"; shift
+          cargo publish -p "$crate" "$@" 2>&1 | tee /tmp/publish.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ] && grep -qE "already (exists|uploaded)" /tmp/publish.log; then
+            echo "::notice::$crate 该版本已发布，跳过"
+            exit 0
+          fi
+          exit "$status"
+          EOF
+          chmod +x /tmp/publish.sh
+      - name: 发布 dpe-hash
+        run: /tmp/publish.sh dpe-hash --locked
+      - name: 发布 dpe-sdk（精确依赖同版本 dpe-hash，必须在其之后）
+        run: /tmp/publish.sh dpe-sdk --locked

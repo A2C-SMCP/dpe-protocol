@@ -1,0 +1,4 @@
+# MSRV 回退：解析依赖版本时优先选择与 rust-version（1.80）兼容的版本，
+# 防止 cargo update 把依赖静默升到要求更高 Rust 的版本、只在 CI 的 MSRV job 才暴露。
+[resolver]
+incompatible-rust-versions = "fallback"

@@ -1,0 +1,99 @@
+# Rust SDK 质量门禁：先校验向量与生成器一致，再跑 lint、测试（含 MSRV 1.80 矩阵）与打包检查。
+# 同时作为可复用 workflow 被 release-rust.yml 调用：发布必须先通过完整门禁。
+name: rust-sdk
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/rust/**"
+      - "vectors/**"
+      - "scripts/gen_vectors.py"
+      - "Makefile"
+      - ".github/workflows/rust-sdk.yml"
+  pull_request:
+    paths:
+      - "sdk/rust/**"
+      - "vectors/**"
+      - "scripts/gen_vectors.py"
+      - "Makefile"
+      - ".github/workflows/rust-sdk.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # 只取消同一 PR 的旧 run；main 与被 release 调用时（event_name 为 push）每次都跑完
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: make check-vectors
+
+  lint:
+    needs: vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  test:
+    needs: vectors
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.80.0", "stable"]
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - run: cargo test --locked
+      # sans-IO 核心的机械防线（plan §10）：关掉默认 feature 也要能编译，且依赖树里没有异步运行时
+      - if: matrix.toolchain == 'stable'
+        run: |
+          cargo check -p dpe-sdk --no-default-features --locked
+          cargo tree -p dpe-sdk --no-default-features --locked -e normal --prefix none > /tmp/deps.txt
+          if grep -Eq '^(tokio|reqwest) v' /tmp/deps.txt; then
+            echo "::error::sans-IO 核心不得依赖 tokio / reqwest"
+            exit 1
+          fi
+
+  package:
+    needs: vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - name: dpe-hash 打包与发布面演练（完整 dry-run）
+        run: cargo publish --dry-run -p dpe-hash --locked
+      # dpe-sdk 依赖的 dpe-hash 尚未发布到 crates.io 时，cargo 连发布面都无法准备
+      # （no matching package named `dpe-hash` found）；完整 dry-run 顺延到 dpe-hash 首发
+      # 之后（#19），发布顺序由 release-rust.yml 保证（先 dpe-hash 后 dpe-sdk）。
+      - name: dpe-sdk 打包面检查（依赖发布前可用）
+        run: cargo package --list -p dpe-sdk
