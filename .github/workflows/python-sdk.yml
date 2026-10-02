@@ -1,0 +1,74 @@
+# Python SDK 质量门禁：先校验向量与生成器一致，再在 3.11 / 3.12 上跑 lint、类型检查、测试与打包约束。
+# 同时作为可复用 workflow 被 release-python.yml 调用：发布必须先通过完整门禁。
+name: python-sdk
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdk/python/**"
+      - "vectors/**"
+      - "scripts/gen_vectors.py"
+      - "Makefile"
+      - ".github/workflows/python-sdk.yml"
+  pull_request:
+    paths:
+      - "sdk/python/**"
+      - "vectors/**"
+      - "scripts/gen_vectors.py"
+      - "Makefile"
+      - ".github/workflows/python-sdk.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # 只取消同一 PR 的旧 run；main 与被 release 调用时（event_name 为 push）每次都跑完
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: make check-vectors
+
+  test:
+    needs: vectors
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest
+
+  package:
+    needs: vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - run: uv build --all-packages -o dist
+      - run: uv run --no-project python tools/check_packages.py dist

@@ -13,7 +13,7 @@ DPE（Document / Page / Element）**标准协议**的权威仓库：规范、has
 - `vectors/`：一致性向量（规范的一部分）
 - `scripts/gen_vectors.py`：向量生成器 = hash 契约的**规范参考实现**（仅标准库）
 - `conformance/`：黑盒 HTTP 跑分器（M2）
-- `sdk/python/`、`sdk/rust/`：两份独立 SDK（M2）
+- `sdk/python/`：uv workspace，`dpe-hash`（零依赖 hash 核心）+ `dpe-sdk` 两个包（M2，见 `sdk/python/README.md`）；`sdk/rust/`：对等 SDK（M2）
 
 ## 命令
 
@@ -21,6 +21,7 @@ DPE（Document / Page / Element）**标准协议**的权威仓库：规范、has
 make vectors          # 重新生成向量（仅在规范变更时）
 make check-vectors    # CI：校验已提交向量与生成器一致
 uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失败）
+# Python SDK（在 sdk/python/ 下）：uv sync / uv run ruff check / uv run mypy / uv run pytest
 ```
 
 ## 版本管理
@@ -28,6 +29,7 @@ uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失�
 - **当前文档版本**：0.1.4
 - 文档版本单一来源是 `pyproject.toml`，只用 `bump-my-version` 修改（发布 `bump pre_l`，开周期 `bump patch|minor|major`）；它与协议版本（DPE v1）、hash 契约版本（`dpe1:`）独立，升契约版本不等于升文档版本。
 - 多版本站点由 mike 管理在 `gh-pages` 分支，`inv docs.deploy` 发布到 doc.turingfocus.cn/dpe（默认 mode=upload）；`-dev` 版本只占 `dev` 别名，不得顶替 `latest`。
+- **SDK 版本是独立的第四条轴**：Python SDK 两包同版本，由 `sdk/python/` 自己的 bump-my-version 管理（同样 dev/final 两态），发布标签 `py-vX.Y.Z` 触发 `release-python.yml`（PyPI Trusted Publishing），`py-v*-dev` 不发布；文档发版不牵动 SDK 版本。
 - 站点源是 `website/`（符号链接聚合 spec / docs / vectors / conformance），新增规范文档须同步 `mkdocs.yml` 的 nav。
 
 ## 不可破坏的约束

@@ -17,7 +17,8 @@ website/                  # 文档站点入口（index.md + 指向 spec/ docs/ v
 vectors/                  # 一致性向量（规范的一部分，由规范产出）
 scripts/gen_vectors.py    # 向量生成器 = hash 契约的规范参考实现（仅标准库）
 conformance/              # 服务端一致性跑分器（M2 占位）
-sdk/python/  sdk/rust/    # 两份独立 SDK 实现（M2）
+sdk/python/               # Python SDK workspace：dpe-hash（零依赖 hash 核心）+ dpe-sdk（M2）
+sdk/rust/                 # Rust SDK（M2）
 ```
 
 ## 命令
@@ -26,6 +27,8 @@ sdk/python/  sdk/rust/    # 两份独立 SDK 实现（M2）
 make vectors          # 重新生成向量（仅在规范变更时）
 make check-vectors    # 校验已提交向量与生成器一致（CI）
 ```
+
+Python SDK 的开发、版本与发布见 [sdk/python/README.md](sdk/python/README.md)；SDK 版本独立于文档版本，发布标签为 `py-vX.Y.Z`。
 
 ## 文档站点与版本管理
 
