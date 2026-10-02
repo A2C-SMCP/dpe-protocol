@@ -1,0 +1,113 @@
+{
+  "name": "page_reorder",
+  "kind": "document",
+  "description": "页序就是 pages 数组顺序，属于内容：对调两页，各页 page_hash 不变，doc_hash 变化。",
+  "documents": {
+    "before": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "A",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "a"
+            }
+          ]
+        },
+        {
+          "title": "B",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "b"
+            }
+          ]
+        }
+      ]
+    },
+    "after": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "B",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "b"
+            }
+          ]
+        },
+        {
+          "title": "A",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "a"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "before": {
+      "dpe1": {
+        "doc_hash": "dpe1:c1a10eb6406bc13878d677b9143e75e02ffcc7976c98275fc4139ce90852c2d2",
+        "pages": [
+          {
+            "page_hash": "dpe1:9899b7d1edb72c14fedc4254c433e8aa8e39c42a304379bf43a00f6b18bf3c6d",
+            "elements": [
+              "dpe1:2ebc9afc0b5249592c331e15702f5ff6ed355bc8cb08f4ae19fb822e90113174"
+            ]
+          },
+          {
+            "page_hash": "dpe1:8725e3ed57a8a6c72d1d86500c6f4b6c022690c32ad5d504f4d1f4cfcad35b7d",
+            "elements": [
+              "dpe1:63159b33935f45c731fdbf089aff85c52b89e377efee190693e17167f44a44a6"
+            ]
+          }
+        ]
+      }
+    },
+    "after": {
+      "dpe1": {
+        "doc_hash": "dpe1:631d0e8b6349937f593d3f7ce778409c97b0324f42b28853c61c623abbfd5c01",
+        "pages": [
+          {
+            "page_hash": "dpe1:8725e3ed57a8a6c72d1d86500c6f4b6c022690c32ad5d504f4d1f4cfcad35b7d",
+            "elements": [
+              "dpe1:63159b33935f45c731fdbf089aff85c52b89e377efee190693e17167f44a44a6"
+            ]
+          },
+          {
+            "page_hash": "dpe1:9899b7d1edb72c14fedc4254c433e8aa8e39c42a304379bf43a00f6b18bf3c6d",
+            "elements": [
+              "dpe1:2ebc9afc0b5249592c331e15702f5ff6ed355bc8cb08f4ae19fb822e90113174"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "before.pages.0.page_hash",
+        "after.pages.1.page_hash"
+      ]
+    },
+    {
+      "equal": [
+        "before.pages.1.page_hash",
+        "after.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "before.doc_hash",
+        "after.doc_hash"
+      ]
+    }
+  ]
+}

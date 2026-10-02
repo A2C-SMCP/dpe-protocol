@@ -1,0 +1,54 @@
+{
+  "name": "duplicate_elements",
+  "kind": "document",
+  "description": "同页两个相同元素：content_hash 相同（内容对象共享），page 的 elements 列表中按位置重复出现。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "ListItem",
+              "text": "重复项"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "中间"
+            },
+            {
+              "category": "ListItem",
+              "text": "重复项"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:f65a7ef435f4ae795fabd06fe547d9985d0f80c0a5dcee23418195eae297ebb1",
+        "pages": [
+          {
+            "page_hash": "dpe1:6a592e334f7a9740a03993d588395d391b42f0b81e8d0b94edb5bfae3ab523fd",
+            "elements": [
+              "dpe1:6cd9a41c74a75af901a87523b88cc9ab9dace53ae197291d65f48f5da6dd38c6",
+              "dpe1:75e15d312ca6182a525d8d0fe8a056a8096c59d03b6dc4f757d87ee2f2d9a163",
+              "dpe1:6cd9a41c74a75af901a87523b88cc9ab9dace53ae197291d65f48f5da6dd38c6"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.2"
+      ]
+    }
+  ]
+}
