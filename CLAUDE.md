@@ -25,7 +25,7 @@ uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失�
 
 ## 版本管理
 
-- **当前文档版本**：0.1.2-dev
+- **当前文档版本**：0.1.2
 - 文档版本单一来源是 `pyproject.toml`，只用 `bump-my-version` 修改（发布 `bump pre_l`，开周期 `bump patch|minor|major`）；它与协议版本（DPE v1）、hash 契约版本（`dpe1:`）独立，升契约版本不等于升文档版本。
 - 多版本站点由 mike 管理在 `gh-pages` 分支，`inv docs.deploy` 发布到 doc.turingfocus.cn/dpe（默认 mode=upload）；`-dev` 版本只占 `dev` 别名，不得顶替 `latest`。
 - 站点源是 `website/`（符号链接聚合 spec / docs / vectors / conformance），新增规范文档须同步 `mkdocs.yml` 的 nav。
