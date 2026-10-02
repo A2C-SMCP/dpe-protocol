@@ -72,3 +72,18 @@ jobs:
           python-version: "3.12"
       - run: uv build --all-packages -o dist
       - run: uv run --no-project python tools/check_packages.py dist
+
+  # 原位重算基准（#7）：只报告、不设门槛，结果写进 job summary
+  bench:
+    needs: vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # 上游自 v8 起不再提供浮动主版本标签
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run python tools/bench_hash.py | tee -a "$GITHUB_STEP_SUMMARY"
