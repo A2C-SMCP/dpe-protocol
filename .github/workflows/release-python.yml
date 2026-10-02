@@ -1,0 +1,81 @@
+# Python 包发布（PyPI Trusted Publishing / OIDC，不使用 API token）。
+# 推送 py-vX.Y.Z 标签触发（由 sdk/python/ 下的 bump-my-version 生成）；开发版标签 py-v*-dev 不触发。
+# 每个包一个 GitHub environment（pypi-dpe-<pkg>），需维护者审批；登记约定见 Issue #10 评论。
+# 文件名、environment 名与 PyPI 侧登记逐字一致，改动前先改 PyPI 配置。
+name: release-python
+
+on:
+  push:
+    tags:
+      - "py-v*"
+      - "!py-v*-dev"
+
+permissions:
+  contents: read
+
+jobs:
+  # 完整质量门禁（向量、3.11 / 3.12 矩阵的 ruff / mypy / pytest、打包约束），与 PR 上跑的是同一份
+  ci:
+    uses: ./.github/workflows/python-sdk.yml
+
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: 标签必须指向 main 上的提交
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: astral-sh/setup-uv@v10.2.0  # 上游自 v8 起不再提供浮动主版本标签
+        with:
+          python-version: "3.12"
+      - run: uv build --all-packages -o dist
+      - name: 打包约束与标签版本
+        run: uv run --no-project python tools/check_packages.py dist --expect-version "${GITHUB_REF_NAME#py-v}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-dpe-hash
+          path: sdk/python/dist/dpe_hash-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-dpe-sdk
+          path: sdk/python/dist/dpe_sdk-*
+          if-no-files-found: error
+
+  publish-dpe-hash:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-dpe-hash
+      url: https://pypi.org/project/dpe-hash/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-dpe-hash
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # dpe-sdk 精确依赖同版本 dpe-hash，必须在其之后发布
+  publish-dpe-sdk:
+    needs: publish-dpe-hash
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-dpe-sdk
+      url: https://pypi.org/project/dpe-sdk/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-dpe-sdk
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

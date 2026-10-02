@@ -1,0 +1,43 @@
+[project]
+name = "dpe-sdk"
+version = "0.1.4-dev"
+description = "DPE 协议 Python SDK：sans-IO 协议核心、传输适配、增量推送与 dpe-run 运行器"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+# 仓库根 LICENSE 的副本（构建后端只收录包目录内的文件），测试断言两者一致
+license-files = ["LICENSE"]
+authors = [
+    {name = "TuringFocus Team", email = "dev@turingfocus.cn"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = [
+    # 与 dpe-hash 同一标签发布、精确同版本（版本串由 bump-my-version 维护）
+    "dpe-hash==0.1.4-dev",
+    "pydantic>=2.7,<3",
+    "httpx>=0.27,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/A2C-SMCP/dpe-protocol"
+Documentation = "https://doc.turingfocus.cn/dpe/"
+Repository = "https://github.com/A2C-SMCP/dpe-protocol"
+
+[tool.uv.sources]
+dpe-hash = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dpe_sdk"]
+
+# 测试依赖 workspace 根的 conftest 与仓库 vectors/，不随 sdist 分发
+[tool.hatch.build.targets.sdist]
+exclude = ["tests"]
