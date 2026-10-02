@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30 修订
+> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -34,6 +34,12 @@
 
 ### 3.1 契约声明与版本令牌
 
+- **带 JSON 请求体的端点的校验顺序**（negotiate、页对象与元素对象的 upload、commit、move；blob 上传的请求体是原始字节，不适用）：
+  1. 整个请求体是 I-JSON（core.md §2.8 第 0 步），否则 `DPE_VALIDATION`；
+  2. 契约声明（`DPE-Hash-Contract` 头），否则 `DPE_CONTRACT_UNSUPPORTED`；
+  3. 按 core.md §2.8 校验请求体中的对象。
+
+  commit 的完整求值顺序见 core.md §3.3。
 - **契约声明**：每个请求 MUST 带 `DPE-Hash-Contract: <契约>`（取值为 capabilities 的 `hash_contracts` 之一，如 `dpe1`；`GET capabilities` 除外）。请求体中的 hash 按它计算，响应中的 hash 按它给出。未声明或不受支持 → `DPE_CONTRACT_UNSUPPORTED`。文档资源的响应 MUST 带 `Vary: DPE-Hash-Contract`。
 - **版本令牌**：文档的版本令牌就是 doc_hash（core.md §1）。文档资源的响应带 `DPE-Doc-Hash: <契约>:…`（**权威值**）与 `ETag: "<契约>:…"`（强校验器，HTTP 便利），均按 `DPE-Hash-Contract` 给出。
 - **弱 ETag**：中间层（如做 gzip 的反向代理）可能把 ETag 改写为弱校验器 `W/"…"`。客户端构造条件头时 MUST 取 `DPE-Doc-Hash` 或响应体中的 `doc_hash`，自行写成 `"<doc_hash>"`；MUST NOT 原样回传收到的 `ETag`。
@@ -143,6 +149,7 @@
   "staging_session": { "id": "st-…", "expires_at": "2026-10-01T00:00:00Z" } }
 ```
 
+- 校验顺序同 §3.1：先确认请求体是 I-JSON，再判契约头，然后按 core.md §2.8 校验文档对象，最后按数组顺序校验附带的页对象。
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
 - `missing_pages`：文档对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的元素对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
 - 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交文档对象即可，文档对象只含页 hash 列表）。
@@ -152,7 +159,7 @@
 
 请求体为一个页对象或元素对象 JSON，即该 hash 的原像对象（core.md §2.2、§2.3）。服务端依次：
 
-1. 校验字段：出现未定义字段 → `DPE_VALIDATION`；未知 category → `DPE_CATEGORY_UNKNOWN`；
+1. 按 §3.1 的顺序校验：请求体是 I-JSON → 契约头 → 按 core.md §2.8 校验对象（`DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`）；
 2. 重算 hash，与路径不符 → `DPE_HASH_MISMATCH`。
 
 响应 `201`（本会话内新写入）或 `200`（本会话内重复），体为下一层的缺失清单：

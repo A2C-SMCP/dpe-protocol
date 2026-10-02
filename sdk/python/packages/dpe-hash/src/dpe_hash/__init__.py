@@ -30,10 +30,11 @@ from dpe_hash.errors import (
     DpeHashError,
     FileTypeUnknownError,
     IntegerOutOfRangeError,
+    InvalidUnicodeError,
     UndefinedFieldError,
     ValidationError,
 )
-from dpe_hash.jcs import jcs
+from dpe_hash.jcs import has_invalid_unicode, jcs
 from dpe_hash.models import (
     DocumentFields,
     DocumentHashes,
@@ -66,6 +67,7 @@ __all__ = [
     "ExpandedPage",
     "FileTypeUnknownError",
     "IntegerOutOfRangeError",
+    "InvalidUnicodeError",
     "ObjectKind",
     "PageFields",
     "PageHashes",
@@ -78,6 +80,7 @@ __all__ = [
     "content_hash",
     "doc_hash",
     "document_hashes",
+    "has_invalid_unicode",
     "jcs",
     "object_hash",
     "page_hash",

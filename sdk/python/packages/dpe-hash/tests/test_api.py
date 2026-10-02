@@ -19,6 +19,7 @@ from dpe_hash import (
     content_hash,
     doc_hash,
     document_hashes,
+    has_invalid_unicode,
     object_hash,
     page_hash,
     parse_blob_ref,
@@ -132,3 +133,10 @@ def test_tuple_arrays_and_mapping_inputs() -> None:
         MappingProxyType({"category": "Title", "metadata": {"box": ((0, 1), (2, 3))}}), "element"
     )
     assert a == b
+
+
+def test_has_invalid_unicode_for_whole_request_bodies() -> None:
+    """服务端在判契约头之前，用它检查整个请求体（含信封字段）是否为 I-JSON。"""
+    assert has_invalid_unicode({"staging_session": "st-\ud800", "document": {}})
+    assert has_invalid_unicode([{"\udc00": 1}])
+    assert not has_invalid_unicode({"document": {"title": "季度报告 🚀"}, "pages": [1.5, None]})

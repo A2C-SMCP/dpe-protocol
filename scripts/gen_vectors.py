@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -98,75 +99,255 @@ def obj_hash(obj: dict[str, Any], contract: str) -> tuple[str, str]:
 
 
 def metadata(m: dict[str, Any] | None) -> dict[str, Any]:
-    """metadata 字段的规范化（§3.2）：缺省 / null 视同 {}，递归删 null 键；非对象值即违规。"""
-    if m is None:
-        return {}
-    if not isinstance(m, dict):
-        raise TypeError(f"metadata must be an object, got {type(m).__name__}")
-    return strip_nulls(m)
+    """metadata 字段的规范化（§3.2）：缺省 / null 视同 {}，递归删 null 键（值已由校验器检查）。"""
+    return {} if m is None else strip_nulls(m)
 
 
-def content_fields(cat: str) -> frozenset[str]:
-    """元素对象允许的字段 = content_hash 的完整原像（core.md §2.3）；未知 category 拒绝。"""
-    if cat not in CATEGORY_CONTENT_FIELDS:
-        raise ValueError(f"unknown category: {cat}")
-    return frozenset({"category", "metadata", *CATEGORY_CONTENT_FIELDS[cat]})
+# ---------------------------------------------------------------------------
+# 参考校验器（core.md §2.8）：按规范顺序校验线上原像，遇第一处违例即 Reject(code, path)。
+# hash 计算与拒绝类向量共用这一套规则。
+# ---------------------------------------------------------------------------
+
+VALIDATION = "DPE_VALIDATION"
+CATEGORY_UNKNOWN = "DPE_CATEGORY_UNKNOWN"
+CONTRACT_UNSUPPORTED = "DPE_CONTRACT_UNSUPPORTED"
+
+#: 真实契约；dpe2 只在被选为本次契约时才算受支持（契约 1 §5）
+SUPPORTED_CONTRACTS = ("dpe1",)
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
-def validate_element(el: dict[str, Any]) -> None:
-    """向量元素就是一个元素对象（content_hash 的完整原像）；多余字段即违规。"""
-    cat = el["category"]
-    extra = set(el) - content_fields(cat)
+class Reject(Exception):  # noqa: N818
+    def __init__(self, code: str, path: str) -> None:
+        super().__init__(f"{code} at {path!r}")
+        self.code = code
+        self.path = path
+
+
+def ptr(path: str, seg: str | int) -> str:
+    """在 RFC 6901 JSON Pointer 后追加一段。"""
+    if isinstance(seg, int):
+        return f"{path}/{seg}"
+    return path + "/" + seg.replace("~", "~0").replace("/", "~1")
+
+
+def utf16_key(key: str) -> bytes:
+    return key.encode("utf-16-be")
+
+
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def has_invalid_unicode(value: Any) -> bool:
+    """I-JSON（core §2.8 第 0 步）：字符串或对象键中含孤立代理项。"""
+    if isinstance(value, str):
+        return bool(_SURROGATE.search(value))
+    if isinstance(value, list):
+        return any(has_invalid_unicode(v) for v in value)
+    if isinstance(value, dict):
+        return any(
+            (isinstance(k, str) and _SURROGATE.search(k)) or has_invalid_unicode(v)
+            for k, v in value.items()
+        )
+    return False
+
+
+def check_ijson(value: Any) -> None:
+    """第 0 步，对整个被校验对象做检查，违例位置为对象自身。重复键由 strict_loads 在解析时拒绝。"""
+    if has_invalid_unicode(value):
+        raise Reject(VALIDATION, "")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise Reject(VALIDATION, "")
+    return dict(pairs)
+
+
+def strict_loads(text: str) -> Any:
+    """I-JSON 解析：重复键即 Reject（core §2.8 第 0 步）。"""
+    return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+
+
+def check_json(value: Any, path: str) -> None:
+    """JSON 值（§2.6、契约 1 §3.3）：深度优先，对象键按 UTF-16 码元序、数组按下标。"""
+    if value is None or isinstance(value, (bool, str)):
+        return
+    if isinstance(value, int):
+        if abs(value) > 2**53 - 1:
+            raise Reject(VALIDATION, path)
+        return
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise Reject(VALIDATION, path)
+        return
+    if isinstance(value, list):
+        for i, v in enumerate(value):
+            check_json(v, ptr(path, i))
+        return
+    if isinstance(value, dict):
+        if not all(isinstance(k, str) for k in value):
+            raise Reject(VALIDATION, path)
+        for k in sorted(value, key=utf16_key):
+            check_json(value[k], ptr(path, k))
+        return
+    raise Reject(VALIDATION, path)
+
+
+def check_string(obj: dict[str, Any], field: str, path: str) -> None:
+    value = obj.get(field)
+    if value is not None and not isinstance(value, str):
+        raise Reject(VALIDATION, ptr(path, field))
+
+
+def check_metadata(obj: dict[str, Any], field: str, path: str) -> None:
+    value = obj.get(field)
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise Reject(VALIDATION, ptr(path, field))
+    check_json(value, ptr(path, field))
+
+
+def check_closed(obj: dict[str, Any], allowed: tuple[str, ...], path: str) -> None:
+    extra = sorted((k for k in obj if k not in allowed), key=utf16_key)
     if extra:
-        raise ValueError(f"{cat}: fields outside content object: {sorted(extra)}")
+        raise Reject(VALIDATION, ptr(path, extra[0]))
+
+
+def check_hash_list(value: Any, contract: str, path: str) -> None:
+    """子对象 hash 列表（契约 1 §1、§5），逐项按数组顺序。"""
+    if not isinstance(value, list):
+        raise Reject(VALIDATION, path)
+    supported = {*SUPPORTED_CONTRACTS, contract}
+    for i, h in enumerate(value):
+        at = ptr(path, i)
+        if not isinstance(h, str):
+            raise Reject(VALIDATION, at)
+        prefix, sep, hexpart = h.partition(":")
+        if not sep or prefix not in supported:
+            raise Reject(CONTRACT_UNSUPPORTED, at)
+        if not _HEX64.fullmatch(hexpart):
+            raise Reject(VALIDATION, at)
+        if prefix != contract:
+            raise Reject(VALIDATION, at)  # 契约混用
+
+
+def check_element(el: Any, path: str = "") -> None:
+    """元素对象（core §2.3）：形状 → category → 封闭 schema → 逐字段。"""
+    if not isinstance(el, dict) or el.get("category") is None:  # 必有字段为 null 视同缺省
+        raise Reject(VALIDATION, path)
+    cat = el["category"]
+    if not isinstance(cat, str):
+        raise Reject(VALIDATION, ptr(path, "category"))
+    if cat not in CATEGORY_CONTENT_FIELDS:
+        raise Reject(CATEGORY_UNKNOWN, ptr(path, "category"))
+    fields = CATEGORY_CONTENT_FIELDS[cat]
+    check_closed(el, ("category", *fields, "metadata"), path)
+    for field in fields:
+        check_string(el, field, path)
+        blob = el.get(field) if field == "image_blob" else None
+        if blob is not None and not (blob.startswith("sha256:") and _HEX64.fullmatch(blob[7:])):
+            raise Reject(VALIDATION, ptr(path, field))
+    check_metadata(el, "metadata", path)
+
+
+def check_page(page: Any, contract: str, path: str = "") -> None:
+    """页对象（core §2.2）线上原像：形状 → 封闭 schema → title、page_metadata、elements。"""
+    if not isinstance(page, dict) or page.get("elements") is None:
+        raise Reject(VALIDATION, path)
+    check_closed(page, ("title", "page_metadata", "elements"), path)
+    check_string(page, "title", path)
+    check_metadata(page, "page_metadata", path)
+    check_hash_list(page["elements"], contract, ptr(path, "elements"))
+
+
+def check_document(doc: Any, contract: str, path: str = "") -> None:
+    """文档对象（core §2.1）线上原像：形状 → 封闭 schema → file_type、title、doc_metadata、pages。"""
+    check_document_fields(doc, path)
+    check_hash_list(doc["pages"], contract, ptr(path, "pages"))
+
+
+def check_document_fields(doc: Any, path: str) -> None:
+    """文档对象除 pages 内容外的部分：形状 → 封闭 schema → file_type、title、doc_metadata。"""
+    if not isinstance(doc, dict) or doc.get("file_type") is None or doc.get("pages") is None:
+        raise Reject(VALIDATION, path)
+    check_closed(doc, ("file_type", "title", "doc_metadata", "pages"), path)
+    if not isinstance(doc["file_type"], str) or doc["file_type"] not in FILE_TYPES:
+        raise Reject(VALIDATION, ptr(path, "file_type"))
+    check_string(doc, "title", path)
+    check_metadata(doc, "doc_metadata", path)
+
+
+def check_expanded(doc: Any, contract: str) -> None:
+    """展开视图（vectors/README.md）：与线上请求同序——文档自身字段 → 各页自身字段（数组序）→
+    各页的元素（逐页、数组序）。"""
+    check_document_fields(doc, "")
+    if not isinstance(doc["pages"], list):
+        raise Reject(VALIDATION, "/pages")
+    for i, page in enumerate(doc["pages"]):
+        at = ptr("/pages", i)
+        if not isinstance(page, dict) or page.get("elements") is None:
+            raise Reject(VALIDATION, at)
+        check_closed(page, ("title", "page_metadata", "elements"), at)
+        check_string(page, "title", at)
+        check_metadata(page, "page_metadata", at)
+        if not isinstance(page["elements"], list):
+            raise Reject(VALIDATION, ptr(at, "elements"))
+    for i, page in enumerate(doc["pages"]):
+        for j, el in enumerate(page["elements"]):
+            check_element(el, ptr(ptr(ptr("/pages", i), "elements"), j))
+
+
+def _ijson_first(check: Any) -> Any:
+    def checker(obj: Any, contract: str) -> None:
+        check_ijson(obj)
+        check(obj, contract)
+
+    return checker
+
+
+CHECKERS = {
+    "element": _ijson_first(lambda obj, contract: check_element(obj)),
+    "page": _ijson_first(check_page),
+    "document": _ijson_first(check_document),
+    "expanded_document": _ijson_first(check_expanded),
+}
+
+
+# ---------------------------------------------------------------------------
+# 三层对象（线上原像）的规范化
+# ---------------------------------------------------------------------------
 
 
 def element_object(el: dict[str, Any]) -> dict[str, Any]:
-    validate_element(el)
-    for k, v in el.items():
-        if k != "metadata" and v is not None and not isinstance(v, str):
-            raise TypeError(f"content field {k} must be a string or null")
+    check_element(el)
     obj = strip_nulls({k: v for k, v in el.items() if k != "metadata"})
     obj["metadata"] = metadata(el.get("metadata"))
     return obj
 
 
-PAGE_FIELDS = frozenset({"title", "page_metadata", "elements"})
-DOCUMENT_FIELDS = frozenset({"file_type", "title", "doc_metadata", "pages"})
-
-
-def page_object(page: dict[str, Any], element_hashes: list[str]) -> dict[str, Any]:
-    extra = set(page) - PAGE_FIELDS
-    if extra:
-        raise ValueError(f"page: undefined fields: {sorted(extra)}")
-    title = page.get("title")
-    if title is not None and not isinstance(title, str):
-        raise TypeError("page title must be a string or null")
-    obj: dict[str, Any] = {
-        "page_metadata": metadata(page.get("page_metadata")),
-        "elements": element_hashes,
-    }
-    if title is not None:
-        obj["title"] = title
+def page_object(page: dict[str, Any], element_hashes: list[str], contract: str) -> dict[str, Any]:
+    """展开视图中的页 + 已算出的子 hash → 页对象（先按线上原像校验）。"""
+    wire = {**{k: v for k, v in page.items() if k != "elements"}, "elements": element_hashes}
+    check_page(wire, contract)
+    obj: dict[str, Any] = {"page_metadata": metadata(page.get("page_metadata")), "elements": element_hashes}
+    if page.get("title") is not None:
+        obj["title"] = page["title"]
     return obj
 
 
-def document_object(doc: dict[str, Any], page_hashes: list[str]) -> dict[str, Any]:
-    extra = set(doc) - DOCUMENT_FIELDS
-    if extra:
-        raise ValueError(f"document: undefined fields: {sorted(extra)}")
-    if doc["file_type"] not in FILE_TYPES:
-        raise ValueError(f"unknown file_type: {doc['file_type']}")
-    title = doc.get("title")
-    if title is not None and not isinstance(title, str):
-        raise TypeError("doc title must be a string or null")
+def document_object(doc: dict[str, Any], page_hashes: list[str], contract: str) -> dict[str, Any]:
+    wire = {**{k: v for k, v in doc.items() if k != "pages"}, "pages": page_hashes}
+    check_document(wire, contract)
     obj: dict[str, Any] = {
         "file_type": doc["file_type"],
         "doc_metadata": metadata(doc.get("doc_metadata")),
         "pages": page_hashes,
     }
-    if title is not None:
-        obj["title"] = title
+    if doc.get("title") is not None:
+        obj["title"] = doc["title"]
     return obj
 
 
@@ -174,6 +355,7 @@ def doc_hashes(
     doc: dict[str, Any], contract: str, with_preimages: bool = False
 ) -> dict[str, Any]:
     """返回一篇文档在某契约下的全部期望值：三层同构的 tree（§4–§5）。"""
+    CHECKERS["expanded_document"](doc, contract)
     pages_out = []
     page_hashes: list[str] = []
     pre_pages: list[str] = []
@@ -181,12 +363,12 @@ def doc_hashes(
     for page in doc["pages"]:
         hashed = [obj_hash(element_object(el), contract) for el in page["elements"]]
         ehs = [h for h, _ in hashed]
-        ph, ppre = obj_hash(page_object(page, ehs), contract)
+        ph, ppre = obj_hash(page_object(page, ehs, contract), contract)
         page_hashes.append(ph)
         pages_out.append({"page_hash": ph, "elements": ehs})
         pre_pages.append(ppre)
         pre_elements.append([p for _, p in hashed])
-    dh, dpre = obj_hash(document_object(doc, page_hashes), contract)
+    dh, dpre = obj_hash(document_object(doc, page_hashes, contract), contract)
     out: dict[str, Any] = {"doc_hash": dh, "pages": pages_out}
     if with_preimages:
         out["preimages"] = {"document": dpre, "pages": pre_pages, "elements": pre_elements}
@@ -936,6 +1118,95 @@ JCS_VECTORS: list[dict[str, Any]] = [
 ]
 
 
+_H1 = "dpe1:" + "a" * 64
+_H2 = "dpe2:" + "a" * 64
+_HUGE = 2**53
+
+
+def bad(name: str, kind: str, input_: Any, code: str, path: str | None = None, contract: str = "dpe1") -> dict[str, Any]:
+    """拒绝类用例：只有一处违例时给出 path；多处违例只断言 code（core §2.8）。"""
+    case: dict[str, Any] = {"name": name, "object_kind": kind, "contract": contract, "input": input_, "code": code}
+    if path is not None:
+        case["path"] = path
+    return case
+
+
+def raw(name: str, kind: str, text: str, code: str, path: str | None = None, contract: str = "dpe1") -> dict[str, Any]:
+    """以原始 JSON 文本给出输入的拒绝类用例（I-JSON 违例无法以解析后的 JSON 值表达）。"""
+    case = bad(name, kind, None, code, path, contract)
+    del case["input"]
+    case["input_json"] = text
+    return case
+
+
+V, CU, CTU = "DPE_VALIDATION", "DPE_CATEGORY_UNKNOWN", "DPE_CONTRACT_UNSUPPORTED"
+
+INVALID_VECTORS: list[dict[str, Any]] = [
+    {
+        "name": "invalid_objects",
+        "description": "拒绝类一致性用例（core.md §2.8 校验顺序）：每条输入都 MUST 被拒绝且错误码一致；只有一处违例的用例另断言违例位置 path（RFC 6901）。多处违例的用例只断言错误码，用来固定校验顺序。",
+        "cases": [
+            # 元素对象
+            bad("element_not_object", "element", ["NarrativeText"], V, ""),
+            bad("element_missing_category", "element", {"text": "x"}, V, ""),
+            bad("element_category_not_string", "element", {"category": 1}, V, "/category"),
+            bad("element_category_unknown", "element", {"category": "Video"}, CU, "/category"),
+            bad("element_undefined_field", "element", {"category": "NarrativeText", "text_as_html": "<p/>"}, V, "/text_as_html"),
+            bad("element_text_not_string", "element", {"category": "Title", "text": 1}, V, "/text"),
+            bad("element_image_blob_not_ref", "element", {"category": "Image", "image_blob": "https://a.cdn/x.png"}, V, "/image_blob"),
+            bad("element_metadata_not_object", "element", {"category": "Title", "metadata": [1]}, V, "/metadata"),
+            bad("element_metadata_integer_out_of_range", "element", {"category": "Title", "metadata": {"a/b": [_HUGE]}}, V, "/metadata/a~1b/0"),
+            bad("element_category_before_closed_schema", "element", {"category": "Video", "foo": 1}, CU),
+            bad("element_category_null_is_missing", "element", {"category": None, "text": "x"}, V, ""),
+            # 页对象
+            bad("page_not_object", "page", [], V, ""),
+            bad("page_missing_elements", "page", {"title": "p"}, V, ""),
+            bad("page_undefined_field", "page", {"number": 1, "elements": []}, V, "/number"),
+            bad("page_title_not_string", "page", {"title": 1, "elements": []}, V, "/title"),
+            bad("page_metadata_integer_out_of_range", "page", {"page_metadata": {"n": -_HUGE}, "elements": []}, V, "/page_metadata/n"),
+            bad("page_elements_not_array", "page", {"elements": _H1}, V, "/elements"),
+            bad("page_child_hash_not_string", "page", {"elements": [1]}, V, "/elements/0"),
+            bad("page_child_hash_no_prefix", "page", {"elements": ["a" * 64]}, CTU, "/elements/0"),
+            bad("page_child_hash_unknown_contract", "page", {"elements": [_H1, "dpe9:" + "a" * 64]}, CTU, "/elements/1"),
+            bad("page_child_hash_drill_contract_unsupported", "page", {"elements": [_H2]}, CTU, "/elements/0"),
+            bad("page_child_hash_uppercase_hex", "page", {"elements": ["dpe1:" + "A" * 64]}, V, "/elements/0"),
+            bad("page_child_hash_mixed_contract", "page", {"elements": [_H1]}, V, "/elements/0", contract="dpe2"),
+            bad("page_elements_null_is_missing", "page", {"elements": None}, V, ""),
+            bad("page_closed_schema_before_children", "page", {"number": 1, "elements": ["a" * 64]}, V),
+            bad("page_title_before_children", "page", {"title": 1, "elements": ["a" * 64]}, V),
+            bad("page_children_in_array_order_validation_first", "page", {"elements": ["dpe1:" + "A" * 64, "a" * 64]}, V),
+            bad("page_children_in_array_order_contract_first", "page", {"elements": ["a" * 64, "dpe1:" + "A" * 64]}, CTU),
+            bad("page_child_hash_prefix_before_hex", "page", {"elements": ["dpe9:" + "A" * 64]}, CTU),
+            bad("page_metadata_before_children", "page", {"page_metadata": {"n": _HUGE}, "elements": ["a" * 64]}, V),
+            # 文档对象
+            bad("document_missing_file_type", "document", {"pages": []}, V, ""),
+            bad("document_missing_pages", "document", {"file_type": "md"}, V, ""),
+            bad("document_file_type_unknown", "document", {"file_type": "markdown", "pages": []}, V, "/file_type"),
+            bad("document_undefined_field", "document", {"file_type": "md", "pages": [], "attributes": {}}, V, "/attributes"),
+            bad("document_metadata_integer_out_of_range", "document", {"file_type": "md", "doc_metadata": {"n": _HUGE}, "pages": []}, V, "/doc_metadata/n"),
+            bad("document_child_hash_blob_prefix", "document", {"file_type": "md", "pages": ["sha256:" + "a" * 64]}, CTU, "/pages/0"),
+            bad("document_shape_before_children", "document", {"pages": ["a" * 64]}, V),
+            bad("document_file_type_before_children", "document", {"file_type": "markdown", "pages": ["a" * 64]}, V),
+            bad("document_metadata_before_children", "document", {"file_type": "md", "doc_metadata": {"n": _HUGE}, "pages": ["a" * 64]}, V),
+            # I-JSON（第 0 步）：输入以原始 JSON 文本给出（input_json），消费方用严格的 I-JSON 解析器读取
+            raw("ijson_lone_surrogate", "element", '{"category": "Title", "text": "\\ud800"}', V, ""),
+            raw("ijson_lone_surrogate_in_key", "element", '{"category": "Title", "metadata": {"\\udc00": 1}}', V, ""),
+            raw("ijson_before_category", "element", '{"category": "Video", "text": "\\ud800"}', V),
+            raw("ijson_before_children", "page", '{"title": "\\ud800", "elements": ["a"]}', V),
+            raw("ijson_duplicate_key", "element", '{"category": "Title", "category": "Video"}', V, ""),
+            raw("ijson_after_contract_unsupported", "page", '{"elements": ["aaaa", "\\ud800"]}', V, ""),
+            # 数值越界属于第 4 步（§2.6），不是解析阶段：位置指向出错的值，且排在 category 之后
+            raw("number_overflow_double", "element", '{"category": "Title", "metadata": {"a": 1e400}}', V, "/metadata/a"),
+            raw("number_overflow_after_category", "element", '{"category": "Video", "metadata": {"a": 1e400}}', CU),
+            # 展开视图（vectors/README.md）：文档字段 → 各页字段 → 各页元素
+            bad("expanded_element_category_unknown", "expanded_document", {"file_type": "md", "pages": [{"elements": [{"category": "Video"}]}]}, CU, "/pages/0/elements/0/category"),
+            bad("expanded_page_fields_before_elements", "expanded_document", {"file_type": "md", "pages": [{"elements": [{"category": "Video"}]}, {"title": 1, "elements": []}]}, V),
+            bad("expanded_document_fields_before_pages", "expanded_document", {"file_type": "markdown", "pages": [{"elements": [{"category": "Video"}]}]}, V),
+        ],
+    },
+]
+
+
 # ---------------------------------------------------------------------------
 # 生成与校验
 # ---------------------------------------------------------------------------
@@ -1014,6 +1285,27 @@ def build_files() -> dict[str, str]:
                 "kind": "jcs",
                 "description": vec["description"],
                 "cases": cases,
+            }
+        )
+
+    for vec in INVALID_VECTORS:
+        for case in vec["cases"]:
+            try:
+                obj = strict_loads(case["input_json"]) if "input_json" in case else case["input"]
+                CHECKERS[case["object_kind"]](obj, case["contract"])
+            except Reject as rej:
+                if rej.code != case["code"] or ("path" in case and rej.path != case["path"]):
+                    raise AssertionError(
+                        f"{vec['name']}/{case['name']}: got {rej.code} at {rej.path!r}"
+                    ) from None
+            else:
+                raise AssertionError(f"{vec['name']}/{case['name']}: not rejected")
+        files[f"{vec['name']}.json"] = dump_json(
+            {
+                "name": vec["name"],
+                "kind": "invalid",
+                "description": vec["description"],
+                "cases": vec["cases"],
             }
         )
 

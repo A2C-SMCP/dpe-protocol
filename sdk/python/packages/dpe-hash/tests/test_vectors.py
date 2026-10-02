@@ -5,12 +5,15 @@ from __future__ import annotations
 import decimal
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 from dpe_hash import (
     DRILL_CONTRACT,
+    DpeHashError,
+    children,
     content_hash,
     doc_hash,
     document_hashes,
@@ -149,3 +152,53 @@ def test_jcs_numbers_ignore_decimal_context(vectors_dir: Path) -> None:
         for case in vec["cases"]:
             assert jcs(case["input"]) == case["canonical"]
         assert jcs(0.1234567890123456) == "0.1234567890123456"
+
+
+class _DuplicateKey(Exception):
+    """严格解析器在解析阶段拒绝重复键（I-JSON，core §2.8 第 0 步）。"""
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    if len({k for k, _ in pairs}) != len(pairs):
+        raise _DuplicateKey
+    return dict(pairs)
+
+
+def _entries(kind: Any) -> list[Callable[[Any, str], object]]:
+    """拒绝类用例要经过的入口：展开视图走 document_hashes，线上原像走 object_hash 与 children。"""
+    if kind == "expanded_document":
+        return [document_hashes]
+
+    def via_object_hash(obj: Any, contract: str) -> object:
+        return object_hash(obj, kind, contract)
+
+    def via_children(obj: Any, contract: str) -> object:
+        return children(obj, kind, contract)
+
+    return [via_object_hash, via_children]
+
+
+def test_invalid_vectors(vectors_dir: Path) -> None:
+    """拒绝类向量（core.md §2.8）：每条都被拒绝且错误码一致；声明了 path 的用例，位置也一致。
+
+    ``input_json`` 用例按 vectors/README.md 以拒绝重复键的严格解析器读取：解析阶段拒绝即视为
+    ``DPE_VALIDATION``、位置 ``""``（重复键属于解析器职责，dpe-hash 接收的是解析后的对象）。
+    """
+    for vec in _load(vectors_dir, "invalid"):
+        for case in vec["cases"]:
+            label = f"{vec['name']}/{case['name']}"
+            if "input_json" in case:
+                try:
+                    obj = json.loads(case["input_json"], object_pairs_hook=_reject_duplicate_keys)
+                except _DuplicateKey:  # 只认重复键；坏 JSON 照常报错，不会被静默当作通过
+                    assert case["code"] == "DPE_VALIDATION", label
+                    assert case.get("path", "") == "", label
+                    continue
+            else:
+                obj = case["input"]
+            for call in _entries(case["object_kind"]):
+                with pytest.raises(DpeHashError) as info:
+                    call(obj, case["contract"])
+                assert info.value.code == case["code"], label
+                if "path" in case:
+                    assert info.value.path == case["path"], label

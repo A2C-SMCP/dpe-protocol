@@ -166,6 +166,10 @@
       "sha256": "932b1fb7c3c0be167f5c6459548d3f8d0f8480aeabc4410aa0a318a194ec5fd1"
     },
     {
+      "name": "invalid_objects.json",
+      "sha256": "29869e5389246bdfad694232349f48e16f3db958be2d52daf81603d71fbd2bab"
+    },
+    {
       "name": "jcs_basic.json",
       "sha256": "3ab99251be0d884558ff17238a687deb76c6aafc4cb327e63896f4ba8cc4da43"
     },
