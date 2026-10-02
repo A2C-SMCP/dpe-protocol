@@ -69,7 +69,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 - **源字段不得带会自行变化的默认值**（如 `created_at` 缺省取当前时间）：值由源提供，源给不出就留空。
 - **易变字段不应进入 metadata**：不随内容变化、却会频繁变化的源字段（浏览计数、最近访问时间、在线状态、同步时间戳等）SHOULD NOT 放进任何 metadata——它们一旦进 hash，每次同步都会制造内容变化。
 - **不写入由位置算出的序号**（非规范性指引）：位置只由数组表达一次。元素 metadata SHOULD NOT 写入页码、页内序号，page_metadata SHOULD NOT 写入由位置算出的页序号。这不改变"进 hash"的规则，只是代价说明：这类键会让插入一页时后续的对象连锁变化、全部重传，退化为全量传输。源文件自带的页码标签不在此列（§2.2）。
-- **治理不属于 DPE**：访问控制等治理属性不是内容，协议不承载；服务端依据调用者身份或自身配置决定（plan §0.1 P1）。
+- **治理不属于 DPE**：访问控制等治理属性不是内容，协议不承载；服务端依据调用者身份或自身配置决定（plan §0.1 P1）。将来若需要把数据源的文档权限同步到远端，以不进内容核心的扩展方式引入。
 - **所有写入同级，只经 commit**（plan §0.1 P5）：DPE 字段只能经 commit 写入；服务端实现 MUST NOT 提供绕过 commit 修改 DPE 字段的途径。服务端自己修改内容（包括作为某个 URI 的来源，如用户直接上传的文件）同样经 commit、同样受 CAS 约束。来源与服务端的写入同权同级，后写覆盖前写。
 
 ### 2.5 file_type
@@ -78,7 +78,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 
 `bmp` `csv` `doc` `docx` `eml` `epub` `heic` `html` `jpg` `json` `md` `msg` `ndjson` `odt` `org` `pdf` `png` `ppt` `pptx` `rst` `rtf` `tiff` `tsv` `txt` `wav` `xls` `xlsx` `xml` `zip` `java_repo` `python_repo` `javascript_repo` `typescript_repo` `unk` `empty` `tfchat` `jira_project` `jira_issue`
 
-注意是 `md` 而不是 `markdown`。未知取值 MUST 拒绝（`DPE_VALIDATION`）。SDK MUST 以常量导出本枚举（同 `vectors/manifest.json` 的 `file_types`）。
+注意是 `md` 而不是 `markdown`。`tfchat`、`jira_project`、`jira_issue` 是开放格式名，属 plan §1 命名规则的登记例外；新增取值 MUST NOT 带产品或品牌名。未知取值 MUST 拒绝（`DPE_VALIDATION`）。SDK MUST 以常量导出本枚举（同 `vectors/manifest.json` 的 `file_types`）。
 
 ### 2.6 数值
 
@@ -97,12 +97,14 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 | `capabilities` | 返回协议版本、接受的 hash 契约版本、限额（`max_payload_bytes`、`page_max_bytes`、`staging_ttl`、blob 上限与分块参数）、`content_encodings`、可选能力 | 否 |
 | `head` / `batch_head` | 按 URI 返回 `{doc_hash}`；不存在返回 null。批量版只读，不涉及原子性 | 否 |
 | `get_skeleton` | 返回 `doc_hash`、根对象与全部页对象（按根对象顺序），不含内容对象。返回值 MUST 与最近一次写入的值**内容等价**（§2.7）——据此重算的 doc_hash 必须等于返回值 | 否 |
-| `list` | 按 file_uri 前缀（码点前缀匹配规范化后的 URI）分页返回 `{file_uri, doc_hash}` | 否 |
+| `list` | 按 file_uri 前缀分页返回 `{file_uri, doc_hash}`。前缀按规范化后 URI 的码点匹配，不识别 path 段边界；需要按段匹配时，调用方在前缀末尾自带分隔符（如 `/`） | 否 |
 | `negotiate` | 提交根对象（可附带部分页对象），返回缺失的页与内容对象，并开启一个 `staging_session` | 否（只开会话） |
 | `upload` | 向暂存会话上传页对象、内容对象或 blob。幂等；服务端 MUST 校验字段（§2）并重算 hash，不符返回 `DPE_HASH_MISMATCH`；响应给出该对象引用的下一层中缺失的部分；页对象与 blob 支持分块与断点续传 | 暂存 |
 | `commit` | 提交根对象（页对象与内容对象可内联或引用暂存会话）。**原子切换**：要么完整生效，要么没有任何变化 | 是 |
 | `delete` | 按 URI 删除整篇文档 | 是 |
 | `move` | `from_uri → to_uri` 原子改名，学习产物原样保留。前置：源满足 CAS，目标不存在（否则 `DPE_ALREADY_EXISTS`） | 是 |
+
+协议不提供按 hash 读取单个页对象或内容对象的接口：投递只依赖缺失清单，不需要读骨架；`get_skeleton` 的响应没有请求那样的上限，可流式返回。将来若增加按对象读取（对应 `git cat-file`），属于增量扩展，且 MUST 限定在调用者有读权限的文档内，否则会成为跨文档探测口（§8）。
 
 ### 3.1 能力协商
 
@@ -142,7 +144,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 6. **会话与可得性**：引用的暂存会话须可用于本文档（§3.4，否则 `DPE_SESSION_EXPIRED`）。服务端对每个内联对象计算 hash（Rule 0：不信任客户端，hash 一律由服务端算出；内联对象没有声明的 hash，因此不会出现 `DPE_HASH_MISMATCH`），然后检查根对象引用的每个 page_hash、这些页对象引用的每个 content_hash、这些内容对象引用的每个 blob，都能在「去重范围内的已存内容 ∪ 暂存会话 ∪ 内联」中找到，否则 `DPE_MISSING_CONTENT`，本次 commit 无任何效果。
    - 缺失时，problem 体 MUST 带上缺失的 hash 清单（按层分为 pages / content_hashes / blobs，MAY 截断并注明），客户端上传到同一会话后重新 commit 即可。
    - **闭包不变式**：去重范围内已存的页对象，其引用的全部内容对象与 blob 也都在去重范围内（服务端只以完整的子树形式存储对象）。正因如此，缺失清单可以逐层给出：一个页不缺失，它的整棵子树就不缺失。
-   - **去重范围**由服务端自行决定，协议只约束上下界：MUST 至少包含该文档当前状态引用的全部对象，MUST NOT 超出调用者有写授权的文档；negotiate、upload 响应中的缺失清单与 commit 的可得性判定 MUST 使用同一范围（§9）。范围不在 capabilities 中声明：客户端只按缺失清单行事，不需要知道范围（类比 Git 不暴露服务端的对象存储策略）。
+   - **去重范围**由服务端自行决定，协议只约束上下界：MUST 至少包含该文档当前状态引用的全部对象，MUST NOT 超出调用者有写授权的文档；negotiate、upload 响应中的缺失清单与 commit 的可得性判定 MUST 使用同一范围（§8）。范围不在 capabilities 中声明：客户端只按缺失清单行事，不需要知道范围（类比 Git 不暴露服务端的对象存储策略）。
 
 服务端 MUST 按 category 实例化元素，MUST NOT 全部按纯文本处理。
 
@@ -180,19 +182,19 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 - **失败的 commit（任何错误）MUST NOT 消费会话**。并发写入导致 `DPE_PRECONDITION_FAILED` 时，客户端重新读取后，以新的前置条件引用**同一会话**重新 commit，已上传到会话的内容无需重传。若他人的写入移除了本次提交依赖、但未上传到会话的对象（最小去重范围下它们原本来自文档的当前状态），commit 得到 `DPE_MISSING_CONTENT` 及缺失清单，补传到同一会话后重新 commit 即可。
 - **过期**：会话的过期时间从最近一次成功的 negotiate 或 upload（含分块上传的中间块）起算，每次成功操作都会续期；capabilities 声明的 `staging_ttl` MUST 不少于 1 小时。持续上传的大文档因此不会中途过期，闲置的会话尽快回收。
 - 会话过期后重开 negotiate，新会话从空开始：过期会话中的内容不再可得，缺失清单与可得性判定都只看去重范围与新会话。
-- upload 幂等：同一 hash 重复上传 MUST 成功且无副作用。upload 的一切可观察结果（"新写入 / 重复"的区分、断点续传的已收字节数）MUST 只按**本会话内**已收到的内容判定，与服务端其他位置是否已存该对象无关（§9）；缺失清单按去重范围计算（§3.3）。
+- upload 幂等：同一 hash 重复上传 MUST 成功且无副作用。upload 的一切可观察结果（"新写入 / 重复"的区分、断点续传的已收字节数）MUST 只按**本会话内**已收到的内容判定，与服务端其他位置是否已存该对象无关（§8）；缺失清单按去重范围计算（§3.3）。
 - commit 以 `created` / `updated` 成功后会话即消费完毕；`unchanged` 不消费会话（会话随 TTL 回收）。未引用的暂存对象随会话回收。
 
 ## 4. 删除与移动
 
 - `delete` 受 CAS 约束（§5），成功后该 URI 上的 `head` 返回 null。
 - **复活防护**：基于旧 doc_hash 的 commit 在文档被删后只会得到 `DPE_NOT_FOUND`，由上层决定是否以 `if_absent` 重建。服务端不需要保存墓碑。
-- `move` 成功后目标 URI 的 doc_hash 等于移动前源文档的 doc_hash（file_uri 不进 hash），源 URI 视同被删。学习产物 MUST 原样保留（不重新学习）。move MUST 带 `base_hash`，不支持 force。
+- `move` 成功后目标 URI 的 doc_hash 等于移动前源文档的 doc_hash（file_uri 不进 hash），源 URI 视同被删，不留任何痕迹（`list` / `head` 中与 delete 后完全一致）。学习产物 MUST 原样保留（不重新学习）。move MUST 带 `base_hash`，不支持 force。
 - 文档内部删页、删元素、移动页，都通过提交新的根对象 / 页对象表达。
 
 ## 5. 写入冲突（CAS）与重试
 
-**授权总则**：所有写操作（commit / delete / move）MUST 先完成授权判定，再做任何依赖文档状态的判定（是否存在、doc_hash、unchanged 等）；move 对源与目标两侧都要判定。无写授权时一律返回 `DPE_FORBIDDEN`，与文档是否存在、内容为何无关（§9）。
+**授权总则**：所有写操作（commit / delete / move）MUST 先完成授权判定，再做任何依赖文档状态的判定（是否存在、doc_hash、unchanged 等）；move 对源与目标两侧都要判定。无写授权时一律返回 `DPE_FORBIDDEN`，与文档是否存在、内容为何无关（§8）。
 
 ### 5.1 前置条件
 
@@ -256,22 +258,7 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 5. 字段变更不被静默丢弃：DPE 的全部字段都进 doc_hash，内容等价（§2.7）之外的任何变化都会被发现并落库；
 6. 契约升级不引起未变内容的重推或重学。
 
-## 8. 待评审决策点
-
-1. **`list` 按码点前缀匹配**（§3，维护者确认）：与对象存储的 prefix 列举一致，不定义 path 段边界；需要按段匹配时，调用方在前缀末尾自带分隔符（如 `/`）。
-2. **`move` 不留痕迹**（维护者确认）：旧 URI 在 `list` / `head` 中与 delete 后完全一致。
-3. **去重范围不声明**（§3.3，维护者确认）：取消 capabilities 的 `dedup_scope`，服务端在「该文档自身 ⊆ 范围 ⊆ 调用者写授权」之间自行决定，客户端只看缺失清单。
-4. **不定义幂等键**（§5.2，#4 评审中维护者确认）：幂等由内容保证，原 plan §16 中「幂等键去重窗口」一项随之撤销。
-5. **治理属性移出 DPE**（§2.4，#4 评审中维护者确认）：将来若需要把数据源的文档权限同步到远端，以不进内容核心的扩展方式引入。
-6. **file_type 枚举中的 `tfchat` / `jira_project` / `jira_issue`**（§2.5，#4 C1 维护者确认）：视为开放标准的格式名保留，属 plan §1 命名规则的登记例外；新增枚举值仍不得带产品或品牌名。
-7. **页没有页号，页序即数组顺序**（§2.2，#6 中维护者确认）：推翻 #4 B2 的"按 number 升序"；骨架增量的粒度是页，更细粒度的内容分块不在 v1 范围（§3.2）。
-8. **v1 不提供按对象读取**（维护者确认）：`get_skeleton` 一次返回根对象与全部页对象，响应可流式返回，没有请求那样的上限；投递路径只依赖缺失清单，不依赖读骨架。将来若增加按 hash 读取页对象或内容对象的端点（对应 `git cat-file`），属于增量扩展，且 MUST 限定在调用者有读权限的文档内，否则会成为跨文档探测口（§9）。
-9. hash 相关的决策点集中在契约 1 §7。
-10. **暂存会话 TTL**（§3.4，维护者确认）：从最近一次成功的会话操作起算，下限 1 小时。
-
-以上均已由维护者确认；待评审：暂无。
-
-## 9. 安全考虑
+## 8. 安全考虑
 
 - **跨文档探测**：按内容寻址的去重天然是一个存在性预言机。若缺失清单（negotiate、upload 响应）或 commit 的可得性判定覆盖整个 remote，一个只被授权写某个 URI 前缀的调用者，可以通过提交任意 hash 探测其他文档里是否存在某段内容、某个页或某个 blob，绕过前缀授权；更进一步，commit 引用一个自己从未上传的 hash 若能成功，就等于凭 hash "认领"了别人的内容。因此去重范围 MUST NOT 超出调用者的写授权范围，各处缺失清单与 commit MUST 使用同一范围（§3.3），范围外的对象一律视为缺失。
 - **上传侧信道**：upload 的"新写入 / 重复"状态与断点续传偏移只按本会话判定（§3.4），否则上传一个猜测的对象即可从响应得知它是否存在于别处。

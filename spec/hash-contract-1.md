@@ -83,7 +83,7 @@ category 进 hash（#3 S3：以什么语义角色呈现属于内容本身；`Tit
 | `Table`、`Formula` | `text`、`text_as_html` |
 | 其余（见下） | `text` |
 
-text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement`、`FigureCaption`、`NarrativeText`、`ListItem`、`Title`、`Address`、`EmailAddress`、`PageBreak`、`TableChunk`、`Header`、`Footer`、`CodeSnippet`、`PageNumber`、`FormKeysValues`、`tfchat`。
+text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement`、`FigureCaption`、`NarrativeText`、`ListItem`、`Title`、`Address`、`EmailAddress`、`PageBreak`、`TableChunk`、`Header`、`Footer`、`CodeSnippet`、`PageNumber`、`FormKeysValues`、`tfchat`。其中 `tfchat` 是开放格式名，属 plan §1 命名规则的登记例外（同 core.md §2.5）。
 
 内容字段的值均为字符串（`image_blob` 为 §1 的 blob 引用）。出现其 category 未允许的字段 MUST 拒绝。`FormKeysValues` 的键值对如由源随元素 metadata 提供，则自然进入 hash，无需专门的内容字段。
 
@@ -117,17 +117,3 @@ doc_hash  = H(root)     root = { "file_type": …, "title"?: …, "doc_metadata"
 - 向量包含契约升级演练：同一份内容同时给出 `dpe1` 与假想 `dpe2` 的期望值，两个契约下的逐页、逐元素结果按位置一一对应，即为对应关系断言（`dpe2` 定义见 vectors/README.md，仅用于测试）。
 
 实现方从既有 hash 规则迁移到本契约的对照，见 [docs/migration/kernel-to-dpe1.md](../docs/migration/kernel-to-dpe1.md)（非规范）。
-
-## 7. 待评审决策点
-
-已关闭：
-
-- ~~页号进 page_hash~~：#6 中改为三层同构 tree，页没有页号字段，页序即数组顺序（推翻 #3 的确认与 #4 B2 的"按 number 升序"）。
-- ~~保留键集合~~：按 plan §0.1 P2（源即内容）取消保留键，metadata 全部进 hash（#4 评审中维护者确定，推翻 #3 S2 的过滤方案）。
-- ~~`file_type` 的归属~~：#3 确认按来源规则进 doc_hash，属于根对象（§5）。
-- ~~图片 url 是否进 hash~~：按 P2 作为元素 metadata 进 hash（推翻 #3 S4 中"url 不进 hash"的部分）。
-- ~~category `tfchat` 的命名~~：视为开放标准的格式名保留，属 plan §1 命名规则的登记例外（#4 C1）。
-- ~~doc title~~：根对象增加可选 `title`，与页对称（由内核会话提出、维护者确认，撤回 #3 S6；向量 `doc_title`）。
-- ~~null 与空串~~：#6 中改为 JCS 原语后，空串是独立的值，与 null（缺省）不等价（§3.2）。
-
-待评审：暂无。

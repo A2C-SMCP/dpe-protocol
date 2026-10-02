@@ -46,5 +46,5 @@ uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失�
 ## 约定
 
 - 文档与注释用中文，标识符用英文；关键词 MUST / SHOULD 按 RFC 2119。
-- 规范草案中的待定项集中写在各文档的「待评审决策点」小节，并在 plan §16 有登记的注明。
+- 规范草案中的待定项集中写在各文档末尾的「待评审决策点」小节，并在 plan §16 有登记的注明；有结论后并入正文对应章节、删去该条（全部关闭即删去整节），决策历史留在 plan 修订注记与 Issue 中。
 - M2 起：Python ≥ 3.11（pydantic v2、sans-IO 核心、sync + async）；Rust ≥ 1.80（serde、sans-IO 核心不绑定异步运行时，默认 reqwest/tokio 适配）；`mypy --strict` / ruff / `cargo clippy -D warnings` / `cargo fmt` 必须通过。
