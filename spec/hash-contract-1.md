@@ -23,7 +23,7 @@ Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何�
 
 ## 2. 输入：源即内容
 
-DPE 的每个字段都由源提供（plan §0.1 P2），除身份 `file_uri` 外**全部**进 hash，没有保留键、没有过滤、没有例外：正文、category、`file_type`、页 title，以及 doc / page / element 三层 metadata 的全部键（含版面坐标、图片 url、源页码标签等）。
+DPE 的每个字段都由源提供（plan §0.1 P2），除身份 `file_uri` 外**全部**进 hash，没有保留键、没有过滤、没有例外：正文、category、`file_type`、文档 title 与页 title，以及 doc / page / element 三层 metadata 的全部键（含版面坐标、图片 url、源页码标签等）。
 
 规范性规则：
 
@@ -100,12 +100,12 @@ text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement
 
 ```
 page_hash = H(page)     page = { "title"?: …, "page_metadata": {…}, "elements": [content_hash…] }
-doc_hash  = H(root)     root = { "file_type": …, "doc_metadata": {…}, "pages": [page_hash…] }
+doc_hash  = H(root)     root = { "file_type": …, "title"?: …, "doc_metadata": {…}, "pages": [page_hash…] }
 ```
 
 - `elements` / `pages` 是子对象 hash 完整字符串（含 `dpe1:` 前缀）的数组，**数组顺序即阅读顺序**。重复出现照常重复：内容完全相同的元素共用同一个内容对象，内容完全相同的页共用同一个页对象（向量 `duplicate_pages`）。
 - 页没有页号字段：页的位置就是它在 `pages` 中的下标。源文件自带的页码标签（印刷页码、PDF PageLabels，如 `iv`）是源内容，放进 `page_metadata`。由位置算出的序号 SHOULD NOT 写进 `page_metadata`——它会让插入一页后，后续每一页的页对象都变化，页层重新出现连锁重传。
-- `title` 为字符串，可缺省；`file_type` 为 core.md §2.5 封闭枚举的字符串值，未知取值 MUST 拒绝。
+- 根与页的 `title` 为字符串，可缺省（缺省与 null 等价，`""` 是独立的值）；`file_type` 为 core.md §2.5 封闭枚举的字符串值，未知取值 MUST 拒绝。
 - 空文档（0 页）与空页（0 元素）均合法：`pages` / `elements` 为 `[]`。
 
 ## 6. 契约演进
@@ -127,6 +127,7 @@ doc_hash  = H(root)     root = { "file_type": …, "doc_metadata": {…}, "pages
 - ~~`file_type` 的归属~~：#3 确认按来源规则进 doc_hash，属于根对象（§5）。
 - ~~图片 url 是否进 hash~~：按 P2 作为元素 metadata 进 hash（推翻 #3 S4 中"url 不进 hash"的部分）。
 - ~~category `tfchat` 的命名~~：视为开放标准的格式名保留，属 plan §1 命名规则的登记例外（#4 C1）。
+- ~~doc title~~：根对象增加可选 `title`，与页对称（由内核会话提出、维护者确认，撤回 #3 S6；向量 `doc_title`）。
 - ~~null 与空串~~：#6 中改为 JCS 原语后，空串是独立的值，与 null（缺省）不等价（§3.2）。
 
 待评审：暂无。

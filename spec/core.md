@@ -33,10 +33,11 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 | 字段 | 说明 |
 | --- | --- |
 | `file_type` | 必需。封闭枚举（§2.5） |
+| `title` | 字符串，可缺省。源给出的文档标题（文档标题、网页 `<title>`、issue summary 等） |
 | `doc_metadata` | JSON 对象，缺省视同 `{}` |
 | `pages` | 必需。页对象 `page_hash` 的数组；**数组顺序即页的阅读顺序**，可为空数组 |
 
-`file_uri` 是文档身份，不属于根对象，不进 hash。契约 1 没有 doc title（#3 S6）。
+`file_uri` 是文档身份，不属于根对象，不进 hash。`title` 与页 title 对称；源文件名（如 `filename`）是另一项源属性，放在 `doc_metadata` 中，不能代替 title。展示名如何选取由实现决定，协议不规定。
 
 ### 2.2 Page object（页）
 
@@ -157,7 +158,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 
 **变化即重学**（plan §0.1 P3）：
 
-- 任何层级的 hash 变化都是该层内容的变化：content_hash 变化是元素内容变了，page_hash 变化是页的内容（title、page_metadata 或元素序列）变了，doc_hash 变化是文档的内容（file_type、doc_metadata 或页序列）变了。服务端 SHOULD 刷新依赖变化层级的衍生物；刷新的效率由服务端自己解决，协议不为规避重学做任何设计。
+- 任何层级的 hash 变化都是该层内容的变化：content_hash 变化是元素内容变了，page_hash 变化是页的内容（title、page_metadata 或元素序列）变了，doc_hash 变化是文档的内容（file_type、title、doc_metadata 或页序列）变了。服务端 SHOULD 刷新依赖变化层级的衍生物；刷新的效率由服务端自己解决，协议不为规避重学做任何设计。
 - 顺序属于内容：页序列、页内元素序列的变化会改变 doc_hash / page_hash，即使 delta 全为 retained。例：对调"他们离婚了"与"A 与 C 再婚了"两句，delta 为 0，但页的内容已变，基于上下文的衍生物需要刷新；在中间插入一页，其余页对象不变，但根对象已变，依赖页序的衍生物需要刷新。
 - **delta 衡量的是传输量**：`retained` 只代表该内容对象不需要重传，不代表依赖它的衍生物仍然有效。
 

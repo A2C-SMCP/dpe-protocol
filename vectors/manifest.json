@@ -56,6 +56,10 @@
       "sha256": "a346ecb11d9221942ccd883cc5a0743353f988b8a8ddab9eeae7079c826a4fb5"
     },
     {
+      "name": "doc_title.json",
+      "sha256": "d25aa3c0e068501166bc6b02e47aeab61a40d61d27c17e4c3983d50c915dc8e5"
+    },
+    {
       "name": "duplicate_different_coordinates.json",
       "sha256": "be5b1ef39ffcb10abf90f42822ec4ca267d59d3c72550f8e24ca095f749a690b"
     },
@@ -77,7 +81,7 @@
     },
     {
       "name": "empty_document.json",
-      "sha256": "3140e29deb21047efee49950ccfc085637025aee1fea79d5132a11c1f97985bb"
+      "sha256": "e54acccd8860e596de4efbd9afd340f33991eac834550ecd0d96ad3857a50082"
     },
     {
       "name": "file_type_identity.json",
@@ -137,7 +141,7 @@
     },
     {
       "name": "preimage_basic.json",
-      "sha256": "328a7afd917063935446013b75ed30934cefc1e4d855151c2d8b80eff217e2b6"
+      "sha256": "487cf12f57ebbb1bcd28800c44635161ba339700afdefffc72ea3c5251f932f9"
     },
     {
       "name": "table_formula_html.json",

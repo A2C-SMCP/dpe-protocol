@@ -110,6 +110,7 @@
   "doc_hash": "dpe1:…",
   "root": {
     "file_type": "md",
+    "title": "季度报告",
     "doc_metadata": { "created_at": "2026-09-01T02:03:04Z", "author": "…" },
     "pages": [ "dpe1:…", "dpe1:…" ]
   },

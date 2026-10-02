@@ -1,7 +1,7 @@
 {
   "name": "empty_document",
   "kind": "document",
-  "description": "空文档（0 页）与空页（0 元素）均合法；契约 1 没有 doc title（#3 S6）。",
+  "description": "空文档（0 页）与空页（0 元素）均合法。",
   "documents": {
     "no_pages": {
       "file_type": "empty",

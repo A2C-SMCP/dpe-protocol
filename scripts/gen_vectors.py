@@ -126,7 +126,7 @@ def element_object(el: dict[str, Any]) -> dict[str, Any]:
 
 
 PAGE_FIELDS = frozenset({"title", "page_metadata", "elements"})
-ROOT_FIELDS = frozenset({"file_type", "doc_metadata", "pages"})
+ROOT_FIELDS = frozenset({"file_type", "title", "doc_metadata", "pages"})
 
 
 def page_object(page: dict[str, Any], element_hashes: list[str]) -> dict[str, Any]:
@@ -148,7 +148,13 @@ def root_object(doc: dict[str, Any], page_hashes: list[str]) -> dict[str, Any]:
         raise ValueError(f"root: undefined fields: {sorted(extra)}")
     if doc["file_type"] not in FILE_TYPES:
         raise ValueError(f"unknown file_type: {doc['file_type']}")
-    return {"file_type": doc["file_type"], "doc_metadata": metadata(doc.get("doc_metadata")), "pages": page_hashes}
+    title = doc.get("title")
+    if title is not None and not isinstance(title, str):
+        raise TypeError("doc title must be a string or null")
+    obj: dict[str, Any] = {"file_type": doc["file_type"], "doc_metadata": metadata(doc.get("doc_metadata")), "pages": page_hashes}
+    if title is not None:
+        obj["title"] = title
+    return obj
 
 
 def doc_hashes(doc: dict[str, Any], contract: str, with_preimages: bool = False) -> dict[str, Any]:
@@ -255,8 +261,12 @@ def el(category: str, text_: str | None = None, **kw: Any) -> dict[str, Any]:
     return out
 
 
-def doc(*pages: dict[str, Any], file_type: str = "md", doc_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def doc(
+    *pages: dict[str, Any], file_type: str = "md", title: str | None = None, doc_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
     out: dict[str, Any] = {"file_type": file_type, "pages": list(pages)}
+    if title is not None:
+        out["title"] = title
     if doc_metadata is not None:
         out["doc_metadata"] = doc_metadata
     return out
@@ -296,6 +306,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
             "doc": doc(
                 page("p1", el("Title", "标题", metadata={"lang": "zh"}), el("Table", "a", text_as_html="<table/>")),
                 page(None, el("Image", None, image_blob=_BLOB, image_mime_type="image/png")),
+                title="季度报告",
                 doc_metadata={"author": "gmq"},
             )
         },
@@ -441,6 +452,25 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
         ],
     },
     {
+        "name": "doc_title",
+        "description": "根对象可选 title 与页 title 对称：缺省与 null 等价，\"\" 是独立的值；title 变化只改变 doc_hash，页与元素 hash 不变；title 与 doc_metadata 中的 filename 是不同的源属性。",
+        "documents": {
+            "absent": doc(page("p1", el("NarrativeText", "正文")), doc_metadata={"filename": "report_v3_final.docx"}),
+            "null": {**doc(page("p1", el("NarrativeText", "正文")), doc_metadata={"filename": "report_v3_final.docx"}), "title": None},
+            "empty": doc(page("p1", el("NarrativeText", "正文")), title="", doc_metadata={"filename": "report_v3_final.docx"}),
+            "titled": doc(page("p1", el("NarrativeText", "正文")), title="季度报告", doc_metadata={"filename": "report_v3_final.docx"}),
+            "renamed": doc(page("p1", el("NarrativeText", "正文")), title="年度报告", doc_metadata={"filename": "report_v3_final.docx"}),
+            "filename_only": doc(page("p1", el("NarrativeText", "正文")), doc_metadata={"filename": "季度报告"}),
+            "title_only": doc(page("p1", el("NarrativeText", "正文")), title="季度报告"),
+        },
+        "relations": [
+            eq("absent.doc_hash", "null.doc_hash"),
+            ne("absent.doc_hash", "empty.doc_hash", "titled.doc_hash", "renamed.doc_hash"),
+            eq("absent.pages.0.page_hash", "titled.pages.0.page_hash", "renamed.pages.0.page_hash"),
+            ne("filename_only.doc_hash", "title_only.doc_hash"),
+        ],
+    },
+    {
         "name": "duplicate_elements",
         "description": "同页两个相同元素：content_hash 相同（内容对象共享），page 的 elements 列表中按位置重复出现。",
         "documents": {
@@ -553,7 +583,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "empty_document",
-        "description": "空文档（0 页）与空页（0 元素）均合法；契约 1 没有 doc title（#3 S6）。",
+        "description": "空文档（0 页）与空页（0 元素）均合法。",
         "documents": {
             "no_pages": doc(file_type="empty"),
             "empty_page": doc(page(None), file_type="empty"),

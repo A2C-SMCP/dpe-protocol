@@ -34,6 +34,7 @@
           ]
         }
       ],
+      "title": "季度报告",
       "doc_metadata": {
         "author": "gmq"
       }
@@ -42,7 +43,7 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:a1858617a15d1f4cf888da248566d5d4fe1b79f2229cb5d6c2ea1b14ace9a37e",
+        "doc_hash": "dpe1:8e036ff6f82da8e15ca71e1347e83cffbc29d92c6dd6ebcd9e0f941ec55d2919",
         "pages": [
           {
             "page_hash": "dpe1:23ae242f81001adf2b48e83b9a67da4c0c25168b4c9b81eeab353c006452305b",
@@ -59,7 +60,7 @@
           }
         ],
         "preimages": {
-          "root": "{\"doc_metadata\":{\"author\":\"gmq\"},\"file_type\":\"md\",\"pages\":[\"dpe1:23ae242f81001adf2b48e83b9a67da4c0c25168b4c9b81eeab353c006452305b\",\"dpe1:075e0c43cbf0002f1bce09eccf7a104904649c56e311a66260c2c9cc51ed56e3\"]}",
+          "root": "{\"doc_metadata\":{\"author\":\"gmq\"},\"file_type\":\"md\",\"pages\":[\"dpe1:23ae242f81001adf2b48e83b9a67da4c0c25168b4c9b81eeab353c006452305b\",\"dpe1:075e0c43cbf0002f1bce09eccf7a104904649c56e311a66260c2c9cc51ed56e3\"],\"title\":\"季度报告\"}",
           "pages": [
             "{\"elements\":[\"dpe1:2fa59dc85718026f31551d62452e87ee45216dd38fe3c4d3e67f7ff894620725\",\"dpe1:fd9ca6d627bfd341cddfcf490538f84c39f744b8f17c1dd6cede47013a5fadf6\"],\"page_metadata\":{},\"title\":\"p1\"}",
             "{\"elements\":[\"dpe1:1ba2297eb7d34724f8e7f6edc9d250bf695de51ddfbdef3675eaaa883053966a\"],\"page_metadata\":{}}"

@@ -13,7 +13,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
 - **`document`**：
   - `documents` 是一到多篇文档的 hash 输入：
-    - 文档：`file_type`、可选 `doc_metadata`、`pages[{title, page_metadata, elements[]}]`；页没有页号，数组顺序即阅读顺序；契约 1 没有 doc title。
+    - 文档：`file_type`、可选 `title`、可选 `doc_metadata`、`pages[{title, page_metadata, elements[]}]`；页没有页号，数组顺序即阅读顺序。
     - 元素：内容对象，即 category 允许的字段加 `metadata`。
     - 这是三层对象的**展开视图**：线上的根对象 `pages` 与页对象 `elements` 是子对象 hash 列表，子对象单独投递（契约 1 §5）。
   - `expected` 给出每篇文档在各契约下的 `doc_hash`、逐页的 `page_hash`，以及逐元素的 `content_hash`（`pages[i].elements[j]`，i 为输入数组下标）。`preimage_basic` 另给出 `preimages`：根对象、各页对象、各元素对象规范化后的 JCS 原像字符串，hash 即其 UTF-8 字节的 SHA-256。
