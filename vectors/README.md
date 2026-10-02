@@ -14,9 +14,9 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 - **`document`**：
   - `documents` 是一到多篇文档的 hash 输入：
     - 文档：`file_type`、可选 `title`、可选 `doc_metadata`、`pages[{title, page_metadata, elements[]}]`；页没有页号，数组顺序即阅读顺序。
-    - 元素：内容对象，即 category 允许的字段加 `metadata`。
-    - 这是三层对象的**展开视图**：线上的根对象 `pages` 与页对象 `elements` 是子对象 hash 列表，子对象单独投递（契约 1 §5）。
-  - `expected` 给出每篇文档在各契约下的 `doc_hash`、逐页的 `page_hash`，以及逐元素的 `content_hash`（`pages[i].elements[j]`，i 为输入数组下标）。`preimage_basic` 另给出 `preimages`：根对象、各页对象、各元素对象规范化后的 JCS 原像字符串，hash 即其 UTF-8 字节的 SHA-256。
+    - 元素：元素对象，即 category 允许的字段加 `metadata`。
+    - 这是三层对象的**展开视图**：线上的文档对象 `pages` 与页对象 `elements` 是子对象 hash 列表，子对象单独投递（契约 1 §5）。
+  - `expected` 给出每篇文档在各契约下的 `doc_hash`、逐页的 `page_hash`，以及逐元素的 `content_hash`（`pages[i].elements[j]`，i 为输入数组下标）。`preimage_basic` 另给出 `preimages`：文档对象（`document`）、各页对象（`pages`）、各元素对象（`elements`）规范化后的 JCS 原像字符串，hash 即其 UTF-8 字节的 SHA-256。
   - `relations`（可选）是本向量要证明的**规范性质**，生成器在生成时断言其成立，消费方 SHOULD 一并断言：
     - `{"equal": [ref…]}`：所列值两两相等；
     - `{"distinct": [ref…]}`：所列值两两不同。
@@ -25,7 +25,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
 `manifest.json` 记录：
 - 契约版本；
-- 契约常量，与 SDK 导出的常量必须一致：file_type 封闭枚举 `file_types`；
+- 契约常量，与 SDK 导出的常量必须一致：file_type 封闭枚举 `file_types`（按 core.md §2.5 的顺序），以及 category 封闭枚举与各自允许的内容字段 `category_content_fields`（契约 1 §4.1；键按名排序，字段按表中顺序）；
 - 生成器与各文件的 sha256（provenance）。
 
 ## 假想契约 `dpe2`

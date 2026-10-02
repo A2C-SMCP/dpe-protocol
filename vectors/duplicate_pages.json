@@ -1,7 +1,7 @@
 {
   "name": "duplicate_pages",
   "kind": "document",
-  "description": "两页内容完全相同：page_hash 相同（页对象共享，如同 Git 中相同的 tree），root 的 pages 列表中按位置重复出现。",
+  "description": "两页内容完全相同：page_hash 相同（页对象共享，如同 Git 中相同的 tree），文档对象的 pages 列表中按位置重复出现。",
   "documents": {
     "doc": {
       "file_type": "md",

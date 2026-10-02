@@ -1,7 +1,7 @@
 {
   "name": "doc_title",
   "kind": "document",
-  "description": "根对象可选 title 与页 title 对称：缺省与 null 等价，\"\" 是独立的值；title 变化只改变 doc_hash，页与元素 hash 不变；title 与 doc_metadata 中的 filename 是不同的源属性。",
+  "description": "文档对象可选 title 与页 title 对称：缺省与 null 等价，\"\" 是独立的值；title 变化只改变 doc_hash，页与元素 hash 不变；title 与 doc_metadata 中的 filename 是不同的源属性。",
   "documents": {
     "absent": {
       "file_type": "md",

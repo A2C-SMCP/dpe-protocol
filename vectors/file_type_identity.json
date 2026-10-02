@@ -1,7 +1,7 @@
 {
   "name": "file_type_identity",
   "kind": "document",
-  "description": "file_type 由源提供，属于 root 对象，进 doc_hash：只改 file_type 时页与元素 hash 不变，doc_hash 变化。",
+  "description": "file_type 由源提供，属于文档对象，进 doc_hash：只改 file_type 时页与元素 hash 不变，doc_hash 变化。",
   "documents": {
     "md": {
       "file_type": "md",

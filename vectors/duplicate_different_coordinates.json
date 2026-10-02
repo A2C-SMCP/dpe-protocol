@@ -1,7 +1,7 @@
 {
   "name": "duplicate_different_coordinates",
   "kind": "document",
-  "description": "同一文本出现在两处、坐标不同：坐标是内容，两处是不同的内容对象（content_hash 不同）；坐标相同时才共享同一内容对象。",
+  "description": "同一文本出现在两处、坐标不同：坐标是内容，两处是不同的元素对象（content_hash 不同）；坐标相同时才共享同一元素对象。",
   "documents": {
     "doc": {
       "file_type": "md",

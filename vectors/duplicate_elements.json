@@ -1,7 +1,7 @@
 {
   "name": "duplicate_elements",
   "kind": "document",
-  "description": "同页两个相同元素：content_hash 相同（内容对象共享），page 的 elements 列表中按位置重复出现。",
+  "description": "同页两个相同元素：content_hash 相同（元素对象共享），page 的 elements 列表中按位置重复出现。",
   "documents": {
     "doc": {
       "file_type": "md",
