@@ -12,7 +12,7 @@ spec/
   core.md                 # 核心协议：抽象模型、操作、CAS、错误（与传输无关）
   hash-contract-1.md      # hash 契约 1（dpe1:）
   bindings/http.md        # HTTP 绑定（v1 唯一规范性绑定）
-  connector-contract.md   # 中立 connector 契约（大纲，独立规范）
+  connector-contract.md   # 中立 connector 契约（独立规范；§6 运行边界已定稿）
 website/                  # 文档站点入口（index.md + 指向 spec/ docs/ vectors/ conformance/ 的符号链接）
 vectors/                  # 一致性向量（规范的一部分，由规范产出）
 scripts/gen_vectors.py    # 向量生成器 = hash 契约的规范参考实现（仅标准库）
@@ -62,7 +62,7 @@ Connector（中立契约）→ 运行器 + SDK（hash·协商·暂存·CAS·重�
 
 | | 内容 | 状态 |
 | --- | --- | --- |
-| M1 | 规范（core / http / hash-contract-1 / connector 大纲 / 向量） | **草案，待评审** |
+| M1 | 规范（core / http / hash-contract-1 / connector 契约 §6 / 向量） | **草案，待评审** |
 | M2 | 两份 SDK（sans-IO）+ 黑盒跑分器 + 参考服务端 | 未开始 |
 | M3 | 第一个服务端实现（TFRS + 内核改造） | 未开始 |
 | M4 | 官方 Git connector 真实数据端到端验收 | 未开始 |
