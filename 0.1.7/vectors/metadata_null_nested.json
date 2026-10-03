@@ -1,0 +1,131 @@
+{
+  "name": "metadata_null_nested",
+  "kind": "document",
+  "description": "null 键删除是递归的：嵌套对象中的 null 键同样删除；数组中的 null 保留。",
+  "documents": {
+    "with_nulls": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "a": {
+                  "b": null,
+                  "c": 1
+                },
+                "arr": [
+                  null,
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "stripped": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "a": {
+                  "c": 1
+                },
+                "arr": [
+                  null,
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "array_null_dropped": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "a": {
+                  "c": 1
+                },
+                "arr": [
+                  1
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "with_nulls": {
+      "dpe1": {
+        "doc_hash": "dpe1:16c040f92a5babfeda1a6d920674cb6cbb03248b2af52f667fc81e6c45e5c238",
+        "pages": [
+          {
+            "page_hash": "dpe1:91267c9cf0661d739740224ddf148112ddacd762a312a5288b1092337a737ee2",
+            "elements": [
+              "dpe1:6f77d8587b09ca32ea34442f368f0af0cb58154b364a75753165065fdcb458df"
+            ]
+          }
+        ]
+      }
+    },
+    "stripped": {
+      "dpe1": {
+        "doc_hash": "dpe1:16c040f92a5babfeda1a6d920674cb6cbb03248b2af52f667fc81e6c45e5c238",
+        "pages": [
+          {
+            "page_hash": "dpe1:91267c9cf0661d739740224ddf148112ddacd762a312a5288b1092337a737ee2",
+            "elements": [
+              "dpe1:6f77d8587b09ca32ea34442f368f0af0cb58154b364a75753165065fdcb458df"
+            ]
+          }
+        ]
+      }
+    },
+    "array_null_dropped": {
+      "dpe1": {
+        "doc_hash": "dpe1:068a19cf6f8021dd4fb46375f16cbfb6e1a225f752f10ecfc8ad868bd8bf6a21",
+        "pages": [
+          {
+            "page_hash": "dpe1:c142dbee56c679d716287a1144e68f15cf48c7e3fd11157a07da9d7d34809205",
+            "elements": [
+              "dpe1:3ce9eaa1ac804d427c13cc47d8a45de94dc4bf6c37fda218a5baad397534e631"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "with_nulls.doc_hash",
+        "stripped.doc_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "stripped.doc_hash",
+        "array_null_dropped.doc_hash"
+      ]
+    }
+  ]
+}

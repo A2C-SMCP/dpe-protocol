@@ -1,0 +1,1781 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="DPE（Document / Page / Element）标准协议规范">
+      
+      
+      
+        <link rel="canonical" href="https://doc.turingfocus.cn/dpe/latest/spec/bindings/http/">
+      
+      
+        <link rel="prev" href="../../hash-contract-1/">
+      
+      
+        <link rel="next" href="../../connector-contract/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>HTTP 绑定 - DPE Protocol</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#dpe-v1-http-绑定" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../../.." title="DPE Protocol" class="md-header__button md-logo" aria-label="DPE Protocol" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            DPE Protocol
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              HTTP 绑定
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换到深色模式"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换到深色模式" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7M9 21v-1h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1m3-17a5 5 0 0 0-5 5c0 2.05 1.23 3.81 3 4.58V16h4v-2.42c1.77-.77 3-2.53 3-4.58a5 5 0 0 0-5-5"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换到浅色模式"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换到浅色模式" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7M9 21a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-1H9z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/A2C-SMCP/dpe-protocol" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    dpe-protocol
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  首页
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../core/" class="md-tabs__link">
+          
+  
+  
+  协议规范
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../vectors/" class="md-tabs__link">
+          
+  
+  
+  一致性
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../docs/plan/v1-plan/" class="md-tabs__link">
+          
+  
+  
+  计划与迁移
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="DPE Protocol" class="md-nav__button md-logo" aria-label="DPE Protocol" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    DPE Protocol
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/A2C-SMCP/dpe-protocol" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    dpe-protocol
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    协议规范
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    协议规范
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core v1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../hash-contract-1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hash 契约 1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP 绑定
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP 绑定
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="页面目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      页面目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-remote-与路径" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Remote 与路径
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-媒体类型" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 媒体类型
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-并发控制doc_hash-即-etag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 并发控制：doc_hash 即 ETag
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 并发控制：doc_hash 即 ETag">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-契约声明与版本令牌" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 契约声明与版本令牌
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-前置条件" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 前置条件
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-响应头" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 响应头
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-各端点报文" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 各端点报文
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 各端点报文">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-get-remotecapabilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 GET {remote}/capabilities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-post-remoteheadsbatch_head" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 POST {remote}/heads（batch_head）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-get-remotedocumentsuriget_skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 GET {remote}/documents?uri=…（get_skeleton）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-get-remotedocumentsprefixcursorlimitlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 GET {remote}/documents?prefix=…&amp;cursor=…&amp;limit=…（list）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-post-remotenegotiate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 POST {remote}/negotiate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-put-remotestagingsidpagespage_hash-与-objectscontent_hash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 PUT {remote}/staging/{sid}/pages/{page_hash} 与 …/objects/{content_hash}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#47-put-remotestagingsidblobssha256分块与断点续传" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.7 PUT {remote}/staging/{sid}/blobs/{sha256}（分块与断点续传）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#48-put-remotedocumentsuricommit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.8 PUT {remote}/documents?uri=…（commit）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#49-delete-remotedocumentsuri-与-post-remotemove" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.9 DELETE {remote}/documents?uri=… 与 POST {remote}/move
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-错误格式rfc-9457" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 错误格式（RFC 9457）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-鉴权" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 鉴权
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-传输细节" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 传输细节
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../connector-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Connector 契约
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    一致性
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    一致性
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../vectors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    一致性向量
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../conformance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    服务端跑分器
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    计划与迁移
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    计划与迁移
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../docs/plan/v1-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v1 计划
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../docs/migration/kernel-to-dpe1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    内核迁移对照
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="页面目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      页面目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-remote-与路径" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Remote 与路径
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-媒体类型" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 媒体类型
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-并发控制doc_hash-即-etag" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 并发控制：doc_hash 即 ETag
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 并发控制：doc_hash 即 ETag">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-契约声明与版本令牌" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 契约声明与版本令牌
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-前置条件" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 前置条件
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-响应头" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 响应头
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-各端点报文" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 各端点报文
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 各端点报文">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-get-remotecapabilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 GET {remote}/capabilities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-post-remoteheadsbatch_head" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 POST {remote}/heads（batch_head）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-get-remotedocumentsuriget_skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 GET {remote}/documents?uri=…（get_skeleton）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-get-remotedocumentsprefixcursorlimitlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 GET {remote}/documents?prefix=…&amp;cursor=…&amp;limit=…（list）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-post-remotenegotiate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 POST {remote}/negotiate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-put-remotestagingsidpagespage_hash-与-objectscontent_hash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 PUT {remote}/staging/{sid}/pages/{page_hash} 与 …/objects/{content_hash}
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#47-put-remotestagingsidblobssha256分块与断点续传" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.7 PUT {remote}/staging/{sid}/blobs/{sha256}（分块与断点续传）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#48-put-remotedocumentsuricommit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.8 PUT {remote}/documents?uri=…（commit）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#49-delete-remotedocumentsuri-与-post-remotemove" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.9 DELETE {remote}/documents?uri=… 与 POST {remote}/move
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-错误格式rfc-9457" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 错误格式（RFC 9457）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-鉴权" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 鉴权
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-传输细节" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. 传输细节
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+  <nav class="md-path" aria-label="导航栏" >
+    <ol class="md-path__list">
+      
+        
+  
+  
+    <li class="md-path__item">
+      <a href="../../.." class="md-path__link">
+        
+  <span class="md-ellipsis">
+    首页
+  </span>
+
+      </a>
+    </li>
+  
+
+      
+      
+        
+  
+  
+    
+    
+      <li class="md-path__item">
+        <a href="../../core/" class="md-path__link">
+          
+  <span class="md-ellipsis">
+    协议规范
+  </span>
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ol>
+  </nav>
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="dpe-v1-http-绑定">DPE v1 HTTP 绑定<a class="headerlink" href="#dpe-v1-http-绑定" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>状态：<strong>草案</strong>（M1，待评审定稿）｜ 依据：<a href="../../../docs/plan/v1-plan/">docs/plan/v1-plan.md</a> §9，经 Issue #4、#6（评审）、#30、#31 修订
+本文把 <a href="../../core/">core.md</a> 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。</p>
+</blockquote>
+<h2 id="1-remote-与路径">1. Remote 与路径<a class="headerlink" href="#1-remote-与路径" title="Permanent link">&para;</a></h2>
+<p>一个 remote 就是一个 base URL（例如 <code>https://example.com/anything/r/42</code>），协议不关心其内部结构，<strong>不使用</strong>域名根路径下的 <code>.well-known</code>。下文所有路径都相对于 remote，remote 自身路径不带尾部 <code>/</code>。</p>
+<table>
+<thead>
+<tr>
+<th>Core 操作</th>
+<th>HTTP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>capabilities</code></td>
+<td><code>GET {remote}/capabilities</code></td>
+</tr>
+<tr>
+<td><code>head</code></td>
+<td><code>HEAD {remote}/documents?uri={file_uri}</code></td>
+</tr>
+<tr>
+<td><code>batch_head</code></td>
+<td><code>POST {remote}/heads</code></td>
+</tr>
+<tr>
+<td><code>get_skeleton</code></td>
+<td><code>GET {remote}/documents?uri={file_uri}</code></td>
+</tr>
+<tr>
+<td><code>list</code></td>
+<td><code>GET {remote}/documents?prefix={p}&amp;cursor={c}&amp;limit={n}</code></td>
+</tr>
+<tr>
+<td><code>negotiate</code></td>
+<td><code>POST {remote}/negotiate</code></td>
+</tr>
+<tr>
+<td><code>upload</code>（页对象）</td>
+<td><code>PUT {remote}/staging/{sid}/pages/{page_hash}</code></td>
+</tr>
+<tr>
+<td><code>upload</code>（元素对象）</td>
+<td><code>PUT {remote}/staging/{sid}/objects/{content_hash}</code></td>
+</tr>
+<tr>
+<td><code>upload</code>（blob）</td>
+<td><code>PUT {remote}/staging/{sid}/blobs/{sha256}</code></td>
+</tr>
+<tr>
+<td><code>commit</code></td>
+<td><code>PUT {remote}/documents?uri={file_uri}</code></td>
+</tr>
+<tr>
+<td><code>delete</code></td>
+<td><code>DELETE {remote}/documents?uri={file_uri}</code></td>
+</tr>
+<tr>
+<td><code>move</code></td>
+<td><code>POST {remote}/move</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>uri</code> / <code>prefix</code> 查询参数按 RFC 3986 百分号编码。<code>documents?uri=</code> 就是<strong>文档资源</strong>本身：读（GET / HEAD）、写（PUT）、删（DELETE）作用在同一个目标资源上，条件请求头因此恰好约束被 CAS 保护的文档（RFC 9110 §13）。</p>
+<h2 id="2-媒体类型">2. 媒体类型<a class="headerlink" href="#2-媒体类型" title="Permanent link">&para;</a></h2>
+<ul>
+<li>JSON 主体（含页对象与元素对象的上传）一律 <code>application/json</code>；错误为 <code>application/problem+json</code>（§5）；blob 上传用 blob 自身的媒体类型（未知时 <code>application/octet-stream</code>）。</li>
+<li>媒体类型不承载版本：协议版本以 capabilities 的 <code>protocol</code> 为准，hash 契约由 <code>DPE-Hash-Contract</code> 头声明（§3.1）。</li>
+<li>命名保持中性：媒体类型、头字段、错误码中 MUST NOT 出现具体产品名。</li>
+</ul>
+<h2 id="3-并发控制doc_hash-即-etag">3. 并发控制：doc_hash 即 ETag<a class="headerlink" href="#3-并发控制doc_hash-即-etag" title="Permanent link">&para;</a></h2>
+<h3 id="31-契约声明与版本令牌">3.1 契约声明与版本令牌<a class="headerlink" href="#31-契约声明与版本令牌" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>带 JSON 请求体的端点的校验顺序</strong>（negotiate、页对象与元素对象的 upload、commit、move；blob 上传的请求体是原始字节，不适用）：</li>
+<li>整个请求体是 I-JSON（core.md §2.8 第 0 步），否则 <code>DPE_VALIDATION</code>；</li>
+<li>契约声明（<code>DPE-Hash-Contract</code> 头），否则 <code>DPE_CONTRACT_UNSUPPORTED</code>；</li>
+<li>按 core.md §2.8 校验请求体中的对象。</li>
+</ul>
+<p>commit 的完整求值顺序见 core.md §3.3。
+- <strong>契约声明</strong>：每个请求 MUST 带 <code>DPE-Hash-Contract: &lt;契约&gt;</code>（取值为 capabilities 的 <code>hash_contracts</code> 之一，如 <code>dpe1</code>；<code>GET capabilities</code> 除外）。请求体中的 hash 按它计算，响应中的 hash 按它给出。未声明或不受支持 → <code>DPE_CONTRACT_UNSUPPORTED</code>。文档资源的响应 MUST 带 <code>Vary: DPE-Hash-Contract</code>。
+- <strong>版本令牌</strong>：文档的版本令牌就是 doc_hash（core.md §1）。文档资源的响应带 <code>DPE-Doc-Hash: &lt;契约&gt;:…</code>（<strong>权威值</strong>）与 <code>ETag: "&lt;契约&gt;:…"</code>（强校验器，HTTP 便利），均按 <code>DPE-Hash-Contract</code> 给出。
+- <strong>弱 ETag</strong>：中间层（如做 gzip 的反向代理）可能把 ETag 改写为弱校验器 <code>W/"…"</code>。客户端构造条件头时 MUST 取 <code>DPE-Doc-Hash</code> 或响应体中的 <code>doc_hash</code>，自行写成 <code>"&lt;doc_hash&gt;"</code>；MUST NOT 原样回传收到的 <code>ETag</code>。
+- <strong>If-Match 的比较</strong>：服务端对 <code>If-Match</code> 的值逐字符比较（<code>W/</code> 前缀的值永不匹配），比较对象是当前内容在该值前缀所示契约下的 doc_hash（契约 1 §6），而不是本次响应的 ETag。因此过渡期内新旧契约的值都能匹配，与请求声明的契约无关。</p>
+<h3 id="32-前置条件">3.2 前置条件<a class="headerlink" href="#32-前置条件" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Core（§5.1）</th>
+<th>commit（<code>PUT documents?uri=</code>）/ delete（<code>DELETE documents?uri=</code>）</th>
+<th>move（<code>POST move</code>）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base_hash = H</code></td>
+<td><code>If-Match: "H"</code></td>
+<td>请求体 <code>"base_hash": "H"</code>（必填）</td>
+</tr>
+<tr>
+<td><code>if_absent</code></td>
+<td><code>If-None-Match: *</code>（仅 commit）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>force: true</code></td>
+<td>请求体 <code>"force": true</code>，且不带条件头（仅 commit）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>条件不满足</td>
+<td><code>412 Precondition Failed</code>（含文档不存在时的 <code>If-Match</code>，code 为 <code>DPE_NOT_FOUND</code>，与 RFC 9110 §13.1.1 一致）</td>
+<td><code>409 Conflict</code></td>
+</tr>
+<tr>
+<td>缺少前置条件</td>
+<td><code>428 Precondition Required</code></td>
+<td><code>428 Precondition Required</code></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>move 的 CAS 对象是请求体中的 <code>from_uri</code>，不是 <code>/move</code> 这个目标资源，因此前置条件放在请求体中，不使用条件头；条件不满足返回 <code>409</code>（<code>412</code> 专指条件头求值失败）。</li>
+<li>带 <code>force: true</code> 的请求同时带条件头时返回 <code>DPE_VALIDATION</code>。</li>
+<li><strong>commit 的 unchanged 先于条件求值</strong>（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 <code>200</code> + <code>unchanged</code>，即使条件头不满足。对 <code>If-Match</code>，这符合 RFC 9110 §13.1.1：状态变更请求所要求的结果已经生效时，源服务器可以返回 2xx 而不是 412。对 <code>If-None-Match: *</code>，RFC 9110 §13.1.2 要求条件不满足时返回 412，这里是<strong>有意偏离</strong>：内容已经是提交的值时，DPE 以内容幂等（core.md §5.2）为准返回 <code>unchanged</code>。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。</li>
+<li>同一个 <code>code</code> 在不同端点可能映射到不同状态码（如 <code>DPE_PRECONDITION_FAILED</code> 在 PUT 上是 412、在 move 上是 409）。<strong>客户端 MUST 依据 problem 体中的 <code>code</code> 分派</strong>，MUST NOT 依据状态码分派。</li>
+<li>若仍收到不带 problem 体的 <code>412</code>（例如网关自行求值），客户端 MUST 先 <code>head</code> 该文档再判定：</li>
+<li>PUT：doc_hash 等于提交内容 → 成功；不存在 → <code>DPE_NOT_FOUND</code>；否则 → <code>DPE_PRECONDITION_FAILED</code>（<code>If-None-Match: *</code> 时为 <code>DPE_ALREADY_EXISTS</code>）。</li>
+<li>DELETE：不存在 → 成功（§5.2）；doc_hash 等于 <code>If-Match</code> 的值 → 中间层误判，可原样重试一次，仍如此则上报；否则 → <code>DPE_PRECONDITION_FAILED</code>。</li>
+</ul>
+<h3 id="33-响应头">3.3 响应头<a class="headerlink" href="#33-响应头" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>head</code> 用 <code>HEAD documents?uri=</code>：<code>200</code> 带 <code>DPE-Doc-Hash</code> 与 <code>ETag</code>；不存在返回 <code>404</code>（不带 problem 体）。</li>
+<li><code>get_skeleton</code> 的 <code>200</code> 响应带同样的头，客户端 MAY 用 <code>If-None-Match</code> 走 <code>304</code>（弱比较，<code>W/</code> 不影响）。</li>
+<li>commit 的成功响应带文档当前的 <code>DPE-Doc-Hash</code> 与 <code>ETag</code>；move 的成功响应带目标文档的 <code>DPE-Doc-Hash</code> 与指向目标文档的 <code>Content-Location</code>，不带 <code>ETag</code>（<code>/move</code> 不是文档资源）；delete 的 <code>204</code> 不带二者。</li>
+</ul>
+<h2 id="4-各端点报文">4. 各端点报文<a class="headerlink" href="#4-各端点报文" title="Permanent link">&para;</a></h2>
+<h3 id="41-get-remotecapabilities">4.1 <code>GET {remote}/capabilities</code><a class="headerlink" href="#41-get-remotecapabilities" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">"protocol"</span><span class="p">:</span><span class="w"> </span><span class="s2">"dpe/1"</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">"hash_contracts"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"dpe1"</span><span class="p">],</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">"limits"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">"max_payload_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">8388608</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">"page_max_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">268435456</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">"staging_ttl_seconds"</span><span class="p">:</span><span class="w"> </span><span class="mi">86400</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">"blob_max_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">104857600</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">"blob_chunk_bytes"</span><span class="p">:</span><span class="w"> </span><span class="mi">8388608</span><span class="p">,</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="nt">"batch_head_max"</span><span class="p">:</span><span class="w"> </span><span class="mi">500</span><span class="p">,</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">"list_page_max"</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">  </span><span class="nt">"content_encodings"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"gzip"</span><span class="p">],</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">  </span><span class="nt">"features"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"move"</span><span class="p">]</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li><code>staging_ttl_seconds</code>：暂存会话从最近一次成功操作起算的过期时间，MUST ≥ 3600（core.md §3.4）。</li>
+<li>去重范围不在此声明（core.md §3.3）。</li>
+<li><code>features</code> 列出可选能力；v1 内 <code>move</code> 为 MUST 实现，此处保留位置供扩展。</li>
+</ul>
+<h3 id="42-post-remoteheadsbatch_head">4.2 <code>POST {remote}/heads</code>（batch_head）<a class="headerlink" href="#42-post-remoteheadsbatch_head" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// 请求</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="p">{</span><span class="w"> </span><span class="nt">"uris"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"feishu://doc/a"</span><span class="p">,</span><span class="w"> </span><span class="s2">"s3://bucket/b.md"</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1">// 响应 200</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">{</span><span class="w"> </span><span class="nt">"heads"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"doc_hash"</span><span class="p">:</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="w"> </span><span class="p">},</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>响应数组与请求一一对应，不存在的文档为 <code>null</code>。数量超过 <code>batch_head_max</code> 返回 <code>DPE_VALIDATION</code>。</p>
+<h3 id="43-get-remotedocumentsuriget_skeleton">4.3 <code>GET {remote}/documents?uri=…</code>（get_skeleton）<a class="headerlink" href="#43-get-remotedocumentsuriget_skeleton" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">"file_uri"</span><span class="p">:</span><span class="w"> </span><span class="s2">"feishu://doc/a"</span><span class="p">,</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">"doc_hash"</span><span class="p">:</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="p">,</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">"document"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">"file_type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"md"</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"季度报告"</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">"doc_metadata"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"created_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-09-01T02:03:04Z"</span><span class="p">,</span><span class="w"> </span><span class="nt">"author"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="p">,</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="w"> </span><span class="p">]</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"第一页"</span><span class="p">,</span><span class="w"> </span><span class="nt">"page_metadata"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"page_label"</span><span class="p">:</span><span class="w"> </span><span class="s2">"i"</span><span class="w"> </span><span class="p">},</span><span class="w"> </span><span class="nt">"elements"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="p">,</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="w"> </span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"page_metadata"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span><span class="w"> </span><span class="nt">"elements"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="w"> </span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="p">}</span>
+</code></pre></div>
+<p><code>pages</code> 按文档对象 <code>pages</code> 的顺序给出全部页对象（重复的页 hash 对应重复的页对象）。返回值与最近一次写入的值内容等价（core.md §2.7），不含任何服务端衍生数据。</p>
+<h3 id="44-get-remotedocumentsprefixcursorlimitlist">4.4 <code>GET {remote}/documents?prefix=…&amp;cursor=…&amp;limit=…</code>（list）<a class="headerlink" href="#44-get-remotedocumentsprefixcursorlimitlist" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">"documents"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"file_uri"</span><span class="p">:</span><span class="w"> </span><span class="s2">"feishu://doc/a"</span><span class="p">,</span><span class="w"> </span><span class="nt">"doc_hash"</span><span class="p">:</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">],</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">"next_cursor"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p><code>next_cursor</code> 为 null 表示结束。cursor 不透明。</p>
+<h3 id="45-post-remotenegotiate">4.5 <code>POST {remote}/negotiate</code><a class="headerlink" href="#45-post-remotenegotiate" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1">// 请求</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="p">{</span><span class="w"> </span><span class="nt">"file_uri"</span><span class="p">:</span><span class="w"> </span><span class="s2">"feishu://doc/a"</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">"document"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">…同</span><span class="w"> </span><span class="mf">4.3</span><span class="w"> </span><span class="err">的</span><span class="w"> </span><span class="err">docume</span><span class="kc">nt</span><span class="err">…</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">…页对象…</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w">        </span><span class="c1">// 可选：附带部分或全部页对象</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1">// 响应 200</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">{</span><span class="w"> </span><span class="nt">"missing_pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"dpe1:…"</span><span class="p">],</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="nt">"missing_content_hashes"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"dpe1:…"</span><span class="p">],</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">"staging_session"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"st-…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"expires_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-10-01T00:00:00Z"</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li>校验顺序同 §3.1：先确认请求体是 I-JSON，再判契约头，然后按 core.md §2.8 校验文档对象，最后按数组顺序校验附带的页对象。</li>
+<li>negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 <code>(file_uri, 调用者身份)</code>（core.md §3.4）。</li>
+<li><code>missing_pages</code>：文档对象引用、既未附带也不在去重范围内的页对象。<code>missing_content_hashes</code>：附带的页对象中引用、而不可得的元素对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。</li>
+<li>请求体超过 <code>max_payload_bytes</code> 时，少附带页对象（只提交文档对象即可，文档对象只含页 hash 列表）。</li>
+<li>缺失清单按去重范围计算（core.md §3.3）。</li>
+</ul>
+<h3 id="46-put-remotestagingsidpagespage_hash-与-objectscontent_hash">4.6 <code>PUT {remote}/staging/{sid}/pages/{page_hash}</code> 与 <code>…/objects/{content_hash}</code><a class="headerlink" href="#46-put-remotestagingsidpagespage_hash-与-objectscontent_hash" title="Permanent link">&para;</a></h3>
+<p>请求体为一个页对象或元素对象 JSON，即该 hash 的原像对象（core.md §2.2、§2.3）。服务端依次：</p>
+<ol>
+<li>按 §3.1 的顺序校验：请求体是 I-JSON → 契约头 → 按 core.md §2.8 校验对象（<code>DPE_VALIDATION</code> / <code>DPE_CATEGORY_UNKNOWN</code> / <code>DPE_CONTRACT_UNSUPPORTED</code>）；</li>
+<li>重算 hash，与路径不符 → <code>DPE_HASH_MISMATCH</code>。</li>
+</ol>
+<p>响应 <code>201</code>（本会话内新写入）或 <code>200</code>（本会话内重复），体为下一层的缺失清单：</p>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1">// 页对象的响应</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="p">{</span><span class="w"> </span><span class="nt">"missing_content_hashes"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"dpe1:…"</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1">// 元素对象的响应</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="p">{</span><span class="w"> </span><span class="nt">"missing_blobs"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"sha256:…"</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>201 / 200 MUST 只按本会话已收到的内容判定，不反映服务端其他位置是否已存该对象；缺失清单按去重范围计算（core.md §3.3、§8）。</p>
+<p>会话的每个成功操作都会续期（core.md §3.4）：negotiate 响应的 <code>expires_at</code> 与 upload 各响应（含 <code>202</code> 中间块）的 <code>DPE-Session-Expires: &lt;RFC 3339 UTC&gt;</code> 头给出续期后的过期时间。</p>
+<p><strong>页对象可分块</strong>：单个页对象超过 <code>max_payload_bytes</code> 时，按 §4.7 的方式分块上传与断点续传，总大小不超过 <code>page_max_bytes</code>。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。元素对象不分块，超限返回 <code>DPE_PAYLOAD_TOO_LARGE</code>（core.md §3.2）。</p>
+<h3 id="47-put-remotestagingsidblobssha256分块与断点续传">4.7 <code>PUT {remote}/staging/{sid}/blobs/{sha256}</code>（分块与断点续传）<a class="headerlink" href="#47-put-remotestagingsidblobssha256分块与断点续传" title="Permanent link">&para;</a></h3>
+<ul>
+<li>整体上传：不带 <code>Content-Range</code> 的 <code>PUT</code>，体为完整字节。</li>
+<li>分块上传：<code>PUT</code> + <code>Content-Range: bytes {from}-{to}/{total}</code>，块大小不超过 <code>blob_chunk_bytes</code>，MUST 按序追加；全部字节到齐后服务端校验 sha256。</li>
+<li>中间块：响应 <code>202</code>，带 <code>DPE-Upload-Offset: {n}</code>（已收字节数），无体；最后一块到齐并校验通过后，按 §4.6 返回 <code>201</code> / <code>200</code>。</li>
+<li>断点查询：<code>HEAD</code> 同一 URL，响应头 <code>DPE-Upload-Offset: {n}</code> 表示<strong>本会话</strong>已收字节数（同样不反映会话外是否已存该对象），并带 <code>DPE-Session-Expires</code> 给出会话当前的过期时间。断点查询只读，<strong>不续期</strong>（core.md §3.4）。</li>
+<li>校验失败返回 <code>DPE_HASH_MISMATCH</code> 并丢弃已收内容。blob 校验的是原始字节的 sha256。</li>
+<li>以上分块规则同样适用于 §4.6 的页对象，只是校验方式不同（见 §4.6），总大小上限为 <code>page_max_bytes</code>。</li>
+</ul>
+<h3 id="48-put-remotedocumentsuricommit">4.8 <code>PUT {remote}/documents?uri=…</code>（commit）<a class="headerlink" href="#48-put-remotedocumentsuricommit" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">"document"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">…同</span><span class="w"> </span><span class="mf">4.3</span><span class="w"> </span><span class="err">的</span><span class="w"> </span><span class="err">docume</span><span class="kc">nt</span><span class="err">…</span><span class="w"> </span><span class="p">},</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">"pages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">…内联页对象…</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">],</span><span class="w">       </span><span class="c1">// 可选</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">"objects"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">…内联元素对象…</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">],</span><span class="w">   </span><span class="c1">// 可选</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">"staging_session"</span><span class="p">:</span><span class="w"> </span><span class="s2">"st-…"</span><span class="p">,</span><span class="w">          </span><span class="c1">// 可选</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span><span class="nt">"force"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li>
+<p>快路径：内联文档对象引用的全部页对象与元素对象，一次往返完成。大文档：只带文档对象并引用会话。</p>
+</li>
+<li>
+<p>文档身份取自查询参数 <code>uri</code>，请求体不重复 <code>file_uri</code>。</p>
+</li>
+<li>CAS 前置条件走 <code>If-Match</code> / <code>If-None-Match: *</code>（§3.2）。</li>
+<li>响应 <code>201</code>（created）或 <code>200</code>（updated / unchanged），体为 core.md §3.3 的 commit 响应，头带文档当前的 <code>DPE-Doc-Hash</code> 与 <code>ETag</code>。</li>
+<li>失败的 commit 不消费 <code>staging_session</code>（core.md §3.4）。</li>
+</ul>
+<h3 id="49-delete-remotedocumentsuri-与-post-remotemove">4.9 <code>DELETE {remote}/documents?uri=…</code> 与 <code>POST {remote}/move</code><a class="headerlink" href="#49-delete-remotedocumentsuri-与-post-remotemove" title="Permanent link">&para;</a></h3>
+<ul>
+<li>delete：CAS 走 <code>If-Match</code>，成功 <code>204</code>。</li>
+<li>move：</li>
+</ul>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">"from_uri"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"to_uri"</span><span class="p">:</span><span class="w"> </span><span class="s2">"…"</span><span class="p">,</span><span class="w"> </span><span class="nt">"base_hash"</span><span class="p">:</span><span class="w"> </span><span class="s2">"dpe1:…"</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>按 core.md §5.2 的求值顺序：源不存在且目标 doc_hash 等于 <code>base_hash</code> → 视为已完成，返回成功；源不存在的其他情况 → <code>404</code> + <code>DPE_NOT_FOUND</code>；源 doc_hash 不符 → <code>409</code> + <code>DPE_PRECONDITION_FAILED</code>；目标已存在 → <code>409</code> + <code>DPE_ALREADY_EXISTS</code>。成功 <code>200</code>，体为 <code>{ "doc_hash": "dpe1:…" }</code>，头带 <code>DPE-Doc-Hash</code> 与 <code>Content-Location: {remote}/documents?uri={to_uri}</code>（§3.3）。</p>
+<p>写操作不需要幂等键：幂等由内容保证（core.md §5.2）。</p>
+<h2 id="5-错误格式rfc-9457">5. 错误格式（RFC 9457）<a class="headerlink" href="#5-错误格式rfc-9457" title="Permanent link">&para;</a></h2>
+<div class="language-json highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">{</span><span class="w"> </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"urn:dpe:error:precondition-failed"</span><span class="p">,</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"precondition failed"</span><span class="p">,</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="mi">412</span><span class="p">,</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span><span class="nt">"detail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"expected dpe1:3f…, current dpe1:9a…"</span><span class="p">,</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"DPE_PRECONDITION_FAILED"</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span><span class="nt">"retryable"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<ul>
+<li><code>type</code> 是规范中稳定的 URI。草案使用 <code>urn:dpe:error:&lt;kebab-case&gt;</code>；定稿后若规范发布到固定域名，MAY 改为该域名下的 URL（plan §16）。</li>
+<li>扩展成员：<code>code</code>（core.md §6 的错误码）与 <code>retryable</code>（语义见 core.md §6：仅表示原样重试可能成功）。<code>DPE_MISSING_CONTENT</code> 另带 <code>missing: {pages: […], content_hashes: […], blobs: […]}</code> 与 <code>missing_truncated: true|false</code>（core.md §3.3）。</li>
+<li>HTTP 状态映射（每个 code 在给定端点上只有一个状态码；客户端按 <code>code</code> 分派，§3.2）：</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>code</th>
+<th>状态码</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DPE_VALIDATION</code>、<code>DPE_CONTRACT_UNSUPPORTED</code>、<code>DPE_CATEGORY_UNKNOWN</code>、<code>DPE_HASH_MISMATCH</code>、<code>DPE_MISSING_CONTENT</code></td>
+<td>400</td>
+</tr>
+<tr>
+<td><code>DPE_FORBIDDEN</code></td>
+<td>403（所有写操作都先判定授权，core.md §5 总则）</td>
+</tr>
+<tr>
+<td><code>DPE_NOT_FOUND</code></td>
+<td>404；带 <code>If-Match</code> 的 PUT / DELETE documents 为 412（§3.2）</td>
+</tr>
+<tr>
+<td><code>DPE_PRECONDITION_FAILED</code>、<code>DPE_ALREADY_EXISTS</code></td>
+<td>412（条件头：PUT / DELETE documents）；409（请求体前置条件：move）</td>
+</tr>
+<tr>
+<td><code>DPE_SESSION_EXPIRED</code></td>
+<td>410（会话过期、已消费、不存在、不属于调用者或不属于该 file_uri，一律如此）</td>
+</tr>
+<tr>
+<td><code>DPE_PAYLOAD_TOO_LARGE</code></td>
+<td>413</td>
+</tr>
+<tr>
+<td><code>DPE_PRECONDITION_REQUIRED</code></td>
+<td>428</td>
+</tr>
+<tr>
+<td><code>DPE_RATE_LIMITED</code></td>
+<td>429</td>
+</tr>
+<tr>
+<td><code>DPE_UNAVAILABLE</code></td>
+<td>503</td>
+</tr>
+</tbody>
+</table>
+<p>429 与 503 MUST 带 <code>Retry-After</code>。</p>
+<h2 id="6-鉴权">6. 鉴权<a class="headerlink" href="#6-鉴权" title="Permanent link">&para;</a></h2>
+<p>协议不定义鉴权方案：</p>
+<ul>
+<li>客户端凭证放在标准 <code>Authorization</code> 头；具体方案（PAT、OAuth、JWT、mTLS）由服务端决定。</li>
+<li>未认证返回 <code>401</code> + <code>WWW-Authenticate</code>；无权限返回 <code>403</code>（体为 <code>DPE_FORBIDDEN</code> problem）。</li>
+<li>SDK 通过可插拔的 <code>CredentialProvider</code> 注入凭证，不感知方案细节。</li>
+</ul>
+<h2 id="7-传输细节">7. 传输细节<a class="headerlink" href="#7-传输细节" title="Permanent link">&para;</a></h2>
+<ul>
+<li>请求 MAY 使用 <code>Content-Encoding: gzip</code>（在 capabilities 的 <code>content_encodings</code> 内协商）；<code>max_payload_bytes</code> <strong>按压缩前计算</strong>。</li>
+<li>服务端 SHOULD 支持 HTTP/2；大量小文档场景依赖多路复用并发快路径。</li>
+<li>协议不暴露服务端处理进度：commit 成功响应就是协议的终点。</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/A2C-SMCP/dpe-protocol" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["content.code.copy", "announce.dismiss", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "search.suggest", "search.highlight", "toc.follow"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
