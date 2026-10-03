@@ -18,7 +18,7 @@ DPE（Document / Page / Element）：把结构化文档的**内容面****正确�
 | [Core v1](spec/core.md) | 抽象模型与操作语义（与传输无关） |
 | [Hash 契约 1](spec/hash-contract-1.md) | 三层同构 tree 的 hash 规则（`dpe1:`） |
 | [HTTP 绑定](spec/bindings/http.md) | v1 唯一的规范性传输绑定 |
-| [Connector 契约](spec/connector-contract.md) | 中立 connector 契约（独立规范，大纲） |
+| [Connector 契约](spec/connector-contract.md) | 中立 connector 契约（独立规范；§6 运行边界已定稿） |
 | [一致性向量](vectors/README.md) | hash 契约的组成部分，实现 MUST 全部通过 |
 | [服务端跑分器](conformance/README.md) | 黑盒 HTTP 一致性检查面 |
 | [v1 计划](docs/plan/v1-plan.md) | 评审定稿稿，当前工作的依据 |

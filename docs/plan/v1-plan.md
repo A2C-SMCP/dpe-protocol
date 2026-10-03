@@ -214,7 +214,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 11. Connector 契约（独立中立规范，不属于 Core）
 
-> **修订注记**：按 Issue #2 关闭结论调整——平台不引入 connector 运行环境（不托管在 TFRS/TFRSUC），connector 由用户自行开发、自行部署；将来确有需要，托管运行作为独立产品另立。v1 只交付**官方 Git connector**（本仓 `connectors/git/`），TFRS 现有的飞书、COS 同步保持不变、不重构为 connector。下文原有的「宿主」表述保留为契约角色，不代表本平台提供宿主。
+> **修订注记**：按 Issue #2 关闭结论调整——平台不引入 connector 运行环境（不托管在 TFRS/TFRSUC），connector 由用户自行开发、自行部署；将来确有需要，托管运行作为独立产品另立。v1 只交付**官方 Git connector**（本仓 `connectors/git/`），TFRS 现有的飞书、COS 同步保持不变、不重构为 connector。下文原有的「宿主」表述保留为契约角色，不代表本平台提供宿主。运行边界（进程边界与语言无关线协议）已随 Issue #34 定稿，见 [spec/connector-contract.md](../../spec/connector-contract.md) §6；下文末条「随 `dpe-run`（M2）定稿」不再适用。
 
 - 类比 git remote-helper：核心投递协议完全不知道 connector 的存在。同一个 connector 既可以由用户自己部署（SDK 自带独立运行器 `dpe-run`），也可以托管在某个宿主里运行，**宿主只是这份契约的另一个运行器**。
 - **运行器负责推送，插件只负责产出**：
@@ -263,7 +263,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 | 里程碑 | 内容 | 验收 |
 | --- | --- | --- |
-| **M1 规范** | core、http 绑定、hash-contract-1、connector 契约大纲、向量；评审定稿 | 规范评审通过；向量同时由两个 SDK 原型校验通过 |
+| **M1 规范** | core、http 绑定、hash-contract-1、connector 契约（§6 运行边界定稿，其余大纲）、向量；评审定稿 | 规范评审通过；向量同时由两个 SDK 原型校验通过 |
 | **M2 SDK + 跑分器** | 同事按规范改造 Python 和 Rust SDK（初版代码先推到分支供参考）；实现黑盒跑分器；参考服务端通过跑分器 | 两个 SDK 通过全部向量；参考服务端跑分全部通过 |
 | **M3 TFRS + 内核** | K1–K8、S1、S3 | TFRS 端点在 CI 中跑分全部通过 |
 | **M4 E2E** | 官方 Git connector 走运行器 `dpe-run` | 在 test 集群上，以 Git 仓库为真实数据源，对 TFRS 端点端到端跑通增量推送、删除和移动，结果与全量推送收敛后一致 |
