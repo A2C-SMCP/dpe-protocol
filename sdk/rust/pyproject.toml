@@ -14,7 +14,7 @@ dev = ["bump-my-version>=0.28.0"]
 
 # 当前版本由 Cargo.toml 的 [workspace.package].version 承载；两个 crate 始终同版本。
 [tool.bumpversion]
-current_version = "0.1.6-dev"
+current_version = "0.2.0-dev"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)(?:-(?P<pre_l>dev))?"
 serialize = [
     "{major}.{minor}.{patch}-{pre_l}",
