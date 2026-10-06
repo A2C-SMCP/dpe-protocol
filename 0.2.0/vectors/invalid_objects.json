@@ -1,0 +1,598 @@
+{
+  "name": "invalid_objects",
+  "kind": "invalid",
+  "description": "拒绝类一致性用例（core.md §2.8 校验顺序）：每条输入都 MUST 被拒绝且错误码一致；只有一处违例的用例另断言违例位置 path（RFC 6901）。多处违例的用例只断言错误码，用来固定校验顺序。",
+  "cases": [
+    {
+      "name": "element_not_object",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": [
+        "NarrativeText"
+      ],
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "element_missing_category",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "text": "x"
+      },
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "element_category_not_string",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": 1
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/category"
+    },
+    {
+      "name": "element_category_unknown",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Video"
+      },
+      "code": "DPE_CATEGORY_UNKNOWN",
+      "path": "/category"
+    },
+    {
+      "name": "element_undefined_field",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "NarrativeText",
+        "text_as_html": "<p/>"
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/text_as_html"
+    },
+    {
+      "name": "element_blob_category_not_allowed",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "NarrativeText",
+        "blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc"
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/blob"
+    },
+    {
+      "name": "element_mime_type_category_not_allowed",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Title",
+        "mime_type": "image/png"
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/mime_type"
+    },
+    {
+      "name": "element_text_not_string",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Title",
+        "text": 1
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/text"
+    },
+    {
+      "name": "element_blob_not_ref",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Image",
+        "blob": "https://a.cdn/x.png"
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/blob"
+    },
+    {
+      "name": "element_metadata_not_object",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Title",
+        "metadata": [
+          1
+        ]
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/metadata"
+    },
+    {
+      "name": "element_metadata_integer_out_of_range",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Title",
+        "metadata": {
+          "a/b": [
+            9007199254740992
+          ]
+        }
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/metadata/a~1b/0"
+    },
+    {
+      "name": "element_category_before_closed_schema",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Video",
+        "foo": 1
+      },
+      "code": "DPE_CATEGORY_UNKNOWN"
+    },
+    {
+      "name": "element_category_null_is_missing",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": null,
+        "text": "x"
+      },
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "page_not_object",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": [],
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "page_missing_elements",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "title": "p"
+      },
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "page_undefined_field",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "number": 1,
+        "elements": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/number"
+    },
+    {
+      "name": "page_title_not_string",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "title": 1,
+        "elements": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/title"
+    },
+    {
+      "name": "page_metadata_integer_out_of_range",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "page_metadata": {
+          "n": -9007199254740992
+        },
+        "elements": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/page_metadata/n"
+    },
+    {
+      "name": "page_elements_not_array",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": "dpe1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/elements"
+    },
+    {
+      "name": "page_child_hash_not_string",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          1
+        ]
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/elements/0"
+    },
+    {
+      "name": "page_child_hash_no_prefix",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_CONTRACT_UNSUPPORTED",
+      "path": "/elements/0"
+    },
+    {
+      "name": "page_child_hash_unknown_contract",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          "dpe1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "dpe9:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_CONTRACT_UNSUPPORTED",
+      "path": "/elements/1"
+    },
+    {
+      "name": "page_child_hash_drill_contract_unsupported",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          "dpe2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_CONTRACT_UNSUPPORTED",
+      "path": "/elements/0"
+    },
+    {
+      "name": "page_child_hash_uppercase_hex",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          "dpe1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ]
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/elements/0"
+    },
+    {
+      "name": "page_child_hash_mixed_contract",
+      "object_kind": "page",
+      "contract": "dpe2",
+      "input": {
+        "elements": [
+          "dpe1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/elements/0"
+    },
+    {
+      "name": "page_elements_null_is_missing",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": null
+      },
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "page_closed_schema_before_children",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "number": 1,
+        "elements": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "page_title_before_children",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "title": 1,
+        "elements": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "page_children_in_array_order_validation_first",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          "dpe1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "page_children_in_array_order_contract_first",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "dpe1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ]
+      },
+      "code": "DPE_CONTRACT_UNSUPPORTED"
+    },
+    {
+      "name": "page_child_hash_prefix_before_hex",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "elements": [
+          "dpe9:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ]
+      },
+      "code": "DPE_CONTRACT_UNSUPPORTED"
+    },
+    {
+      "name": "page_metadata_before_children",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "input": {
+        "page_metadata": {
+          "n": 9007199254740992
+        },
+        "elements": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "document_missing_file_type",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "document_missing_pages",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md"
+      },
+      "code": "DPE_VALIDATION",
+      "path": ""
+    },
+    {
+      "name": "document_file_type_unknown",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "markdown",
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/file_type"
+    },
+    {
+      "name": "document_undefined_field",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md",
+        "pages": [],
+        "attributes": {}
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/attributes"
+    },
+    {
+      "name": "document_metadata_integer_out_of_range",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md",
+        "doc_metadata": {
+          "n": 9007199254740992
+        },
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/doc_metadata/n"
+    },
+    {
+      "name": "document_child_hash_blob_prefix",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md",
+        "pages": [
+          "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_CONTRACT_UNSUPPORTED",
+      "path": "/pages/0"
+    },
+    {
+      "name": "document_shape_before_children",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "pages": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "document_file_type_before_children",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "markdown",
+        "pages": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "document_metadata_before_children",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md",
+        "doc_metadata": {
+          "n": 9007199254740992
+        },
+        "pages": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "ijson_lone_surrogate",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"category\": \"Title\", \"text\": \"\\ud800\"}"
+    },
+    {
+      "name": "ijson_lone_surrogate_in_key",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"category\": \"Title\", \"metadata\": {\"\\udc00\": 1}}"
+    },
+    {
+      "name": "ijson_before_category",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "input_json": "{\"category\": \"Video\", \"text\": \"\\ud800\"}"
+    },
+    {
+      "name": "ijson_before_children",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "input_json": "{\"title\": \"\\ud800\", \"elements\": [\"a\"]}"
+    },
+    {
+      "name": "ijson_duplicate_key",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"category\": \"Title\", \"category\": \"Video\"}"
+    },
+    {
+      "name": "ijson_after_contract_unsupported",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"elements\": [\"aaaa\", \"\\ud800\"]}"
+    },
+    {
+      "name": "number_overflow_double",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "/metadata/a",
+      "input_json": "{\"category\": \"Title\", \"metadata\": {\"a\": 1e400}}"
+    },
+    {
+      "name": "number_overflow_after_category",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_CATEGORY_UNKNOWN",
+      "input_json": "{\"category\": \"Video\", \"metadata\": {\"a\": 1e400}}"
+    },
+    {
+      "name": "expanded_element_category_unknown",
+      "object_kind": "expanded_document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md",
+        "pages": [
+          {
+            "elements": [
+              {
+                "category": "Video"
+              }
+            ]
+          }
+        ]
+      },
+      "code": "DPE_CATEGORY_UNKNOWN",
+      "path": "/pages/0/elements/0/category"
+    },
+    {
+      "name": "expanded_page_fields_before_elements",
+      "object_kind": "expanded_document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md",
+        "pages": [
+          {
+            "elements": [
+              {
+                "category": "Video"
+              }
+            ]
+          },
+          {
+            "title": 1,
+            "elements": []
+          }
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "name": "expanded_document_fields_before_pages",
+      "object_kind": "expanded_document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "markdown",
+        "pages": [
+          {
+            "elements": [
+              {
+                "category": "Video"
+              }
+            ]
+          }
+        ]
+      },
+      "code": "DPE_VALIDATION"
+    }
+  ]
+}

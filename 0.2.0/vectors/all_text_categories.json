@@ -1,0 +1,139 @@
+{
+  "name": "all_text_categories",
+  "kind": "document",
+  "description": "全部 text-only category 各一个元素，同页排列；category 进入 hash，故同文本不同 category 的值互不相同。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Address",
+              "text": "same text"
+            },
+            {
+              "category": "CheckBox",
+              "text": "same text"
+            },
+            {
+              "category": "CodeSnippet",
+              "text": "same text"
+            },
+            {
+              "category": "CompositeElement",
+              "text": "same text"
+            },
+            {
+              "category": "EmailAddress",
+              "text": "same text"
+            },
+            {
+              "category": "FigureCaption",
+              "text": "same text"
+            },
+            {
+              "category": "Footer",
+              "text": "same text"
+            },
+            {
+              "category": "FormKeysValues",
+              "text": "same text"
+            },
+            {
+              "category": "Header",
+              "text": "same text"
+            },
+            {
+              "category": "ListItem",
+              "text": "same text"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "same text"
+            },
+            {
+              "category": "PageBreak",
+              "text": "same text"
+            },
+            {
+              "category": "PageNumber",
+              "text": "same text"
+            },
+            {
+              "category": "TableChunk",
+              "text": "same text"
+            },
+            {
+              "category": "Title",
+              "text": "same text"
+            },
+            {
+              "category": "UncategorizedText",
+              "text": "same text"
+            },
+            {
+              "category": "tfchat",
+              "text": "same text"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:ab110056e8ff3d14e3b6e829304efba888609758e9ac72dd3c37b982a3e4b516",
+        "pages": [
+          {
+            "page_hash": "dpe1:413df5dd91dd38446884c049750b1b94017909abc69e917b7f90ee5c0b19630a",
+            "elements": [
+              "dpe1:31bd2198335e4fc54201030a33c2ba544e023be0e53fb7e2bbf8d32b0d6cc503",
+              "dpe1:f82bbb0f91180aae6254da1801a4650be532aee0a9f73c32d1ff0b0dfc12ed60",
+              "dpe1:80c1dbc4de8d228c9c79f051985e71108a07ba970a52c7c285865271b30fbfe3",
+              "dpe1:f84bcd39f15f035c7d88c43ef159de5584be5b06c38590d691f50b51fda3146b",
+              "dpe1:dff36f7f6efd099e16240e26510c9379f4fa2c814e77368a3c0390845a69f97e",
+              "dpe1:ca8c45577100159d0deba32157d9034518a9685170baeb8e512a1727614d50fe",
+              "dpe1:59600c2e4e9eff53017a39fc81c7099a3b1a18cd76ad97addfa96aa5bf822786",
+              "dpe1:f501d1e2339d590e1afc6f68156695a6d16f78ce90dc5a48b5f59596af1ab95d",
+              "dpe1:7f035583ec2810323993bb8e68e462a1867aade4725a3ba227c188cfeb40a521",
+              "dpe1:0a996ffa91b263bab5714f8aec53d9ba6677d7e91b1f316628e2cca3ebbe1f2e",
+              "dpe1:3d15850bfc67649334d4f75f2e543b7ec0629340b5c86dfa5bff164f7e7dcfe5",
+              "dpe1:fe8bb134eae3473175a430e8dafca64962ba2ed914f9eb8fbef85d801d0e649a",
+              "dpe1:f09291580117b2f3c423d88e2e4c1b1d29a8028bda47ac6979f18b6d8098adde",
+              "dpe1:cf109fa4a7f08cfd3b835d4ed3e98dba63be5f8cbbecaf9a332baa84f7bc77fb",
+              "dpe1:3570a3d66f68826715856f74702da3193a3c8874a6036ed79876a853b3861c0b",
+              "dpe1:975df92fc5326e05f95fc4b83a63d617a757e88431374b7d2c972c8bbf6460e7",
+              "dpe1:824b0d52d163c191e76ff6e4acc016a3a9c83a18db2705ffb1429ad247fa584b"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.1",
+        "doc.pages.0.elements.2",
+        "doc.pages.0.elements.3",
+        "doc.pages.0.elements.4",
+        "doc.pages.0.elements.5",
+        "doc.pages.0.elements.6",
+        "doc.pages.0.elements.7",
+        "doc.pages.0.elements.8",
+        "doc.pages.0.elements.9",
+        "doc.pages.0.elements.10",
+        "doc.pages.0.elements.11",
+        "doc.pages.0.elements.12",
+        "doc.pages.0.elements.13",
+        "doc.pages.0.elements.14",
+        "doc.pages.0.elements.15",
+        "doc.pages.0.elements.16"
+      ]
+    }
+  ]
+}
