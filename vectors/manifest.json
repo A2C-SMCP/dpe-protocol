@@ -76,8 +76,8 @@
     ],
     "Image": [
       "text",
-      "image_blob",
-      "image_mime_type"
+      "blob",
+      "mime_type"
     ],
     "ListItem": [
       "text"
@@ -118,6 +118,10 @@
       "sha256": "e5befd384e2e4612e107eb73e85726a5654b4e54c97ec67ae02346334ff8649d"
     },
     {
+      "name": "blob_ref.json",
+      "sha256": "5273e9c930942cc703f5659d3b2a4193b2c18a26cab2278937256a0da951edbf"
+    },
+    {
       "name": "cross_page_move.json",
       "sha256": "a346ecb11d9221942ccd883cc5a0743353f988b8a8ddab9eeae7079c826a4fb5"
     },
@@ -154,20 +158,16 @@
       "sha256": "37d597688ca1bf9dec5ebdb237c69dc9806a357e1a852ba08ff6294265ae4443"
     },
     {
-      "name": "image_blob.json",
-      "sha256": "748e5dac232d98e9b21f15cdcc7aebdd97137e2fc42315bc9c4107976817e7cd"
-    },
-    {
       "name": "image_placeholder_null.json",
-      "sha256": "36ff4f260195dbf4c98d2e1df156df0dc2e5dce619680cf2ee656af5e9b0d3be"
+      "sha256": "7d17b6dc003aa45451224fd01c6c0d37f735c52573f4cb83f909515f848f2a9f"
     },
     {
       "name": "image_url_is_content.json",
-      "sha256": "932b1fb7c3c0be167f5c6459548d3f8d0f8480aeabc4410aa0a318a194ec5fd1"
+      "sha256": "87469605371385219cc4a00a77ecfff7a424ec3875596e595a9e3241902e3c29"
     },
     {
       "name": "invalid_objects.json",
-      "sha256": "29869e5389246bdfad694232349f48e16f3db958be2d52daf81603d71fbd2bab"
+      "sha256": "7cf94ad62547cfe9f8d3587593ddb8e677378938b791e694be78dc282939f599"
     },
     {
       "name": "jcs_basic.json",
@@ -211,7 +211,7 @@
     },
     {
       "name": "preimage_basic.json",
-      "sha256": "5dc13cf3606b65e73e2c32cbbd118d4c87c5873974d18bcb6e31d1a0c92ce8f0"
+      "sha256": "7c48bc3a1b65e0c4132bfbbf2c81409950b6e39efc3d07f122d6ef9d313f4f07"
     },
     {
       "name": "table_formula_html.json",
@@ -223,7 +223,7 @@
     },
     {
       "name": "upgrade_drill.json",
-      "sha256": "9d14ef73f10862b6c350c72caaee01243e1080c389d045afcc531f70086620b2"
+      "sha256": "c7feefa580f434c28c31b6c522b550b19e9d4f17066931a6c834107157856cef"
     }
   ]
 }

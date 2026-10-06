@@ -62,7 +62,7 @@ extra:
   version:
     provider: mike
     alias: true
-  announce: "DPE 协议规范文档 - 本文档版本：0.1.8"
+  announce: "DPE 协议规范文档 - 本文档版本：0.2.0-dev"
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/A2C-SMCP/dpe-protocol

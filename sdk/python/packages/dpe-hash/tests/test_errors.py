@@ -65,8 +65,8 @@ def _raises(error: type[DpeHashError], code: str, path: str, fn: Any, *args: Any
         (
             ValidationError,
             "DPE_VALIDATION",
-            "/image_blob",
-            {"category": "Image", "image_blob": "https://a/x.png"},
+            "/blob",
+            {"category": "Image", "blob": "https://a/x.png"},
             "element",
         ),
         (

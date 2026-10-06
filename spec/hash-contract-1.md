@@ -1,6 +1,6 @@
 # DPE Hash 契约 1（`dpe1`）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31、#60 修订（#60 为原位修订，见 plan §7 修订注记）
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何合规实现都必须逐字节算出相同的 `content_hash` / `page_hash` / `doc_hash`。doc_hash 同时是文档的版本令牌（core.md §1）。契约版本与投递协议版本是两个独立的轴；本文是契约 **1**，值前缀为 `dpe1:`。
@@ -79,21 +79,23 @@ category 进 hash（#3 S3：以什么语义角色呈现属于内容本身；`Tit
 
 | category | 允许的内容字段（均可选） |
 | --- | --- |
-| `Image` | `text`、`image_blob`、`image_mime_type` |
+| `Image` | `text`、`blob`、`mime_type` |
 | `Table`、`Formula` | `text`、`text_as_html` |
 | 其余（见下） | `text` |
 
 text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement`、`FigureCaption`、`NarrativeText`、`ListItem`、`Title`、`Address`、`EmailAddress`、`PageBreak`、`TableChunk`、`Header`、`Footer`、`CodeSnippet`、`PageNumber`、`FormKeysValues`、`tfchat`。其中 `tfchat` 是开放格式名，属 plan §1 命名规则的登记例外（同 core.md §2.5）。
 
-内容字段的值均为字符串（`image_blob` 为 §1 的 blob 引用）。出现其 category 未允许的字段 MUST 拒绝。`FormKeysValues` 的键值对如由源随元素 metadata 提供，则自然进入 hash，无需专门的内容字段。
+内容字段的值均为字符串（`blob` 为 §1 的 blob 引用）。出现其 category 未允许的字段 MUST 拒绝。
+
+二进制内容一律经通用的 `blob` / `mime_type` 携带，不为每种媒体另设字段名（类比 OCI 描述符的 `digest` + `mediaType`）。本表决定哪些 category 可以携带 blob；以后新增二进制类别（如音频、视频）只需增加 category 与表行，字段名与 hash 原语都不变（新增 category 本身仍按下段升契约次版本）。`FormKeysValues` 的键值对如由源随元素 metadata 提供，则自然进入 hash，无需专门的内容字段。
 
 新增 category 需要升契约次版本，并通过 capabilities 协商（§6）。本表以机器可读形式随向量发布（`vectors/manifest.json` 的 `category_content_fields`），SDK MUST 以常量导出，并与之一致。
 
-### 4.2 Image
+### 4.2 blob 与 Image
 
-- 图片字节由 blob 承载，`image_blob` 是字节的引用（`"sha256:…"`），直接作为元素对象的字段进 hash；图片 url、版面坐标等源信息放在元素 metadata 中，与其他源字段一样进 hash（§2）。同一张图换一个 url 即内容变化（向量 `image_url_is_content`）。
-- **SDK 上传辅助**（非规范性，登记为 M2 SDK 需求）：SDK 应提供辅助函数——给它本地路径或字节，它计算 `sha256:` 引用、上传 blob 并把元素替换为引用。字节只经 `image_blob` 携带，这是正向定义；协议不对 metadata 中的路径类字符串做任何识别或拒收。
-- **字节由持有数据源凭证的一方提供**：需要数据源凭证才能取得的图片，由产出方（connector，或直接调用 SDK 的上游）用自己的凭证取回字节；推送侧（SDK / 运行器）只负责计算 `sha256:` 引用并上传 blob。运行器不持有数据源凭证，MUST NOT 自行解引用数据源 url（connector 契约 §0、§1-2）。字节确实无法取得时，`image_blob` 缺省。
+- 字节由 blob 承载，`blob` 是字节的引用（`"sha256:…"`），`mime_type` 是字节的媒体类型（如 `image/png`），二者直接作为元素对象的字段进 hash；图片 url、版面坐标等源信息放在元素 metadata 中，与其他源字段一样进 hash（§2）。同一张图换一个 url 即内容变化（向量 `image_url_is_content`）。
+- **SDK 上传辅助**（非规范性，登记为 M2 SDK 需求）：SDK 应提供辅助函数——给它本地路径或字节，它计算 `sha256:` 引用、上传 blob 并把元素替换为引用。字节只经 `blob` 携带，这是正向定义；协议不对 metadata 中的路径类字符串做任何识别或拒收。
+- **字节由持有数据源凭证的一方提供**：需要数据源凭证才能取得的图片，由产出方（connector，或直接调用 SDK 的上游）用自己的凭证取回字节；推送侧（SDK / 运行器）只负责计算 `sha256:` 引用并上传 blob。运行器不持有数据源凭证，MUST NOT 自行解引用数据源 url（connector 契约 §0、§1-2）。字节确实无法取得时，`blob` 缺省。
 - 服务端不负责抓取 url；OCR / 抽取出的文字若由服务端生成，属服务端衍生物，不进 DPE（图片型文档不再需要特殊 hash 策略，#3 S9）。
 
 ## 5. `page_hash` 与 `doc_hash`（tree 对象）

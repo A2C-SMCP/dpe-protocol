@@ -7,7 +7,7 @@ members = ["crates/*"]
 
 # 共享元数据：两个 crate 同版本（由本目录的 bump-my-version 管理，dev / final 两态）。
 [workspace.package]
-version = "0.1.6-dev"
+version = "0.2.0-dev"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
@@ -21,4 +21,4 @@ authors = ["TuringFocus Team <dev@turingfocus.cn>"]
 [workspace.dependencies]
 # 内部依赖：两个 crate 锁步发布、精确同版本（与 Python 的 dpe-hash==X.Y.Z 对等）。
 # 版本串由 bump-my-version 与 [workspace.package].version 一并维护。
-dpe-hash = { path = "crates/dpe-hash", version = "=0.1.6-dev" }
+dpe-hash = { path = "crates/dpe-hash", version = "=0.2.0-dev" }

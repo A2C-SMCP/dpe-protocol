@@ -59,7 +59,7 @@ CATEGORY_CONTENT_FIELDS: dict[str, tuple[str, ...]] = dict(
         {
             **{c: ("text",) for c in TEXT_ONLY_CATEGORIES},
             **{c: ("text", "text_as_html") for c in HTML_CATEGORIES},
-            "Image": ("text", "image_blob", "image_mime_type"),
+            "Image": ("text", "blob", "mime_type"),
         }.items()
     )
 )
@@ -247,7 +247,7 @@ def check_element(el: Any, path: str = "") -> None:
     check_closed(el, ("category", *fields, "metadata"), path)
     for field in fields:
         check_string(el, field, path)
-        blob = el.get(field) if field == "image_blob" else None
+        blob = el.get(field) if field == "blob" else None
         if blob is not None and not (blob.startswith("sha256:") and _HEX64.fullmatch(blob[7:])):
             raise Reject(VALIDATION, ptr(path, field))
     check_metadata(el, "metadata", path)
@@ -519,7 +519,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
                 ),
                 page(
                     None,
-                    el("Image", None, image_blob=_BLOB, image_mime_type="image/png"),
+                    el("Image", None, blob=_BLOB, mime_type="image/png"),
                 ),
                 title="季度报告",
                 doc_metadata={"author": "gmq"},
@@ -742,14 +742,14 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "image_blob",
-        "description": "Image 的字节以 image_blob（sha256 引用）进 hash；url 等源信息作为元素 metadata 另进 hash（见 image_url_is_content）。",
+        "name": "blob_ref",
+        "description": "二进制字节以通用的 blob 字段（sha256 引用）与 mime_type 进 hash；哪些 category 可携带 blob 由契约 1 §4.1 表决定（目前为 Image）。url 等源信息作为元素 metadata 另进 hash（见 image_url_is_content）。",
         "documents": {
             "doc": doc(
                 page(
                     None,
                     el(
-                        "Image", "架构图", image_blob=_BLOB, image_mime_type="image/png"
+                        "Image", "架构图", blob=_BLOB, mime_type="image/png"
                     ),
                 )
             )
@@ -765,8 +765,8 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
                     el(
                         "Image",
                         "",
-                        image_blob=_BLOB,
-                        image_mime_type="image/png",
+                        blob=_BLOB,
+                        mime_type="image/png",
                         metadata={"image_url": "https://a.cdn/x.png"},
                     ),
                 )
@@ -777,8 +777,8 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
                     el(
                         "Image",
                         "",
-                        image_blob=_BLOB,
-                        image_mime_type="image/png",
+                        blob=_BLOB,
+                        mime_type="image/png",
                         metadata={"image_url": "https://b.cdn/y.png"},
                     ),
                 )
@@ -789,8 +789,8 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
                     el(
                         "Image",
                         "",
-                        image_blob=_BLOB2,
-                        image_mime_type="image/png",
+                        blob=_BLOB2,
+                        mime_type="image/png",
                         metadata={"image_url": "https://a.cdn/x.png"},
                     ),
                 )
@@ -810,7 +810,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
         "documents": {
             "absent": doc(page(None, el("Image", "占位"))),
             "null_fields": doc(
-                page(None, el("Image", "占位", image_blob=None, image_mime_type=None))
+                page(None, el("Image", "占位", blob=None, mime_type=None))
             ),
         },
         "relations": [eq("absent.doc_hash", "null_fields.doc_hash")],
@@ -1069,8 +1069,8 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
                     el(
                         "Image",
                         "图",
-                        image_blob=_BLOB,
-                        image_mime_type="image/webp",
+                        blob=_BLOB,
+                        mime_type="image/webp",
                         metadata={"image_url": "https://a.cdn/x.webp"},
                     ),
                 ),
@@ -1152,8 +1152,10 @@ INVALID_VECTORS: list[dict[str, Any]] = [
             bad("element_category_not_string", "element", {"category": 1}, V, "/category"),
             bad("element_category_unknown", "element", {"category": "Video"}, CU, "/category"),
             bad("element_undefined_field", "element", {"category": "NarrativeText", "text_as_html": "<p/>"}, V, "/text_as_html"),
+            bad("element_blob_category_not_allowed", "element", {"category": "NarrativeText", "blob": _BLOB}, V, "/blob"),
+            bad("element_mime_type_category_not_allowed", "element", {"category": "Title", "mime_type": "image/png"}, V, "/mime_type"),
             bad("element_text_not_string", "element", {"category": "Title", "text": 1}, V, "/text"),
-            bad("element_image_blob_not_ref", "element", {"category": "Image", "image_blob": "https://a.cdn/x.png"}, V, "/image_blob"),
+            bad("element_blob_not_ref", "element", {"category": "Image", "blob": "https://a.cdn/x.png"}, V, "/blob"),
             bad("element_metadata_not_object", "element", {"category": "Title", "metadata": [1]}, V, "/metadata"),
             bad("element_metadata_integer_out_of_range", "element", {"category": "Title", "metadata": {"a/b": [_HUGE]}}, V, "/metadata/a~1b/0"),
             bad("element_category_before_closed_schema", "element", {"category": "Video", "foo": 1}, CU),

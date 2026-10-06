@@ -40,8 +40,8 @@ class ElementObject(TypedDict):
     category: str
     text: NotRequired[str | None]
     text_as_html: NotRequired[str | None]
-    image_blob: NotRequired[str | None]
-    image_mime_type: NotRequired[str | None]
+    blob: NotRequired[str | None]
+    mime_type: NotRequired[str | None]
     metadata: NotRequired[dict[str, Any] | None]
 
 

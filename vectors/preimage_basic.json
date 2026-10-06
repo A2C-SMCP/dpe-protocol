@@ -28,8 +28,8 @@
           "elements": [
             {
               "category": "Image",
-              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_mime_type": "image/png"
+              "blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "mime_type": "image/png"
             }
           ]
         }
@@ -43,7 +43,7 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:8e036ff6f82da8e15ca71e1347e83cffbc29d92c6dd6ebcd9e0f941ec55d2919",
+        "doc_hash": "dpe1:b805f0672c053bb1d22ccc13c64c488f4d6f508263408a95ccab127b5b543c72",
         "pages": [
           {
             "page_hash": "dpe1:23ae242f81001adf2b48e83b9a67da4c0c25168b4c9b81eeab353c006452305b",
@@ -53,17 +53,17 @@
             ]
           },
           {
-            "page_hash": "dpe1:075e0c43cbf0002f1bce09eccf7a104904649c56e311a66260c2c9cc51ed56e3",
+            "page_hash": "dpe1:1a16ec8de2a4356ccb9bcfc1b1bb0b4af46c3b59585853c4d4f235b5cc5fbf0d",
             "elements": [
-              "dpe1:1ba2297eb7d34724f8e7f6edc9d250bf695de51ddfbdef3675eaaa883053966a"
+              "dpe1:59163daceaf561a8cfbac6611b8da285e5eba94f6dcd0483fa8fcfa7852b195d"
             ]
           }
         ],
         "preimages": {
-          "document": "{\"doc_metadata\":{\"author\":\"gmq\"},\"file_type\":\"md\",\"pages\":[\"dpe1:23ae242f81001adf2b48e83b9a67da4c0c25168b4c9b81eeab353c006452305b\",\"dpe1:075e0c43cbf0002f1bce09eccf7a104904649c56e311a66260c2c9cc51ed56e3\"],\"title\":\"季度报告\"}",
+          "document": "{\"doc_metadata\":{\"author\":\"gmq\"},\"file_type\":\"md\",\"pages\":[\"dpe1:23ae242f81001adf2b48e83b9a67da4c0c25168b4c9b81eeab353c006452305b\",\"dpe1:1a16ec8de2a4356ccb9bcfc1b1bb0b4af46c3b59585853c4d4f235b5cc5fbf0d\"],\"title\":\"季度报告\"}",
           "pages": [
             "{\"elements\":[\"dpe1:2fa59dc85718026f31551d62452e87ee45216dd38fe3c4d3e67f7ff894620725\",\"dpe1:fd9ca6d627bfd341cddfcf490538f84c39f744b8f17c1dd6cede47013a5fadf6\"],\"page_metadata\":{},\"title\":\"p1\"}",
-            "{\"elements\":[\"dpe1:1ba2297eb7d34724f8e7f6edc9d250bf695de51ddfbdef3675eaaa883053966a\"],\"page_metadata\":{}}"
+            "{\"elements\":[\"dpe1:59163daceaf561a8cfbac6611b8da285e5eba94f6dcd0483fa8fcfa7852b195d\"],\"page_metadata\":{}}"
           ],
           "elements": [
             [
@@ -71,7 +71,7 @@
               "{\"category\":\"Table\",\"metadata\":{},\"text\":\"a\",\"text_as_html\":\"<table/>\"}"
             ],
             [
-              "{\"category\":\"Image\",\"image_blob\":\"sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc\",\"image_mime_type\":\"image/png\",\"metadata\":{}}"
+              "{\"blob\":\"sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc\",\"category\":\"Image\",\"metadata\":{},\"mime_type\":\"image/png\"}"
             ]
           ]
         }

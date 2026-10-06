@@ -18,7 +18,7 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
 ## 2. 插件产出模型（大纲）
 
 - Document（复用 core.md §2 的数据模型：DPE 只表达内容面，插件产出的每个字段都是源内容、都进 hash；治理属性与抽取衍生物不属于 Document）；
-- **blob 字节**：Image 的字节由插件用自己持有的数据源凭证取得（运行器不持有数据源凭证，MUST NOT 自行解引用数据源 url，契约 1 §4.2）。小对象内联产出；大对象产出不透明句柄，运行器通过 `read_blob` 请求向插件分块拉取字节（线协议见 §6.7），自行计算 `sha256:` 引用并上传。字节确实无法取得时 `image_blob` 留空；图片 url 等源信息照常放在元素 metadata 中；
+- **blob 字节**：可携带 blob 的元素（契约 1 §4.1，目前为 Image），其字节由插件用自己持有的数据源凭证取得（运行器不持有数据源凭证，MUST NOT 自行解引用数据源 url，契约 1 §4.2）。小对象内联产出；大对象产出不透明句柄，运行器通过 `read_blob` 请求向插件分块拉取字节（线协议见 §6.7），自行计算 `sha256:` 引用并上传。字节确实无法取得时 `blob` 留空；图片 url 等源信息照常放在元素 metadata 中；
 - **易变字段**：插件 SHOULD NOT 把不随内容变化的易变源字段（浏览计数、最近访问时间、在线状态、同步时间戳等）放进 metadata，否则每轮同步都会制造内容变化（契约 1 §2）；同理 SHOULD NOT 在元素 metadata 中重复骨架已表达的位置（页码、页内序号），否则插入一页会让后续元素对象全部重传（core.md §2.4）；
 - 删除意图 `{file_uri}` 与移动意图 `{from_uri, to_uri}`；
 - 变更枚举方式：全量枚举 / 源端增量游标（fingerprint 只存运行器本地缓存，见 §6.8）。
@@ -230,24 +230,24 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
 
 ### 6.6 元素线格式与校验流水线
 
-线元素与 core.md §2.3 的元素对象一致，唯一区别是 Image 的字节来源：
+线元素与 core.md §2.3 的元素对象一致，唯一区别是 `blob` 字段的取值：线协议上给出字节的来源，运行器取得字节后把它替换为 `sha256:` 引用。
 
-- `Image` 元素的 `image_blob` MUST NOT 出现在线协议上——插件不计算、也不得伪造 `sha256:` 引用；运行器取得字节后自行写入引用并上传。
-- 字节以 `image` 字段给出，互斥二选一：
+- 线协议上的 `blob` MUST 是下面的字节来源对象，MUST NOT 是 `sha256:` 引用字符串——插件不计算、也不得伪造引用；运行器取得字节后自行写入引用并上传。
+- 字节来源互斥二选一：
   - `{"inline": "<base64>"}`：内联字节（RFC 4648 §4 标准字母表，带填充）。只适合小对象，受 `max_message_bytes` 约束（§6.2）。
   - `{"handle": "…", "size": 12345}`：不透明句柄（§6.7）；`size` 为字节数（整数，≤ 2^53−1），可选，插件 SHOULD 提供已知的大小。
-- `image` 缺省或为 `null` 表示源确实没有字节（合法；运行器最终不产出 `image_blob`）。`image` 对象中 `inline` 与 `handle` 同时出现或同时缺失（但 `image` 对象存在）→ 条目失败。
-- 其他 category 的元素 MUST NOT 出现 `image` 字段（与 core.md §2.3 同样的封闭规则）；`image_mime_type` 仍只属于 `Image`。
+- `blob` 缺省或为 `null` 表示源确实没有字节（合法；运行器最终不产出 `blob`）。`blob` 对象中 `inline` 与 `handle` 同时出现或同时缺失（但 `blob` 对象存在）→ 条目失败。
+- category 不允许携带 blob 的元素 MUST NOT 出现 `blob` 与 `mime_type`（与 core.md §2.3 同样的封闭规则，契约 1 §4.1）。
 
 ```json
-{ "category": "Image", "text": "架构图", "image_mime_type": "image/png",
-  "image": { "handle": "blob-1", "size": 20480 } }
+{ "category": "Image", "text": "架构图", "mime_type": "image/png",
+  "blob": { "handle": "blob-1", "size": 20480 } }
 ```
 
 运行器对每个文件条目按以下流水线校验，遇错即该条目失败（MUST NOT 跳过出错的元素或只提交其余部分）：
 
 1. 条目封闭 schema（§6.5）；
-2. 页对象与元素对象按 core.md §2 校验，顺序同 core.md §2.8：形状 → category 封闭枚举 → 封闭 schema（含 category 允许的字段）→ 逐字段（类型、数值界限 §2.6、metadata 全量、base64 与 `size` 合法性）；
+2. 页对象与元素对象按 core.md §2 校验，顺序同 core.md §2.8：形状 → category 封闭枚举 → 封闭 schema（含 category 允许的字段）→ 逐字段（类型、数值界限 §2.6、metadata 全量、base64 与 `size` 合法性）。其中 `blob` 按本节的字节来源对象校验，替代 core.md §2.8 对 blob 引用格式的校验；第 3 步替换为引用之后，元素才是 core.md §2.3 的元素对象；
 3. blob 解析（§6.7）：内联解码或句柄读取，取得字节、算出 `sha256:` 引用；
 4. 分段合并为完整文档后，整体再按 core.md §2 的文档层规则校验（含 `file_type` 枚举），并由运行器重算三层 hash。
 
@@ -284,7 +284,7 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
 - MUST 以分块方式流式读取（块大小由运行器决定、受 `max_message_bytes` 约束），MUST NOT 要求单条消息承载完整 blob。
 - 读取完成后运行器才得到 `sha256:` 与总长；blob 的分块上传在**读取完成之后**进行——上传路径含 `sha256`、`Content-Range` 含 total（http.md §4.7），两者都必须先确定。运行器 MAY 在本地暂存字节（内存或临时文件）以衔接读取与上传，MUST NOT 在摘要与总长确定前开始上传。
 - 声明 `size` 超过远端 `blob_max_bytes` 时 SHOULD 立即判该条目失败，不必读取。
-- **失败语义**：读取失败（含取消、超时、`size` 不符、句柄失效）使该条目**整篇失败**：运行器 MUST NOT 提交该文档（MUST NOT 只提交其余元素，MUST NOT 用空 `image_blob` 顶替——那会写出与源不等价的内容），MUST 如实上报；本轮游标不得推进（§6.8）。运行器 MAY 在本轮内重试读取。
+- **失败语义**：读取失败（含取消、超时、`size` 不符、句柄失效）使该条目**整篇失败**：运行器 MUST NOT 提交该文档（MUST NOT 只提交其余元素，MUST NOT 用空 `blob` 顶替——那会写出与源不等价的内容），MUST 如实上报；本轮游标不得推进（§6.8）。运行器 MAY 在本轮内重试读取。
 - 同一轮内相同内容的 blob SHOULD 只读取与上传一次（去重属运行器实现）。
 
 取消与超时：

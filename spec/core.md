@@ -1,6 +1,6 @@
 # DPE Core v1（抽象模型与操作语义）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#60 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 DPE（Document / Page / Element）是把任意格式文档的**内容面**——面向 LLM 阅读的内容——**正确、增量、可靠**地投递到一个远端的标准协议。本文定义与传输无关的核心语义；v1 唯一的规范性传输绑定是 HTTP（[bindings/http.md](bindings/http.md)）；内容身份的计算见 [hash-contract-1.md](hash-contract-1.md)。
@@ -18,7 +18,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 | **Document object** | 文档对象，三层 tree 的根：`{file_type, title?, doc_metadata, pages: [page_hash…]}`（§2.1）。对应 Git 的根 tree。 |
 | **Page object** | 一页：`{title?, page_metadata, elements: [content_hash…]}`（§2.2），按 `page_hash` 寻址。对应 Git 的子 tree。 |
 | **Element object** | 一个元素：`{category, 内容字段…, metadata}`（§2.3），按 `content_hash` 寻址。对应 Git 的 blob。 |
-| **Blob** | 二进制内容（图片等），按 `sha256:<64hex>` 寻址，由元素对象的 `image_blob` 引用。blob 的存储方式由服务端实现决定。 |
+| **Blob** | 二进制内容（图片等），按 `sha256:<64hex>` 寻址，由元素对象的 `blob` 字段引用；哪些 category 可以携带 blob 由契约 1 §4.1 的表决定，blob 本身与内容类型无关（类比 Git 的 tree 不关心 blob 是什么）。blob 的存储方式由服务端实现决定。 |
 | **doc_hash** | 文档对象的 hash（契约 1 §5）。DPE 中文档的全部状态都进 doc_hash，因此它同时是文档的**版本令牌**：判断是否变化、CAS 前置条件（§5）都只用它（plan §0.1 P4）。作用域是单个文档，remote 不存在全局版本。 |
 | **Staging session** | 暂存会话。由 negotiate 开启，绑定 `(file_uri, 调用者身份)`，有过期时间；暂存的页对象、元素对象与 blob 对读接口和召回**不可见**（§3.4）。 |
 
@@ -56,7 +56,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 | `category` | 必需。封闭枚举，见契约 1 §4.1 |
 | `text` | 字符串，可缺省 |
 | `text_as_html` | 仅 `Table` / `Formula` |
-| `image_blob` / `image_mime_type` | 仅 `Image`；`image_blob` 为 blob 引用 `"sha256:…"`（契约 1 §4.2） |
+| `blob` / `mime_type` | 仅契约 1 §4.1 允许携带 blob 的 category（目前为 `Image`）；`blob` 为 blob 引用 `"sha256:…"`，`mime_type` 为字节的媒体类型（契约 1 §4.2） |
 | `metadata` | JSON 对象，缺省视同 `{}`。版面坐标、图片 url 等源提供的信息都放在这里 |
 
 - 元素对象中出现其 category 未允许的字段（如 NarrativeText 带 `text_as_html`）MUST 拒绝（`DPE_VALIDATION`）——否则同一 content_hash 会对应不同字节，服务端去重时静默丢掉其一。
@@ -105,7 +105,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 4. **逐字段**：按 §2.1–§2.3 表中的字段顺序逐个校验，一个字段完整校验后才校验下一个字段。完整校验包括：
    - 值的类型；
    - file_type 枚举（§2.5）；
-   - `image_blob` 的引用格式（契约 1 §1）；
+   - `blob` 的引用格式（契约 1 §1）；
    - metadata 中的全部值（§2.6）；
    - 子对象 hash 列表的每一项，按数组顺序。每一项依次判定：
      1. 是字符串，否则 `DPE_VALIDATION`；
@@ -295,6 +295,7 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 1. 增量推送、删除、move 收敛后的结果与全量推送完全一致；
 2. 不制造伪变更：内容未变的元素 MUST NOT 出现在 delta 的 added/removed 中；
 3. 分批投递期间，读接口与召回 MUST NOT 看到中间态；
+   （说明，非规范性）这里的中间态指暂存中、尚未 commit 的内容；原子性约束的是 DPE 内容的读取。commit 生效后，服务端衍生物（索引、抽取等）何时追上新内容由服务端决定，不属于 DPE（本文开头的定位，plan §0.1 P1），例如衍生物可以最终一致地更新。
 4. 不静默覆盖他人写入：默认拒绝无前置条件的写；同级写入之间的后写覆盖经 CAS 发生，不属于静默覆盖；
 5. 字段变更不被静默丢弃：DPE 的全部字段都进 doc_hash，内容等价（§2.7）之外的任何变化都会被发现并落库；
 6. 契约升级不引起未变内容的重推或重学。

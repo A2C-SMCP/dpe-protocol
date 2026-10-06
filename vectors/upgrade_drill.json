@@ -29,8 +29,8 @@
             {
               "category": "Image",
               "text": "图",
-              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_mime_type": "image/webp",
+              "blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "mime_type": "image/webp",
               "metadata": {
                 "image_url": "https://a.cdn/x.webp"
               }
@@ -46,7 +46,7 @@
   "expected": {
     "doc": {
       "dpe1": {
-        "doc_hash": "dpe1:5cd8d5806c003291422d9fdd86d103362e0493fea0f4c9c263292ad7b524a6a0",
+        "doc_hash": "dpe1:15e8ce55b79baed7ca5739fe3162f180e90d52bdcd080e9769c9689d421d6eae",
         "pages": [
           {
             "page_hash": "dpe1:3ccb12363f1ec428609656c8e98a59e73cb7a70c5e46ba1b912648d28d6ef07e",
@@ -56,15 +56,15 @@
             ]
           },
           {
-            "page_hash": "dpe1:1779d04cbb0390e62222d74eaeaa82ac5b1a1f50d49f5602732d33936a24c2d5",
+            "page_hash": "dpe1:897a27efc825082a7042b212c16adbe471c9929438504a1303c2763c55a5f377",
             "elements": [
-              "dpe1:6affa14aca10439e6aafa7e3a3a9afcd4f41564f4909e7342f76c0e769984ef2"
+              "dpe1:00f5e9f7baca6ec71a2f8b2f2f9de7b0464e45c3c091322c1a9c28b317b636ff"
             ]
           }
         ]
       },
       "dpe2": {
-        "doc_hash": "dpe2:6e6027c45e583a454570a357a5ed20253e4ed33e5659ca9523eafa4a3dec4a36",
+        "doc_hash": "dpe2:286354ff81181a871342160b5a74eb29f325c65138004c4944bceb9c61855ffb",
         "pages": [
           {
             "page_hash": "dpe2:fd0e86cd9ee277758330707c377c46a6f2f5fbc01c63cb97111c4eb2f96595c4",
@@ -74,9 +74,9 @@
             ]
           },
           {
-            "page_hash": "dpe2:84025e70fcb000ffb9da352c212620d5d087c658ca6c86039b0b6e474621360c",
+            "page_hash": "dpe2:ffef37019299cf7ade717a7b77de0e8909dc14d00663e0b2a33eed509740be4f",
             "elements": [
-              "dpe2:f047df1f112b401ae6a0bcd436ed58b99cff2b3f579b7f8ede19e8eb05cb81eb"
+              "dpe2:e38ca4d24d0b695fcb40ff683736288f742b788286b49baf1b13fdc7d864eb5d"
             ]
           }
         ]
