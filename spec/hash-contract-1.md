@@ -1,6 +1,6 @@
 # DPE Hash 契约 1（`dpe1`）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31、#60 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31、#60 修订（#60 为原位修订，见 plan §7 修订注记）
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何合规实现都必须逐字节算出相同的 `content_hash` / `page_hash` / `doc_hash`。doc_hash 同时是文档的版本令牌（core.md §1）。契约版本与投递协议版本是两个独立的轴；本文是契约 **1**，值前缀为 `dpe1:`。
@@ -87,7 +87,7 @@ text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement
 
 内容字段的值均为字符串（`blob` 为 §1 的 blob 引用）。出现其 category 未允许的字段 MUST 拒绝。
 
-二进制内容一律经通用的 `blob` / `mime_type` 携带，不为每种媒体另设字段名（类比 OCI 描述符的 `digest` + `mediaType`）。本表决定哪些 category 可以携带 blob；以后新增二进制类别（如音频、视频）只需增加 category 与表行，字段名与 hash 规则都不变。`FormKeysValues` 的键值对如由源随元素 metadata 提供，则自然进入 hash，无需专门的内容字段。
+二进制内容一律经通用的 `blob` / `mime_type` 携带，不为每种媒体另设字段名（类比 OCI 描述符的 `digest` + `mediaType`）。本表决定哪些 category 可以携带 blob；以后新增二进制类别（如音频、视频）只需增加 category 与表行，字段名与 hash 原语都不变（新增 category 本身仍按下段升契约次版本）。`FormKeysValues` 的键值对如由源随元素 metadata 提供，则自然进入 hash，无需专门的内容字段。
 
 新增 category 需要升契约次版本，并通过 capabilities 协商（§6）。本表以机器可读形式随向量发布（`vectors/manifest.json` 的 `category_content_fields`），SDK MUST 以常量导出，并与之一致。
 

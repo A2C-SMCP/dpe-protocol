@@ -66,6 +66,17 @@
       "path": "/blob"
     },
     {
+      "name": "element_mime_type_category_not_allowed",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "Title",
+        "mime_type": "image/png"
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/mime_type"
+    },
+    {
       "name": "element_text_not_string",
       "object_kind": "element",
       "contract": "dpe1",

@@ -1153,6 +1153,7 @@ INVALID_VECTORS: list[dict[str, Any]] = [
             bad("element_category_unknown", "element", {"category": "Video"}, CU, "/category"),
             bad("element_undefined_field", "element", {"category": "NarrativeText", "text_as_html": "<p/>"}, V, "/text_as_html"),
             bad("element_blob_category_not_allowed", "element", {"category": "NarrativeText", "blob": _BLOB}, V, "/blob"),
+            bad("element_mime_type_category_not_allowed", "element", {"category": "Title", "mime_type": "image/png"}, V, "/mime_type"),
             bad("element_text_not_string", "element", {"category": "Title", "text": 1}, V, "/text"),
             bad("element_blob_not_ref", "element", {"category": "Image", "blob": "https://a.cdn/x.png"}, V, "/blob"),
             bad("element_metadata_not_object", "element", {"category": "Title", "metadata": [1]}, V, "/metadata"),

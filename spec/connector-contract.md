@@ -247,7 +247,7 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
 运行器对每个文件条目按以下流水线校验，遇错即该条目失败（MUST NOT 跳过出错的元素或只提交其余部分）：
 
 1. 条目封闭 schema（§6.5）；
-2. 页对象与元素对象按 core.md §2 校验，顺序同 core.md §2.8：形状 → category 封闭枚举 → 封闭 schema（含 category 允许的字段）→ 逐字段（类型、数值界限 §2.6、metadata 全量、base64 与 `size` 合法性）；
+2. 页对象与元素对象按 core.md §2 校验，顺序同 core.md §2.8：形状 → category 封闭枚举 → 封闭 schema（含 category 允许的字段）→ 逐字段（类型、数值界限 §2.6、metadata 全量、base64 与 `size` 合法性）。其中 `blob` 按本节的字节来源对象校验，替代 core.md §2.8 对 blob 引用格式的校验；第 3 步替换为引用之后，元素才是 core.md §2.3 的元素对象；
 3. blob 解析（§6.7）：内联解码或句柄读取，取得字节、算出 `sha256:` 引用；
 4. 分段合并为完整文档后，整体再按 core.md §2 的文档层规则校验（含 `file_type` 枚举），并由运行器重算三层 hash。
 

@@ -157,7 +157,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 7. Hash 契约 1
 
-> **修订注记**：hash 结构已按 #6 改为三层同构 tree，原语统一为 `sha256(JCS(对象))`，取消长度前缀拼接与页号；doc_hash 含 `file_type` 与 `doc_metadata`（#3），根对象有可选 `title`（撤回 #3 S6）；metadata 全部进 hash（§0.1 P2）；图片字节以 blob 进 hash，url 作为元素 metadata 进 hash；blob 引用通用化（#60）：元素字段改为 `blob` / `mime_type`，哪些 category 可携带由契约 1 §4.1 表决定。#60 是对契约 1 的**原位修订**，不升契约版本：当时仍在调试期、任何系统都没有落库的 dpe1 数据，owner 决定越早改越便宜；定稿后、存在落库数据时，hash 规则变更仍须升契约版本。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准；下文保留作为历史。
+> **修订注记**：hash 结构已按 #6 改为三层同构 tree，原语统一为 `sha256(JCS(对象))`，取消长度前缀拼接与页号；doc_hash 含 `file_type` 与 `doc_metadata`（#3），根对象有可选 `title`（撤回 #3 S6）；metadata 全部进 hash（§0.1 P2）；图片字节以 blob 进 hash，url 作为元素 metadata 进 hash；blob 引用通用化（#60）：元素字段改为 `blob` / `mime_type`，哪些 category 可携带由契约 1 §4.1 表决定。#60 是对契约 1 的**原位修订**，不升契约版本：当时仍在调试期，任何系统都没有落库的 dpe1 数据，唯一使用者是尚未切换的内核，owner 决定越早改越便宜。已发布的 `dpe-hash` 0.1.x 实现的是被取代的契约 1 草案，与 0.2.0 起的实现对 Image 元素算出不同的 `dpe1:` 值，不得混用（内核以 `<0.2.0` 门禁隔离）。此后一旦存在落库数据或已上线的外部实现，hash 规则变更必须升契约版本。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准；下文保留作为历史。
 
 - **格式**：`dpe1:<64 hex>`，即完整 sha256，不截断，前缀标明契约版本。blob 使用 `sha256:<64hex>`，与 OCI 和 Git SHA-256 的惯例一致。
 - **拼接**：每段前面加 4 字节大端长度前缀，再计算 sha256。null 视为空串。沿用内核的做法，并写成与语言无关的规范文本。
