@@ -1,0 +1,77 @@
+{
+  "name": "file_type_identity",
+  "kind": "document",
+  "description": "file_type 由源提供，属于文档对象，进 doc_hash：只改 file_type 时页与元素 hash 不变，doc_hash 变化。",
+  "documents": {
+    "md": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "txt": {
+      "file_type": "txt",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "md": {
+      "dpe1": {
+        "doc_hash": "dpe1:4347236ded7b1947764651896291907887c5e108379673b000d77daf32751dde",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "txt": {
+      "dpe1": {
+        "doc_hash": "dpe1:7fbde2094b0bcdf8b7561866cee29a89b6d9b59bba0da793feb8b790a110f175",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "md.pages.0.page_hash",
+        "txt.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "md.doc_hash",
+        "txt.doc_hash"
+      ]
+    }
+  ]
+}
