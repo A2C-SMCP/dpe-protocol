@@ -31,6 +31,7 @@ uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失�
 - 文档版本单一来源是 `pyproject.toml`，只用 `bump-my-version` 修改（发布 `bump pre_l`，开周期 `bump patch|minor|major`）；它与协议版本（DPE v1）、hash 契约版本（`dpe1:`）独立，升契约版本不等于升文档版本。
 - 多版本站点由 mike 管理在 `gh-pages` 分支，`inv docs.deploy` 发布到 doc.turingfocus.cn/dpe（默认 mode=upload）；`-dev` 版本只占 `dev` 别名，不得顶替 `latest`。
 - **SDK 版本是独立的第四条轴**：两个 SDK 各自同版本、各自用所在目录的 bump-my-version 管理（同样 dev/final 两态），互不牵动——Python 两包发布标签 `py-vX.Y.Z` 触发 `release-python.yml`（PyPI Trusted Publishing）；Rust 两 crate 发布标签 `rs-vX.Y.Z` 触发 `release-rust.yml`（crates.io；首发 token bootstrap 后转 OIDC，见 `sdk/rust/README.md`）；`*-dev` 标签不发布；文档发版不牵动 SDK 版本。
+- **不兼容变更同步升次版本**（0.x 阶段，#60 起）：规范或 SDK 出现不兼容变更（字段改名、hash 值变化等）时，文档与两个 SDK 一起 `bump minor`，保持相同的 `X.Y`；兼容变更只给受影响的一方 `bump patch`，补丁号允许不同。下游依赖按 `>=X.Y.0,<X.(Y+1)` 声明。
 - 站点源是 `website/`（符号链接聚合 spec / docs / vectors / conformance），新增规范文档须同步 `mkdocs.yml` 的 nav。
 
 ## 不可破坏的约束
