@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -227,7 +227,7 @@
   "retryable": false }
 ```
 
-- `type` 是规范中稳定的 URI。草案使用 `urn:dpe:error:<kebab-case>`；定稿后若规范发布到固定域名，MAY 改为该域名下的 URL（plan §16）。
+- `type` 是规范中稳定的 URI。v1 使用 `urn:dpe:error:<kebab-case>`；规范将来若发布到固定域名，MAY 改为该域名下的 URL（plan §16）。
 - 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。`DPE_MISSING_CONTENT` 另带 `missing: {pages: […], content_hashes: […], blobs: […]}` 与 `missing_truncated: true|false`（core.md §3.3）。
 - HTTP 状态映射（每个 code 在给定端点上只有一个状态码；客户端按 `code` 分派，§3.2）：
 

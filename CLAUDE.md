@@ -2,7 +2,7 @@
 
 DPE（Document / Page / Element）**标准协议**的权威仓库：规范、hash 契约、一致性向量、服务端跑分器、connector 契约、两份 SDK 都在这里。类比 Git 之于 GitHub / GitLab / CNB：任何服务端都能实现 DPE，**TFRS 端点只是第一个实现**。
 
-**当前依据**：`docs/plan/v1-plan.md`（CTO 对 Issue #1 的评审定稿稿）。行为与计划冲突时以计划为准；对计划的异议走 Issue #1 回复（须带章节号）。**当前阶段：M1 规范草案待评审**。初版 SDK 在 `archive/initial-sdk` 分支，M1 定稿后按规范改造（M2）。
+**当前依据**：`docs/plan/v1-plan.md`（CTO 对 Issue #1 的评审定稿稿）。行为与计划冲突时以计划为准；对计划或规范的异议另开 Issue（须带章节号）。**当前阶段：M1 规范已定稿（2026-10-06，文档版本 0.1.8），M2 进行中**（SDK、跑分器、参考服务端）。初版 SDK 留在 `archive/initial-sdk` 分支，仅供参考。
 
 ## 结构
 

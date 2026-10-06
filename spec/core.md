@@ -1,6 +1,6 @@
 # DPE Core v1（抽象模型与操作语义）
 
-> 状态：**草案**（M1，待评审定稿）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 DPE（Document / Page / Element）是把任意格式文档的**内容面**——面向 LLM 阅读的内容——**正确、增量、可靠**地投递到一个远端的标准协议。本文定义与传输无关的核心语义；v1 唯一的规范性传输绑定是 HTTP（[bindings/http.md](bindings/http.md)）；内容身份的计算见 [hash-contract-1.md](hash-contract-1.md)。
