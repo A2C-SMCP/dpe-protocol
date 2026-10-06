@@ -26,8 +26,8 @@
             {
               "category": "Image",
               "text": "占位",
-              "image_blob": null,
-              "image_mime_type": null
+              "blob": null,
+              "mime_type": null
             }
           ]
         }

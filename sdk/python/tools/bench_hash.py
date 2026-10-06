@@ -23,8 +23,8 @@ def _element(page: int, i: int) -> ElementObject:
     if i % 20 == 0:
         return {
             "category": "Image",
-            "image_blob": blob_ref(f"{page}-{i}".encode()),
-            "image_mime_type": "image/png",
+            "blob": blob_ref(f"{page}-{i}".encode()),
+            "mime_type": "image/png",
             "metadata": {"coordinates": box, "image_url": f"https://cdn.example/{page}/{i}.png"},
         }
     if i % 10 == 0:

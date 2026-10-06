@@ -227,7 +227,7 @@ def _element_preimage(element: object, at: str) -> str:
         part = _string_part(el, field, at)
         if part is None:
             continue
-        if field == "image_blob":
+        if field == "blob":
             _blob_hex(el[field], at + pointer(field))
         parts[field] = part
     parts["metadata"] = _metadata_part(el, "metadata", at)
@@ -389,13 +389,13 @@ def object_hash(obj: Mapping[str, Any], kind: ObjectKind, contract: str = CONTRA
 def children(obj: Mapping[str, Any], kind: ObjectKind, contract: str = CONTRACT) -> list[str]:
     """线上原像引用的下一层（先按 ``object_hash`` 的规则完整校验）。
 
-    页 → ``elements`` 的 content_hash；文档 → ``pages`` 的 page_hash；元素 → ``image_blob``
+    页 → ``elements`` 的 content_hash；文档 → ``pages`` 的 page_hash；元素 → ``blob``
     引用（没有则为空）。按出现顺序返回，重复保留，去重由调用方决定。
     """
     _salt(contract)
     _ijson_first(obj, lambda: _preimage(obj, kind, contract))
     if kind == "element":
-        blob = obj.get("image_blob")
+        blob = obj.get("blob")
         return [blob] if isinstance(blob, str) else []
     return list(obj["elements" if kind == "page" else "pages"])
 

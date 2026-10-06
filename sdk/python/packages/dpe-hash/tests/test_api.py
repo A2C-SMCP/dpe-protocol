@@ -31,7 +31,7 @@ BLOB = blob_ref(b"png bytes")
 ELEMENTS: list[ElementObject] = [
     {"category": "Title", "text": "标题", "metadata": {"lang": "zh", "drop": None}},
     {"category": "Table", "text": "a", "text_as_html": "<table/>"},
-    {"category": "Image", "image_blob": BLOB, "image_mime_type": "image/png"},
+    {"category": "Image", "blob": BLOB, "mime_type": "image/png"},
 ]
 PAGE: PageFields = {"title": "p1", "page_metadata": {"page_label": "iv"}}
 DOCUMENT: DocumentFields = {"file_type": "pdf", "title": "季度报告", "doc_metadata": {"a": 1}}

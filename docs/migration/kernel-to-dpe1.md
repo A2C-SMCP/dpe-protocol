@@ -13,7 +13,7 @@
 | metadata | 不进 element / page hash | 三层 metadata 的**全部键**都进 hash，不设保留键、不做过滤 |
 | 页号 | 只用于排序 | 不是 DPE 字段：页序即文档对象 `pages` 的数组顺序；内核的页号退化为存储层的位置序号（与 seq_in_page 地位相同），不进 hash |
 | hash 结构 | 长度前缀拼接的扁平摘要 | 三层同构 tree：元素 / 页 / 文档对象各自 `sha256(JCS(对象))`（#6） |
-| 图片 | url / base64 / path 取首个非空 | 字节以 `image_blob`（`sha256:` 引用）作为元素对象字段进 hash；url 等作为元素 metadata 进 hash |
+| 图片 | url / base64 / path 取首个非空 | 字节以 `blob`（`sha256:` 引用，`mime_type` 为媒体类型）作为元素对象字段进 hash（#60）；url 等作为元素 metadata 进 hash |
 | hash 策略 | 按文件类型选择（default / image-source） | 不存在策略，只由契约版本 + category 决定 |
 | 结构化值 | Python `json.dumps` | RFC 8785 JCS |
 | 升级行为 | 策略 URI 不同即全删全建 | 原位重算，身份不变，禁止重新配对 |

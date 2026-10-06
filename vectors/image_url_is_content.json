@@ -12,8 +12,8 @@
             {
               "category": "Image",
               "text": "",
-              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_mime_type": "image/png",
+              "blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "mime_type": "image/png",
               "metadata": {
                 "image_url": "https://a.cdn/x.png"
               }
@@ -31,8 +31,8 @@
             {
               "category": "Image",
               "text": "",
-              "image_blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
-              "image_mime_type": "image/png",
+              "blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "mime_type": "image/png",
               "metadata": {
                 "image_url": "https://b.cdn/y.png"
               }
@@ -50,8 +50,8 @@
             {
               "category": "Image",
               "text": "",
-              "image_blob": "sha256:e37c167d65a03d37aba237a79193900dc65170298167d95e6e61a29766f11900",
-              "image_mime_type": "image/png",
+              "blob": "sha256:e37c167d65a03d37aba237a79193900dc65170298167d95e6e61a29766f11900",
+              "mime_type": "image/png",
               "metadata": {
                 "image_url": "https://a.cdn/x.png"
               }
@@ -64,12 +64,12 @@
   "expected": {
     "url_a": {
       "dpe1": {
-        "doc_hash": "dpe1:e7fbb58a70b8ac37f188587396f943e912257a927c7bce10132ed2384416f1e2",
+        "doc_hash": "dpe1:303040c87fe58a6e3c8d8b1c3b20b608d2bbaf1b64a757b47b1009fa58b98f53",
         "pages": [
           {
-            "page_hash": "dpe1:6038bff0bd6761ed6cbc68014d1fe7bf5049e117fe0d4c04cb6f4b4086324ffb",
+            "page_hash": "dpe1:e8b34c0a58968be598084f8210beb31b2ac58fbe6b13632645014eff2ddf82fc",
             "elements": [
-              "dpe1:7bf41e89bda1a3d49e48c428029bab7f1b4639322b1c72b896996b2279314708"
+              "dpe1:c332c7f4f51c96e579d9deff745c8f3c7e6cbbe7ecca9700d5b7989c380fa2ca"
             ]
           }
         ]
@@ -77,12 +77,12 @@
     },
     "url_b": {
       "dpe1": {
-        "doc_hash": "dpe1:3d9af68cf4acb7b0a9346fc78a041537d595caf2061aa29b739c4f099ce17d48",
+        "doc_hash": "dpe1:f7124cbcf73158f896bec71820772e9403533be4b052380440dfe6ef59e3d7fb",
         "pages": [
           {
-            "page_hash": "dpe1:47f58d3ca474acb7a2a0a0d7bb200ed1a3fb922ebb7c9aa7f7ee1fcc2bb50cd7",
+            "page_hash": "dpe1:9e1d16e82ea706e11d11695f92a80d5dc0f78751832e0a478769853efdb59942",
             "elements": [
-              "dpe1:4896537803ee41fb72883c6005c09e628ce1c3a50ef6bd5cbffe261e1c015593"
+              "dpe1:90e9a62304289055215ec0e7b28253ab00de7c7675c806d03e91a5c09d797a87"
             ]
           }
         ]
@@ -90,12 +90,12 @@
     },
     "blob_changed": {
       "dpe1": {
-        "doc_hash": "dpe1:9da4be7cbe2721695918c47b1120afd09e5834b18ad00ff6b14cabed52120f35",
+        "doc_hash": "dpe1:16c2be1eacdc962a600086b20097cdce2d7bf855399b450fd90e9ed53a61bb66",
         "pages": [
           {
-            "page_hash": "dpe1:de5e776f8562802575f3424a016b6751521dc2ed94613f5dc725d2b97b191cfc",
+            "page_hash": "dpe1:9068e6e6bdf39c1038a3da8ddb9c1d494488db03453f5a25607a8f3bdc9abf35",
             "elements": [
-              "dpe1:d63d9050b8605da960199aeb0db89a393dfcff3595f4be28f851e6920e25bc70"
+              "dpe1:5fd60bf47cc2f9ab2e8966b3faa713169905c9dc7b79b5f12c1dbf01ffa6aee7"
             ]
           }
         ]

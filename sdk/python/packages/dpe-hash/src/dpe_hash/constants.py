@@ -55,7 +55,7 @@ CATEGORY_CONTENT_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         },
         "Table": ("text", "text_as_html"),
         "Formula": ("text", "text_as_html"),
-        "Image": ("text", "image_blob", "image_mime_type"),
+        "Image": ("text", "blob", "mime_type"),
     }
 )
 

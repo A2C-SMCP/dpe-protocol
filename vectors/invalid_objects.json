@@ -55,6 +55,17 @@
       "path": "/text_as_html"
     },
     {
+      "name": "element_blob_category_not_allowed",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "input": {
+        "category": "NarrativeText",
+        "blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc"
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/blob"
+    },
+    {
       "name": "element_text_not_string",
       "object_kind": "element",
       "contract": "dpe1",
@@ -66,15 +77,15 @@
       "path": "/text"
     },
     {
-      "name": "element_image_blob_not_ref",
+      "name": "element_blob_not_ref",
       "object_kind": "element",
       "contract": "dpe1",
       "input": {
         "category": "Image",
-        "image_blob": "https://a.cdn/x.png"
+        "blob": "https://a.cdn/x.png"
       },
       "code": "DPE_VALIDATION",
-      "path": "/image_blob"
+      "path": "/blob"
     },
     {
       "name": "element_metadata_not_object",
