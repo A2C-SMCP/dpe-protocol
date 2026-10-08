@@ -133,8 +133,7 @@ class EngineConfig:
     def __post_init__(self) -> None:
         if not self.contracts:
             raise ValueError("contracts 至少要有一个契约")
-        known = {*dpe_hash.SUPPORTED_CONTRACTS, dpe_hash.DRILL_CONTRACT}
-        unknown = [c for c in self.contracts if c not in known]
+        unknown = [c for c in self.contracts if c not in dpe_hash.KNOWN_CONTRACTS]
         if unknown:
             raise ValueError(f"dpe_hash 不支持的契约：{unknown}")
         if len(set(self.contracts)) != len(self.contracts):

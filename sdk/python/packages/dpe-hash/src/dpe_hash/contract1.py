@@ -29,6 +29,7 @@ from dpe_hash.constants import (
     CONTRACT,
     DRILL_CONTRACT,
     FILE_TYPES,
+    KNOWN_CONTRACTS,
     SUPPORTED_CONTRACTS,
 )
 from dpe_hash.errors import (
@@ -66,8 +67,6 @@ __all__ = [
 _SALT = {"dpe1": b"", DRILL_CONTRACT: b"dpe2"}
 _FILE_TYPES = frozenset(FILE_TYPES)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-#: 本包认识的全部契约（真实契约 + 演练契约）；hash 值的前缀不在其中即 DPE_CONTRACT_UNSUPPORTED
-_KNOWN_CONTRACTS = frozenset({*SUPPORTED_CONTRACTS, DRILL_CONTRACT})
 _BLOB_PREFIX = "sha256:"
 
 _PAGE_FIELDS = frozenset({"title", "page_metadata"})
@@ -123,7 +122,7 @@ def parse_hash(value: str, contracts: Collection[str] = SUPPORTED_CONTRACTS) -> 
     if isinstance(contracts, str):
         raise TypeError('contracts 必须是契约的集合（如 ("dpe1",)），不能是单个字符串')
     accepted = frozenset(contracts)
-    unknown = accepted - _KNOWN_CONTRACTS
+    unknown = accepted - KNOWN_CONTRACTS
     if unknown:
         raise ContractUnsupportedError(f"不支持的 hash 契约：{sorted(unknown)!r}")
     return _split_hash(value, accepted, "")

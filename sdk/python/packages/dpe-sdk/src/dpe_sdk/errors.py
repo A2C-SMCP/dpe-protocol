@@ -10,6 +10,9 @@
 
 本地构造模型（``dpe_sdk.models``）时的校验错误仍是 dpe_hash 的 ``DpeHashError``；
 ``from_hash_error`` 把它转换为对应的协议错误（服务端返回、或客户端统一上报时使用）。
+
+客户端本地异常（``ClientError`` 及其子类）不是协议错误：没有 core §6 的码，也不由服务端返回，
+而是客户端判定响应不合规（``UnexpectedResponseError``）或服务端不兼容（``IncompatibleServerError``）。
 """
 
 from __future__ import annotations
@@ -25,10 +28,12 @@ from dpe_sdk.wire import Missing
 __all__ = [
     "AlreadyExistsError",
     "CategoryUnknownError",
+    "ClientError",
     "ContractUnsupportedError",
     "DpeError",
     "ForbiddenError",
     "HashMismatchError",
+    "IncompatibleServerError",
     "MissingContentError",
     "NotFoundError",
     "PayloadTooLargeError",
@@ -37,6 +42,7 @@ __all__ = [
     "RateLimitedError",
     "SessionExpiredError",
     "UnavailableError",
+    "UnexpectedResponseError",
     "UnknownCodeError",
     "ValidationError",
     "error_class",
@@ -58,7 +64,7 @@ class DpeError(Exception):
         super().__init__(message)
         self.message = message
         self.path = path
-        #: ``Retry-After`` 换算成的秒数（HTTP-date 形式由传输层换算）；只在可重试时有意义
+        #: ``Retry-After`` 换算成的秒数（``protocol.retry_after_seconds``）；只在可重试时有意义
         self.retry_after = retry_after
 
     def __str__(self) -> str:
@@ -183,6 +189,34 @@ class UnknownCodeError(DpeError):
         self.code = code
         self.retryable = retryable
         super().__init__(message, path, retry_after=retry_after)
+
+
+class ClientError(Exception):
+    """客户端本地异常的共同基类：不是协议错误，没有 core §6 的码，一律不可原样重试。"""
+
+    retryable = False
+
+
+class UnexpectedResponseError(ClientError):
+    """响应不是 DPE 的合规响应（HTTP 绑定 §5）。
+
+    包括：错误状态码却既无 problem 体、也无 ``DPE-Error-Code`` 头（如网关 404、remote 配错），
+    客户端 MUST NOT 猜测 code；以及成功响应的报文不合规（体不是合法 JSON、形状不对、hash 不属于
+    请求声明的契约、骨架重算的 hash 与返回值不符等）。``status`` 是收到的 HTTP 状态码。
+    """
+
+    def __init__(self, message: str, *, status: int, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.retry_after = retry_after
+
+    def __str__(self) -> str:
+        return f"{self.message}（HTTP {self.status}）"
+
+
+class IncompatibleServerError(ClientError):
+    """服务端的协议版本（capabilities 的 ``protocol``）不是本 SDK 实现的版本。"""
 
 
 _BY_CODE: dict[str, type[DpeError]] = {

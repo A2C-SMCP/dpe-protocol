@@ -40,6 +40,23 @@ def test_envelopes_ignore_unknown_members() -> None:
     assert caps.model_dump() == CAPABILITIES
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("batch_head_max", 0),
+        ("batch_head_max", -1),
+        ("batch_head_max", True),
+        ("list_page_max", "1000"),
+        ("blob_chunk_bytes", 1.5),
+        ("staging_ttl_seconds", 3599),
+    ],
+)
+def test_limits_must_be_positive_integers(name: str, value: Any) -> None:
+    data = {**CAPABILITIES, "limits": {**CAPABILITIES["limits"], name: value}}
+    with pytest.raises(PydanticValidationError):
+        Capabilities.model_validate(data)
+
+
 def test_batch_heads_and_list_page() -> None:
     heads = BatchHeads.model_validate({"heads": [{"doc_hash": H}, None]})
     assert heads.heads[0] is not None and heads.heads[0].doc_hash == H

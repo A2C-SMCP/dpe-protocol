@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+import dpe_hash
 import pytest
 from dpe_hash import (
     DRILL_CONTRACT,
+    KNOWN_CONTRACTS,
     SUPPORTED_CONTRACTS,
     ContractUnsupportedError,
     DocumentFields,
@@ -104,6 +106,15 @@ def test_parse_hash() -> None:
 def test_supported_contracts_exclude_drill() -> None:
     assert SUPPORTED_CONTRACTS == ("dpe1",)
     assert DRILL_CONTRACT not in SUPPORTED_CONTRACTS
+    assert isinstance(KNOWN_CONTRACTS, frozenset)
+    assert {*SUPPORTED_CONTRACTS, DRILL_CONTRACT} <= KNOWN_CONTRACTS
+    assert "KNOWN_CONTRACTS" in dpe_hash.__all__
+    # 认识的契约都能显式用于 parse_hash，不认识的拒绝
+    for contract in KNOWN_CONTRACTS:
+        h = content_hash(ELEMENTS[0], contract)
+        assert parse_hash(h, (contract,))[0] == contract
+    with pytest.raises(ContractUnsupportedError):
+        parse_hash(content_hash(ELEMENTS[0]), ("dpe9",))
 
 
 def test_equivalences() -> None:

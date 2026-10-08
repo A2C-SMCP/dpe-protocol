@@ -11,9 +11,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from dpe_sdk.models import DocumentObject, PageObject
 
@@ -37,16 +37,20 @@ class _Envelope(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
 
-class Limits(_Envelope):
-    """capabilities 的 ``limits``（HTTP 绑定 §4.1）。"""
+#: 限额必须是正整数（不接受 bool 与可转换的字符串）：客户端按它分批、分块，非正值会让循环静默空转
+_Positive = Annotated[int, Field(strict=True, ge=1)]
 
-    max_payload_bytes: int
-    page_max_bytes: int
-    staging_ttl_seconds: int
-    blob_max_bytes: int
-    blob_chunk_bytes: int
-    batch_head_max: int
-    list_page_max: int
+
+class Limits(_Envelope):
+    """capabilities 的 ``limits``（HTTP 绑定 §4.1）：各项为正整数，会话 TTL 不少于 3600 秒。"""
+
+    max_payload_bytes: _Positive
+    page_max_bytes: _Positive
+    staging_ttl_seconds: Annotated[int, Field(strict=True, ge=3600)]
+    blob_max_bytes: _Positive
+    blob_chunk_bytes: _Positive
+    batch_head_max: _Positive
+    list_page_max: _Positive
 
 
 class Capabilities(_Envelope):

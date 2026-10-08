@@ -11,6 +11,7 @@ from dpe_hash.constants import (
     CONTRACT,
     DRILL_CONTRACT,
     FILE_TYPES,
+    KNOWN_CONTRACTS,
     SUPPORTED_CONTRACTS,
 )
 from dpe_hash.contract1 import (
@@ -55,6 +56,7 @@ __all__ = [
     "CONTRACT",
     "DRILL_CONTRACT",
     "FILE_TYPES",
+    "KNOWN_CONTRACTS",
     "SUPPORTED_CONTRACTS",
     "CategoryUnknownError",
     "ContractUnsupportedError",
