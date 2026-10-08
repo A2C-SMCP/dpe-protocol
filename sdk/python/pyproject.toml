@@ -37,7 +37,7 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.mypy]
 strict = true
 python_version = "3.11"
-mypy_path = "tools"
+mypy_path = "tools:packages/dpe-sdk/tests"
 files = [
     "packages/dpe-hash/src",
     "packages/dpe-sdk/src",
@@ -53,7 +53,7 @@ files = [
 # 两个包的 tests/ 都不是包，importlib 模式避免把它们插进 sys.path
 addopts = ["--import-mode=importlib", "--strict-markers"]
 testpaths = ["packages/dpe-hash/tests", "packages/dpe-sdk/tests", "tools/tests"]
-pythonpath = ["tools"]
+pythonpath = ["tools", "packages/dpe-sdk/tests"]
 
 # SDK 版本管理：与文档版本（根 pyproject.toml）、协议版本、hash 契约版本相互独立。
 # 两个包同步升版；在 sdk/python/ 目录下运行 `uv run bump-my-version bump …`。
