@@ -27,4 +27,28 @@ doc.hashes()  # {"doc_hash", "pages": [{"page_hash", "elements"}…]}
 - 构造、`model_validate`、`model_validate_json` 失败时抛 `dpe_hash.DpeHashError`，带规范错误码 `code` 与违例位置 `path`（RFC 6901）；`model_validate_json` 按 I-JSON 严格解析（拒绝重复键）；
 - 模型保留输入的原样表示，序列化只输出显式给出的字段；null 与缺省、metadata 缺省与 `{}` 是否等价由 hash 判定（core §2.7）。
 
-> 协议核心、传输适配与增量推送尚在开发中（#12–#17）。
+## 协议错误与响应报文
+
+- `dpe_sdk.errors`：core §6 的每个错误码一个异常类（基类 `DpeError`），带 `code` 与 `retryable`（只表示原样重试可能成功）；`from_problem(problem, retry_after)` 按 problem 体的 `code` 构造异常（含 `missing` 清单与 `Retry-After`），不按 HTTP 状态码分派；core §6 之外的码构造为 `UnknownCodeError`；
+- `dpe_sdk.wire`：各端点的响应模型（`Capabilities`、`Head`、`Skeleton`、`ListPage`、`CommitResult` 等）；信封对未知成员宽容，内嵌的三层对象仍是封闭 schema。
+
+## 参考服务端（testing）
+
+`dpe_sdk.testing.Engine` 是内存版 DPE 服务端的核心引擎（不含传输），按规范的求值顺序实现 core 语义，供集成测试与第三方实现对照：
+
+```python
+from dpe_sdk.testing import Engine, EngineConfig, IfAbsent
+
+engine = Engine(EngineConfig(max_payload_bytes=1 << 20))
+body = b'{"document": {"file_type": "md", "pages": []}}'
+engine.commit(
+    "caller", "s3://bucket/a.md", body, "dpe1", IfAbsent()
+)  # CommitResult(status="created", …)
+engine.head("caller", "s3://bucket/a.md", "dpe1")
+```
+
+- 带 JSON 请求体的操作（`batch_head`、`commit`、`move`）接收原始字节，传输层上限、I-JSON、契约声明、请求信封、对象校验、授权、前置条件都在引擎内按 core §3.3 / §5.2 的顺序判定；
+- 可配置限额、受支持契约（第一个为主契约）、去重范围（`DedupScope.DOCUMENT` / `WRITABLE`）与可插拔授权器（`can_write` / `can_force`）；
+- 错误以 `dpe_sdk.errors` 抛出。暂存会话、HTTP（ASGI）与一致性测试钩子随 #43–#45 接入。
+
+> 客户端协议核心、传输适配与增量推送尚在开发中（#12–#17）。
