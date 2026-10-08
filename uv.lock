@@ -492,7 +492,7 @@ wheels = [
 
 [[package]]
 name = "dpe-protocol"
-version = "0.2.0"
+version = "0.2.1.dev0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
