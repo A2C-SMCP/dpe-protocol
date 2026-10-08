@@ -1,6 +1,6 @@
 # DPE Core v1（抽象模型与操作语义）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#60 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#60、#63 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 DPE（Document / Page / Element）是把任意格式文档的**内容面**——面向 LLM 阅读的内容——**正确、增量、可靠**地投递到一个远端的标准协议。本文定义与传输无关的核心语义；v1 唯一的规范性传输绑定是 HTTP（[bindings/http.md](bindings/http.md)）；内容身份的计算见 [hash-contract-1.md](hash-contract-1.md)。
@@ -113,7 +113,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
      3. 前缀之后是 64 位小写 hex，否则 `DPE_VALIDATION`；
      4. 前缀与本对象的契约相同，否则 `DPE_VALIDATION`（契约混用，契约 1 §5）。
 
-一次请求携带多个对象时，按「文档对象 → 页对象（按数组顺序）→ 元素对象（按数组顺序）」逐个校验（commit 见 §3.3 第 2 步）。
+一次请求携带多个对象时，按「文档对象 → 页对象（按数组顺序）→ 元素对象（按数组顺序）」逐个校验（commit 见 §3.3 第 1 步）。
 
 **违例位置**（RFC 6901 JSON Pointer，相对于被校验的对象）：
 - 第 0、1 步：对象自身（`""`）；
@@ -173,12 +173,13 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 服务端 MUST 按以下顺序求值，前一步失败即返回，后续步骤不执行；每个错误码都只出自其中唯一的一步：
 
 0. **传输层**（与文档状态无关）：请求体超过 `max_payload_bytes` → `DPE_PAYLOAD_TOO_LARGE`。认证（401）、限流（`DPE_RATE_LIMITED`）、不可用（`DPE_UNAVAILABLE`）同属传输层，可在任何时刻发生，不在求值顺序之内。
-1. **授权**（§5 总则）：调用者对该 URI 的写授权；带 `force` 时还包括 force 权限 → `DPE_FORBIDDEN`。
-2. **报文校验**（§2），依次为：
+1. **报文校验**（§2）：只看请求本身，与文档状态无关。依次为：
    1. 整个请求体是 I-JSON（§2.8 第 0 步，`DPE_VALIDATION`）；
    2. 契约声明（`DPE_CONTRACT_UNSUPPORTED`）；
-   3. 按 §2.8 校验文档对象，然后是内联页对象（按数组顺序），然后是内联元素对象（按数组顺序），错误码为 `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`；
-   4. force 与 `base_hash` / `if_absent` 不得并存（`DPE_VALIDATION`）。
+   3. 请求信封：请求只含本节开头列出的成员，文档对象必须出现，各成员的类型正确（`pages` / `objects` 为数组，`staging_session` 为字符串，`force` 为布尔），否则 `DPE_VALIDATION`；可选成员为 null 视同缺省。各绑定的具体形状见绑定文档（HTTP 绑定 §3.1）；
+   4. 按 §2.8 校验文档对象，然后是内联页对象（按数组顺序），然后是内联元素对象（按数组顺序），错误码为 `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`；
+   5. force 与 `base_hash` / `if_absent` 不得并存（`DPE_VALIDATION`）。
+2. **授权**（§5 总则）：调用者对该 URI 的写授权；`force` 为 true 时还包括 force 权限 → `DPE_FORBIDDEN`。授权所需的输入（`force`）在请求体中，因此授权排在报文校验之后；报文校验与文档状态无关，授权仍先于一切依赖文档状态的判定（§8）。
 3. **前置条件存在性**：既无 `base_hash`、`if_absent` 也无 `force` → `DPE_PRECONDITION_REQUIRED`（即使内容未变也拒绝，保持"写操作必须带前置条件"的形式要求）。
 4. **unchanged**：对文档对象算出本次提交的 doc_hash（只需文档对象）；当前 doc_hash 已等于它时返回 `unchanged`，**不论前置条件是否满足**（§5.2），MUST NOT 产生任何写入或学习动作，也不处理内联对象、不检查也不消费所引用的暂存会话。
 5. **前置条件求值**（§5.1）→ `DPE_PRECONDITION_FAILED` / `DPE_ALREADY_EXISTS` / `DPE_NOT_FOUND`。
@@ -256,12 +257,17 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 写入的结果状态就是它提交的内容，因此协议不需要幂等键：
 
 - **commit**：当前 doc_hash 已等于提交内容时一律返回 `unchanged`（§3.3）。响应丢失后原样重试，首次已生效则得到 `unchanged`，未生效则正常执行。
-- **move**：求值顺序为：
-  1. 授权：源与目标两侧的写授权 → `DPE_FORBIDDEN`；前置条件存在性 → `DPE_PRECONDITION_REQUIRED`。
-  2. 源不存在时：若目标存在且其 doc_hash 等于 `base_hash`，返回成功（与首次成功的响应相同）；否则 `DPE_NOT_FOUND`。
-  3. 源存在时：doc_hash 不等于 `base_hash` → `DPE_PRECONDITION_FAILED`；目标已存在 → `DPE_ALREADY_EXISTS`；否则执行移动。
+- **move**：请求为 `from_uri`、`to_uri` 与 `base_hash`。求值顺序为：
+  0. 传输层：同 commit（§3.3 第 0 步）。
+  1. 报文校验：请求体是 I-JSON（`DPE_VALIDATION`）→ 契约声明（`DPE_CONTRACT_UNSUPPORTED`）→ 请求信封：只含上述三个成员，`from_uri` / `to_uri` 必须出现且为字符串，`base_hash` 可缺省、出现时为字符串，否则 `DPE_VALIDATION`（可选成员为 null 视同缺省；move 不支持 force，带 `force` 即未定义成员）。
+  2. 授权：源与目标两侧的写授权 → `DPE_FORBIDDEN`。与 commit 相同，授权排在只看请求本身的报文校验之后、一切依赖文档状态的判定之前。
+  3. 前置条件存在性：缺少 `base_hash` → `DPE_PRECONDITION_REQUIRED`。
+  4. 源不存在时：若目标存在且其 doc_hash 等于 `base_hash`，返回成功（与首次成功的响应相同）；否则 `DPE_NOT_FOUND`。
+  5. 源存在时：doc_hash 不等于 `base_hash` → `DPE_PRECONDITION_FAILED`；目标已存在 → `DPE_ALREADY_EXISTS`；否则执行移动。
 
-  第 2 步是"目标状态已达成即成功"：服务端不区分重试与首次请求，因此若源恰好已被他人删除、而目标恰好是另一份内容相同的文档，也返回成功——此时协议只保证状态（源不存在、目标内容为 H），不保证目标的学习产物来自源。首次 move 成功后目标又被他人改写或删除的，重试得到 `DPE_NOT_FOUND`，SDK 如实上报，由上层重新读取后决定。
+  `base_hash` 按值比较，与 commit 的 `base_hash` 相同：等于当前内容在任一受支持契约下的 doc_hash 即匹配（§5.1），不是这样的值（含前缀未知、格式不对）一律视为不匹配，不另做格式校验。
+
+  第 4 步是"目标状态已达成即成功"：服务端不区分重试与首次请求，因此若源恰好已被他人删除、而目标恰好是另一份内容相同的文档，也返回成功——此时协议只保证状态（源不存在、目标内容为 H），不保证目标的学习产物来自源。首次 move 成功后目标又被他人改写或删除的，重试得到 `DPE_NOT_FOUND`，SDK 如实上报，由上层重新读取后决定。
 - **delete**：响应丢失后重试得到 `DPE_NOT_FOUND` 时，SDK MUST 视为成功（目标状态"不存在"已达成）。
 - **force commit**：重放 force 会覆盖首次提交之后他人的写入。响应丢失后 SDK MUST NOT 自动重放：先 `head`，doc_hash 等于提交内容即成功，否则上报，由上层决定是否重新发起。
 

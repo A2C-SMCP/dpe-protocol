@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#63 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -34,12 +34,13 @@
 
 ### 3.1 契约声明与版本令牌
 
-- **带 JSON 请求体的端点的校验顺序**（negotiate、页对象与元素对象的 upload、commit、move；blob 上传的请求体是原始字节，不适用）：
+- **带 JSON 请求体的端点的校验顺序**（batch_head、negotiate、页对象与元素对象的 upload、commit、move；blob 上传的请求体是原始字节，不适用）：
   1. 整个请求体是 I-JSON（core.md §2.8 第 0 步），否则 `DPE_VALIDATION`；
   2. 契约声明（`DPE-Hash-Contract` 头），否则 `DPE_CONTRACT_UNSUPPORTED`；
-  3. 按 core.md §2.8 校验请求体中的对象。
+  3. 请求信封（batch_head、negotiate、commit、move 的请求体顶层，形状见 §4 各端点）：请求体是 JSON 对象；顶层成员封闭，出现 §4 未定义的成员 → `DPE_VALIDATION`；必有成员必须出现，各成员的类型正确，否则 `DPE_VALIDATION`；可选成员为 null 视同缺省。upload 的请求体就是对象本身，没有信封；
+  4. 按 core.md §2.8 校验请求体中的对象。
 
-  commit 的完整求值顺序见 core.md §3.3。
+  以上都只看请求本身。写操作的授权排在这些校验之后、一切依赖文档状态的判定之前（core.md §3.3、§5.2，#63）。commit 的完整求值顺序见 core.md §3.3，move 见 core.md §5.2。
 - **契约声明**：每个请求 MUST 带 `DPE-Hash-Contract: <契约>`（取值为 capabilities 的 `hash_contracts` 之一，如 `dpe1`；`GET capabilities` 除外）。请求体中的 hash 按它计算，响应中的 hash 按它给出。未声明或不受支持 → `DPE_CONTRACT_UNSUPPORTED`。文档资源的响应 MUST 带 `Vary: DPE-Hash-Contract`。
 - **版本令牌**：文档的版本令牌就是 doc_hash（core.md §1）。文档资源的响应带 `DPE-Doc-Hash: <契约>:…`（**权威值**）与 `ETag: "<契约>:…"`（强校验器，HTTP 便利），均按 `DPE-Hash-Contract` 给出。
 - **弱 ETag**：中间层（如做 gzip 的反向代理）可能把 ETag 改写为弱校验器 `W/"…"`。客户端构造条件头时 MUST 取 `DPE-Doc-Hash` 或响应体中的 `doc_hash`，自行写成 `"<doc_hash>"`；MUST NOT 原样回传收到的 `ETag`。
@@ -135,6 +136,10 @@
 ```
 
 `next_cursor` 为 null 表示结束。cursor 不透明。
+
+- `prefix` 缺省视同空串（列出全部文档）。
+- `limit` 缺省取 capabilities 的 `list_page_max`；不是 1 到 `list_page_max` 之间的十进制整数 → `DPE_VALIDATION`（与 batch_head 超过 `batch_head_max` 一致）。
+- `cursor` 只能取本端点此前返回的 `next_cursor`；服务端无法识别的 cursor → `DPE_VALIDATION`。
 
 ### 4.5 `POST {remote}/negotiate`
 
