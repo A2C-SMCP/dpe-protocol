@@ -1,6 +1,6 @@
 # DPE Core v1（抽象模型与操作语义）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#60、#63、#73 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#39、#60、#63、#73 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 DPE（Document / Page / Element）是把任意格式文档的**内容面**——面向 LLM 阅读的内容——**正确、增量、可靠**地投递到一个远端的标准协议。本文定义与传输无关的核心语义；v1 唯一的规范性传输绑定是 HTTP（[bindings/http.md](bindings/http.md)）；内容身份的计算见 [hash-contract-1.md](hash-contract-1.md)。
@@ -14,7 +14,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 | 概念 | 定义 |
 | --- | --- |
 | **Remote** | 一个文档空间的地址，由服务端定义，协议不关心其内部结构。所有操作都相对于一个 remote。 |
-| **file_uri** | 文档身份。任意绝对 URI（RFC 3986），在同一 remote 内唯一。scheme 由上游决定，协议不规定格式，不引入租户概念。比较前按 RFC 3986 §6.2.2 做语法规范化（scheme/host 小写、百分号编码大写并解码 unreserved 字符）；除此之外 MUST NOT 做任何语义规范化。 |
+| **file_uri** | 文档身份。RFC 3986 的 URI（scheme 必需，可带 query 与 fragment），在同一 remote 内唯一。scheme 由上游决定，协议不规定格式，不引入租户概念。比较前按 §1.1 做语法规范化；除此之外 MUST NOT 做任何语义规范化。 |
 | **Document object** | 文档对象，三层 tree 的根：`{file_type, title?, doc_metadata, pages: [page_hash…]}`（§2.1）。对应 Git 的根 tree。 |
 | **Page object** | 一页：`{title?, page_metadata, elements: [content_hash…]}`（§2.2），按 `page_hash` 寻址。对应 Git 的子 tree。 |
 | **Element object** | 一个元素：`{category, 内容字段…, metadata}`（§2.3），按 `content_hash` 寻址。对应 Git 的 blob。 |
@@ -23,6 +23,32 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 | **Staging session** | 暂存会话。由 negotiate 开启，绑定 `(file_uri, 调用者身份)`，有过期时间；暂存的页对象、元素对象与 blob 对读接口和召回**不可见**（§3.4）。 |
 
 每个对象的 hash 只由它自身内容和子对象 hash 的有序列表决定，不含它在上层中的位置：顺序由上层对象的数组表达。同一内容的对象（元素或页）在文档内只存一份、可被多处引用。
+
+### 1.1 file_uri 的语法规范化（RFC 3986 §6.2.2）
+
+`file_uri` 的文法是 RFC 3986 的 `URI` 产生式：scheme 必需，query 与 fragment 可选。规范化只在**语法层**进行，其结果即身份的比较形式。
+
+**合法性判定**：下列三条构成封闭清单，不满足任一条的输入即 `DPE_VALIDATION`。实现 MUST NOT 在此清单之外加严或放宽：
+
+1. 串以 scheme 开头：`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` 后接 `:`（RFC 3986 §3.1）；
+2. 全串字符集：每个字符 MUST 属于 `pct-encoded`（`%` 加两位 HEXDIG）或 ASCII 的 `unreserved` / `reserved` 字符。非 ASCII 字符、空格、控制字符及其他不在字符集中的字符一律非法——上游 MUST 先按 UTF-8 做百分号编码再构造 `file_uri`；
+3. 本规范不校验更深的成分文法（host 是否为合法 IP、port 是否为数字等）：这些按字面处理，不属于本节的拒绝面。
+
+**变换**（三步，依次施加）：
+
+1. 解码表示 `unreserved` 字符（`A-Z` / `a-z` / `0-9` / `-` / `.` / `_` / `~`）的百分号三元组，hex 位大小写不敏感（`%7e` → `~`）；
+2. scheme，以及有 authority 时 host 成分（userinfo 之后、port 之前）中的 ASCII 大写字母改为小写：第 1 步解码出的字符参与本步（host 中的 `%45` 最终为 `e`）；仍以百分号三元组保留的编码不受本步影响（`%C3` 保留为 `%C3`，不得被本步小写成 `%c3`；三元组的 hex 由第 3 步统一为大写）。userinfo、port、path、query、fragment 保持原样。没有 authority 的 URI（如 `feishu:xxx`、`urn:…`）只做 scheme 小写，其余部分按其 scheme 语义是不透明内容，MUST NOT 另行解释；
+3. 其余百分号三元组的 hex 位统一为大写（`%2f` → `%2F`）；`reserved` 字符的三元组 MUST NOT 解码（`%2F` 保持编码形式，不等于 `/`）。
+
+**明确不做**（MUST NOT）：RFC 3986 §6.2.2.3 点段移除（`.` 与 `..` 是字面内容，`%2E` 解码为 `.` 后同样保留）、§6.2.3 基于 scheme 的规范化（不补空 path 的 `/`、不去默认端口、不增删尾斜杠）、§6.2.4 基于协议的规范化；不做 IDNA / punycode 转换；除上述解码外不新增或删除任何百分号编码。
+
+规范化是**幂等**的：`normalize(normalize(x)) == normalize(x)`，所有实现 MUST 满足。
+
+**应用**：
+
+- 服务端 MUST 以规范化形式作为 `file_uri` 的身份：同一 remote 内的唯一性、暂存会话绑定（§3.4）、§3 `list` 的前缀匹配都基于它；`get_skeleton` 与 `list` 返回的 `file_uri`、`move` 成功响应的 `Content-Location` MUST 为规范化形式；
+- 所有接受 `file_uri` 的入口——commit / delete / head / get_skeleton 的 `uri`、batch_head 的 `uris`、negotiate 的 `file_uri`、move 的 `from_uri` 与 `to_uri`——都按本节校验与规范化；`list` 的 `prefix` 是例外（不规范化、不按 URI 文法校验，§3）；connector 的实例 URI 前缀须是规范化不动点（connector 契约 §6.3）；
+- 一致性向量以 `kind: "uri"` 提供合法（输入 → 规范化输出）与非法（输入 → `DPE_VALIDATION`）两组用例，各实现 MUST 逐例通过。
 
 ## 2. 数据模型
 
@@ -134,7 +160,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 | `capabilities` | 返回协议版本、接受的 hash 契约版本、限额（`max_payload_bytes`、`page_max_bytes`、`staging_ttl`、blob 上限与分块参数）、`content_encodings`、可选能力 | 否 |
 | `head` / `batch_head` | 按 URI 返回 `{doc_hash}`；不存在返回 null。批量版只读，不涉及原子性 | 否 |
 | `get_skeleton` | 返回 `doc_hash`、文档对象与全部页对象（按文档对象顺序），不含元素对象。返回值 MUST 与最近一次写入的值**内容等价**（§2.7）——据此重算的 doc_hash 必须等于返回值 | 否 |
-| `list` | 按 file_uri 前缀分页返回 `{file_uri, doc_hash}`。前缀按原样（不做 §1 的规范化，它不是完整的 URI）与规范化后的 file_uri 做码点前缀匹配，不识别 path 段边界；需要按段匹配时，调用方在前缀末尾自带分隔符（如 `/`） | 否 |
+| `list` | 按 file_uri 前缀分页返回 `{file_uri, doc_hash}`。前缀按原样（不做 §1.1 的规范化，它不是完整的 URI）与规范化后的 file_uri 做码点前缀匹配，不识别 path 段边界；需要按段匹配时，调用方在前缀末尾自带分隔符（如 `/`） | 否 |
 | `negotiate` | 提交文档对象（可附带部分页对象），返回缺失的页与元素对象，并开启一个 `staging_session` | 否（只开会话；开会话前须写授权，§3.4） |
 | `upload` | 向暂存会话上传页对象、元素对象或 blob。幂等；服务端 MUST 校验字段（§2）并重算 hash，不符返回 `DPE_HASH_MISMATCH`；响应给出该对象引用的下一层中缺失的部分；页对象与 blob 支持分块与断点续传 | 暂存 |
 | `commit` | 提交文档对象（页对象与元素对象可内联或引用暂存会话）。**原子切换**：要么完整生效，要么没有任何变化 | 是 |
@@ -271,6 +297,8 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
   `base_hash` 按值比较，与 commit 的 `base_hash` 相同：等于当前内容在任一受支持契约下的 doc_hash 即匹配（§5.1），不是这样的值（含前缀未知、格式不对）一律视为不匹配，不另做格式校验。
 
   第 4 步是"目标状态已达成即成功"：服务端不区分重试与首次请求，因此若源恰好已被他人删除、而目标恰好是另一份内容相同的文档，也返回成功——此时协议只保证状态（源不存在、目标内容为 H），不保证目标的学习产物来自源。首次 move 成功后目标又被他人改写或删除的，重试得到 `DPE_NOT_FOUND`，SDK 如实上报，由上层重新读取后决定。
+
+  `from_uri` 与 `to_uri` 规范化后（§1.1）相等时：源存在即「目标已存在」，按第 5 步返回 `DPE_ALREADY_EXISTS`（doc_hash 与 `base_hash` 不符时 `DPE_PRECONDITION_FAILED` 仍优先）；MUST NOT 视为「目标状态已达成」而返回成功——第 4 步的已达成语义只覆盖源已被删除的情形。
 - **delete**：响应丢失后重试得到 `DPE_NOT_FOUND` 时，SDK MUST 视为成功（目标状态"不存在"已达成）。
 - **force commit**：重放 force 会覆盖首次提交之后他人的写入。响应丢失后 SDK MUST NOT 自动重放：先 `head`，doc_hash 等于提交内容即成功，否则上报，由上层决定是否重新发起。
 

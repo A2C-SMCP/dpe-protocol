@@ -1,6 +1,6 @@
 # DPE Connector 契约
 
-> 状态：**部分定稿**（M1 进行中）——§6「运行边界」是规范正文（Issue #34 定稿；其关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解）；§1–§5、§7–§8 仍为大纲，另行撰写。
+> 状态：**部分定稿**（M1 进行中）——§6「运行边界」是规范正文（Issue #34 定稿，经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点；其关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解）；§1–§5、§7–§8 仍为大纲，另行撰写。
 > 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §11。
 > 这是独立的中立规范，**不属于 Core**：核心投递协议完全不知道 connector 的存在（类比 git 与 remote-helper）。
 > Issue #2 已关闭：平台不引入 connector 运行环境，connector 由用户自行开发、自行部署；托管运行若将来需要，另立独立产品。v1 官方 connector 只有 Git connector（本仓 `connectors/git/`）。
@@ -82,7 +82,7 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
 | --- | --- | --- |
 | `protocol_versions` | 是 | 运行器支持的线协议版本，按优先级排列 |
 | `max_message_bytes` | 是 | 单条消息上限（§6.2） |
-| `instance.uri_prefix` | 是 | 实例 URI 前缀，已按 core.md §1 规范化；插件 SHOULD 据此构造 file_uri（§6.5） |
+| `instance.uri_prefix` | 是 | 实例 URI 前缀，MUST 是符合 core.md §1.1 文法的合法 URI，且已是规范化不动点（`normalize_file_uri(p) == p`）；运行器在启动实例前 MUST 校验，不满足即拒绝启动并如实上报。插件 SHOULD 据此构造 file_uri（§6.5） |
 | `instance.config` | 是 | 实例配置（§4：插件以 JSON Schema 声明、宿主渲染的表单数据；MUST NOT 含凭证），可为 `{}` |
 | `runner` | 否 | `{name, version}`，供插件日志 |
 | `remote_limits` | 否 | 远端限额 `{max_payload_bytes, page_max_bytes, blob_max_bytes}`（http.md §4.1）；运行器获取过 capabilities 时 SHOULD 提供，供插件做源→文档映射的切分决策（core.md §3.2） |
@@ -157,7 +157,7 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
   - 运行器 MAY 对进行中的 `scan` 设置超时并在超时后 `cancel`（策略属运行器实现，§7）；插件对 `cancel` 的义务见 §6.7。
 - **背压**：插件只在收到 `scan` 时产出，运行器处理完一批再拉下一批；背压由拉模型天然给出，插件 MUST NOT 依赖任何自行推送的通道。
 - **中止**：运行器可随时丢弃本轮（不再发 `scan`，或终止进程）；轮的产出在运行器提交之前没有任何副作用。进行中的请求可用 `cancel` 取消（§6.7）。
-- **顺序**：产出项按其在流中的顺序生效；同一 file_uri 的多次出现按序后写覆盖（core.md §2.4 的同级写入）；跨 URI 可并发处理（运行器内）。判断 URI 同一性前 MUST 先按 core.md §1 规范化。
+- **顺序**：产出项按其在流中的顺序生效；同一 file_uri 的多次出现按序后写覆盖（core.md §2.4 的同级写入）；跨 URI 可并发处理（运行器内）。判断 URI 同一性前 MUST 先按 core.md §1.1 规范化。
 
 一轮的典型流程：初始化 → `scan`（轮首）→ 插件返回一批条目与 `next` → 运行器逐条处理（其间按需 `read_blob` 读取 blob，§6.7）→ 继续 `scan`（续批）→ … → 插件返回结束批与新 `cursor` → 运行器完成本轮全部落地后持久化游标（§6.8）。
 
@@ -176,7 +176,7 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
   ] }
 ```
 
-- `file_uri`：文档身份（绝对 URI，core.md §1）。
+- `file_uri`：文档身份（URI，文法与规范化见 core.md §1.1）。
 - `document`：文档对象，字段与 core.md §2.1 一致，但**不含 `pages`**——页由本条目给出。首段 MUST 带 `document`，续段 MUST NOT 带；违例时该文档整篇失败。
 - `pages`：页对象数组，字段与 core.md §2.2 一致；`elements` 为内联元素对象（线格式见 §6.6）。页数可为 0。
 - 插件 MUST 保证每条消息（含内联元素与 base64 字节）不超过 `max_message_bytes`；为此 SHOULD 依据 `max_message_bytes` 与 `remote_limits` 决定页与元素的切分。确实无法在限制内表达的内容 MUST 以条目级 `error`（`content_invalid`）如实上报，MUST NOT 发送超限消息。
@@ -190,7 +190,7 @@ connector（插件）/ 运行器 / 宿主 / 内容源实例 / remote。
 **`move`**：`{"kind": "move", "from_uri": "…", "to_uri": "…"}`——原子改名（core.md §4）。
 
 - **删除与移动 MUST 是显式条目**：运行器 MUST NOT 用「未出现即删除」做集合差分——增量枚举下未出现不等于已删除，推断会造成静默误删。
-- **前缀强制**：`file_uri` / `from_uri` / `to_uri` MUST 是符合 core.md §1 的绝对 URI；运行器 MUST 拒绝并如实上报不在 `instance.uri_prefix` 内的条目，MUST NOT 投递。判定按 core.md §1 规范化后的 URI 做前缀匹配（同 core.md §3 `list` 的规则：码点匹配，不识别 path 段边界；需要按段匹配时前缀末尾自带分隔符）。
+- **前缀强制**：`file_uri` / `from_uri` / `to_uri` MUST 是符合 core.md §1.1 的 URI；运行器 MUST 拒绝并如实上报不在 `instance.uri_prefix` 内的条目，MUST NOT 投递。判定按 core.md §1.1 规范化后的条目与该前缀做前缀匹配（同 core.md §3 `list` 的规则：码点匹配，不识别 path 段边界；需要按段匹配时前缀末尾自带分隔符）。前缀本身是规范化不动点（§6.3），条目规范化后仍以它开头，判定不因规范化而失效。
 
 **`error`**：插件对无法产出的条目如实上报，MUST NOT 静默跳过。
 

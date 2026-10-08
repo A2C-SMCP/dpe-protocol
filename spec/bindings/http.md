@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#63、#70、#73 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -42,6 +42,7 @@
 
   以上都只看请求本身。写操作的授权排在这些校验之后、一切依赖文档状态的判定之前（core.md §3.3、§5.2，#63）。commit 的完整求值顺序见 core.md §3.3，move 见 core.md §5.2。
 - **契约声明**：每个请求 MUST 带 `DPE-Hash-Contract: <契约>`（取值为 capabilities 的 `hash_contracts` 之一，如 `dpe1`；`GET capabilities` 除外）。请求体中的 hash 按它计算，响应中的 hash 按它给出。未声明或不受支持 → `DPE_CONTRACT_UNSUPPORTED`。文档资源的响应 MUST 带 `Vary: DPE-Hash-Contract`。
+- **URI 的文法与规范化**（core.md §1.1）：`uri` 查询参数（GET / HEAD / PUT / DELETE）与请求体中的 URI 成员（batch_head 的 `uris`、negotiate 的 `file_uri`、move 的 `from_uri` / `to_uri`）MUST 符合 core.md §1.1 的文法，不合法 → `DPE_VALIDATION`；与本节的其余校验一样只看请求本身，先于一切依赖文档状态的判定。服务端以规范化形式作为身份；`get_skeleton`、`list` 返回的 `file_uri` 与 move 成功响应的 `Content-Location` MUST 为规范化形式。`list` 的 `prefix` 是例外：不规范化、不按 URI 文法校验（§4.4）。
 - **版本令牌**：文档的版本令牌就是 doc_hash（core.md §1）。文档资源的响应带 `DPE-Doc-Hash: <契约>:…`（**权威值**）与 `ETag: "<契约>:…"`（强校验器，HTTP 便利），均按 `DPE-Hash-Contract` 给出。
 - **弱 ETag**：中间层（如做 gzip 的反向代理）可能把 ETag 改写为弱校验器 `W/"…"`。客户端构造条件头时 MUST 取 `DPE-Doc-Hash` 或响应体中的 `doc_hash`，自行写成 `"<doc_hash>"`；MUST NOT 原样回传收到的 `ETag`。
 - **If-Match 的比较**：服务端对 `If-Match` 的值逐字符比较（`W/` 前缀的值永不匹配），比较对象是当前内容在该值前缀所示契约下的 doc_hash（契约 1 §6），而不是本次响应的 ETag。因此过渡期内新旧契约的值都能匹配，与请求声明的契约无关。
@@ -137,7 +138,7 @@
 
 `next_cursor` 为 null 表示结束。cursor 不透明。
 
-- `prefix` 缺省视同空串（列出全部文档）。前缀按原样与规范化后的 file_uri 做码点前缀匹配，服务端不对前缀做 core.md §1 的规范化（core.md §3）。
+- `prefix` 缺省视同空串（列出全部文档）。前缀按原样与规范化后的 file_uri 做码点前缀匹配，服务端不对前缀做 core.md §1.1 的规范化（core.md §3）。
 - `limit` 缺省取 capabilities 的 `list_page_max`；不是 1 到 `list_page_max` 之间的十进制整数 → `DPE_VALIDATION`（与 batch_head 超过 `batch_head_max` 一致）。
 - `cursor` 只能取本端点此前返回的 `next_cursor`；服务端无法识别的 cursor → `DPE_VALIDATION`。
 
@@ -156,9 +157,9 @@
 
 - **求值顺序**（前一步失败即返回，后续步骤不执行；core.md §3.4）：
   0. 传输层：请求体超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`；
-  1. 报文校验（同 §3.1）：I-JSON → 契约头 → 请求信封（`file_uri` 必须出现、为字符串且是 core.md §1 的绝对 URI，非法（如相对引用、空串）→ `DPE_VALIDATION`；`document` 必须出现，`pages` 可选且为数组；未定义成员 → `DPE_VALIDATION`）→ 文档对象 → 附带的页对象（按数组顺序）；
+  1. 报文校验（同 §3.1）：I-JSON → 契约头 → 请求信封（`file_uri` 必须出现、为字符串且符合 core.md §1.1 的 URI 文法，非法（如相对引用、空串、非 ASCII）→ `DPE_VALIDATION`；`document` 必须出现，`pages` 可选且为数组；未定义成员 → `DPE_VALIDATION`）→ 文档对象 → 附带的页对象（按数组顺序）；
   2. 授权：对 `file_uri` 的写授权 → `403` + `DPE_FORBIDDEN`；报文校验只看请求本身，授权排在其后、一切依赖文档状态的判定之前（core.md §5 总则）；
-  3. 开会话、把附带的页对象存入会话、计算缺失清单；未通过授权的调用者不获得会话与缺失清单。会话绑定与去重范围使用 `file_uri` 按 core.md §1 语法规范化后的形式——同一篇文档的等价写法不会绑定出不同的会话。
+  3. 开会话、把附带的页对象存入会话、计算缺失清单；未通过授权的调用者不获得会话与缺失清单。会话绑定与去重范围使用 `file_uri` 按 core.md §1.1 语法规范化后的形式——同一篇文档的等价写法不会绑定出不同的会话。
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
 - `missing_pages`：文档对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的元素对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
 - 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交文档对象即可，文档对象只含页 hash 列表）。
