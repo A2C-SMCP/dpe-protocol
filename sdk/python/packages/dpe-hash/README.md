@@ -45,7 +45,7 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 
 ## 常量与类型
 
-- `CONTRACT`（`"dpe1"`）、`SUPPORTED_CONTRACTS`（服务端 capabilities 的 `hash_contracts`）、`DRILL_CONTRACT`；
+- `CONTRACT`（`"dpe1"`）、`SUPPORTED_CONTRACTS`（服务端 capabilities 的 `hash_contracts`）、`DRILL_CONTRACT`、`KNOWN_CONTRACTS`（本包认识的全部契约，含演练契约）；
 - `FILE_TYPES`：file_type 封闭枚举，按规范顺序；`CATEGORY_CONTENT_FIELDS`：category → 允许的内容字段（只读映射）。两者与规范 `vectors/manifest.json` 一致，消费方直接 import，不维护副本；
 - TypedDict：`ElementObject`、`PageObject`、`DocumentObject`（线上原像），`PageFields`、`DocumentFields`（不含子列表），`ExpandedDocument` / `ExpandedPage`（展开视图），`DocumentHashes` / `PageHashes`（结果）。
 

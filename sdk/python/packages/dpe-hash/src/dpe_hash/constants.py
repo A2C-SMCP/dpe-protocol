@@ -13,6 +13,7 @@ __all__ = [
     "CONTRACT",
     "DRILL_CONTRACT",
     "FILE_TYPES",
+    "KNOWN_CONTRACTS",
     "SUPPORTED_CONTRACTS",
 ]
 
@@ -26,6 +27,10 @@ SUPPORTED_CONTRACTS: tuple[str, ...] = ("dpe1",)
 #: 后接 JCS 原像字节。不在 ``SUPPORTED_CONTRACTS`` 中：只有调用方显式传 ``contract="dpe2"``
 #: 时 hash 函数才接受它，``parse_hash`` 默认拒绝。
 DRILL_CONTRACT = "dpe2"
+
+#: 本包认识的全部契约：真实契约加演练契约。消费方判断「契约能否由 dpe_hash 计算」时用它，
+#: 不自行拼集合；它不是服务端应声明的契约（那是 ``SUPPORTED_CONTRACTS``）。
+KNOWN_CONTRACTS: frozenset[str] = frozenset({*SUPPORTED_CONTRACTS, DRILL_CONTRACT})
 
 #: category 封闭枚举 → 允许的内容字段（契约 1 §4.1，字段按表中顺序）。
 #: 元素对象另有必有的 ``category`` 与可选的 ``metadata``，不在此列。
