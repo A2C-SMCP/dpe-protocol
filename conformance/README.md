@@ -35,6 +35,9 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 - 在中间插入一页后再次提交：`missing_pages` 只含新页，其余页对象不重传；doc_hash 变化。
 - 对调两页：`missing_pages` 为空，commit 返回 `updated`，delta 为零。
 - 页对象上传响应的 `missing_content_hashes`、元素对象上传响应的 `missing_blobs` 与实际缺失一致。
+- negotiate 对无写授权的 URI → `403` + `DPE_FORBIDDEN`，不返回会话与缺失清单；upload 不重复判定授权（会话可用即放行，commit 才重新授权，core.md §3.4、§5 总则）。
+- 分块违例的求值顺序（core.md §3.4、http §4.7）：会话不可用 → `410`（先于分块参数与请求体校验）；本会话内已完成的 hash 重复上传（含重发最后一块）→ `200` + 缺失清单，不校验 `Content-Range` 与请求体；`Content-Range` 非法 / 块长与范围不符 / `total` 与先前声明不一致 → `400` + `DPE_VALIDATION`；单块超过 `blob_chunk_bytes`、首块声明的 `total` 超过 `page_max_bytes` / `blob_max_bytes` → `413`（不接收字节）；偏移不连续 → `400` + `DPE_VALIDATION`，响应带 `DPE-Upload-Offset` 头；到齐校验失败（含 hash 不符）→ 对应错误码并丢弃该对象已收内容。
+- 断点查询的各状态（http §4.7）：本会话无进度的 hash → `200` + `DPE-Upload-Offset: 0`（不得 `404`）；已完成 → `200` + 该对象已收的总字节数；到齐后校验失败并被丢弃 → 偏移回到 `0`（据此黑盒验证「丢弃」）。
 
 ## 幂等与重试（#4 B1 / B4 / B7）
 
@@ -45,6 +48,7 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 - **delete**：删除后原样重试，返回 `DPE_NOT_FOUND`。
 - **会话失效**：过期、已消费、伪造 id、他人会话一律返回 `410` + `DPE_SESSION_EXPIRED`，`retryable: false`；会话不存在不得返回 404。
 - **会话跨版本复用**：开会话并上传后，他人写入该文档（未移除本次提交依赖的对象）；原 commit 得到 `DPE_PRECONDITION_FAILED`，以新 `If-Match` 引用同一会话重新 commit 成功，无需重传内容。
+- **分块续传的响应不确定**（服务端断言）：中间块 `202` 响应丢失后原样重发 → `400` + `DPE-Upload-Offset` 头；断点查询不续期（`DPE-Session-Expires` 不变）。客户端「先断点查询再续传」是 SDK 侧义务（core.md §3.4），由两个 SDK 的对等测试覆盖（#49 / #50），非跑分项。
 - 引用属于同一调用者、但属于另一 file_uri 的会话，返回 `410` + `DPE_SESSION_EXPIRED`。
 - **同级写入**：服务端经自身入口修改内容后，`head` 的 doc_hash 变化；来源基于新 doc_hash 的 commit 成功覆盖。
 
