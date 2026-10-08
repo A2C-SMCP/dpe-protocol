@@ -34,7 +34,7 @@ doc.hashes()  # {"doc_hash", "pages": [{"page_hash", "elements"}…]}
 
 ## 参考服务端（testing）
 
-`dpe_sdk.testing.Engine` 是内存版 DPE 服务端的核心引擎（不含传输），按规范的求值顺序实现 core 语义，供集成测试与第三方实现对照：
+`dpe_sdk.testing.Engine` 是内存版 DPE 服务端的核心引擎（不含传输），按规范的求值顺序实现 core 语义（含暂存会话与分块上传，#43），供集成测试与第三方实现对照：
 
 ```python
 from dpe_sdk.testing import Engine, EngineConfig, IfAbsent
@@ -45,10 +45,16 @@ engine.commit(
     "caller", "s3://bucket/a.md", body, "dpe1", IfAbsent()
 )  # CommitResult(status="created", …)
 engine.head("caller", "s3://bucket/a.md", "dpe1")
+
+# 暂存路径：negotiate → upload_*（页 / 元素 / blob，支持分块与断点查询）→ commit 引用会话
+session = engine.negotiate("caller", negotiate_body, "dpe1")  # NegotiateResult
+engine.upload_page("caller", session.staging_session.id, page_hash, page_bytes, "dpe1")
+engine.upload_offset("caller", session.staging_session.id, page_hash)  # 断点查询，不续期
 ```
 
-- 带 JSON 请求体的操作（`batch_head`、`commit`、`move`）接收原始字节，传输层上限、I-JSON、契约声明、请求信封、对象校验、授权、前置条件都在引擎内按 core §3.3 / §5.2 的顺序判定；
-- 可配置限额、受支持契约（第一个为主契约）、去重范围（`DedupScope.DOCUMENT` / `WRITABLE`）与可插拔授权器（`can_write` / `can_force`）；
-- 错误以 `dpe_sdk.errors` 抛出。暂存会话、HTTP（ASGI）与一致性测试钩子随 #43–#45 接入。
+- 带 JSON 请求体的操作（`batch_head`、`negotiate`、`commit`、`move`）接收原始字节，传输层上限、I-JSON、契约声明、请求信封、对象校验、授权、前置条件都在引擎内按 core §3.3、§3.4、§5.2 的顺序判定；`upload_page` / `upload_element` / `upload_blob` 按 HTTP 绑定 §4.6、§4.7 的两套阶梯处理，结果为 `UploadResult`（含续期后的 `expires_at` 与下一层缺失清单）；
+- negotiate 与上传响应的缺失清单、commit 的可得性判定使用同一去重范围；可配置限额、受支持契约（第一个为主契约）、去重范围（`DedupScope.DOCUMENT` / `WRITABLE`）与可插拔授权器（`can_write` / `can_force`）；
+- `EngineConfig` 的 `clock` 与 `session_id_factory` 可注入（会话过期与确定性测试）；
+- 错误以 `dpe_sdk.errors` 抛出（分块偏移不连续为 `UploadOffsetError`，带 `offset`）。HTTP（ASGI）与一致性测试钩子随 #44、#45 接入。
 
 > 客户端协议核心、传输适配与增量推送尚在开发中（#12–#17）。

@@ -9,8 +9,8 @@
 - 反向索引 ``referrers`` 记录每个页、元素与 blob 被哪些文档的当前状态引用：去重范围的判定只看
   本次提交实际引用的对象，不必展开范围内全部文档。
 - ``uris`` 是按码点序维护的文档 URI 列表，list 按 cursor 二分切片。
-
-blob 在 #42 阶段只有引用、没有字节（上传随 #43 的暂存会话接入）。
+- blob 的字节经暂存会话进入对象表（#43）：``blobs`` 按引用计数回收，页 / 元素 / blob 的
+  引用计数一起由 ``replace`` 维护。两类键不会冲突：blob 引用固定为 ``sha256:``。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import dpe_hash
 
-__all__ = ["DocState", "ObjectRecord", "Store", "TreeObjectKind"]
+__all__ = ["BlobRecord", "DocState", "ObjectRecord", "Store", "TreeObjectKind"]
 
 TreeObjectKind = Literal["page", "element"]
 
@@ -69,9 +69,19 @@ class DocState:
 
 
 @dataclass
+class BlobRecord:
+    """blob 的字节与引用计数（#43 起内容经暂存会话进入对象存储；登记后不可变）。"""
+
+    data: bytes
+    refs: int = 0
+
+
+@dataclass
 class Store:
     contracts: tuple[str, ...]
     objects: dict[str, ObjectRecord] = field(default_factory=dict)
+    #: blob 引用（``sha256:``）→ 字节记录
+    blobs: dict[str, BlobRecord] = field(default_factory=dict)
     alias: dict[str, dict[str, str]] = field(default_factory=dict)
     docs: dict[str, DocState] = field(default_factory=dict)
     #: 页 / 元素的主契约 hash 与 blob 引用 → 当前状态引用它的文档 URI。两类键不会冲突：
@@ -149,20 +159,35 @@ class Store:
         for contract, value in record.hashes.items():
             self.alias[contract][value] = primary_hash
 
+    def put_blob(self, ref: str, data: bytes) -> None:
+        """登记 blob 字节（不改引用计数）；已存在时保持原记录不变（同引用即同内容）。"""
+        if ref not in self.blobs:
+            self.blobs[ref] = BlobRecord(data)
+
+    def _record(self, key: str) -> ObjectRecord | BlobRecord | None:
+        """按前缀分派：页 / 元素 hash 带契约前缀，blob 引用固定为 ``sha256:``。"""
+        record = self.objects.get(key)
+        return record if record is not None else self.blobs.get(key)
+
     def retain(self, hashes: Iterable[str]) -> None:
-        """为每个对象加一次引用；先确认全部在表中，缺任何一个都不改计数。"""
-        records = [self.objects.get(h) for h in hashes]
-        if any(r is None for r in records):
+        """为每个页 / 元素 / blob 加一次引用；先确认全部在表中，缺任何一个都不改计数。"""
+        resolved = [self._record(h) for h in hashes]
+        if any(r is None for r in resolved):
             raise KeyError("引用了对象表中不存在的对象")
-        for record in records:
+        for record in resolved:
             assert record is not None
             record.refs += 1
 
     def release(self, hashes: Iterable[str]) -> None:
         for h in hashes:
-            record = self.objects[h]
+            record = self._record(h)
+            assert record is not None
             record.refs -= 1
-            if record.refs == 0:
+            if record.refs > 0:
+                continue
+            if isinstance(record, BlobRecord):
+                del self.blobs[h]
+            else:
                 del self.objects[h]
                 for contract, value in record.hashes.items():
                     self.alias[contract].pop(value, None)
@@ -189,7 +214,7 @@ class Store:
         old = self.docs.get(uri)
         # 先计入新状态的引用（唯一可能失败的一步：对象缺失时整体不改计数），再改任何索引
         if state is not None:
-            self.retain(state.pages | state.contents)
+            self.retain(state.pages | state.contents | state.blobs)
         if old is not None:
             self._unlink(uri, old)
         if state is not None:
@@ -201,7 +226,7 @@ class Store:
             del self.docs[uri]
             self._remove_uri(uri)
         if old is not None:
-            self.release(old.pages | old.contents)
+            self.release(old.pages | old.contents | old.blobs)
         return old
 
     def rename(self, from_uri: str, to_uri: str) -> DocState:

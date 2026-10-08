@@ -23,13 +23,17 @@ __all__ = [
     "CommitResult",
     "CommitStatus",
     "Delta",
+    "ElementUploadMissing",
     "Head",
     "Limits",
     "ListEntry",
     "ListPage",
     "Missing",
     "MoveResult",
+    "NegotiateResult",
+    "PageUploadMissing",
     "Skeleton",
+    "StagingSession",
 ]
 
 
@@ -127,3 +131,30 @@ class Missing(_Envelope):
     pages: list[str] = []
     content_hashes: list[str] = []
     blobs: list[str] = []
+
+
+class StagingSession(_Envelope):
+    """negotiate 开启的暂存会话（HTTP 绑定 §4.5）。``expires_at`` 为 RFC 3339 UTC。"""
+
+    id: str
+    expires_at: str
+
+
+class NegotiateResult(_Envelope):
+    """``POST negotiate`` 的响应（HTTP 绑定 §4.5）：逐层缺失清单与会话。"""
+
+    missing_pages: list[str] = []
+    missing_content_hashes: list[str] = []
+    staging_session: StagingSession
+
+
+class PageUploadMissing(_Envelope):
+    """页对象上传完成后的响应体：它引用的缺失元素对象（HTTP 绑定 §4.6）。"""
+
+    missing_content_hashes: list[str] = []
+
+
+class ElementUploadMissing(_Envelope):
+    """元素对象上传完成后的响应体：它引用的缺失 blob（HTTP 绑定 §4.6）。"""
+
+    missing_blobs: list[str] = []
