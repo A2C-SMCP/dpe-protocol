@@ -1083,9 +1083,7 @@ class Engine:
         for staged_element in staged_elements.values():
             store.put(
                 staged_element.hashes[store.primary],
-                ObjectRecord(
-                    "element", dict(staged_element.body), dict(staged_element.hashes)
-                ),
+                ObjectRecord("element", dict(staged_element.body), dict(staged_element.hashes)),
             )
 
         def primary_of(value: str) -> str:

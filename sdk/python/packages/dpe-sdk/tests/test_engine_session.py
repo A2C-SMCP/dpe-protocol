@@ -191,9 +191,7 @@ def test_unchanged_does_not_consume_session() -> None:
     v1 = inline(_text_doc("same"))
     engine.commit("u", URI, v1.body(), C, IfAbsent())
     sid = _open(engine)
-    result = engine.commit(
-        "u", URI, commit_body(v1.document, staging_session=sid), C, IfAbsent()
-    )
+    result = engine.commit("u", URI, commit_body(v1.document, staging_session=sid), C, IfAbsent())
     assert result.status == "unchanged"
     # 会话未被消费：仍可上传
     element, eh = _element()

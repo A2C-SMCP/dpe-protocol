@@ -181,9 +181,7 @@ class SessionStore:
     def open(self, uri: str, caller: str) -> Session:
         """开会话并续期计时（core §3.4：从最近一次成功操作起算）。"""
         self._sweep()
-        session = Session(
-            id=self._id_factory(), uri=uri, caller=caller, expires_at=self.now()
-        )
+        session = Session(id=self._id_factory(), uri=uri, caller=caller, expires_at=self.now())
         self.renew(session)
         self._sessions[session.id] = session
         return session
