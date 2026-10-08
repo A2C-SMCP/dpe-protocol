@@ -59,7 +59,7 @@ def test_document_vectors_via_fast_path(vectors_dir: Path) -> None:
                 blobs = [e["blob"] for e in req.objects if e.get("blob") is not None]
                 if blobs:
                     # blob 不能内联（core §6 DPE_MISSING_CONTENT 的恢复动作）：快路径如实报缺；
-                    # 上传后提交随 #43 的暂存会话覆盖
+                    # 经暂存会话上传后提交由 test_engine_session 覆盖（#43）
                     with pytest.raises(errors.MissingContentError) as info:
                         engine.commit("u", uri, req.body(), contract, IfAbsent())
                     assert info.value.missing.blobs == list(dict.fromkeys(blobs))
