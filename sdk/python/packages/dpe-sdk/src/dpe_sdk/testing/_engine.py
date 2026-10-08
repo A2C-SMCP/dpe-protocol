@@ -137,8 +137,26 @@ class EngineConfig:
         unknown = [c for c in self.contracts if c not in known]
         if unknown:
             raise ValueError(f"dpe_hash 不支持的契约：{unknown}")
-        if self.staging_ttl_seconds < 3600:
-            raise ValueError("staging_ttl_seconds 不得少于 3600（core §3.4）")
+        if len(set(self.contracts)) != len(self.contracts):
+            raise ValueError(f"contracts 不得重复：{self.contracts}")
+        positive = (
+            "max_payload_bytes",
+            "page_max_bytes",
+            "blob_max_bytes",
+            "blob_chunk_bytes",
+            "batch_head_max",
+            "list_page_max",
+            "missing_max",
+        )
+        for name in positive:
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} 必须是正整数，实际为 {value!r}")
+        ttl = self.staging_ttl_seconds
+        if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 3600:
+            raise ValueError(
+                f"staging_ttl_seconds 必须是不少于 3600 的整数（core §3.4），实际为 {ttl!r}"
+            )
 
 
 _COMMIT_MEMBERS = frozenset({"document", "pages", "objects", "staging_session", "force"})
@@ -208,10 +226,23 @@ class _Commit:
 
     document: dict[str, Any]
     doc_hash: str
-    pages: list[dict[str, Any]]
-    objects: list[dict[str, Any]]
+    #: 内联对象按请求声明的契约下的 hash 索引（校验时算出，后续复用，不重算）
+    pages: dict[str, dict[str, Any]]
+    objects: dict[str, dict[str, Any]]
     staging_session: str | None
     force: bool
+
+
+class _Gap(Exception):
+    """可得性检查发现缺失（引擎内部）：完整的缺失清单与每个缺失对象的持有文档。"""
+
+    def __init__(self, missing: dict[str, list[str]], holders: list[frozenset[str]]) -> None:
+        super().__init__("missing content")
+        self.missing = missing
+        self.holders = holders
+
+    def error(self, limit: int) -> MissingContentError:
+        return _missing_error(self.missing, limit)
 
 
 class Engine:
@@ -304,7 +335,10 @@ class Engine:
         cursor: str | None = None,
         limit: int | None = None,
     ) -> ListPage:
-        """按规范化 URI 的码点前缀分页（core §3、HTTP 绑定 §4.4）。不识别 path 段边界。"""
+        """码点前缀分页（core §3、HTTP 绑定 §4.4）。不识别 path 段边界。
+
+        前缀按原样与规范化后的 file_uri 匹配：前缀不是完整的 URI，不经 ``_normalize_uri``。
+        """
         contract = self._contract(contract)
         max_limit = self.config.list_page_max
         if limit is None:
@@ -312,15 +346,12 @@ class Engine:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= max_limit:
             raise ValidationError(f"limit 必须是 1 到 {max_limit} 之间的整数")
         after = None if cursor is None else _decode_cursor(cursor)
-        prefix = _normalize_uri(prefix) if prefix else ""
         with self._lock:
-            matched = sorted(
-                (uri, state.doc_hashes[contract])
-                for uri, state in self._store.docs.items()
-                if uri.startswith(prefix) and (after is None or uri > after)
-            )
-        page = matched[:limit]
-        more = len(matched) > limit
+            store = self._store
+            # 多取一个判断是否还有下一页
+            uris = store.page_after(prefix, after, limit + 1)
+            page = [(u, store.docs[u].doc_hashes[contract]) for u in uris[:limit]]
+        more = len(uris) > limit
         return ListPage(
             documents=[ListEntry(file_uri=u, doc_hash=h) for u, h in page],
             next_cursor=_encode_cursor(page[-1][0]) if more else None,
@@ -353,6 +384,32 @@ class Engine:
         # 第 3 步：前置条件存在性
         if precondition is None and not req.force:
             raise PreconditionRequiredError("写操作必须带 base_hash、if_absent 或 force")
+        # 乐观求值：先只用去重范围下界（本文档当前状态）在锁内完成第 4–6 步；只有缺对象、
+        # 且范围是写授权级时，才在锁外为持有这些对象的文档调用授权器，再进锁重做第 4–6 步。
+        # 授权器可插拔，可能很慢，也可能回调本引擎，因此从不在锁内调用。
+        try:
+            return self._apply_commit(caller, uri, contract, req, precondition, frozenset())
+        except _Gap as gap:
+            if self.config.dedup_scope is not DedupScope.WRITABLE:
+                raise gap.error(self.config.missing_max) from None
+            writable = self._authorize_holders(caller, gap.holders)
+            if not writable:
+                raise gap.error(self.config.missing_max) from None
+        try:
+            return self._apply_commit(caller, uri, contract, req, precondition, writable)
+        except _Gap as gap:
+            raise gap.error(self.config.missing_max) from None
+
+    def _apply_commit(
+        self,
+        caller: str,
+        uri: str,
+        contract: str,
+        req: _Commit,
+        precondition: Precondition | None,
+        writable: frozenset[str],
+    ) -> CommitResult:
+        """在一把锁内完成第 4–6 步与原子切换（CAS 只在这里裁决）。缺对象时抛 ``_Gap``。"""
         with self._lock:
             current = self._store.docs.get(uri)
             # 第 4 步：unchanged，不论前置条件是否满足，不处理内联对象、不检查会话
@@ -376,7 +433,7 @@ class Engine:
             # 第 6 步：会话与可得性
             if req.staging_session is not None:
                 self._resolve_session(caller, uri, req.staging_session)
-            state = self._materialize(caller, uri, contract, req)
+            state = self._materialize(uri, contract, req, writable)
             self._store.replace(uri, state)
         return CommitResult(
             status="created" if current is None else "updated",
@@ -384,63 +441,88 @@ class Engine:
             delta=_delta(current, state),
         )
 
+    def _authorize_holders(self, caller: str, holders: Sequence[frozenset[str]]) -> frozenset[str]:
+        """为每个缺失对象找一个调用者可写的持有文档（去重范围上界，core §3.3）。锁外调用。
+
+        每个对象找到第一个可写的持有者即停；同一 URI 只判定一次。授权在锁外判定、锁内使用，
+        与第 2 步的授权一样存在判定与使用之间的窗口：之后才出现的持有者按范围外处理，
+        范围只会变小，不会超出写授权，也不低于下界。
+        """
+        can_write = self.config.authorizer.can_write
+        decided: dict[str, bool] = {}
+        writable: set[str] = set()
+        for candidates in holders:
+            if not candidates.isdisjoint(writable):
+                continue  # 已有已知可写的持有者，本对象可得
+            for holder in sorted(candidates):
+                if holder not in decided:
+                    decided[holder] = can_write(caller, holder)
+                if decided[holder]:
+                    writable.add(holder)
+                    break
+        return frozenset(writable)
+
     def _parse_commit(self, data: Any, contract: str) -> _Commit:
         env = _envelope(data, _COMMIT_MEMBERS)
-        if "document" not in env:
-            raise ValidationError("请求体缺少 document")
+        document = _require(env, "document", dict, "文档对象")
         pages = _optional(env, "pages", list, "页对象数组") or []
         objects = _optional(env, "objects", list, "元素对象数组") or []
         session = _optional(env, "staging_session", str, "字符串")
         force = _optional(env, "force", bool, "布尔值") or False
-        document = env["document"]
         doc_hash = _validated(
-            lambda: dpe_hash.object_hash(document, "document", contract), "/document"
+            partial(dpe_hash.object_hash, document, "document", contract), pointer("document")
         )
+        inline_pages: dict[str, dict[str, Any]] = {}
         for i, page in enumerate(pages):
-            _validated(partial(dpe_hash.object_hash, page, "page", contract), pointer("pages", i))
+            h = _validated(
+                partial(dpe_hash.object_hash, page, "page", contract), pointer("pages", i)
+            )
+            inline_pages[h] = page  # 同 hash 的等价页取后出现者（core §2.7 允许任一表示）
+        inline_elements: dict[str, dict[str, Any]] = {}
         for i, element in enumerate(objects):
-            _validated(
+            h = _validated(
                 partial(dpe_hash.object_hash, element, "element", contract), pointer("objects", i)
             )
-        return _Commit(document, doc_hash, pages, objects, session, force)
+            inline_elements[h] = element
+        return _Commit(document, doc_hash, inline_pages, inline_elements, session, force)
 
     def _resolve_session(self, caller: str, uri: str, session_id: str) -> NoReturn:
         """会话接缝（core §3.4）：#42 阶段没有暂存会话，任何引用一律不可用；#43 接入真实会话。"""
         raise SessionExpiredError("暂存会话不可用")
 
-    def _scope(self, caller: str, uri: str) -> list[DocState]:
-        docs = self._store.docs
-        if self.config.dedup_scope is DedupScope.WRITABLE:
-            can_write = self.config.authorizer.can_write
-            return [s for u, s in docs.items() if can_write(caller, u)]
-        current = docs.get(uri)
-        return [] if current is None else [current]
-
-    def _materialize(self, caller: str, uri: str, contract: str, req: _Commit) -> DocState:
+    def _materialize(
+        self, uri: str, contract: str, req: _Commit, writable: frozenset[str]
+    ) -> DocState:
         """可得性检查（core §3.3 第 6 步），通过后把内联对象登记进对象表并构造新状态。
 
-        hash 一律由服务端算出（Rule 0）。缺失时本次 commit 无任何效果。
+        去重范围 = 本文档当前状态 ∪ ``writable`` 中文档的当前状态（core §3.3、§8）。
+        hash 一律由服务端算出（Rule 0）。缺失时抛 ``_Gap``，本次 commit 无任何效果。须在锁内调用。
         """
         store = self._store
-        scope = self._scope(caller, uri)
-        scope_pages = frozenset().union(*(s.pages for s in scope))
-        scope_contents = frozenset().union(*(s.contents for s in scope))
-        scope_blobs = frozenset().union(*(s.blobs for s in scope))
+        gap_holders: list[frozenset[str]] = []
 
-        def in_scope(value: str, pool: frozenset[str]) -> str | None:
+        def holders_of_object(value: str) -> frozenset[str]:
+            """页 / 元素对象（请求声明契约下的 hash）的持有文档。"""
             primary = store.to_primary(contract, value)
-            return primary if primary is not None and primary in pool else None
+            return frozenset() if primary is None else frozenset(store.referrers_of(primary))
 
-        inline_pages = {dpe_hash.object_hash(p, "page", contract): p for p in req.pages}
-        inline_elements = {dpe_hash.object_hash(e, "element", contract): e for e in req.objects}
+        def holders_of_blob(ref: str) -> frozenset[str]:
+            return frozenset(store.referrers_of(ref))
+
+        def in_scope(holders: frozenset[str]) -> bool:
+            return uri in holders or not holders.isdisjoint(writable)
+
+        inline_pages = req.pages
+        inline_elements = req.objects
 
         missing: dict[str, list[str]] = {"pages": [], "content_hashes": [], "blobs": []}
         seen: set[str] = set()
 
-        def report(layer: str, value: str) -> None:
+        def report(layer: str, value: str, holders: frozenset[str]) -> None:
             if value not in seen:
                 seen.add(value)
                 missing[layer].append(value)
+                gap_holders.append(holders - {uri})
 
         # 页以内联版本优先：即使范围内已有同 hash 的页，本次写入的原样表示也要生效（core §2.7）。
         # 元素没有读接口，范围内已有即可复用。
@@ -451,23 +533,29 @@ class Engine:
                 continue
             page = inline_pages.get(ph)
             if page is None:
-                if in_scope(ph, scope_pages) is None:
-                    report("pages", ph)
+                holders = holders_of_object(ph)
+                if not in_scope(holders):
+                    report("pages", ph, holders)
                 continue
             used_pages[ph] = page
             for eh in page["elements"]:
-                if eh in used_elements or in_scope(eh, scope_contents) is not None:
+                if eh in used_elements:
+                    continue
+                holders = holders_of_object(eh)
+                if in_scope(holders):
                     continue
                 element = inline_elements.get(eh)
                 if element is None:
-                    report("content_hashes", eh)
+                    report("content_hashes", eh, holders)
                     continue
                 used_elements[eh] = element
                 blob = element.get("blob")
-                if blob is not None and blob not in scope_blobs:
-                    report("blobs", blob)
+                if blob is not None:
+                    blob_holders = holders_of_blob(blob)
+                    if not in_scope(blob_holders):
+                        report("blobs", blob, blob_holders)
         if any(missing.values()):
-            raise _missing_error(missing, self.config.missing_max)
+            raise _Gap(missing, gap_holders)
 
         # 登记内联对象（自底向上），子 hash 换成主契约
         def primary_of(value: str) -> str:
@@ -475,23 +563,24 @@ class Engine:
             assert primary is not None
             return primary
 
-        for element in used_elements.values():
-            hashes = store.element_hashes(element)
+        # 请求声明契约下的 hash 已在校验时算出，逐契约换算时复用
+        for eh, element in used_elements.items():
+            hashes = store.element_hashes(element, {contract: eh})
             store.put(hashes[store.primary], ObjectRecord("element", dict(element), hashes))
         written: dict[str, dict[str, Any]] = {}
-        for page in used_pages.values():
+        for ph, page in used_pages.items():
             children = [primary_of(h) for h in page["elements"]]
             body = {**page, "elements": children}
-            hashes = store.tree_hashes("page", body, children)
+            hashes = store.tree_hashes("page", body, children, {contract: ph})
             store.put(hashes[store.primary], ObjectRecord("page", body, hashes))
             written[hashes[store.primary]] = body
         page_seq = [primary_of(h) for h in req.document["pages"]]
         document = {**req.document, "pages": page_seq}
-        doc_hashes = store.tree_hashes("document", document, page_seq)
+        doc_hashes = store.tree_hashes("document", document, page_seq, {contract: req.doc_hash})
 
         # 每页的原样表示归属本文档（不写进共享的对象记录，避免一次写入改变别的文档的读回）：
-        # 本次内联 → 本文档当前状态中的表示 → 对象记录首次登记的表示（来自范围内的别的文档，
-        # 与之内容等价，core §2.7 允许返回等价类中的任一表示）
+        # 本次内联 → 本文档当前状态中的表示 → 范围内某篇持有它的文档中的表示（与之内容等价，
+        # core §2.7 允许返回等价类中的任一表示；只取范围内的文档，不带出范围外文档的写法）
         current = store.docs.get(uri)
         previous: dict[str, dict[str, Any]] = {}
         if current is not None:
@@ -502,7 +591,13 @@ class Engine:
                 return written[ph]
             if ph in previous:
                 return previous[ph]
-            return store.objects[ph].body
+            # 走到这里的页既未内联、也不在本文档当前状态中，它之所以可得，只能是因为 writable 中
+            # 有持有者（_materialize 的可得性判定），因此候选非空
+            holder = min((u for u in store.referrers_of(ph) if u in writable), default=None)
+            assert holder is not None, "范围内的页必有 writable 中的持有者"
+            state = store.docs[holder]
+            position: int = state.document["pages"].index(ph)
+            return state.page_bodies[position]
 
         page_bodies = tuple(representation(ph) for ph in page_seq)
 
@@ -568,7 +663,7 @@ class Engine:
                 raise PreconditionFailedError(f"expected {base_hash}")
             if target is not None:
                 raise AlreadyExistsError(f"{to_uri} 已存在")
-            docs[to_uri] = docs.pop(from_uri)
+            self._store.rename(from_uri, to_uri)
             return MoveResult(doc_hash=source.doc_hashes[contract])
 
 

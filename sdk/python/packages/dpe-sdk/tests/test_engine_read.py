@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from typing import Any
 
 import dpe_hash
 import pytest
@@ -176,3 +178,96 @@ def test_list_contract() -> None:
     assert listed[0].doc_hash == inline(doc, "dpe2").doc_hash
     with pytest.raises(errors.ContractUnsupportedError):
         engine.list_documents("u", "dpe9")
+
+
+def test_config_requires_positive_limits_and_unique_contracts() -> None:
+    for name in (
+        "max_payload_bytes",
+        "page_max_bytes",
+        "blob_max_bytes",
+        "blob_chunk_bytes",
+        "batch_head_max",
+        "list_page_max",
+        "missing_max",
+    ):
+        for bad in (0, -1, True):
+            overrides: dict[str, Any] = {name: bad}
+            with pytest.raises(ValueError):
+                EngineConfig(**overrides)
+    with pytest.raises(ValueError):
+        EngineConfig(contracts=("dpe1", "dpe1"))
+
+
+def test_list_prefix_is_not_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    """前缀按原样匹配规范化后的 URI（core §3，#63）：#39 接入的规范化不作用于前缀。"""
+    from dpe_sdk.testing import _engine
+
+    def normalize(uri: str) -> str:
+        """core §1 的语法规范化桩：scheme / host 小写、百分号编码大写；不是完整 URI 即拒绝。"""
+        scheme, sep, rest = uri.partition("://")
+        if not sep or re.search(r"%(?![0-9A-Fa-f]{2})", rest):
+            raise errors.ValidationError("不是完整的 URI")
+        host, slash, path = rest.partition("/")
+        path = re.sub(r"%[0-9a-f]{2}", lambda m: m.group(0).upper(), path)
+        return f"{scheme.lower()}://{host.lower()}{slash}{path}"
+
+    monkeypatch.setattr(_engine, "_normalize_uri", normalize)
+    engine = make_engine()
+    _put(engine, "TEST://Docs/X")
+    _put(engine, "test://docs/dir%2f")
+    listed = engine.list_documents("u", C, prefix="test://docs/").documents
+    assert [d.file_uri for d in listed] == ["test://docs/X", "test://docs/dir%2F"]
+    # 前缀按原样：大小写不同即不匹配；不完整的转义也不报错
+    assert engine.list_documents("u", C, prefix="TEST://").documents == []
+    assert len(engine.list_documents("u", C, prefix="test://docs/dir%2").documents) == 1
+
+
+def test_sorted_index_tracks_creates_deletes_and_moves() -> None:
+    engine = make_engine()
+    hashes = {u: _put(engine, u, u) for u in ("test://c", "test://a", "test://b")}
+    engine.delete("u", "test://b", C, hashes["test://b"])
+    engine.move(
+        "u",
+        json.dumps(
+            {"from_uri": "test://c", "to_uri": "test://0", "base_hash": hashes["test://c"]}
+        ).encode(),
+        C,
+    )
+    store = engine._store
+    assert store.uris == sorted(store.docs) == ["test://0", "test://a"]
+    assert [d.file_uri for d in engine.list_documents("u", C).documents] == store.uris
+
+
+@pytest.mark.parametrize(
+    ("prefix", "after", "limit", "expected"),
+    [
+        ("test://b", None, 10, ["test://b/1", "test://b/2"]),
+        ("test://b", "test://a/9", 10, ["test://b/1", "test://b/2"]),  # cursor 小于前缀区间
+        ("test://b", "test://b/2", 10, []),  # cursor 越过前缀区间
+        ("test://b", "test://b/1", 10, ["test://b/2"]),
+        ("test://b", None, 2, ["test://b/1", "test://b/2"]),  # 恰好 limit 条
+        ("test://z", None, 10, []),
+        ("", "test://b/2", 1, ["test://c"]),
+    ],
+)
+def test_page_after_boundaries(
+    prefix: str, after: str | None, limit: int, expected: list[str]
+) -> None:
+    engine = make_engine()
+    for uri in ("test://a/1", "test://b/1", "test://b/2", "test://c"):
+        _put(engine, uri)
+    assert engine._store.page_after(prefix, after, limit) == expected
+
+
+def test_list_exact_limit_and_stale_cursor() -> None:
+    engine = make_engine()
+    hashes = {u: _put(engine, u, u) for u in ("test://p/1", "test://p/2", "test://p/3")}
+    page = engine.list_documents("u", C, prefix="test://p/", limit=3)
+    assert len(page.documents) == 3 and page.next_cursor is None
+    first = engine.list_documents("u", C, prefix="test://p/", limit=2)
+    assert first.next_cursor is not None
+    # 已返回的最后一项被删除：旧 cursor 照常翻页
+    engine.delete("u", "test://p/2", C, hashes["test://p/2"])
+    rest = engine.list_documents("u", C, prefix="test://p/", cursor=first.next_cursor)
+    assert [d.file_uri for d in rest.documents] == ["test://p/3"]
+    assert rest.next_cursor is None
