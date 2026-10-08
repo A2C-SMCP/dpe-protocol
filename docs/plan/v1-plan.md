@@ -52,7 +52,7 @@ DPE 的目标是：参考 Git 的设计理念，**极简、极速地表征世界
   - 服务端一致性跑分器
   - Connector 契约
 - 内核与 TFRS 都只是**按规范实现的一方**，在各自的 CI 里跑向量和一致性跑分器。
-- **要改 hash 规则，必须先改规范、升契约版本**。任何实现的现有行为都不能倒逼规范。
+- **要改 hash 规则，必须先改规范；一旦存在落库数据，或者已发布的包、已部署的服务依赖该契约的 hash 值（协议仓自身发布的 SDK 不算），任何 hash 规则变更都必须升契约版本，此前可在原契约内修订（实现与 SDK 同步升次版本）。**任何实现的现有行为都不能倒逼规范。
 - 定稿后发布到 `doc.turingfocus.cn` 下的独立 path，具体发布策略在撰写过程中制定。**规范正文中的所有标识都不带产品或品牌名**，包括 capability 名、媒体类型、错误码、属性命名空间示例之外的文字。
   - **例外**（Issue #4 C1，维护者确认）：封闭枚举中的 `tfchat`（category 与 file_type）和 `jira_project` / `jira_issue`（file_type）视为开放标准的格式名，予以保留，不属于本条所禁止的品牌标识。例外仅限这三个值；新增枚举值仍须遵守本条。
 - TFRobotServer `docs/protocol/dpe/` 下现有的 `push-protocol-v1.md` 和 `hash-contract-v1.md` 草案，由本仓库的规范**取代**。TFRS 那边改为引用本仓库，只保留「TFRS 实现说明」（scope 名称、部署、Robot 映射等）。
@@ -157,7 +157,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 7. Hash 契约 1
 
-> **修订注记**：hash 结构已按 #6 改为三层同构 tree，原语统一为 `sha256(JCS(对象))`，取消长度前缀拼接与页号；doc_hash 含 `file_type` 与 `doc_metadata`（#3），根对象有可选 `title`（撤回 #3 S6）；metadata 全部进 hash（§0.1 P2）；图片字节以 blob 进 hash，url 作为元素 metadata 进 hash；blob 引用通用化（#60）：元素字段改为 `blob` / `mime_type`，哪些 category 可携带由契约 1 §4.1 表决定。#60 是对契约 1 的**原位修订**，不升契约版本：当时仍在调试期，任何系统都没有落库的 dpe1 数据，唯一使用者是尚未切换的内核，owner 决定越早改越便宜。已发布的 `dpe-hash` 0.1.x 实现的是被取代的契约 1 草案，与 0.2.0 起的实现对 Image 元素算出不同的 `dpe1:` 值，不得混用（内核以 `<0.2.0` 门禁隔离）。此后一旦存在落库数据或已上线的外部实现，hash 规则变更必须升契约版本。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准；下文保留作为历史。
+> **修订注记**：hash 结构已按 #6 改为三层同构 tree，原语统一为 `sha256(JCS(对象))`，取消长度前缀拼接与页号；doc_hash 含 `file_type` 与 `doc_metadata`（#3），根对象有可选 `title`（撤回 #3 S6）；metadata 全部进 hash（§0.1 P2）；图片字节以 blob 进 hash，url 作为元素 metadata 进 hash；blob 引用通用化（#60）：元素字段改为 `blob` / `mime_type`，哪些 category 可携带由契约 1 §4.1 表决定。#60 是对契约 1 的**原位修订**，不升契约版本：当时仍在调试期，任何系统都没有落库的 dpe1 数据，唯一使用者是尚未切换的内核，owner 决定越早改越便宜。已发布的 `dpe-hash` 0.1.x 实现的是被取代的契约 1 草案，与 0.2.0 起的实现对 Image 元素算出不同的 `dpe1:` 值，不得混用（内核以 `<0.2.0` 门禁隔离）。此后按 §0.1 的判据：一旦存在落库数据，或者已发布的包、已部署的服务依赖契约 1 的 hash 值（协议仓自身的 SDK 不算），hash 规则变更必须升契约版本。以 [spec/hash-contract-1.md](../../spec/hash-contract-1.md) 为准；下文保留作为历史。
 
 - **格式**：`dpe1:<64 hex>`，即完整 sha256，不截断，前缀标明契约版本。blob 使用 `sha256:<64hex>`，与 OCI 和 Git SHA-256 的惯例一致。
 - **拼接**：每段前面加 4 字节大端长度前缀，再计算 sha256。null 视为空串。沿用内核的做法，并写成与语言无关的规范文本。

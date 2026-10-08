@@ -36,7 +36,7 @@ uv run inv docs.serve # 本地预览文档站点（mkdocs strict，死链即失�
 
 ## 不可破坏的约束
 
-- **规范先行**：要改 hash 规则，必须先改规范、升契约版本，再改生成器重新生成向量。任何实现（含内核、TFRS）的现有行为都不能倒逼规范。
+- **规范先行**：要改 hash 规则，必须先改规范，再改生成器重新生成向量。**何时必须升契约版本**：一旦存在落库数据，或者已发布的包、已部署的服务（含我方产品，如内核的已发布版本）依赖该契约的 hash 值，任何 hash 规则变更都必须升契约版本；协议仓自身发布的 `dpe-hash` / `dpe-sdk` 不算依赖。在此之前可在原契约内原位修订，文档与两个 SDK 同步 `bump minor`（见「版本管理」）。是否定稿不是判据。任何实现（含内核、TFRS）的现有行为都不能倒逼规范。
 - **向量由本仓库产出**：生成器是 `scripts/gen_vectors.py`（不 import 任何 SDK / 内核代码），不得手改 `vectors/`。SDK 与各服务端实现只消费向量；SDK 测试失败而向量一致时，错的是 SDK。
 - **依赖方向：内核 → Python SDK（#3 S1），SDK 运行时不依赖内核**。内核不保留自有 hash 实现，直接 import Python SDK 的 hash 核心；因此 M2 的 Python SDK 必须：hash 核心可单独安装（或主包零重依赖）、纯 Python（3.11 / 3.12）、导出契约常量（category 封闭枚举及各 category 允许的内容字段、file_type 枚举），PyPI 发布是内核 K2 的前置门禁。
 - **规范与 SDK 中不出现任何服务端私有概念**：Robot、`vnd.tfrs`、`X-TFRS-Robot-Id`、tenant、TFRS 错误信封、JWT/scope 细节都不能进。SDK 只接受 remote URL + 可插拔 `CredentialProvider`。治理属性（ACL 等）不属于 DPE。
