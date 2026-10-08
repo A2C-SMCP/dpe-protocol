@@ -126,7 +126,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 5. 写入冲突（CAS）
 
-> **修订注记**：已按 §0.1 与 Issue #4 修订——前置条件为 `base_hash`（doc_hash）/ `if_absent` / `force`；幂等由内容保证（同内容重复提交返回 unchanged），协议不定义幂等键；本节提到的 attributes 与 revision 已取消。以 [spec/core.md](../../spec/core.md) §5 为准。
+> **修订注记**：已按 §0.1 与 Issue #4 修订——前置条件为 `base_hash`（doc_hash）/ `if_absent` / `force`；幂等由内容保证（同内容重复提交返回 unchanged），协议不定义幂等键；本节提到的 attributes 与 revision 已取消。写操作的授权排在只看请求本身的报文校验（I-JSON、契约声明、请求信封、对象）之后、一切依赖文档状态的判定之前（#63）：commit 的 `force` 与 move 的 `from_uri` / `to_uri` 都在请求体中，原先「授权先于 I-JSON 解析」无法严格实现；被否决的备选是只解析授权所需的字段再授权（规则会多出一组特例）。以 [spec/core.md](../../spec/core.md) §5 为准。
 
 | 场景 | 请求 | 结果 |
 | --- | --- | --- |
