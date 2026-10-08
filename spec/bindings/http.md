@@ -137,7 +137,7 @@
 
 `next_cursor` 为 null 表示结束。cursor 不透明。
 
-- `prefix` 缺省视同空串（列出全部文档）。
+- `prefix` 缺省视同空串（列出全部文档）。前缀按原样与规范化后的 file_uri 做码点前缀匹配，服务端不对前缀做 core.md §1 的规范化（core.md §3）。
 - `limit` 缺省取 capabilities 的 `list_page_max`；不是 1 到 `list_page_max` 之间的十进制整数 → `DPE_VALIDATION`（与 batch_head 超过 `batch_head_max` 一致）。
 - `cursor` 只能取本端点此前返回的 `next_cursor`；服务端无法识别的 cursor → `DPE_VALIDATION`。
 

@@ -134,7 +134,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 | `capabilities` | 返回协议版本、接受的 hash 契约版本、限额（`max_payload_bytes`、`page_max_bytes`、`staging_ttl`、blob 上限与分块参数）、`content_encodings`、可选能力 | 否 |
 | `head` / `batch_head` | 按 URI 返回 `{doc_hash}`；不存在返回 null。批量版只读，不涉及原子性 | 否 |
 | `get_skeleton` | 返回 `doc_hash`、文档对象与全部页对象（按文档对象顺序），不含元素对象。返回值 MUST 与最近一次写入的值**内容等价**（§2.7）——据此重算的 doc_hash 必须等于返回值 | 否 |
-| `list` | 按 file_uri 前缀分页返回 `{file_uri, doc_hash}`。前缀按规范化后 URI 的码点匹配，不识别 path 段边界；需要按段匹配时，调用方在前缀末尾自带分隔符（如 `/`） | 否 |
+| `list` | 按 file_uri 前缀分页返回 `{file_uri, doc_hash}`。前缀按原样（不做 §1 的规范化，它不是完整的 URI）与规范化后的 file_uri 做码点前缀匹配，不识别 path 段边界；需要按段匹配时，调用方在前缀末尾自带分隔符（如 `/`） | 否 |
 | `negotiate` | 提交文档对象（可附带部分页对象），返回缺失的页与元素对象，并开启一个 `staging_session` | 否（只开会话） |
 | `upload` | 向暂存会话上传页对象、元素对象或 blob。幂等；服务端 MUST 校验字段（§2）并重算 hash，不符返回 `DPE_HASH_MISMATCH`；响应给出该对象引用的下一层中缺失的部分；页对象与 blob 支持分块与断点续传 | 暂存 |
 | `commit` | 提交文档对象（页对象与元素对象可内联或引用暂存会话）。**原子切换**：要么完整生效，要么没有任何变化 | 是 |
@@ -168,7 +168,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 
 ### 3.3 commit 语义
 
-请求：文档对象、CAS 前置条件（§5）、可选的内联页对象 `pages` 与内联元素对象 `objects`、可选的 `staging_session` 引用。
+请求：CAS 前置条件（§5）与请求体。请求体的成员是文档对象 `document`（必有）、可选的内联页对象 `pages` 与内联元素对象 `objects`、可选的 `staging_session` 引用、可选的 `force`。前置条件 `base_hash` / `if_absent` 由绑定在请求体之外承载（HTTP 为条件头，HTTP 绑定 §3.2），不是请求体成员。
 
 服务端 MUST 按以下顺序求值，前一步失败即返回，后续步骤不执行；每个错误码都只出自其中唯一的一步：
 
@@ -176,7 +176,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 1. **报文校验**（§2）：只看请求本身，与文档状态无关。依次为：
    1. 整个请求体是 I-JSON（§2.8 第 0 步，`DPE_VALIDATION`）；
    2. 契约声明（`DPE_CONTRACT_UNSUPPORTED`）；
-   3. 请求信封：请求只含本节开头列出的成员，文档对象必须出现，各成员的类型正确（`pages` / `objects` 为数组，`staging_session` 为字符串，`force` 为布尔），否则 `DPE_VALIDATION`；可选成员为 null 视同缺省。各绑定的具体形状见绑定文档（HTTP 绑定 §3.1）；
+   3. 请求信封：请求体只含上面列出的五个成员（出现其他成员，含 `base_hash` / `if_absent`，即未定义成员），`document` 必须出现，各成员的类型正确（`pages` / `objects` 为数组，`staging_session` 为字符串，`force` 为布尔），否则 `DPE_VALIDATION`；可选成员为 null 视同缺省（HTTP 绑定 §3.1）；
    4. 按 §2.8 校验文档对象，然后是内联页对象（按数组顺序），然后是内联元素对象（按数组顺序），错误码为 `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`；
    5. force 与 `base_hash` / `if_absent` 不得并存（`DPE_VALIDATION`）。
 2. **授权**（§5 总则）：调用者对该 URI 的写授权；`force` 为 true 时还包括 force 权限 → `DPE_FORBIDDEN`。授权所需的输入（`force`）在请求体中，因此授权排在报文校验之后；报文校验与文档状态无关，授权仍先于一切依赖文档状态的判定（§8）。
