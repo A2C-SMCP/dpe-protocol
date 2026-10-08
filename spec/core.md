@@ -1,6 +1,6 @@
 # DPE Core v1（抽象模型与操作语义）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#60、#63 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#60、#63、#73 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 DPE（Document / Page / Element）是把任意格式文档的**内容面**——面向 LLM 阅读的内容——**正确、增量、可靠**地投递到一个远端的标准协议。本文定义与传输无关的核心语义；v1 唯一的规范性传输绑定是 HTTP（[bindings/http.md](bindings/http.md)）；内容身份的计算见 [hash-contract-1.md](hash-contract-1.md)。
@@ -135,7 +135,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 | `head` / `batch_head` | 按 URI 返回 `{doc_hash}`；不存在返回 null。批量版只读，不涉及原子性 | 否 |
 | `get_skeleton` | 返回 `doc_hash`、文档对象与全部页对象（按文档对象顺序），不含元素对象。返回值 MUST 与最近一次写入的值**内容等价**（§2.7）——据此重算的 doc_hash 必须等于返回值 | 否 |
 | `list` | 按 file_uri 前缀分页返回 `{file_uri, doc_hash}`。前缀按原样（不做 §1 的规范化，它不是完整的 URI）与规范化后的 file_uri 做码点前缀匹配，不识别 path 段边界；需要按段匹配时，调用方在前缀末尾自带分隔符（如 `/`） | 否 |
-| `negotiate` | 提交文档对象（可附带部分页对象），返回缺失的页与元素对象，并开启一个 `staging_session` | 否（只开会话） |
+| `negotiate` | 提交文档对象（可附带部分页对象），返回缺失的页与元素对象，并开启一个 `staging_session` | 否（只开会话；开会话前须写授权，§3.4） |
 | `upload` | 向暂存会话上传页对象、元素对象或 blob。幂等；服务端 MUST 校验字段（§2）并重算 hash，不符返回 `DPE_HASH_MISMATCH`；响应给出该对象引用的下一层中缺失的部分；页对象与 blob 支持分块与断点续传 | 暂存 |
 | `commit` | 提交文档对象（页对象与元素对象可内联或引用暂存会话）。**原子切换**：要么完整生效，要么没有任何变化 | 是 |
 | `delete` | 按 URI 删除整篇文档 | 是 |
@@ -217,9 +217,12 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 ```
 
 - 会话绑定 `(file_uri, 调用者身份)`，按文档隔离；**不绑定任何前置条件**。CAS 只在 commit 时按该次 commit 的前置条件裁决（§5），因此各种前置条件下的会话校验完全相同：会话存在、未过期、未消费，且 file_uri 与调用者身份相符。
+- **negotiate 的求值顺序**：报文校验（只看请求本身）→ 对 file_uri 的写授权（§5 总则，`DPE_FORBIDDEN`）→ 开会话并计算缺失清单。授权先于开会话与一切依赖文档状态的判定；未通过授权的调用者 MUST NOT 获得会话或缺失清单（理由：§3.3 的去重范围上下界、§8 的探测面）。
 - 会话中可暂存页对象、元素对象与 blob。negotiate 附带的页对象同样存入会话。
 - **逐层缺失清单**：上传页对象的响应给出它引用、而在去重范围与本会话中都不存在的 content_hash；上传元素对象的响应给出它引用的缺失 blob。
 - **分块**：页对象与 blob 支持分块与断点续传；全部字节到齐后服务端才校验 hash。元素对象不分块（§3.2）。
+- **upload 的求值顺序约束**（各端点完整阶梯见 HTTP 绑定 §4.6、§4.7）：会话可用性判定先于「本会话中该 hash 是否已完成」，「已完成」判定先于分块参数与分块请求体的校验——分块请求的字节在到齐前不可校验，本会话中已完成的 hash 重复上传 MUST 成功（幂等见下），不得因分块参数或请求体不合法而失败；其他情形下（含非分块对象）请求本身的校验先于会话判定。到齐后的校验（blob 的 sha256、对象的解析与重算）失败 MUST 丢弃该对象已收的全部内容，重传从零开始。
+- **分块续传的客户端义务**：任何一块的响应丢失或不确定时，客户端 MUST NOT 盲目重发，MUST 先断点查询（只读、不续期）并按其给出的已收偏移续传；盲目重发（from 小于已收偏移）得到 `DPE_VALIDATION`，该错误响应带已收偏移供重新同步（HTTP 绑定 §4.7）。断点查询返回本会话已收字节数（无进度为 0，已完成为该对象的总字节数，HTTP 绑定 §4.7）；偏移等于自己声明的总量即上传已完成，重发任意一块即可获得 `200` 与缺失清单。
 - 引用的会话已过期、已消费、不存在、不属于该调用者或不属于该 file_uri 时，upload / commit 一律返回 `DPE_SESSION_EXPIRED`（不区分原因，避免泄露他人会话是否存在）。
 - **失败的 commit（任何错误）MUST NOT 消费会话**。并发写入导致 `DPE_PRECONDITION_FAILED` 时，客户端重新读取后，以新的前置条件引用**同一会话**重新 commit，已上传到会话的内容无需重传。若他人的写入移除了本次提交依赖、但未上传到会话的对象（最小去重范围下它们原本来自文档的当前状态），commit 得到 `DPE_MISSING_CONTENT` 及缺失清单，补传到同一会话后重新 commit 即可。
 - **过期**：会话的过期时间从最近一次成功的 negotiate 或 upload（含分块上传的中间块）起算，每次成功操作都会续期；只读的断点查询不续期（避免靠反复查询保活）；capabilities 声明的 `staging_ttl` MUST 不少于 1 小时。持续上传的大文档因此不会中途过期，闲置的会话尽快回收。
@@ -236,7 +239,7 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 
 ## 5. 写入冲突（CAS）与重试
 
-**授权总则**：所有写操作（commit / delete / move）MUST 先完成授权判定，再做任何依赖文档状态的判定（是否存在、doc_hash、unchanged 等）；move 对源与目标两侧都要判定。无写授权时一律返回 `DPE_FORBIDDEN`，与文档是否存在、内容为何无关（§8）。
+**授权总则**：所有写操作（commit / delete / move）MUST 先完成授权判定，再做任何依赖文档状态的判定（是否存在、doc_hash、unchanged 等）；move 对源与目标两侧都要判定。无写授权时一律返回 `DPE_FORBIDDEN`，与文档是否存在、内容为何无关（§8）。**negotiate 是写路径的第一步**：它不写入内容，但开会话同样 MUST 先完成对 `file_uri` 的写授权判定（§3.4）；upload 不重复判定——会话只属于与该 file_uri 绑定的调用者，commit 照常重新授权。
 
 ### 5.1 前置条件
 
@@ -279,7 +282,7 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 
 | code | retryable | 语义 | 恢复 |
 | --- | --- | --- | --- |
-| `DPE_VALIDATION` | 否 | 报文不合法：任一层对象出现未定义字段、元素对象多余字段、未知 file_type、整数越界、force 与其他前置条件并存等 | 修正报文 |
+| `DPE_VALIDATION` | 否 | 报文不合法：任一层对象出现未定义字段、元素对象多余字段、未知 file_type、整数越界、force 与其他前置条件并存、暂存分块的 Content-Range 非法、块长不符、总量与先前声明不一致、偏移不连续等 | 修正报文；暂存分块的偏移不连续时按错误响应带的 `DPE-Upload-Offset` 重新同步（HTTP 绑定 §4.7） |
 | `DPE_CONTRACT_UNSUPPORTED` | 否 | hash 契约版本不被支持 | 按 capabilities 换契约，或失败 |
 | `DPE_CATEGORY_UNKNOWN` | 否 | category 不在契约的封闭枚举内 | 修正报文 |
 | `DPE_PRECONDITION_REQUIRED` | 否 | 写操作缺少 CAS 前置条件 | 补前置条件 |
@@ -287,9 +290,9 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 | `DPE_ALREADY_EXISTS` | 否 | `if_absent` 冲突 / move 目标已存在 | 交上层决定 |
 | `DPE_NOT_FOUND` | 否 | 文档不存在（含已删除） | delete 重试视为成功（§5.2）；commit 时交上层决定是否以 `if_absent` 重建（§4） |
 | `DPE_SESSION_EXPIRED` | 否 | 暂存会话不可用：过期、已消费、不存在、不属于调用者或不属于该 file_uri（§3.4） | 重新 negotiate，上传缺失对象后重新 commit |
-| `DPE_HASH_MISMATCH` | 否 | 暂存上传的对象与路径中声明的 hash 不符（仅 upload；commit 的内联对象没有声明的 hash） | 修正对象或 hash |
+| `DPE_HASH_MISMATCH` | 否 | 暂存上传的对象与路径中声明的 hash 不符（仅 upload；commit 的内联对象没有声明的 hash）；到齐校验失败时丢弃该对象已收的全部内容 | 修正对象或 hash，从零重传 |
 | `DPE_MISSING_CONTENT` | 否 | commit 引用了去重范围内不可得的页对象 / 元素对象 / blob；problem 体带缺失清单 | 引用了会话：把缺失对象上传到同一会话后重新 commit。未引用会话（快路径）：缺页对象或元素对象时可改为内联后重新 commit；缺 blob 时（blob 不能内联）先 negotiate 开会话，上传后再 commit |
-| `DPE_PAYLOAD_TOO_LARGE` | 否 | 单个非分块请求或单个元素对象超过 `max_payload_bytes`；分块页对象超过 `page_max_bytes`；blob 超过 `blob_max_bytes`（均按压缩前计算） | 改走暂存与分块；文档对象或元素对象超限由上游拆分文档或切分文本（§3.2） |
+| `DPE_PAYLOAD_TOO_LARGE` | 否 | 单个非分块请求或单个元素对象超过 `max_payload_bytes`；暂存分块的单块超过 `blob_chunk_bytes`（页对象分块同此上限）；页对象与 blob 的总大小超过 `page_max_bytes` / `blob_max_bytes`（分块时按首块声明的总量即判）（均按压缩前计算） | 改走暂存与分块；文档对象或元素对象超限由上游拆分文档或切分文本（§3.2） |
 | `DPE_FORBIDDEN` | 否 | 无权限（含前缀授权、force 权限） | — |
 | `DPE_RATE_LIMITED` | 是 | 限流（配合 Retry-After） | 按 Retry-After 原样重试 |
 | `DPE_UNAVAILABLE` | 是 | 服务端暂时不可用（配合 Retry-After） | 按 Retry-After 原样重试 |

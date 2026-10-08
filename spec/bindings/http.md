@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#63、#70 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#63、#70、#73 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -34,7 +34,7 @@
 
 ### 3.1 契约声明与版本令牌
 
-- **带 JSON 请求体的端点的校验顺序**（batch_head、negotiate、页对象与元素对象的 upload、commit、move；blob 上传的请求体是原始字节，不适用）：
+- **带 JSON 请求体的端点的校验顺序**（batch_head、negotiate、页对象与元素对象的**非分块** upload、commit、move；blob 上传与分块的页对象上传的请求体是原始字节，校验在字节到齐后进行（§4.6、§4.7），不适用本节顺序）：
   1. 整个请求体是 I-JSON（core.md §2.8 第 0 步），否则 `DPE_VALIDATION`；
   2. 契约声明（`DPE-Hash-Contract` 头），否则 `DPE_CONTRACT_UNSUPPORTED`；
   3. 请求信封（batch_head、negotiate、commit、move 的请求体顶层，形状见 §4 各端点）：请求体是 JSON 对象；顶层成员封闭，出现 §4 未定义的成员 → `DPE_VALIDATION`；必有成员必须出现，各成员的类型正确，否则 `DPE_VALIDATION`；可选成员为 null 视同缺省。upload 的请求体就是对象本身，没有信封；
@@ -154,7 +154,11 @@
   "staging_session": { "id": "st-…", "expires_at": "2026-10-01T00:00:00Z" } }
 ```
 
-- 校验顺序同 §3.1：先确认请求体是 I-JSON，再判契约头，然后按 core.md §2.8 校验文档对象，最后按数组顺序校验附带的页对象。
+- **求值顺序**（前一步失败即返回，后续步骤不执行；core.md §3.4）：
+  0. 传输层：请求体超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`；
+  1. 报文校验（同 §3.1）：I-JSON → 契约头 → 请求信封（`file_uri` 必须出现、为字符串且是 core.md §1 的绝对 URI，非法（如相对引用、空串）→ `DPE_VALIDATION`；`document` 必须出现，`pages` 可选且为数组；未定义成员 → `DPE_VALIDATION`）→ 文档对象 → 附带的页对象（按数组顺序）；
+  2. 授权：对 `file_uri` 的写授权 → `403` + `DPE_FORBIDDEN`；报文校验只看请求本身，授权排在其后、一切依赖文档状态的判定之前（core.md §5 总则）；
+  3. 开会话、把附带的页对象存入会话、计算缺失清单；未通过授权的调用者不获得会话与缺失清单。会话绑定与去重范围使用 `file_uri` 按 core.md §1 语法规范化后的形式——同一篇文档的等价写法不会绑定出不同的会话。
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
 - `missing_pages`：文档对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的元素对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
 - 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交文档对象即可，文档对象只含页 hash 列表）。
@@ -162,10 +166,15 @@
 
 ### 4.6 `PUT {remote}/staging/{sid}/pages/{page_hash}` 与 `…/objects/{content_hash}`
 
-请求体为一个页对象或元素对象 JSON，即该 hash 的原像对象（core.md §2.2、§2.3）。服务端依次：
+请求体为一个页对象或元素对象 JSON，即该 hash 的原像对象（core.md §2.2、§2.3）。服务端依次（前一步失败即返回，后续步骤不执行）：
 
-1. 按 §3.1 的顺序校验：请求体是 I-JSON → 契约头 → 按 core.md §2.8 校验对象（`DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`）；
-2. 重算 hash，与路径不符 → `DPE_HASH_MISMATCH`。
+0. 传输层：请求体超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`；
+1. 按 §3.1 的顺序校验：请求体是 I-JSON → 契约头 → 页对象整体超过 `page_max_bytes` → `413`（元素对象不分块，只有第 0 步的 `max_payload_bytes` 上限）→ 按 core.md §2.8 校验对象（`DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`）；
+2. 重算 hash，与路径不符 → `DPE_HASH_MISMATCH`；
+3. 会话可用性（core.md §3.4）→ 不可用一律 `410` + `DPE_SESSION_EXPIRED`；
+4. 本会话内该 hash 已完成 → `200`（重复）；否则登记入会话 → `201`。
+
+第 1–2 步只看请求本身，先于一切依赖会话状态的判定（core.md §3.4）：同一路径 hash、但请求体的 hash 被篡改时得到 `DPE_HASH_MISMATCH`，不是 `200` 重复——篡改后的请求体已不是同一 hash 的上传。
 
 响应 `201`（本会话内新写入）或 `200`（本会话内重复），体为下一层的缺失清单：
 
@@ -180,16 +189,24 @@
 
 会话的每个成功操作都会续期（core.md §3.4）：negotiate 响应的 `expires_at` 与 upload 各响应（含 `202` 中间块）的 `DPE-Session-Expires: <RFC 3339 UTC>` 头给出续期后的过期时间。
 
-**页对象可分块**：单个页对象超过 `max_payload_bytes` 时，按 §4.7 的方式分块上传与断点续传，总大小不超过 `page_max_bytes`。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。元素对象不分块，超限返回 `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
+**页对象可分块**：单个页对象超过 `max_payload_bytes` 时，按 §4.7 的方式分块上传与断点续传（单块大小同样不超过 `blob_chunk_bytes`），总大小不超过 `page_max_bytes`。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。元素对象不分块，超限返回 `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
 
 ### 4.7 `PUT {remote}/staging/{sid}/blobs/{sha256}`（分块与断点续传）
 
-- 整体上传：不带 `Content-Range` 的 `PUT`，体为完整字节。
-- 分块上传：`PUT` + `Content-Range: bytes {from}-{to}/{total}`，块大小不超过 `blob_chunk_bytes`，MUST 按序追加；全部字节到齐后服务端校验 sha256。
-- 中间块：响应 `202`，带 `DPE-Upload-Offset: {n}`（已收字节数），无体；最后一块到齐并校验通过后，按 §4.6 返回 `201` / `200`。
-- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该对象），并带 `DPE-Session-Expires` 给出会话当前的过期时间。断点查询只读，**不续期**（core.md §3.4）；会话不可用时返回 `410` + `DPE-Error-Code: DPE_SESSION_EXPIRED`（§5）。
-- 校验失败返回 `DPE_HASH_MISMATCH` 并丢弃已收内容。blob 校验的是原始字节的 sha256。
-- 以上分块规则同样适用于 §4.6 的页对象，只是校验方式不同（见 §4.6），总大小上限为 `page_max_bytes`。
+- 整体上传：不带 `Content-Range` 的 `PUT`，体为完整字节。服务端依次：第 0 步传输层（超过 `max_payload_bytes` 或 `blob_max_bytes` → `413`）→ 契约头 → 校验原始字节的 sha256，与路径不符 → `400` + `DPE_HASH_MISMATCH` → 会话可用性（不可用一律 `410` + `DPE_SESSION_EXPIRED`）→ 本会话内该 hash 已完成 → `200`（重复），否则登记入会话 → `201`。整段上传通过校验后该对象即在本会话内完成；若此前有分块的部分进度，随之作废。
+- 分块上传：`PUT` + `Content-Range: bytes {from}-{to}/{total}`，MUST 按序追加；全部字节到齐后服务端才校验。服务端依次（前一步失败即返回，后续步骤不执行；core.md §3.4）：
+  0. 传输层：单块请求体超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`；
+  1. 契约头 → `400` + `DPE_CONTRACT_UNSUPPORTED`（请求体是原始字节，内容校验在到齐后进行）；
+  2. 会话可用性 → 不可用一律 `410` + `DPE_SESSION_EXPIRED`；
+  3. 本会话内该 hash 已完成 → `200`（重复）+ 缺失清单，不校验 `Content-Range` 与请求体——幂等（core.md §3.4）：同一 hash 重复上传 MUST 成功，重发最后一块同样命中；
+  4. 分块一致性：`Content-Range` 格式非法、块长与范围不符、`total` 与本会话此前声明的不一致 → `400` + `DPE_VALIDATION`；
+  5. 尺寸：单块超过 `blob_chunk_bytes`、`total` 超过 `blob_max_bytes`（页对象为 `page_max_bytes`）→ `413`，首块即判，不接收任何字节；
+  6. 偏移：`from` ≠ 本会话已收字节数 → `400` + `DPE_VALIDATION`，响应 MUST 带 `DPE-Upload-Offset: {n}`（本会话已收字节数），客户端据它重新同步；
+  7. 追加字节、续期；未到齐 → `202`，带 `DPE-Upload-Offset`（已收字节数）与 `DPE-Session-Expires`，无体。
+- 到齐后：blob 校验原始字节的 sha256；页对象解析为页对象（I-JSON → core.md §2.8 → 按契约 1 重算 page_hash 与路径比较，不是对原始字节算 sha256）。校验失败（含 hash 不符，为 `400` + `DPE_HASH_MISMATCH`）MUST 丢弃该对象已收的全部内容，重传从零开始；通过后按 §4.6 返回 `201` / `200` + 缺失清单，并带 `DPE-Session-Expires`。
+- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该对象），并带 `DPE-Session-Expires` 给出会话当前的过期时间。断点查询只读，**不续期**（core.md §3.4）；会话不可用时返回 `410` + `DPE-Error-Code: DPE_SESSION_EXPIRED`（§5）。三种状态的返回：本会话没有该 hash 的任何进度 → `200` + `DPE-Upload-Offset: 0`（不是 `404`：「无进度」是正常状态，HEAD 的 `404` 也会与网关返回的非 DPE 错误混淆）；本会话内该 hash 已完成 → `200`，偏移为该对象已收的总字节数；到齐后校验失败、已收内容被丢弃后 → 偏移回到 `0`。
+- **客户端义务**：任何一块的响应丢失或不确定时，客户端 MUST 先断点查询再按返回的已收偏移续传，MUST NOT 盲目重发（core.md §3.4）。查到的偏移等于自己声明的 `total` 即上传已完成：重发任意一块（如最后一块）即可按第 3 步得到 `200` + 缺失清单（该步不校验 `Content-Range` 与请求体）；MUST NOT 发送空区间（`bytes {total}-{total}/{total}` 本身不合法）。
+- 以上分块规则同样适用于 §4.6 的页对象（单块上限同 `blob_chunk_bytes`），只是校验方式不同（见 §4.6），总大小上限为 `page_max_bytes`。
 
 ### 4.8 `PUT {remote}/documents?uri=…`（commit）
 
@@ -240,7 +257,7 @@
 | code | 状态码 |
 | --- | --- |
 | `DPE_VALIDATION`、`DPE_CONTRACT_UNSUPPORTED`、`DPE_CATEGORY_UNKNOWN`、`DPE_HASH_MISMATCH`、`DPE_MISSING_CONTENT` | 400 |
-| `DPE_FORBIDDEN` | 403（所有写操作都先判定授权，core.md §5 总则） |
+| `DPE_FORBIDDEN` | 403（写操作与 negotiate 都先判定授权，core.md §5 总则、§3.4） |
 | `DPE_NOT_FOUND` | 404；带 `If-Match` 的 PUT / DELETE documents 为 412（§3.2） |
 | `DPE_PRECONDITION_FAILED`、`DPE_ALREADY_EXISTS` | 412（条件头：PUT / DELETE documents）；409（请求体前置条件：move） |
 | `DPE_SESSION_EXPIRED` | 410（会话过期、已消费、不存在、不属于调用者或不属于该 file_uri，一律如此） |
@@ -248,6 +265,8 @@
 | `DPE_PRECONDITION_REQUIRED` | 428 |
 | `DPE_RATE_LIMITED` | 429 |
 | `DPE_UNAVAILABLE` | 503 |
+
+暂存分块的偏移不连续（`DPE_VALIDATION`，§4.7）带 `DPE-Upload-Offset` 头，客户端据此重新同步。
 
 429 与 503 MUST 带 `Retry-After`。
 

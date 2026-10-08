@@ -93,7 +93,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 4. 核心操作
 
-> **修订注记**：本节中的 attributes 与 revision 已按 §0.1 取消——head / list 返回 doc_hash，commit 响应为 `{status, doc_hash, delta}`，doc_hash 未变即 unchanged。以 [spec/core.md](../../spec/core.md) §3 为准。
+> **修订注记**：本节中的 attributes 与 revision 已按 §0.1 取消——head / list 返回 doc_hash，commit 响应为 `{status, doc_hash, delta}`，doc_hash 未变即 unchanged。negotiate 的写授权与上传的求值顺序已按 #73 补正：negotiate 开会话前 MUST 先完成对 file_uri 的写授权（被否决的备选：不判定、commit 时才 `403`——目标文档不在去重范围时违反 §3.3 的下界）；upload 不重复判定授权，分块上传的会话可用性与「已完成」判定先于分块参数与请求体，重发已收字节得到 `DPE_VALIDATION` 并带 `DPE-Upload-Offset` 供同步（被否决的错误码备选：新增专用错误码——扩张不兼容面；复用 `DPE_PRECONDITION_FAILED`——混淆 doc_hash 的 CAS 语义），客户端 MUST 先断点查询再续传。以 [spec/core.md](../../spec/core.md) §3、§3.4 与 [spec/bindings/http.md](../../spec/bindings/http.md) §4.5–§4.7 为准。
 
 | 操作 | 语义 | 前置条件 | 写？ |
 | --- | --- | --- | --- |
