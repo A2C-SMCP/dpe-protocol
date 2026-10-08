@@ -59,7 +59,7 @@ pythonpath = ["tools"]
 # 两个包同步升版；在 sdk/python/ 目录下运行 `uv run bump-my-version bump …`。
 # 两态与文档一致：X.Y.Z-dev = 开发中（不发布）；X.Y.Z = 发布（标签 py-vX.Y.Z 触发 release-python.yml）。
 [tool.bumpversion]
-current_version = "0.2.0"
+current_version = "0.2.1-dev"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)(?:-(?P<pre_l>dev))?"
 serialize = [
     "{major}.{minor}.{patch}-{pre_l}",
