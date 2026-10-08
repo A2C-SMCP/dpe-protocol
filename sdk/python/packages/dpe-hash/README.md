@@ -36,6 +36,7 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 | `parse_hash(s, contracts=SUPPORTED_CONTRACTS)` / `parse_blob_ref(s)` | 校验并拆分 `dpe1:<hex>` / `sha256:<hex>` |
 | `blob_ref(data)` | blob 字节的引用 `sha256:<hex>` |
 | `jcs(value)` | RFC 8785 规范化字符串 |
+| `normalize_file_uri(uri)` | file_uri 的语法规范化（core.md §1.1），身份的比较形式；非法输入抛 `ValidationError`（`DPE_VALIDATION`） |
 
 逐层入口的参数是 TypedDict，便于在编译期发现字段拼错；从线上反序列化、未加类型的 JSON（`Any`）可以直接传入，已标注为 `dict[str, Any]` 的数据请用 `object_hash`（接受 `Mapping[str, Any]`），或先 `cast`。
 

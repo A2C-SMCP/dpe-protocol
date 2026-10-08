@@ -16,12 +16,14 @@ from dpe_hash import (
     ElementObject,
     ExpandedDocument,
     PageFields,
+    ValidationError,
     blob_ref,
     children,
     content_hash,
     doc_hash,
     document_hashes,
     has_invalid_unicode,
+    normalize_file_uri,
     object_hash,
     page_hash,
     parse_blob_ref,
@@ -151,3 +153,22 @@ def test_has_invalid_unicode_for_whole_request_bodies() -> None:
     assert has_invalid_unicode({"staging_session": "st-\ud800", "document": {}})
     assert has_invalid_unicode([{"\udc00": 1}])
     assert not has_invalid_unicode({"document": {"title": "季度报告 🚀"}, "pages": [1.5, None]})
+
+
+def test_normalize_file_uri_rejects_with_validation_error() -> None:
+    """非法输入（无 scheme、非 ASCII、坏百分号三元组）抛 ValidationError（core.md §1.1）。"""
+    for bad in ("a/b", "", "feishu://doc/季度报告", "feishu://doc/%zz"):
+        with pytest.raises(ValidationError) as info:
+            normalize_file_uri(bad)
+        assert info.value.code == "DPE_VALIDATION"
+
+
+def test_normalize_file_uri_is_idempotent() -> None:
+    """三步变换的结果是不动点（core.md §1.1）：再次规范化不再变化。"""
+    for uri in (
+        "HTTP://EX%43AMPLE.com:8080/A%2Fb?q=%7e#%2F",
+        "FEISHU:Doc/A%2fB",
+        "https://User@Example.com/%2e%2E",
+    ):
+        once = normalize_file_uri(uri)
+        assert normalize_file_uri(once) == once

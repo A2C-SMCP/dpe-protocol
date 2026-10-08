@@ -18,6 +18,7 @@ from dpe_hash import (
     doc_hash,
     document_hashes,
     jcs,
+    normalize_file_uri,
     object_hash,
     page_hash,
 )
@@ -143,6 +144,16 @@ def test_all_jcs_vectors_listed(vectors_dir: Path) -> None:
     assert {v["name"] for v in _load(vectors_dir, "jcs")} == {"jcs_basic", "jcs_numbers"}
 
 
+def test_all_vector_kinds_have_consumers(vectors_dir: Path) -> None:
+    """vectors/ 出现的 kind 是封闭集合，每个都必须有消费方；新增 kind 漏写消费测试时在此失败。"""
+    kinds = {
+        json.loads(f.read_text(encoding="utf-8"))["kind"]
+        for f in vectors_dir.glob("*.json")
+        if f.name != "manifest.json"
+    }
+    assert kinds == {"document", "jcs", "uri", "invalid"}
+
+
 def test_jcs_numbers_ignore_decimal_context(vectors_dir: Path) -> None:
     """数字序列化不受调用方线程全局 decimal 上下文影响（否则浮点 metadata 的 hash 会静默改变）。"""
     vec = json.loads((vectors_dir / "jcs_numbers.json").read_text(encoding="utf-8"))
@@ -152,6 +163,21 @@ def test_jcs_numbers_ignore_decimal_context(vectors_dir: Path) -> None:
         for case in vec["cases"]:
             assert jcs(case["input"]) == case["canonical"]
         assert jcs(0.1234567890123456) == "0.1234567890123456"
+
+
+def test_uri_vectors(vectors_dir: Path) -> None:
+    """file_uri 语法规范化（core.md §1.1）：逐例输出一致；非法输入被拒且错误码一致；结果幂等。"""
+    for vec in _load(vectors_dir, "uri"):
+        for case in vec["cases"]:
+            normalized = normalize_file_uri(case["input"])
+            assert normalized == case["normalized"], f"{vec['name']}: {case['input']!r}"
+            assert normalize_file_uri(normalized) == normalized, (
+                f"{vec['name']}: {case['input']!r} 的规范化结果不是不动点"
+            )
+        for case in vec["invalid_cases"]:
+            with pytest.raises(DpeHashError) as info:
+                normalize_file_uri(case["input"])
+            assert info.value.code == case["code"], f"{vec['name']}: {case['input']!r}"
 
 
 class _DuplicateKey(Exception):
