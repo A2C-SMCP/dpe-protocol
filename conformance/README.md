@@ -14,7 +14,7 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 - `get_skeleton` 读回的内容与推送内容一致，不含任何服务端衍生数据；服务端回报的 doc_hash 等于按契约 1 对推送内容算出的值；
 - CAS 全矩阵（if_absent / base_hash / 缺前置 / force）与删除复活防护；
 - delete / move 语义（move 后目标 doc_hash 与源一致；move 缺 base_hash 返回 428）；
-- RFC 9457 错误格式与 `code` / `retryable` / `Retry-After`；每个 code 与 HTTP §5 的状态码一致；
+- RFC 9457 错误格式与 `code` / `retryable` / `Retry-After`；每个 code 与 HTTP §5 的状态码一致；每个错误响应带与 `code` 相等的 `DPE-Error-Code` 头；
 - 增量推送、删除、move 收敛后与全量推送一致（判据 plan §13）。
 
 ## 字段不被静默丢弃（#4 A1 / A2）
@@ -56,6 +56,7 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 
 - 条件头只出现在文档资源上（`PUT` / `DELETE documents?uri=`）；move 的前置条件在请求体中，冲突返回 `409`。
 - 响应带 `DPE-Doc-Hash` 与 `ETag: "<doc_hash>"`；用 `W/"…"` 形式的 If-Match 写入必然返回 412；按 `DPE-Doc-Hash` 构造的 If-Match 写入成功。
+- HEAD 出错时带 `DPE-Error-Code`：`head` 不存在的文档返回 `404` + `DPE_NOT_FOUND`，缺少契约头返回 `400` + `DPE_CONTRACT_UNSUPPORTED`；对失效会话做断点查询返回 `410` + `DPE_SESSION_EXPIRED`（#70）。
 - 对已删除文档带 `If-Match` 的 PUT / DELETE 返回 `412` + `DPE_NOT_FOUND`；move 响应带指向目标文档的 `Content-Location`，不带 `ETag`。
 
 ## 安全（#4 B9）

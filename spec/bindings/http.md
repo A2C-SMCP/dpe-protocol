@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#63 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#63、#70 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -59,14 +59,14 @@
 - move 的 CAS 对象是请求体中的 `from_uri`，不是 `/move` 这个目标资源，因此前置条件放在请求体中，不使用条件头；条件不满足返回 `409`（`412` 专指条件头求值失败）。
 - 带 `force: true` 的请求同时带条件头时返回 `DPE_VALIDATION`。
 - **commit 的 unchanged 先于条件求值**（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 `200` + `unchanged`，即使条件头不满足。对 `If-Match`，这符合 RFC 9110 §13.1.1：状态变更请求所要求的结果已经生效时，源服务器可以返回 2xx 而不是 412。对 `If-None-Match: *`，RFC 9110 §13.1.2 要求条件不满足时返回 412，这里是**有意偏离**：内容已经是提交的值时，DPE 以内容幂等（core.md §5.2）为准返回 `unchanged`。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。
-- 同一个 `code` 在不同端点可能映射到不同状态码（如 `DPE_PRECONDITION_FAILED` 在 PUT 上是 412、在 move 上是 409）。**客户端 MUST 依据 problem 体中的 `code` 分派**，MUST NOT 依据状态码分派。
-- 若仍收到不带 problem 体的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定：
+- 同一个 `code` 在不同端点可能映射到不同状态码（如 `DPE_PRECONDITION_FAILED` 在 PUT 上是 412、在 move 上是 409）。**客户端 MUST 依据错误的 `code` 分派**（有 problem 体时取体中的 `code`，HEAD 取 `DPE-Error-Code` 头，§5），MUST NOT 依据状态码分派。
+- 若仍收到既无 problem 体、也无 `DPE-Error-Code` 头的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定：
   - PUT：doc_hash 等于提交内容 → 成功；不存在 → `DPE_NOT_FOUND`；否则 → `DPE_PRECONDITION_FAILED`（`If-None-Match: *` 时为 `DPE_ALREADY_EXISTS`）。
   - DELETE：不存在 → 成功（§5.2）；doc_hash 等于 `If-Match` 的值 → 中间层误判，可原样重试一次，仍如此则上报；否则 → `DPE_PRECONDITION_FAILED`。
 
 ### 3.3 响应头
 
-- `head` 用 `HEAD documents?uri=`：`200` 带 `DPE-Doc-Hash` 与 `ETag`；不存在返回 `404`（不带 problem 体）。
+- `head` 用 `HEAD documents?uri=`：`200` 带 `DPE-Doc-Hash` 与 `ETag`；不存在返回 `404` + `DPE-Error-Code: DPE_NOT_FOUND`（HEAD 不带体，§5）。
 - `get_skeleton` 的 `200` 响应带同样的头，客户端 MAY 用 `If-None-Match` 走 `304`（弱比较，`W/` 不影响）。
 - commit 的成功响应带文档当前的 `DPE-Doc-Hash` 与 `ETag`；move 的成功响应带目标文档的 `DPE-Doc-Hash` 与指向目标文档的 `Content-Location`，不带 `ETag`（`/move` 不是文档资源）；delete 的 `204` 不带二者。
 
@@ -187,7 +187,7 @@
 - 整体上传：不带 `Content-Range` 的 `PUT`，体为完整字节。
 - 分块上传：`PUT` + `Content-Range: bytes {from}-{to}/{total}`，块大小不超过 `blob_chunk_bytes`，MUST 按序追加；全部字节到齐后服务端校验 sha256。
 - 中间块：响应 `202`，带 `DPE-Upload-Offset: {n}`（已收字节数），无体；最后一块到齐并校验通过后，按 §4.6 返回 `201` / `200`。
-- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该对象），并带 `DPE-Session-Expires` 给出会话当前的过期时间。断点查询只读，**不续期**（core.md §3.4）。
+- 断点查询：`HEAD` 同一 URL，响应头 `DPE-Upload-Offset: {n}` 表示**本会话**已收字节数（同样不反映会话外是否已存该对象），并带 `DPE-Session-Expires` 给出会话当前的过期时间。断点查询只读，**不续期**（core.md §3.4）；会话不可用时返回 `410` + `DPE-Error-Code: DPE_SESSION_EXPIRED`（§5）。
 - 校验失败返回 `DPE_HASH_MISMATCH` 并丢弃已收内容。blob 校验的是原始字节的 sha256。
 - 以上分块规则同样适用于 §4.6 的页对象，只是校验方式不同（见 §4.6），总大小上限为 `page_max_bytes`。
 
@@ -233,6 +233,7 @@
 ```
 
 - `type` 是规范中稳定的 URI。v1 使用 `urn:dpe:error:<kebab-case>`；规范将来若发布到固定域名，MAY 改为该域名下的 URL（plan §16）。
+- **`DPE-Error-Code` 响应头**：每个 DPE 错误响应 MUST 带 `DPE-Error-Code: <code>`，值等于 problem 体的 `code`。HEAD 响应不能带内容（RFC 9110 §9.3.2），HEAD 出错时只有这个头、没有 problem 体，客户端 MUST 按它分派；`retryable` 由 code 决定（core.md §6），不另设头。错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头时不是 DPE 错误（例如 remote URL 配错或网关返回的 404），客户端 MUST NOT 猜测 code，按非协议错误上报。
 - 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。`DPE_MISSING_CONTENT` 另带 `missing: {pages: […], content_hashes: […], blobs: […]}` 与 `missing_truncated: true|false`（core.md §3.3）。
 - HTTP 状态映射（每个 code 在给定端点上只有一个状态码；客户端按 `code` 分派，§3.2）：
 
