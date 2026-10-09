@@ -6,7 +6,7 @@ conftest.py               # vectors_dir 夹具：读取仓库根目录 vectors/�
 tools/check_packages.py   # 打包约束检查（CI 与发布共用）
 tools/bench_hash.py       # dpe-hash 10 万元素原位重算基准（CI 只报告、不设门槛）
 packages/dpe-hash/        # import dpe_hash：零运行时依赖、纯 Python 的 hash 核心
-packages/dpe-sdk/         # import dpe_sdk：依赖 dpe-hash（同版本精确依赖）、pydantic v2、httpx
+packages/dpe-sdk/         # import dpe_sdk：依赖 dpe-hash（同版本精确依赖）、pydantic v2、httpx、jsonschema（dpe-run 校验插件配置）
 ```
 
 ## 开发
