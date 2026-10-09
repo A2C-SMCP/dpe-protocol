@@ -100,12 +100,16 @@ class ListPage(_Envelope):
     next_cursor: str | None
 
 
+#: 计数必须是非负整数（多重集的大小）
+_Count = Annotated[int, Field(strict=True, ge=0)]
+
+
 class Delta(_Envelope):
     """新旧文档元素 content_hash 多重集之差（core §3.3）。"""
 
-    added: int
-    removed: int
-    retained: int
+    added: _Count
+    removed: _Count
+    retained: _Count
 
 
 CommitStatus = Literal["created", "updated", "unchanged"]

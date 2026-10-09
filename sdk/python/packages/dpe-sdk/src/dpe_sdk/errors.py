@@ -12,7 +12,8 @@
 ``from_hash_error`` 把它转换为对应的协议错误（服务端返回、或客户端统一上报时使用）。
 
 客户端本地异常（``ClientError`` 及其子类）不是协议错误：没有 core §6 的码，也不由服务端返回，
-而是客户端判定响应不合规（``UnexpectedResponseError``）或服务端不兼容（``IncompatibleServerError``）。
+而是客户端判定响应不合规（``UnexpectedResponseError``）、服务端不兼容（``IncompatibleServerError``）
+或 force 提交的结果无法确认（``ForceNotConfirmedError``）。
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ __all__ = [
     "ContractUnsupportedError",
     "DpeError",
     "ForbiddenError",
+    "ForceNotConfirmedError",
     "HashMismatchError",
     "IncompatibleServerError",
     "MissingContentError",
@@ -213,6 +215,23 @@ class UnexpectedResponseError(ClientError):
 
     def __str__(self) -> str:
         return f"{self.message}（HTTP {self.status}）"
+
+
+class ForceNotConfirmedError(ClientError):
+    """force 提交的响应丢失，事后 ``head`` 未能确认它已生效（core §5.2）。
+
+    SDK 不自动重放 force：重放会覆盖首次提交之后他人的写入，由上层重新读取后决定是否再次发起。
+    ``doc_hash`` 是本次提交内容的 doc_hash；``checked`` 为真时 ``current`` 是 head 读到的当前
+    doc_hash（文档不存在为 ``None``），为假时 head 本身也失败了（``__cause__`` 为其异常），
+    ``current`` 无意义。
+    """
+
+    def __init__(self, message: str, *, doc_hash: str, current: str | None, checked: bool) -> None:
+        super().__init__(message)
+        self.message = message
+        self.doc_hash = doc_hash
+        self.current = current
+        self.checked = checked
 
 
 class IncompatibleServerError(ClientError):

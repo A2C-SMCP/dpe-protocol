@@ -30,7 +30,7 @@ doc.hashes()  # {"doc_hash", "pages": [{"page_hash", "elements"}…]}
 ## 协议错误与响应报文
 
 - `dpe_sdk.errors`：core §6 的每个错误码一个异常类（基类 `DpeError`），带 `code` 与 `retryable`（只表示原样重试可能成功）；`from_problem(problem, retry_after)` 按 problem 体的 `code` 构造异常（含 `missing` 清单与 `Retry-After`），不按 HTTP 状态码分派；core §6 之外的码构造为 `UnknownCodeError`；
-- 客户端本地判定不经 `DpeError`：本地判定为不合法时（目前如 `get_skeleton` 的 `uri` 不符合 core §1.1）在发请求前即抛 `dpe_hash.ValidationError`（`ValueError` 子类，`code` 仍为 `DPE_VALIDATION`）；响应不合规抛 `UnexpectedResponseError`。捕获 `DpeError` 的调用方请按需一并处理；
+- 客户端本地判定不经 `DpeError`：本地判定为不合法时（如 `get_skeleton`、`commit`、`delete`、`move` 的 URI 不符合 core §1.1，`base_hash` 不是本次声明契约的 hash）在发请求前即抛 `dpe_hash` 的错误（`ValidationError` / `ContractUnsupportedError`，均为 `ValueError` 子类，带规范错误码）；响应不合规抛 `UnexpectedResponseError`；force 提交的响应丢失且事后 `head` 未能确认生效时抛 `ForceNotConfirmedError`（SDK 不重放 force，core §5.2）。捕获 `DpeError` 的调用方请按需一并处理；
 - `dpe_sdk.wire`：各端点的响应模型（`Capabilities`、`Head`、`Skeleton`、`ListPage`、`CommitResult` 等）；信封对未知成员宽容，内嵌的三层对象仍是封闭 schema。
 
 ## 参考服务端（testing）
