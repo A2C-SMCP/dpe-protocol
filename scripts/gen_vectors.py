@@ -1171,7 +1171,7 @@ JCS_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "jcs_numbers",
-        "description": "ECMAScript Number::toString 边界：整数展开阈值 1e21、指数下界 1e-7、无前导零指数、-0 归一为 0。",
+        "description": "ECMAScript Number::toString 边界：整数展开阈值 1e21、指数下界 1e-7、无前导零指数、-0 归一为 0、最短候选等距时取偶。",
         "cases": [
             {"input": 0},
             {"input": -0.0},
@@ -1187,6 +1187,9 @@ JCS_VECTORS: list[dict[str, Any]] = [
             {"input": 3.141592653589793},
             {"input": 333333333.33333331},
             {"input": [1e30, -1e-30]},
+            # 最短候选等距时取偶（契约 1 §3.3）：真值恰为 …54.25 / …38.125 / …98.625，
+            # 末位须为 2 而非 3（部分标准库的最短格式化在此取奇）
+            {"input": [1059438285926254.25, 154616442297138.125, 87762274880598.625]},
         ],
     },
 ]

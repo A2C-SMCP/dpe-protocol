@@ -1,7 +1,9 @@
 [package]
 name = "dpe-hash"
-# 依赖预算（硬约束）：hash 核心不绑定运行时，只允许 sha2 + serde_json，改动前先过评审
-description = "DPE hash 契约的独立 hash 核心：不绑定运行时，仅依赖 sha2 与 serde_json"
+# 依赖预算（硬约束）：hash 核心不绑定运行时，只允许 sha2 + serde + serde_json + ryu，改动前先过评审。
+# #19 评审加入 serde（derive，类型化输入结构；编译期另引入 serde_derive / syn / quote / proc-macro2）
+# 与 ryu（JCS 浮点的最短往返且等距取偶，契约 1 §3.3）——均为直接依赖，ryu 不随 serde_json 传递引入
+description = "DPE hash 契约的独立 hash 核心：不绑定运行时，仅依赖 sha2、serde、serde_json 与 ryu"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +16,13 @@ readme = "README.md"
 
 [dependencies]
 sha2 = "0.10"
+# JCS 浮点格式化的有效数字来源：最短往返、居中取偶（与 ES Number::toString、Python repr 一致；
+# 标准库的 {:e} 居中时不取偶，见 src/jcs.rs）
+ryu = "1"
+serde = { version = "1", features = ["derive"] }
 # float_roundtrip 必需：JCS 数字序列化以「正确舍入的 f64」为前提，serde_json 默认解析
-# 在极端指数下可差 1 ULP（向量 jcs_numbers 的 1e-30 用例即为此而设，见 sdk/README.md）
-serde_json = { version = "1", features = ["float_roundtrip"] }
+# 在极端指数下可差 1 ULP（向量 jcs_numbers 的 1e-30 用例即为此而设，见 sdk/README.md）。
+# arbitrary_precision 必需：数值越界（如 1e400）属 core §2.8 第 4 步，解析阶段不得拒绝，
+# 须保留字面量交给 JCS 判定（向量 number_overflow_after_category）。该 feature 在下游统一
+# 生效，代价是 #[serde(flatten)] / untagged enum 遇到数字会反序列化失败，见 README。
+serde_json = { version = "1", features = ["float_roundtrip", "arbitrary_precision"] }

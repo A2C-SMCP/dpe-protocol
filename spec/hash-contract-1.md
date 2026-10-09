@@ -56,7 +56,7 @@ H(obj) = "dpe1:" + hex( SHA-256( utf8( JCS( norm(obj) ) ) ) )
 对象一律用 [RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785) 序列化为 UTF-8 字节。要点：
 
 - 对象键按 UTF-16 码元序排序；
-- 数字按 ECMAScript `Number::toString` 序列化（整数不带小数点，指数不带前导零）；
+- 数字按 ECMAScript `Number::toString` 序列化（整数不带小数点，指数不带前导零）。有效数字取能往返的最短位数；同为最短的候选有多个时 MUST 取最接近真值者，与两者等距时 MUST 取末位为偶数者（即 ECMAScript 该算法 Note 2 的推荐做法，RFC 8785 附带的测试数据、Python `repr` 均如此；部分语言标准库的最短格式化在等距时不取偶，不能直接使用，见向量 `jcs_numbers`）；
 - **整数字面量**（不含小数点与指数）绝对值超过 2^53−1 时 MUST 拒绝；带小数点或指数的数字按 IEEE-754 double 解析后序列化（向量 `jcs_numbers`）；
 - 时间戳一律为 RFC 3339 UTC 字符串（`Z` 结尾），作为字符串参与 JCS，不做时区换算之外的改写。
 
