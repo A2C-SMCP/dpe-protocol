@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "dpe-hash"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "ryu",
  "serde",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "dpe-sdk"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "dpe-hash",
  "reqwest",
