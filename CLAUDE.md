@@ -9,7 +9,7 @@ DPE（Document / Page / Element）**标准协议**的权威仓库：规范、has
 - `spec/core.md`：抽象模型与操作语义（与传输无关）
 - `spec/hash-contract-1.md`：hash 契约 1（`dpe1:`）
 - `spec/bindings/http.md`：HTTP 绑定（v1 唯一规范性绑定）
-- `spec/connector-contract.md`：中立 connector 契约（独立规范；运行边界见 §6）
+- `spec/connector-contract.md`：中立 connector 契约（独立规范，全文定稿；配置与凭证见 §4，运行边界见 §6，错误与可观测见 §7）
 - `vectors/`：一致性向量（规范的一部分）
 - `scripts/gen_vectors.py`：向量生成器 = hash 契约的**规范参考实现**（仅标准库）
 - `conformance/`：黑盒 HTTP 跑分器（M2）
