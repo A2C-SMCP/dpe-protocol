@@ -2,7 +2,8 @@
 
 依赖 dpe-hash 计算 hash；承载三层对象的数据模型（``dpe_sdk.models``）、协议错误
 （``dpe_sdk.errors``）、响应报文（``dpe_sdk.wire``）、sans-IO 协议核心（``dpe_sdk.protocol``）
-与内存版参考服务端（``dpe_sdk.testing``），以及后续的传输适配、增量推送与 dpe-run（#13–#17）。
+内存版参考服务端（``dpe_sdk.testing``）与 dpe-run 运行器的组成部分（``dpe_sdk.run``，不在顶层
+导入），以及后续的传输适配与增量推送（#13–#15）。
 """
 
 from importlib.metadata import version
