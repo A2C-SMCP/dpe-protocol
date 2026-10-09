@@ -1,13 +1,62 @@
-//! dpe-hash：DPE hash 契约 1（`dpe1:`）的独立 hash 核心。
+//! dpe-hash：DPE hash 契约的独立 hash 核心。
 //!
-//! 不绑定异步运行时、不含任何 I/O；对齐对象是 `spec/hash-contract-1.md`，
-//! 一致性由仓库根目录 `vectors/` 的向量逐字节校验。
-//! 当前为工程骨架：hash 入口与契约常量随 #19 落地，本版本只导出 [`VERSION`]。
+//! 不绑定异步运行时、不含任何 I/O；实现 hash 契约 1（`spec/hash-contract-1.md`，`dpe1:`）与
+//! file_uri 语法规范化（`spec/core.md` §1.1），并导出契约常量、三层对象的类型化结构与带规范
+//! 错误码的错误类型。一致性由仓库根目录 `vectors/` 的向量逐字节校验，与 Python dpe-hash
+//! 行为对等。
 //!
-//! 消费方注意：喂给 hash 的 JSON 若含浮点，解析必须正确舍入——本 crate 已为
-//! `serde_json` 开启 `float_roundtrip`（见 `sdk/README.md`）。
+//! ```
+//! use dpe_hash::{content_hash, doc_hash, page_hash, PageFields, DocumentFields, CONTRACT};
+//! use serde_json::json;
+//!
+//! let element = json!({"category": "Title", "text": "季度报告"});
+//! let element_hash = content_hash(&element, CONTRACT)?;
+//! let page = page_hash(&PageFields::default(), &[&element_hash], CONTRACT)?;
+//! let document = DocumentFields { file_type: "pdf".into(), ..Default::default() };
+//! assert!(doc_hash(&document, &[page], CONTRACT)?.starts_with("dpe1:"));
+//! # Ok::<(), dpe_hash::Error>(())
+//! ```
+//!
+//! # I-JSON 与数值（core §2.8）
+//!
+//! - 第 0 步 I-JSON：孤立代理项由 serde_json 在解析阶段拒绝（`str` 无法承载）；重复键
+//!   serde_json 默认保留最后一个，需要拒绝重复键的调用方（如服务端读取请求体）须用严格解析。
+//! - 本 crate 为 serde_json 开启 `float_roundtrip`（浮点正确舍入）与 `arbitrary_precision`
+//!   （`1e400` 这类越界数值保留到第 4 步再拒绝）。后者在下游统一生效：同一构建中的
+//!   `#[serde(flatten)]` 与 untagged enum 遇到数字会反序列化失败，消费方的模型应避开这两种写法。
+//! - **在 Rust 中构造的 NaN / Infinity 不会被拒绝，而是被当作缺省**：`serde_json::Value`
+//!   无法承载非有限数，`json!` / `Value::from(f64)` / `serde_json::to_value` 会把它们静默
+//!   转成 `null`，而 metadata 中值为 null 的键在规范化时被删除（契约 1 §3.2）。因此
+//!   `{"x": f64::NAN}` 与 `{}` 得到相同的 hash。Python dpe-hash 对同样的输入报
+//!   `DPE_VALIDATION`。用计算得到的浮点（如版面坐标）构造 metadata 时，调用方 MUST 先自行
+//!   确认它是有限数（`f64::is_finite`）。
 
 #![forbid(unsafe_code)]
+
+mod constants;
+mod contract1;
+mod error;
+mod jcs;
+mod models;
+mod uri;
+
+pub use constants::{
+    content_fields, CATEGORY_CONTENT_FIELDS, CONTRACT, DRILL_CONTRACT, FILE_TYPES, KNOWN_CONTRACTS,
+    SUPPORTED_CONTRACTS,
+};
+#[doc(hidden)]
+pub use contract1::__private;
+pub use contract1::{
+    blob_ref, children, content_hash, doc_hash, document_hashes, object_hash, page_hash,
+    parse_blob_ref, parse_hash, parse_hash_with,
+};
+pub use error::{Error, ErrorKind, Result};
+pub use jcs::jcs;
+pub use models::{
+    DocumentFields, DocumentHashes, DocumentObject, ElementObject, ExpandedDocument, ExpandedPage,
+    JsonObject, ObjectKind, PageFields, PageHashes, PageObject, ToJson, UnknownObjectKind,
+};
+pub use uri::normalize_file_uri;
 
 /// 本 crate 的版本，与 `dpe-sdk` 同版本（两个 crate 由 workspace 统一管理）。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

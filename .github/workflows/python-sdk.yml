@@ -86,4 +86,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
-      - run: uv run python tools/bench_hash.py | tee -a "$GITHUB_STEP_SUMMARY"
+      # 显式 shell: bash 才带 -o pipefail：否则基准失败时退出码被 tee 覆盖，job 仍为绿色
+      - shell: bash
+        run: uv run python tools/bench_hash.py | tee -a "$GITHUB_STEP_SUMMARY"

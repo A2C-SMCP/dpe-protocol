@@ -4,7 +4,7 @@
 Cargo.toml            # workspace 根（不是 crate）：成员、共享元数据、SDK 版本管理与依赖预算
 .cargo/config.toml    # resolver MSRV 回退：依赖解析优先选与 rust-version 1.80 兼容的版本
 pyproject.toml        # bump-my-version（版本工具是 Python 的，与 sdk/python/ 同款两态约定）
-crates/dpe-hash/      # dpe-hash：hash 核心与契约常量，仅依赖 sha2 + serde_json
+crates/dpe-hash/      # dpe-hash：hash 核心、file_uri 规范化与契约常量，仅依赖 sha2 + serde + serde_json + ryu
 crates/dpe-sdk/       # dpe-sdk：sans-IO 协议核心；默认 feature `http` 提供 reqwest / tokio 适配
 ```
 
@@ -19,9 +19,10 @@ cargo test --locked                             # 另可 cargo +1.80.0 test --lo
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo fmt --all --check
 cargo check -p dpe-sdk --no-default-features --locked   # sans-IO 核心：不引入 reqwest / tokio
+cargo run --release -p dpe-hash --example bench_hash    # 可选：10 万元素原位重算基准，参数 --pages / --per-page / --repeat
 ```
 
-CI（`.github/workflows/rust-sdk.yml`）先跑 `make check-vectors`，再跑 lint（stable）、测试（1.80.0 + stable 矩阵，`--locked`）与打包检查；toolchain 由 `actions-rust-lang/setup-rust-toolchain` 提供。
+CI（`.github/workflows/rust-sdk.yml`）先跑 `make check-vectors`，再跑 lint（stable）、测试（1.80.0 + stable 矩阵，`--locked`）、打包检查与原位重算基准（只报告、不设门槛，写进 job summary）；toolchain 由 `actions-rust-lang/setup-rust-toolchain` 提供。
 
 打包与发布面：
 

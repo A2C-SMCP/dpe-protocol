@@ -97,3 +97,19 @@ jobs:
       # 之后（#19），发布顺序由 release-rust.yml 保证（先 dpe-hash 后 dpe-sdk）。
       - name: dpe-sdk 打包面检查（依赖发布前可用）
         run: cargo package --list -p dpe-sdk
+
+  # 原位重算基准（#19，对等 Python 的 bench job）：只报告、不设门槛，结果写进 job summary
+  bench:
+    needs: vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      # 显式 shell: bash 才带 -o pipefail：否则基准失败时退出码被 tee 覆盖，job 仍为绿色
+      - shell: bash
+        run: cargo run --release -p dpe-hash --example bench_hash --locked | tee -a "$GITHUB_STEP_SUMMARY"
