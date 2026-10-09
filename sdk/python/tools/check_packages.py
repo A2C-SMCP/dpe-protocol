@@ -14,7 +14,9 @@
    不依赖构建后端是否规范化 METADATA；
 5. 静态 import 白名单：wheel 中的 ``import`` / ``from … import`` 只允许标准库、自身以及
    已声明的运行时依赖。用白名单而不是黑名单，内核、向量生成器（``scripts.gen_vectors``）
-   等未声明的模块不必列名即可拦下。``importlib.import_module`` 等动态 import 不在检查范围内，
+   等未声明的模块不必列名即可拦下。可选依赖（``extra == …``）只允许在函数体内惰性 import：
+   模块顶层 import 会让未装该 extra 的用户在导入时失败。``importlib.import_module`` 等
+   动态 import 不在检查范围内，
    由评审把关；依赖名按 ``-``/``.`` → ``_`` 映射到 import 名，
    发布名与 import 名不同的依赖需另行处理。
 """
@@ -82,14 +84,27 @@ def _read_wheel(path: Path) -> Wheel:
     )
 
 
-def _imported_roots(source: str, filename: str) -> set[str]:
-    roots: set[str] = set()
-    for node in ast.walk(ast.parse(source, filename=filename)):
-        if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".")[0])
-    return roots
+def _import_roots(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Import):
+        return {alias.name.split(".")[0] for alias in node.names}
+    if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+        return {node.module.split(".")[0]}
+    return set()
+
+
+def _imported_roots(source: str, filename: str) -> tuple[set[str], set[str]]:
+    """返回 (模块级 import 的根, 函数体内惰性 import 的根)。"""
+    eager: set[str] = set()
+    lazy: set[str] = set()
+
+    def visit(node: ast.AST, in_function: bool) -> None:
+        (lazy if in_function else eager).update(_import_roots(node))
+        nested = in_function or isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        for child in ast.iter_child_nodes(node):
+            visit(child, nested)
+
+    visit(ast.parse(source, filename=filename), False)
+    return eager, lazy
 
 
 def check(dist: Path, expect_version: str | None) -> list[str]:
@@ -116,9 +131,17 @@ def check(dist: Path, expect_version: str | None) -> list[str]:
         runtime = [r for r in wheel.requires if "extra ==" not in r]
         allowed = set(sys.stdlib_module_names) | {import_name}
         allowed |= {_import_name(r) for r in runtime}
+        optional = {_import_name(r) for r in wheel.requires if "extra ==" in r}
         for filename, source in wheel.sources.items():
-            for root in sorted(_imported_roots(source, filename) - allowed):
-                errors.append(f"{dist_name}：{filename} import 了未声明的模块 {root!r}")
+            eager, lazy = _imported_roots(source, filename)
+            for root in sorted((eager - allowed) | (lazy - allowed - optional)):
+                if root in optional:
+                    errors.append(
+                        f"{dist_name}：{filename} 在模块顶层 import 了可选依赖 {root!r}"
+                        "（只能在函数体内惰性 import）"
+                    )
+                else:
+                    errors.append(f"{dist_name}：{filename} import 了未声明的模块 {root!r}")
 
     hash_wheel = wheels.get("dpe-hash")
     sdk_wheel = wheels.get("dpe-sdk")

@@ -179,7 +179,7 @@ source = { virtual = "." }
 dev = [
     { name = "bump-my-version" },
     { name = "dpe-hash" },
-    { name = "dpe-sdk" },
+    { name = "dpe-sdk", extra = ["server"] },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -192,7 +192,7 @@ dev = [
 dev = [
     { name = "bump-my-version", specifier = ">=0.28.0" },
     { name = "dpe-hash", editable = "packages/dpe-hash" },
-    { name = "dpe-sdk", editable = "packages/dpe-sdk" },
+    { name = "dpe-sdk", extras = ["server"], editable = "packages/dpe-sdk" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.8" },
@@ -204,6 +204,7 @@ name = "dpe-sdk"
 version = "0.2.2.dev0"
 source = { editable = "packages/dpe-sdk" }
 dependencies = [
+    { name = "anyio" },
     { name = "dpe-hash" },
     { name = "httpx" },
     { name = "jsonschema" },
@@ -211,14 +212,22 @@ dependencies = [
     { name = "referencing" },
 ]
 
+[package.optional-dependencies]
+server = [
+    { name = "uvicorn" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4,<5" },
     { name = "dpe-hash", editable = "packages/dpe-hash" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "jsonschema", specifier = ">=4.18,<5" },
     { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "referencing", specifier = ">=0.28,<1" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30,<1" },
 ]
+provides-extras = ["server"]
 
 [[package]]
 name = "h11"
@@ -1013,6 +1022,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a3/26/b09b8010994eccc3c09092e6b34058f36a460eea2d4c3e8b910c695975a0/typing_inspection-0.4.4.tar.gz", hash = "sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47", size = 76928, upload-time = "2026-08-12T12:37:25.997Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl", hash = "sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147", size = 14750, upload-time = "2026-08-12T12:37:24.648Z" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.54.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
 ]
 
 [[package]]

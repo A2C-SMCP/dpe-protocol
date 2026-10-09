@@ -66,7 +66,7 @@ def test_session_binding_isolation() -> None:
     with pytest.raises(errors.SessionExpiredError):  # 他人会话
         engine.upload_element("v", sid, eh, raw, C)
     with pytest.raises(errors.SessionExpiredError):
-        engine.upload_offset("v", sid, eh)
+        engine.upload_offset("v", sid, eh, C, kind="page")
     with pytest.raises(errors.SessionExpiredError):  # 伪造 id
         engine.upload_element("u", "st-none", eh, raw, C)
     # 属于同一调用者、但属于另一 file_uri 的会话：commit 时 410
@@ -180,7 +180,7 @@ def test_commit_consumes_session_and_unchanged_replay() -> None:
     result = engine.commit("u", URI, body, C, IfAbsent())
     assert result.status == "created"
     with pytest.raises(errors.SessionExpiredError):  # 已消费
-        engine.upload_offset("u", sid, "sha256:" + "0" * 64)
+        engine.upload_offset("u", sid, "sha256:" + "0" * 64, C, kind="blob")
     # 原样重试（同一 staging_session）：unchanged 在会话检查之前，200 而不是 410
     replay = engine.commit("u", URI, body, C, IfAbsent())
     assert replay.status == "unchanged"

@@ -21,8 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from functools import partial
-from typing import Any, Protocol, TypeVar
-from urllib.parse import urlsplit
+from typing import Any, Literal, Protocol, TypeVar
 
 import dpe_hash
 from dpe_hash import DpeHashError, has_invalid_unicode
@@ -46,6 +45,7 @@ from dpe_sdk.errors import (
 )
 from dpe_sdk.protocol import BaseHash, IfAbsent
 from dpe_sdk.testing._staging import (
+    InvalidChunk,
     PartialUpload,
     Session,
     SessionStore,
@@ -87,6 +87,7 @@ __all__ = [
     "Engine",
     "EngineConfig",
     "IfAbsent",
+    "InvalidPrecondition",
     "Precondition",
 ]
 
@@ -123,6 +124,19 @@ class DedupScope(Enum):
 #: 条件头承载的前置条件（force 是请求体成员，不在此列）。``base_hash`` 按值比较，不做格式校验
 #: （core §5.2，#63）
 Precondition = BaseHash | IfAbsent
+
+
+@dataclass(frozen=True)
+class InvalidPrecondition:
+    """绑定层无法解释的前置条件（HTTP：条件头语法非法，如 ``If-Match: *``、多个 entity-tag、
+    ``If-Match`` 与 ``If-None-Match`` 并存）。
+
+    它只看请求本身，引擎在报文校验的末步（与「force 与条件头并存」同一步，core §3.3 第 1.5 步；
+    delete 在授权之前）抛 ``DPE_VALIDATION``。合法 entity-tag 中的值不在此列：``base_hash`` 按值
+    比较、不做格式校验（core §5.2），比较不上即不匹配。
+    """
+
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -187,22 +201,31 @@ _CURSOR_PREFIX = "c1."
 _T = TypeVar("_T")
 
 
-def _normalize_uri(uri: str) -> str:
-    """file_uri 比较前的语法规范化（core §1）。
+def _normalize_uri(uri: str, at: str = "") -> str:
+    """file_uri 的校验与语法规范化（core §1.1），结果即身份；不合法 → ``DPE_VALIDATION``。
 
-    接缝：#39 合入后改为 ``dpe_hash.normalize_file_uri``；在此之前按原样比较。
+    只看请求本身：各入口都排在契约声明之后、与请求信封同一步（HTTP 绑定 §3.1、§4.5）；
+    ``at`` 是该 URI 在请求体中的位置（查询参数为根）。
     """
-    return uri
+    return _validated(partial(dpe_hash.normalize_file_uri, uri), at)
 
 
-def _require_absolute_uri(uri: str) -> None:
-    """file_uri 必须是绝对 URI（core §1）：带 scheme（RFC 3986）。"""
+StagedKind = Literal["page", "blob"]
+
+
+def _target_ref(target: str, kind: StagedKind, contract: str) -> None:
+    """暂存路径中的目标 hash 的语法（页为声明契约的 hash，blob 为 ``sha256:`` 引用）。
+
+    用于字节到齐前无法重算的请求（分块上传与断点查询）：排在契约之后、会话判定之前，非法 →
+    ``DPE_VALIDATION``——否则断点查询一个非法 hash 会得到「合法但无进度」的 200。
+    """
     try:
-        scheme = urlsplit(uri).scheme
-    except ValueError:
-        scheme = ""
-    if not scheme:
-        raise ValidationError(f"file_uri 必须是绝对 URI：{uri!r}", pointer("file_uri"))
+        if kind == "blob":
+            dpe_hash.parse_blob_ref(target)
+        else:
+            dpe_hash.parse_hash(target, (contract,))
+    except DpeHashError as exc:
+        raise ValidationError(f"路径中的 hash {target!r} 不合法：{exc.message}") from None
 
 
 def _validated(compute: Callable[[], _T], at: str = "") -> _T:
@@ -347,8 +370,9 @@ class Engine:
 
     def head(self, caller: str, uri: str, contract: str | None) -> Head | None:
         contract = self._contract(contract)
+        uri = _normalize_uri(uri)
         with self._lock:
-            state = self._store.docs.get(_normalize_uri(uri))
+            state = self._store.docs.get(uri)
             return None if state is None else Head(doc_hash=state.doc_hashes[contract])
 
     def batch_head(self, caller: str, body: bytes, contract: str | None) -> BatchHeads:
@@ -356,14 +380,16 @@ class Engine:
         contract = self._contract(contract)
         env = _envelope(data, _HEADS_MEMBERS)
         uris = _require(env, "uris", list, "字符串数组")
+        if len(uris) > self.config.batch_head_max:
+            raise ValidationError(f"uris 超过 batch_head_max={self.config.batch_head_max}")
+        normalized: list[str] = []
         for i, uri in enumerate(uris):
             if not isinstance(uri, str):
                 raise ValidationError("uris 的每一项必须是字符串", pointer("uris", i))
-        if len(uris) > self.config.batch_head_max:
-            raise ValidationError(f"uris 超过 batch_head_max={self.config.batch_head_max}")
+            normalized.append(_normalize_uri(uri, pointer("uris", i)))
         with self._lock:
             docs = self._store.docs
-            states = [docs.get(_normalize_uri(u)) for u in uris]
+            states = [docs.get(u) for u in normalized]
             return BatchHeads(
                 heads=[None if s is None else Head(doc_hash=s.doc_hashes[contract]) for s in states]
             )
@@ -427,9 +453,7 @@ class Engine:
         data = _parse_body(body, self.config.max_payload_bytes)
         contract = self._contract(contract)
         env = _envelope(data, _NEGOTIATE_MEMBERS)
-        file_uri = _require(env, "file_uri", str, "字符串")
-        _require_absolute_uri(file_uri)
-        uri = _normalize_uri(file_uri)
+        uri = _normalize_uri(_require(env, "file_uri", str, "字符串"), pointer("file_uri"))
         document = _require(env, "document", dict, "文档对象")
         pages = _optional(env, "pages", list, "页对象数组") or []
         _validated(
@@ -468,7 +492,7 @@ class Engine:
         body: bytes,
         contract: str | None,
         *,
-        chunk: UploadChunk | None = None,
+        chunk: UploadChunk | InvalidChunk | None = None,
     ) -> UploadResult:
         """``PUT staging/{sid}/pages/{page_hash}``（HTTP 绑定 §4.6、§4.7）。
 
@@ -515,13 +539,14 @@ class Engine:
         page_hash: str,
         body: bytes,
         contract: str | None,
-        chunk: UploadChunk,
+        chunk: UploadChunk | InvalidChunk,
     ) -> UploadResult:
         if len(body) > self.config.max_payload_bytes:
             raise PayloadTooLargeError(
                 f"分块 {len(body)} 字节，超过 max_payload_bytes={self.config.max_payload_bytes}"
             )
         contract = self._contract(contract)
+        _target_ref(page_hash, "page", contract)
         with self._lock:
             session = self._sessions.get(caller, session_id)
             if page_hash in session.pages:
@@ -559,9 +584,29 @@ class Engine:
         )
 
     def upload_element(
-        self, caller: str, session_id: str, content_hash: str, body: bytes, contract: str | None
+        self,
+        caller: str,
+        session_id: str,
+        content_hash: str,
+        body: bytes,
+        contract: str | None,
+        *,
+        chunk: InvalidChunk | None = None,
     ) -> UploadResult:
-        """``PUT staging/{sid}/objects/{content_hash}``（HTTP 绑定 §4.6）。元素对象不分块。"""
+        """``PUT staging/{sid}/objects/{content_hash}``（HTTP 绑定 §4.6）。元素对象不分块。
+
+        ``chunk`` 是请求带了分块参数（HTTP：``Content-Range``）：请求体按原始字节处理，与分块
+        路径一样契约在前——传输层上限 → 契约 → ``DPE_VALIDATION``，先于 I-JSON（#83）；不带时
+        按 §3.1 的顺序（I-JSON 先于契约）。
+        """
+        if chunk is not None:
+            if len(body) > self.config.max_payload_bytes:
+                limit = self.config.max_payload_bytes
+                raise PayloadTooLargeError(
+                    f"请求体 {len(body)} 字节，超过 max_payload_bytes={limit}"
+                )
+            self._contract(contract)
+            raise ValidationError(chunk.reason)
         data = _parse_body(body, self.config.max_payload_bytes)
         contract = self._contract(contract)
         h = _validated(partial(dpe_hash.object_hash, data, "element", contract))
@@ -601,7 +646,7 @@ class Engine:
         data: bytes,
         contract: str | None,
         *,
-        chunk: UploadChunk | None = None,
+        chunk: UploadChunk | InvalidChunk | None = None,
     ) -> UploadResult:
         """``PUT staging/{sid}/blobs/{sha256}``（HTTP 绑定 §4.7）：整体与分块两条路径。
 
@@ -641,17 +686,16 @@ class Engine:
         blob: str,
         body: bytes,
         contract: str | None,
-        chunk: UploadChunk,
+        chunk: UploadChunk | InvalidChunk,
     ) -> UploadResult:
         if len(body) > self.config.max_payload_bytes:
             raise PayloadTooLargeError(
                 f"分块 {len(body)} 字节，超过 max_payload_bytes={self.config.max_payload_bytes}"
             )
-        self._contract(contract)
+        contract = self._contract(contract)
+        _target_ref(blob, "blob", contract)
         with self._lock:
             session = self._sessions.get(caller, session_id)
-            # 路径 ref 的格式校验排在会话判定之后（§4.7 分块阶梯：契约头 → 会话 410）
-            _validated(partial(dpe_hash.parse_blob_ref, blob))
             if blob in session.blobs:
                 # 已完成：不校验 Content-Range 与请求体（幂等；重发最后一块同样命中）
                 self._sessions.renew(session)
@@ -672,8 +716,20 @@ class Engine:
             self._sessions.renew(session)
         return UploadResult("created", rfc3339_utc(session.expires_at))
 
-    def upload_offset(self, caller: str, session_id: str, target: str) -> UploadSnapshot:
-        """断点查询（HTTP 绑定 §4.7）：只读、**不续期**；会话不可用一律 410。"""
+    def upload_offset(
+        self,
+        caller: str,
+        session_id: str,
+        target: str,
+        contract: str | None,
+        *,
+        kind: StagedKind,
+    ) -> UploadSnapshot:
+        """断点查询（HTTP 绑定 §4.7）：只读、**不续期**。
+
+        契约声明（core §3.1，每个请求都声明）→ 目标 hash 的语法 → 会话（不可用一律 410）。
+        """
+        _target_ref(target, kind, self._contract(contract))
         with self._lock:
             session = self._sessions.get(caller, session_id)
             return UploadSnapshot(
@@ -682,15 +738,23 @@ class Engine:
             )
 
     def _advance_chunk(
-        self, session: Session, target: str, body: bytes, chunk: UploadChunk, total_limit: int
+        self,
+        session: Session,
+        target: str,
+        body: bytes,
+        chunk: UploadChunk | InvalidChunk,
+        total_limit: int,
     ) -> tuple[int, bytes | None]:
         """分块的一致性与追加（HTTP 绑定 §4.7 第 4–7 步）。须在锁内调用。
 
         返回 (已收字节数, 完整字节或 None)；到齐时把内容移出中间态（调用方的到齐校验失败
         即丢弃该对象已收内容，重传从零）。违例：格式 / 块长 / total 不一致 →
         ``DPE_VALIDATION``；尺寸 → ``DPE_PAYLOAD_TOO_LARGE``；偏移不连续 →
-        ``UploadOffsetError``（带本会话已收偏移，供客户端重新同步）。
+        ``UploadOffsetError``（带本会话已收偏移，供客户端重新同步）。绑定层无法解析的分块
+        参数（``InvalidChunk``）同属第 4 步。
         """
+        if isinstance(chunk, InvalidChunk):
+            raise ValidationError(chunk.reason)
         if (
             chunk.from_byte < 0
             or chunk.to_byte < chunk.from_byte
@@ -838,13 +902,15 @@ class Engine:
         uri: str,
         body: bytes,
         contract: str | None,
-        precondition: Precondition | None = None,
+        precondition: Precondition | InvalidPrecondition | None = None,
     ) -> CommitResult:
-        uri = _normalize_uri(uri)
-        # 第 0–1 步：传输层上限与报文校验，只看请求本身
+        # 第 0–1 步：传输层上限与报文校验，只看请求本身；查询参数 uri 与请求信封同一步
         data = _parse_body(body, self.config.max_payload_bytes)
         contract = self._contract(contract)
+        uri = _normalize_uri(uri)
         req = self._parse_commit(data, contract)
+        if isinstance(precondition, InvalidPrecondition):
+            raise ValidationError(precondition.reason)
         if req.force and precondition is not None:
             raise ValidationError("force 不得与 base_hash / if_absent 并存")
         # 第 2 步：授权
@@ -1152,10 +1218,19 @@ class Engine:
     # delete / move（core §4、§5）
     # ------------------------------------------------------------------
 
-    def delete(self, caller: str, uri: str, contract: str | None, base_hash: str | None) -> None:
-        """契约声明 → 授权 → 前置条件存在性 → 文档存在性 → base_hash 比较（core §5.1）。"""
-        uri = _normalize_uri(uri)
+    def delete(
+        self,
+        caller: str,
+        uri: str,
+        contract: str | None,
+        base_hash: str | InvalidPrecondition | None,
+    ) -> None:
+        """契约声明 → uri → 前置条件形式 → 授权 → 前置条件存在性 → 文档存在性 → base_hash
+        比较（core §5.1）。"""
         self._contract(contract)
+        uri = _normalize_uri(uri)
+        if isinstance(base_hash, InvalidPrecondition):
+            raise ValidationError(base_hash.reason)
         self._forbid_unless(self.config.authorizer.can_write(caller, uri), uri)
         if base_hash is None:
             raise PreconditionRequiredError("delete 必须带 base_hash")
@@ -1168,12 +1243,13 @@ class Engine:
             self._store.replace(uri, None)
 
     def move(self, caller: str, body: bytes, contract: str | None) -> MoveResult:
-        """求值顺序见 core §5.2（#63）。"""
+        """求值顺序见 core §5.2（#63）。``from_uri`` 与 ``to_uri`` 规范化后相等时，源存在即
+        「目标已存在」（第 5 步，base_hash 不符时 ``DPE_PRECONDITION_FAILED`` 优先）。"""
         data = _parse_body(body, self.config.max_payload_bytes)
         contract = self._contract(contract)
         env = _envelope(data, _MOVE_MEMBERS)
-        from_uri = _normalize_uri(_require(env, "from_uri", str, "字符串"))
-        to_uri = _normalize_uri(_require(env, "to_uri", str, "字符串"))
+        from_uri = _normalize_uri(_require(env, "from_uri", str, "字符串"), pointer("from_uri"))
+        to_uri = _normalize_uri(_require(env, "to_uri", str, "字符串"), pointer("to_uri"))
         base_hash = _optional(env, "base_hash", str, "字符串")
         can_write = self.config.authorizer.can_write
         self._forbid_unless(can_write(caller, from_uri), from_uri)
