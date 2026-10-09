@@ -316,22 +316,28 @@ class ProtocolCore:
         """``GET documents?uri=``：文档对象与全部页对象，不存在为 ``None``。
 
         按声明的契约重算每个页对象的 page_hash 与文档对象的 doc_hash，必须与返回值一致（core §3）。
-        暂不校验响应的 ``file_uri`` 与 ``uri`` 对应：服务端返回规范化后的 URI（core §1），比较须经
-        唯一的规范化实现 ``normalize_file_uri``（#39），落地后补上。
+        响应的 ``file_uri`` MUST 等于请求 ``uri`` 的规范化形式（core §1.1，服务端以规范化形式
+        返回），否则抛 ``UnexpectedResponseError``——不能把别的文档的骨架当成目标文档接受。
+        ``uri`` 不合法（core §1.1 文法）时本地即抛 ``dpe_hash.ValidationError``，不发请求。
         """
+        expected_uri = dpe_hash.normalize_file_uri(uri)
         response = yield self._request("GET", "documents?" + _query(uri=uri))
         try:
             _expect(response)
         except NotFoundError:
             return None
         skeleton = _parse(response, Skeleton, {"contract": self.contract})
-        self._verify_skeleton(skeleton, response)
+        self._verify_skeleton(skeleton, expected_uri, response)
         return skeleton
 
-    def _verify_skeleton(self, skeleton: Skeleton, response: Response) -> None:
+    def _verify_skeleton(self, skeleton: Skeleton, expected_uri: str, response: Response) -> None:
         def broken(reason: str) -> UnexpectedResponseError:
             return UnexpectedResponseError(f"骨架不自洽：{reason}", status=response.status)
 
+        if skeleton.file_uri != expected_uri:
+            raise broken(
+                f"file_uri {skeleton.file_uri!r} 与请求 uri 的规范化形式 {expected_uri!r} 不符"
+            )
         refs = skeleton.document.pages
         if len(skeleton.pages) != len(refs):
             raise broken(f"文档对象引用 {len(refs)} 页，返回了 {len(skeleton.pages)} 个页对象")

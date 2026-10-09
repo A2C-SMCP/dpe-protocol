@@ -142,7 +142,7 @@ def test_every_request_declares_the_contract() -> None:
 # ---------------------------------------------------------------------- 编码
 
 
-@pytest.mark.parametrize("uri", ["s3://b/k?x=1&y=2#f", "file:///a b/%41/中文", "feishu://doc/a+b"])
+@pytest.mark.parametrize("uri", ["s3://b/k?x=1&y=2#f", "file:///a&b=%41+c", "feishu://doc/a+b"])
 def test_query_values_are_percent_encoded(uri: str) -> None:
     c = core()
     for op in (c.head(uri), c.get_skeleton(uri)):
@@ -156,6 +156,17 @@ def test_query_values_are_percent_encoded(uri: str) -> None:
         assert unquote(value) == uri
 
 
+def test_query_values_encode_invalid_uris_for_head() -> None:
+    """head 不做本地 URI 校验（由服务端判 DPE_VALIDATION）：非常规字符仍按 RFC 3986 编码。"""
+    uri = "file:///a b/%41/中文"
+    target = next(core().head(uri)).target
+    path, _, query = target.partition("?")
+    key, _, value = query.partition("=")
+    assert (path, key) == ("documents", "uri")
+    assert all(ch.isascii() and ch not in "?&#/ +" for ch in value)
+    assert unquote(value) == uri
+
+
 def test_list_page_query() -> None:
     c = core()
     op = c.list_page()
@@ -163,6 +174,10 @@ def test_list_page_query() -> None:
     op.close()
     op = c.list_page("s3://b/a&b/", cursor="c/1=", limit=10)
     assert next(op).target == "documents?prefix=s3%3A%2F%2Fb%2Fa%26b%2F&cursor=c%2F1%3D&limit=10"
+    op.close()
+    # prefix 不是完整的 URI，不做校验也不规范化：非 ASCII 按 RFC 3986 百分号编码（core §3）
+    op = c.list_page("s3://b/中文/")
+    assert next(op).target == "documents?prefix=s3%3A%2F%2Fb%2F%E4%B8%AD%E6%96%87%2F"
     op.close()
 
 
@@ -328,11 +343,14 @@ def _tamper(body: dict[str, Any], how: str) -> tuple[dict[str, Any], dict[str, s
         body["document"]["title"] = "changed"
     elif how == "header":
         headers["DPE-Doc-Hash"] = H1
+    elif how == "file_uri":
+        body["file_uri"] = "a:2"
     return body, headers
 
 
 @pytest.mark.parametrize(
-    "how", ["page_content", "page_order", "page_count", "doc_hash", "document", "header"]
+    "how",
+    ["page_content", "page_order", "page_count", "doc_hash", "document", "header", "file_uri"],
 )
 def test_get_skeleton_integrity(how: str) -> None:
     body, headers = _tamper(skeleton_body(), how)
@@ -345,6 +363,32 @@ def test_get_skeleton_rejects_invalid_objects() -> None:
     body["pages"][0]["extra"] = 1
     with pytest.raises(errors.UnexpectedResponseError):
         run(core().get_skeleton("a:1"), ok(body))
+
+
+def test_get_skeleton_accepts_unnormalized_request_uri() -> None:
+    """请求可以带未规范化的 uri（服务端按规范化形式定位）；响应返回规范化后的 file_uri 应当通过。"""
+    body = skeleton_body()
+    body["file_uri"] = "feishu://doc/a"
+    result, server = run(core().get_skeleton("FEISHU://doc/%61"), ok(body))
+    assert result.file_uri == "feishu://doc/a"
+    # 请求侧仍按原样发送，不做规范化
+    assert server.requests[0].target.endswith("uri=FEISHU%3A%2F%2Fdoc%2F%2561")
+
+
+def test_get_skeleton_rejects_other_documents_file_uri() -> None:
+    """响应返回另一篇文档的 file_uri：拒绝，不能把别的文档的骨架当成目标文档接受（#39）。"""
+    body = skeleton_body()
+    body["file_uri"] = "feishu://doc/b"
+    with pytest.raises(errors.UnexpectedResponseError, match="file_uri"):
+        run(core().get_skeleton("feishu://doc/a"), ok(body))
+
+
+def test_get_skeleton_rejects_invalid_request_uri_without_request() -> None:
+    """请求 uri 不符合 core §1.1 文法（非 ASCII 等）：本地即抛 ValidationError，不发请求。"""
+    server = Server(ok(skeleton_body()))
+    with pytest.raises(dpe_hash.ValidationError):
+        drive(core().get_skeleton("feishu://doc/季度报告"), server)
+    assert server.requests == []
 
 
 # ---------------------------------------------------------------------- list

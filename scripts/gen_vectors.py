@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""一致性向量生成器 —— hash 契约 1（spec/hash-contract-1.md）的规范参考实现。
+"""一致性向量生成器 —— hash 契约 1（spec/hash-contract-1.md）与 file_uri 语法规范化（spec/core.md §1.1）的规范参考实现。
 
 治理模型（docs/plan/v1-plan.md §1）：向量是规范的一部分，由本仓库产出；
 SDK 与各服务端实现只消费向量。本脚本因此：
@@ -314,6 +314,80 @@ CHECKERS = {
     "document": _ijson_first(check_document),
     "expanded_document": _ijson_first(check_expanded),
 }
+
+
+# ---------------------------------------------------------------------------
+# file_uri 的语法规范化（core.md §1.1）：合法性判定（封闭清单）+ 三步变换
+# ---------------------------------------------------------------------------
+
+#: unreserved（RFC 3986 §2.3）与 reserved（§2.2）字符集；其余字符（含非 ASCII）一律非法。
+_UNRESERVED = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+)
+_RESERVED = frozenset(":/?#[]@!$&'()*+,;=")
+_URI_CHARS = _UNRESERVED | _RESERVED
+_HEXDIG = frozenset("0123456789abcdefABCDEF")
+#: scheme（RFC 3986 §3.1）：ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) 后接 ":"。
+_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
+
+
+def normalize_file_uri(uri: str) -> str:
+    """file_uri 的语法规范化（core.md §1.1），与 ``dpe_hash.normalize_file_uri`` 行为一致。
+
+    合法性判定（封闭清单）：scheme 文法、全串字符集（pct-encoded / unreserved / reserved）、
+    ``%`` 后两位 HEXDIG；不校验更深的成分文法。三步变换：解码表示 unreserved 的百分号三元组
+    → scheme 与 host 中三元组之外的 ASCII 字母小写 → 其余三元组的 hex 大写。幂等。
+    非法输入抛 ``Reject(DPE_VALIDATION, "")``。
+    """
+    match = _SCHEME.match(uri)
+    if match is None:
+        raise Reject(VALIDATION, "")
+    scheme_end = match.end()
+
+    # host 成分的范围：':' 后紧跟 "//" 才有 authority；authority 到第一个 "/"、"?"、"#" 为止，
+    # host 是最后一个 "@"（userinfo 之后）到 port 之前的成分。三元组解码不改变这些边界
+    # （unreserved 不含定界符），所以索引可以直接取自原串。
+    host_start = host_end = scheme_end
+    if uri.startswith("//", scheme_end):
+        start = scheme_end + 2
+        authority_end = len(uri)
+        for ch in "/?#":
+            at = uri.find(ch, start)
+            if at != -1:
+                authority_end = min(authority_end, at)
+        at = uri.rfind("@", start, authority_end)
+        host_start = at + 1 if at != -1 else start
+        if host_start < authority_end and uri[host_start] == "[":
+            close = uri.find("]", host_start, authority_end)
+            host_end = authority_end if close == -1 else close + 1
+        else:
+            colon = uri.find(":", host_start, authority_end)
+            host_end = authority_end if colon == -1 else colon
+
+    out: list[str] = []
+    i = 0
+    n = len(uri)
+    while i < n:
+        ch = uri[i]
+        if ch == "%":
+            if i + 2 >= n or uri[i + 1] not in _HEXDIG or uri[i + 2] not in _HEXDIG:
+                raise Reject(VALIDATION, "")
+            decoded = chr(int(uri[i + 1 : i + 3], 16))
+            if decoded in _UNRESERVED:
+                if host_start <= i < host_end and "A" <= decoded <= "Z":
+                    decoded = chr(ord(decoded) + 32)
+                out.append(decoded)
+            else:
+                out.append("%" + uri[i + 1 : i + 3].upper())
+            i += 3
+            continue
+        if ch not in _URI_CHARS:
+            raise Reject(VALIDATION, "")
+        if (i < scheme_end or host_start <= i < host_end) and "A" <= ch <= "Z":
+            ch = chr(ord(ch) + 32)
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -1118,6 +1192,85 @@ JCS_VECTORS: list[dict[str, Any]] = [
 ]
 
 
+#: file_uri 语法规范化向量（core.md §1.1）。cases 的 ``expect`` 是手写期望，生成器逐例断言
+#: （同时断言幂等）；invalid_cases 逐例断言被拒且错误码为 DPE_VALIDATION。
+URI_VECTORS: list[dict[str, Any]] = [
+    {
+        "name": "file_uri_normalization",
+        "description": "file_uri 的语法规范化（core.md §1.1）：cases 为合法输入与其规范化输出（幂等不动点），invalid_cases 为必须被拒绝（DPE_VALIDATION）的输入。",
+        "cases": [
+            # 大小写：scheme 与 host 小写，其余成分原样
+            {"input": "HTTP://EXAMPLE.com/Path", "expect": "http://example.com/Path"},
+            {"input": "feishu://DOC/Path", "expect": "feishu://doc/Path"},
+            {"input": "s3://Bucket.Name:9000/K", "expect": "s3://bucket.name:9000/K"},
+            {"input": "https://User@Example.com/A", "expect": "https://User@example.com/A"},
+            {"input": "https://[2001:DB8::A]/x", "expect": "https://[2001:db8::a]/x"},
+            {"input": "https://[FE80::1]:8080/x", "expect": "https://[fe80::1]:8080/x"},
+            {"input": "weird+scheme.1-2://A/b", "expect": "weird+scheme.1-2://a/b"},
+            {"input": "s3://b/K?Q=ABC#Frag", "expect": "s3://b/K?Q=ABC#Frag"},
+            # 百分号编码：解码 unreserved；reserved 不解码、hex 大写；host 中保留的三元组不参与小写
+            {"input": "feishu://doc/%7Euser", "expect": "feishu://doc/~user"},
+            {"input": "feishu://doc/%2f", "expect": "feishu://doc/%2F"},
+            {"input": "s3://b/k?a=%2b", "expect": "s3://b/k?a=%2B"},
+            {"input": "s3://b/%7a", "expect": "s3://b/z"},
+            {"input": "s3://b/%41", "expect": "s3://b/A"},
+            {"input": "s3://b/100%25a", "expect": "s3://b/100%25a"},
+            {"input": "http://ex%c3%a4mple.com/", "expect": "http://ex%C3%A4mple.com/"},
+            {"input": "http://%45XAMPLE.com/", "expect": "http://example.com/"},
+            {"input": "s3://us%7eer@Bucket/k", "expect": "s3://us~er@bucket/k"},
+            # userinfo 里解码出的大写字母不参与 host 小写（%41 在 userinfo 中，保持大写）
+            {"input": "s3://%41@B/k", "expect": "s3://A@b/k"},
+            {"input": "s3://bucket/k?x=%7e", "expect": "s3://bucket/k?x=~"},
+            # 不做 §6.2.3 / §6.2.4：保留默认端口、前导零端口、尾斜杠，不补空 path 的 "/"
+            {"input": "https://example.com:443/a", "expect": "https://example.com:443/a"},
+            {"input": "http://example.com:080/x", "expect": "http://example.com:080/x"},
+            {"input": "s3://bucket/key/", "expect": "s3://bucket/key/"},
+            {"input": "https://example.com", "expect": "https://example.com"},
+            # 不做 §6.2.2.3：点段是字面内容（%2E 解码为 "." 后同样保留）
+            {"input": "s3://b/a/../c", "expect": "s3://b/a/../c"},
+            {"input": "feishu://doc/%2e%2E", "expect": "feishu://doc/.."},
+            # 无 authority：只做 scheme 小写与百分号编码，其余是不透明内容
+            {"input": "FEISHU:xxx", "expect": "feishu:xxx"},
+            {"input": "FEISHU:Doc/A%2fB", "expect": "feishu:Doc/A%2FB"},
+            {"input": "urn:ISBN:0-395-36341-1", "expect": "urn:ISBN:0-395-36341-1"},
+            {"input": "urn:example:%7e", "expect": "urn:example:~"},
+            # fragment 与空 host
+            {"input": "feishu://doc/a#gid=0", "expect": "feishu://doc/a#gid=0"},
+            {"input": "file:///a/b", "expect": "file:///a/b"},
+            {"input": "file://User@/a", "expect": "file://User@/a"},
+            # 混合长例：三步的顺序与作用范围（先解码再小写；host 中三元组不被小写）
+            {
+                "input": "HTTP://EX%43AMPLE.com:8080/A%2Fb?q=%7e#%2F",
+                "expect": "http://excample.com:8080/A%2Fb?q=~#%2F",
+            },
+        ],
+        "invalid_cases": [
+            # 不是 URI（scheme 缺失或文法不符）
+            "",
+            "a/b",
+            "/abs/path",
+            "1http://x",
+            "http//example.com",
+            "%41:b",
+            # 不在 URI 字符集（非 ASCII、空格、控制字符、其他）
+            "feishu://doc/季度报告",
+            "https://例子.example/",
+            "feishu://doc/a b",
+            "http://ex ample.com/",
+            "feishu://doc/a\\b",
+            "feishu://doc/\u0000",
+            'feishu://doc/a"b',
+            "feishu://doc/a{b}",
+            # 坏的百分号三元组
+            "feishu://doc/%",
+            "feishu://doc/%2",
+            "feishu://doc/%zz",
+            "feishu://doc/%2g",
+        ],
+    },
+]
+
+
 _H1 = "dpe1:" + "a" * 64
 _H2 = "dpe2:" + "a" * 64
 _HUGE = 2**53
@@ -1290,6 +1443,37 @@ def build_files() -> dict[str, str]:
             }
         )
 
+    for vec in URI_VECTORS:
+        cases = []
+        for case in vec["cases"]:
+            got = normalize_file_uri(case["input"])
+            if got != case["expect"]:
+                raise AssertionError(f"{vec['name']}: {case['input']!r} → {got!r}，期望 {case['expect']!r}")
+            if normalize_file_uri(got) != got:
+                raise AssertionError(f"{vec['name']}: {case['input']!r} 的规范化结果不是不动点")
+            cases.append({"input": case["input"], "normalized": got})
+        invalid_cases = []
+        for input_ in vec["invalid_cases"]:
+            try:
+                normalize_file_uri(input_)
+            except Reject as rej:
+                if rej.code != VALIDATION:
+                    raise AssertionError(
+                        f"{vec['name']}: {input_!r} 得到 {rej.code}，期望 {VALIDATION}"
+                    ) from None
+            else:
+                raise AssertionError(f"{vec['name']}: {input_!r} 未被拒绝")
+            invalid_cases.append({"input": input_, "code": VALIDATION})
+        files[f"{vec['name']}.json"] = dump_json(
+            {
+                "name": vec["name"],
+                "kind": "uri",
+                "description": vec["description"],
+                "cases": cases,
+                "invalid_cases": invalid_cases,
+            }
+        )
+
     for vec in INVALID_VECTORS:
         for case in vec["cases"]:
             try:
@@ -1319,7 +1503,7 @@ def build_files() -> dict[str, str]:
         "category_content_fields": {c: list(f) for c, f in CATEGORY_CONTENT_FIELDS.items()},
         "provenance": {
             "generator": "scripts/gen_vectors.py",
-            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md",
+            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1",
         },
         "files": [
             {

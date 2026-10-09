@@ -1,7 +1,8 @@
 """dpe-hash：DPE hash 契约的独立 hash 核心。
 
 零运行时依赖、纯 Python；内核与 dpe-sdk 都直接依赖本包，不另行维护 hash 实现。
-实现 hash 契约 1（spec/hash-contract-1.md），并导出契约常量、三层对象类型与带规范错误码的异常。
+实现 hash 契约 1（spec/hash-contract-1.md）与 file_uri 语法规范化（spec/core.md §1.1），
+并导出契约常量、三层对象类型与带规范错误码的异常。
 """
 
 from importlib.metadata import version
@@ -48,6 +49,7 @@ from dpe_hash.models import (
     PageHashes,
     PageObject,
 )
+from dpe_hash.uri import normalize_file_uri
 
 __version__ = version("dpe-hash")
 
@@ -84,6 +86,7 @@ __all__ = [
     "document_hashes",
     "has_invalid_unicode",
     "jcs",
+    "normalize_file_uri",
     "object_hash",
     "page_hash",
     "parse_blob_ref",

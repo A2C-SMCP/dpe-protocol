@@ -110,7 +110,7 @@
   },
   "provenance": {
     "generator": "scripts/gen_vectors.py",
-    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md"
+    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1"
   },
   "files": [
     {
@@ -156,6 +156,10 @@
     {
       "name": "file_type_identity.json",
       "sha256": "37d597688ca1bf9dec5ebdb237c69dc9806a357e1a852ba08ff6294265ae4443"
+    },
+    {
+      "name": "file_uri_normalization.json",
+      "sha256": "66d0bd5815253604108542fd33d96ba701ca11fe9695be1ab661d765d4ec7688"
     },
     {
       "name": "image_placeholder_null.json",

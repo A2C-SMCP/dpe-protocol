@@ -9,7 +9,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
 ## 文件格式
 
-每个 `*.json` 是一个向量，`kind` 三选一：
+每个 `*.json` 是一个向量，`kind` 四类：
 
 - **`document`**：
   - `documents` 是一到多篇文档的 hash 输入：
@@ -22,6 +22,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
     - `{"distinct": [ref…]}`：所列值两两不同。
     - `ref` 形如 `<文档键>.<路径>`，例如 `base.doc_hash`、`base.pages.0.page_hash`、`base.pages.0.elements.1`；有多个契约时，在每个契约下分别成立。
 - **`jcs`**：`cases[]` 每条给出 JSON 输入、RFC 8785 规范化字符串 `canonical` 及其 UTF-8 字节的 `sha256`。
+- **`uri`**：file_uri 的语法规范化（[core.md §1.1](../spec/core.md)）。`cases[]` 每条给出合法输入 `input` 与其规范化输出 `normalized`（规范化幂等，`normalized` 是不动点）；`invalid_cases[]` 每条给出必须被拒绝的输入 `input` 与期望错误码 `code`（恒为 `DPE_VALIDATION`）。消费方 MUST 逐例通过。
 - **`invalid`**：拒绝类用例，固定 [core.md §2.8](../spec/core.md) 的校验顺序。`cases[]` 每条包含：
   - `object_kind`：`element` / `page` / `document`（线上原像），或 `expanded_document`（上文的展开视图，按与线上请求相同的顺序校验：文档自身字段 → 各页自身字段 → 各页元素）；
   - `contract`：本次选择的契约；
