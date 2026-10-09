@@ -44,6 +44,7 @@ from dpe_sdk.errors import (
     ValidationError,
     from_hash_error,
 )
+from dpe_sdk.protocol import BaseHash, IfAbsent
 from dpe_sdk.testing._staging import (
     PartialUpload,
     Session,
@@ -119,18 +120,8 @@ class DedupScope(Enum):
     WRITABLE = "writable"
 
 
-@dataclass(frozen=True)
-class BaseHash:
-    """前置条件 ``base_hash``（HTTP：``If-Match``）。按值比较，不做格式校验（core §5.2，#63）。"""
-
-    value: str
-
-
-@dataclass(frozen=True)
-class IfAbsent:
-    """前置条件 ``if_absent``（HTTP：``If-None-Match: *``）。"""
-
-
+#: 条件头承载的前置条件（force 是请求体成员，不在此列）。``base_hash`` 按值比较，不做格式校验
+#: （core §5.2，#63）
 Precondition = BaseHash | IfAbsent
 
 
