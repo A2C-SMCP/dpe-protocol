@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 import dpe_hash
@@ -111,13 +110,13 @@ def test_list_prefix_is_code_point_not_segment() -> None:
 
 
 def test_list_order_is_code_point_order() -> None:
+    """file_uri 只含 ASCII（core §1.1，非 ASCII 须先百分号编码），码点序即字节序。"""
     engine = make_engine()
-    uris = ["test://Z", "test://a", "test://é", "test://\U0001f600", "test://￿"]
+    uris = ["test://h/Z", "test://h/a", "test://h/%C3%A9", "test://h/~", "test://h/!"]
     for uri in uris:
         _put(engine, uri)
     listed = [d.file_uri for d in engine.list_documents("u", C).documents]
     assert listed == sorted(uris)  # Python 的 str 比较即码点序
-    assert listed.index("test://￿") < listed.index("test://\U0001f600")
 
 
 def test_list_pagination() -> None:
@@ -198,28 +197,17 @@ def test_config_requires_positive_limits_and_unique_contracts() -> None:
         EngineConfig(contracts=("dpe1", "dpe1"))
 
 
-def test_list_prefix_is_not_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
-    """前缀按原样匹配规范化后的 URI（core §3，#63）：#39 接入的规范化不作用于前缀。"""
-    from dpe_sdk.testing import _engine
-
-    def normalize(uri: str) -> str:
-        """core §1 的语法规范化桩：scheme / host 小写、百分号编码大写；不是完整 URI 即拒绝。"""
-        scheme, sep, rest = uri.partition("://")
-        if not sep or re.search(r"%(?![0-9A-Fa-f]{2})", rest):
-            raise errors.ValidationError("不是完整的 URI")
-        host, slash, path = rest.partition("/")
-        path = re.sub(r"%[0-9a-f]{2}", lambda m: m.group(0).upper(), path)
-        return f"{scheme.lower()}://{host.lower()}{slash}{path}"
-
-    monkeypatch.setattr(_engine, "_normalize_uri", normalize)
+def test_list_prefix_is_not_normalized() -> None:
+    """前缀按原样匹配规范化后的 URI（core §3，#63）：规范化（core §1.1）不作用于前缀。"""
     engine = make_engine()
     _put(engine, "TEST://Docs/X")
     _put(engine, "test://docs/dir%2f")
     listed = engine.list_documents("u", C, prefix="test://docs/").documents
     assert [d.file_uri for d in listed] == ["test://docs/X", "test://docs/dir%2F"]
-    # 前缀按原样：大小写不同即不匹配；不完整的转义也不报错
+    # 前缀按原样：大小写不同即不匹配；不完整的转义、非 ASCII 也不报错
     assert engine.list_documents("u", C, prefix="TEST://").documents == []
     assert len(engine.list_documents("u", C, prefix="test://docs/dir%2").documents) == 1
+    assert engine.list_documents("u", C, prefix="test://é").documents == []
 
 
 def test_sorted_index_tracks_creates_deletes_and_moves() -> None:

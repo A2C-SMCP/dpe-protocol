@@ -103,10 +103,23 @@ def test_rejects_undeclared_import_in_dpe_hash(tmp_path: Path, source: str, modu
     _assert_fails(errors, f"import 了未声明的模块 {module!r}")
 
 
-def test_rejects_import_of_extra_only_dependency(tmp_path: Path) -> None:
+def test_rejects_top_level_import_of_extra_only_dependency(tmp_path: Path) -> None:
     requires = ("dpe-hash==0.1.4-dev", 'rich; extra == "cli"')
     errors = check(_dist(tmp_path, sdk_requires=requires, sdk_source="import rich\n"), None)
-    _assert_fails(errors, "import 了未声明的模块 'rich'")
+    _assert_fails(errors, "在模块顶层 import 了可选依赖 'rich'")
+
+
+def test_allows_lazy_import_of_extra_only_dependency(tmp_path: Path) -> None:
+    requires = ("dpe-hash==0.1.4-dev", 'rich; extra == "cli"')
+    source = "def main() -> None:\n    import rich\n    from rich import console\n"
+    assert check(_dist(tmp_path, sdk_requires=requires, sdk_source=source), None) == []
+
+
+def test_rejects_lazy_import_of_undeclared_module(tmp_path: Path) -> None:
+    requires = ("dpe-hash==0.1.4-dev", 'rich; extra == "cli"')
+    source = "def main() -> None:\n    import tfrobot\n"
+    errors = check(_dist(tmp_path, sdk_requires=requires, sdk_source=source), None)
+    _assert_fails(errors, "import 了未声明的模块 'tfrobot'")
 
 
 def test_rejects_version_mismatch(tmp_path: Path) -> None:

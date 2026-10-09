@@ -50,12 +50,38 @@ engine.head("caller", "s3://bucket/a.md", "dpe1")
 # 暂存路径：negotiate → upload_*（页 / 元素 / blob，支持分块与断点查询）→ commit 引用会话
 session = engine.negotiate("caller", negotiate_body, "dpe1")  # NegotiateResult
 engine.upload_page("caller", session.staging_session.id, page_hash, page_bytes, "dpe1")
-engine.upload_offset("caller", session.staging_session.id, page_hash)  # 断点查询，不续期
+engine.upload_offset(
+    "caller", session.staging_session.id, page_hash, "dpe1", kind="page"
+)  # 断点查询，不续期
 ```
 
 - 带 JSON 请求体的操作（`batch_head`、`negotiate`、`commit`、`move`）接收原始字节，传输层上限、I-JSON、契约声明、请求信封、对象校验、授权、前置条件都在引擎内按 core §3.3、§3.4、§5.2 的顺序判定；`upload_page` / `upload_element` / `upload_blob` 按 HTTP 绑定 §4.6、§4.7 的两套阶梯处理，结果为 `UploadResult`（含续期后的 `expires_at` 与下一层缺失清单）；
 - negotiate 与上传响应的缺失清单、commit 的可得性判定使用同一去重范围；可配置限额、受支持契约（第一个为主契约）、去重范围（`DedupScope.DOCUMENT` / `WRITABLE`）与可插拔授权器（`can_write` / `can_force`）；
 - `EngineConfig` 的 `clock` 与 `session_id_factory` 可注入（会话过期与确定性测试）；
-- 错误以 `dpe_sdk.errors` 抛出（分块偏移不连续为 `UploadOffsetError`，带 `offset`）。HTTP（ASGI）与一致性测试钩子随 #44、#45 接入。
+- 所有接受 file_uri 的入口按 core §1.1 校验与规范化（`dpe_hash.normalize_file_uri`），规范化形式即身份；`list` 的前缀按原样匹配；
+- 错误以 `dpe_sdk.errors` 抛出（分块偏移不连续为 `UploadOffsetError`，带 `offset`）。绑定层无法解释的条件头与分块参数以 `InvalidPrecondition` / `InvalidChunk` 传入，在规范规定的那一步判定。
+
+### HTTP 绑定（ASGI）
+
+`create_app(engine, prefix=…)` 按 [HTTP 绑定](https://doc.turingfocus.cn/dpe/) 把引擎暴露为 ASGI 应用（#44），可挂到 httpx 的 `ASGITransport` 上做零网络测试：
+
+```python
+import httpx
+from dpe_sdk.testing import Engine, create_app
+
+app = create_app(Engine(), prefix="/r/1")
+async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+    await client.get("http://test/r/1/capabilities")
+```
+
+- `authenticate`：`Authorization` 头 → 调用者身份，返回 `None` 时 401（缺省放行，身份取头原值）；`public_url`：反向代理之后的对外 base URL（move 的 `Content-Location`）；`max_threads`（缺省 64）：本应用专用的工作线程上限，引擎、授权器与认证器都在其中运行——它们经 HTTP 回调本应用时每层嵌套各占一个线程，并发请求数 × 嵌套深度须小于该上限；`prefix` 只能含无需百分号编码的 path 字符；
+- 独立监听（Rust SDK 集成测试、conformance 跑分器的对手）需要 extra `server`：
+
+  ```bash
+  pip install 'dpe-sdk[server]'
+  python -m dpe_sdk.testing --port 0 --prefix /r/1   # stdout 第一行：{"url": "http://127.0.0.1:PORT/r/1"}
+  ```
+
+  可用 `--max-payload-bytes` 等参数调整限额；一致性测试钩子随 #45 接入。
 
 > 客户端协议核心、传输适配与增量推送尚在开发中（#12–#17）。

@@ -21,11 +21,18 @@ dependencies = [
     "dpe-hash==0.2.2-dev",
     "pydantic>=2.7,<3",
     "httpx>=0.27,<1",
+    # testing 的 ASGI 应用把引擎调用放到工作线程（引擎持线程锁，授权器可能慢或回调引擎）；
+    # 已是 httpx 的传递依赖，被直接 import 须显式声明
+    "anyio>=4,<5",
     # dpe-run：按清单的 config_schema（draft 2020-12）校验实例配置（connector 契约 §4.1–§4.2）；
     # referencing 被直接 import（空 Registry，禁止解析外部 $ref），须显式声明
     "jsonschema>=4.18,<5",
     "referencing>=0.28,<1",
 ]
+
+[project.optional-dependencies]
+# 参考服务端独立监听（python -m dpe_sdk.testing，#44）：Rust SDK 集成测试与 conformance 的对手
+server = ["uvicorn>=0.30,<1"]
 
 [project.urls]
 Homepage = "https://github.com/A2C-SMCP/dpe-protocol"

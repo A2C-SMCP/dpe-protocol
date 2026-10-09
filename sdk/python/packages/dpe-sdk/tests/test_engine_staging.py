@@ -286,7 +286,7 @@ def test_page_chunked_flow() -> None:
     assert final.outcome == "created"
     assert isinstance(final.missing, PageUploadMissing)
     assert final.missing.missing_content_hashes == [xh]
-    assert engine.upload_offset("u", sid, ph).offset == len(raw)
+    assert engine.upload_offset("u", sid, ph, C, kind="page").offset == len(raw)
 
 
 def test_completed_chunk_upload_skips_validation() -> None:
@@ -346,8 +346,8 @@ def test_chunk_limits_reject_first_chunk_without_receiving() -> None:
     sid2 = _open(total_engine)
     with pytest.raises(errors.PayloadTooLargeError):  # 声明的总量首块即判
         total_engine.upload_blob("u", sid2, ref, blob[:4], C, chunk=UploadChunk(0, 3, 10))
-    assert chunk_engine.upload_offset("u", sid, ref).offset == 0  # 未接收任何字节
-    assert total_engine.upload_offset("u", sid2, ref).offset == 0
+    assert chunk_engine.upload_offset("u", sid, ref, C, kind="blob").offset == 0  # 未接收任何字节
+    assert total_engine.upload_offset("u", sid2, ref, C, kind="blob").offset == 0
 
 
 def test_page_chunk_total_limit() -> None:
@@ -358,7 +358,7 @@ def test_page_chunk_total_limit() -> None:
     _, ph = _page([])
     with pytest.raises(errors.PayloadTooLargeError):
         engine.upload_page("u", sid, ph, raw[:4], C, chunk=UploadChunk(0, 3, len(raw)))
-    assert engine.upload_offset("u", sid, ph).offset == 0
+    assert engine.upload_offset("u", sid, ph, C, kind="page").offset == 0
 
 
 def test_chunked_page_completion_failure_discards_and_recovers() -> None:
@@ -375,7 +375,7 @@ def test_chunked_page_completion_failure_discards_and_recovers() -> None:
     piece, part = parts[-1]
     with pytest.raises(errors.HashMismatchError):
         engine.upload_page("u", sid, wrong_hash, piece, C, chunk=part)
-    assert engine.upload_offset("u", sid, wrong_hash).offset == 0  # 丢弃后归零
+    assert engine.upload_offset("u", sid, wrong_hash, C, kind="page").offset == 0  # 丢弃后归零
     # 以正确路径从零重传成功（补传收敛）
     upload = None
     for piece, part in parts:
@@ -393,7 +393,7 @@ def test_chunked_page_invalid_json_discards() -> None:
     piece, part = parts[-1]
     with pytest.raises(errors.ValidationError):
         engine.upload_page("u", sid, ph, piece, C, chunk=part)
-    assert engine.upload_offset("u", sid, ph).offset == 0
+    assert engine.upload_offset("u", sid, ph, C, kind="page").offset == 0
 
 
 def test_whole_upload_voids_partial_progress() -> None:
@@ -402,10 +402,10 @@ def test_whole_upload_voids_partial_progress() -> None:
     blob = b"abcdefghij"
     ref = dpe_hash.blob_ref(blob)
     engine.upload_blob("u", sid, ref, blob[:4], C, chunk=UploadChunk(0, 3, 10))
-    assert engine.upload_offset("u", sid, ref).offset == 4
+    assert engine.upload_offset("u", sid, ref, C, kind="blob").offset == 4
     upload = engine.upload_blob("u", sid, ref, blob, C)  # 整段上传：部分进度作废
     assert upload.outcome == "created"
-    assert engine.upload_offset("u", sid, ref).offset == 10
+    assert engine.upload_offset("u", sid, ref, C, kind="blob").offset == 10
     # 已完成：再来任意分块 → 重复
     again = engine.upload_blob("u", sid, ref, blob[4:], C, chunk=UploadChunk(4, 9, 10))
     assert again.outcome == "duplicate"
@@ -424,24 +424,24 @@ def test_upload_offset_three_states_and_no_renewal() -> None:
     page, ph = _page([xh])
     raw = json.dumps(page).encode()
     # 无进度 → 0（不得 404）
-    assert engine.upload_offset("u", sid, ph).offset == 0
+    assert engine.upload_offset("u", sid, ph, C, kind="page").offset == 0
     clock.advance(100)
     first = engine.upload_page("u", sid, ph, raw[:6], C, chunk=UploadChunk(0, 5, len(raw)))
     assert first.outcome == "partial"
-    snapshot = engine.upload_offset("u", sid, ph)
+    snapshot = engine.upload_offset("u", sid, ph, C, kind="page")
     assert snapshot.offset == 6
     # 成功上传续期到「此刻 + ttl」；断点查询不续期（过期时间不变）
     assert snapshot.expires_at == "2026-01-01T13:01:40Z"
-    assert engine.upload_offset("u", sid, ph).expires_at == snapshot.expires_at
+    assert engine.upload_offset("u", sid, ph, C, kind="page").expires_at == snapshot.expires_at
     # 完成 → 总字节数
     engine.upload_page("u", sid, ph, raw[6:], C, chunk=UploadChunk(6, len(raw) - 1, len(raw)))
-    assert engine.upload_offset("u", sid, ph).offset == len(raw)
+    assert engine.upload_offset("u", sid, ph, C, kind="page").offset == len(raw)
 
 
 def test_upload_offset_bad_session() -> None:
     engine = make_engine(session_id_factory=id_factory())
     with pytest.raises(errors.SessionExpiredError):
-        engine.upload_offset("u", "st-none", URI)
+        engine.upload_offset("u", "st-none", "dpe1:" + "0" * 64, C, kind="page")
 
 
 # ---------------------------------------------------------------------------

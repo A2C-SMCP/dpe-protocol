@@ -21,6 +21,7 @@ from dpe_sdk.errors import SessionExpiredError, ValidationError
 from dpe_sdk.wire import ElementUploadMissing, PageUploadMissing
 
 __all__ = [
+    "InvalidChunk",
     "PartialUpload",
     "Session",
     "SessionStore",
@@ -59,6 +60,19 @@ class UploadChunk:
     from_byte: int
     to_byte: int
     total: int
+
+
+@dataclass(frozen=True)
+class InvalidChunk:
+    """绑定层无法解析的分块参数（HTTP：``Content-Range`` 语法非法，或分块请求带
+    ``Content-Encoding``）。
+
+    与合法但不一致的分块参数同属 HTTP 绑定 §4.7 第 4 步（``DPE_VALIDATION``）：会话判定与
+    「本会话内已完成 → 200」先于它，已完成的 hash 重复上传不因它失败（core §3.4）。元素对象
+    不分块、没有「已完成」阶梯：带分块参数时在传输层上限与契约之后即判定，先于 I-JSON（#83）。
+    """
+
+    reason: str
 
 
 UploadOutcome = Literal["created", "duplicate", "partial"]

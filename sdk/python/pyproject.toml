@@ -14,7 +14,7 @@ members = ["packages/*"]
 [dependency-groups]
 dev = [
     "dpe-hash",
-    "dpe-sdk",
+    "dpe-sdk[server]",
     "pytest>=8.3",
     "mypy>=1.13",
     "types-jsonschema",
