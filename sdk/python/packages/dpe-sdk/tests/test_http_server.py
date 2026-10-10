@@ -58,7 +58,7 @@ def test_standalone_server_is_reachable_from_another_process(server: str) -> Non
                 request.method,
                 f"{server}/{request.target}",
                 headers=dict(request.headers),
-                content=request.body,
+                content=request.body_bytes(),
             )
             return Response(reply.status_code, dict(reply.headers), reply.content)
 

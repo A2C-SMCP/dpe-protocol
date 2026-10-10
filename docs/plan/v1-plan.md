@@ -201,7 +201,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 10. SDK
 
-> **修订注记**：「revision 不匹配就重新协商」改为「doc_hash 不匹配（`DPE_PRECONDITION_FAILED`）就重新读取」（§0.1 P4）。
+> **修订注记**：「revision 不匹配就重新协商」改为「doc_hash 不匹配（`DPE_PRECONDITION_FAILED`）就重新读取」（§0.1 P4）。暂存路径的分层与编排已按 #49 定稿（会话协商定案）：新增 `deliver` 组合操作——自动选快路径或暂存路径，只处理 `DPE_MISSING_CONTENT` 补传（同一会话）与 `DPE_SESSION_EXPIRED` 重开两类恢复，其余错误（含 CAS 三类）原样抛出、**绝不自动 force**；`commit` 保持单次协议操作的语义，只加可选 `session` 参数（被否决的备选：commit 自动升级为「内联超限即走暂存」的全流程——投递策略混进协议原语，`DPE_PAYLOAD_TOO_LARGE` 等错误码不再如实反映服务端结论；且 blob 永远不能内联，「快路径还是暂存」还取决于 blob 是否已在服务端）。**blob 字节不进 sans-IO 核心**：核心只描述「谁的 `[offset, offset+len)` 区间」（`Request.body` 的延迟区间），字节由传输适配层取出（被否决的备选：核心直接读源——异步驱动会阻塞事件循环、违背 sans-IO 分层；仅接受 bytes——#15 的「内存不随文件大小线性增长」无法达标）。会话只作缓存，过期只信服务端信号（410 与断点查询的 `DPE-Session-Expires`），**不做本地时钟预检**（被否决的备选：本地预检——时钟偏差会提前放弃有效会话、整会话重传），失败异常带当前会话句柄供上层按 core §3.4 引用同一会话重提。以 [spec/core.md](../../spec/core.md) §3.2–§3.4 与 [spec/bindings/http.md](../../spec/bindings/http.md) §4.5–§4.7 为准。
 
 - **两份独立实现**（Python ≥ 3.11，Rust ≥ 1.80），共享同一套向量。两份实现出现分歧，说明规范需要补正。
 - 每个 SDK 内部拆成 **sans-IO 核心**（hash、协议状态机，不做任何 I/O）和**传输适配层**。

@@ -38,7 +38,13 @@ from dpe_sdk.errors import (
     PayloadTooLargeError,
     ValidationError,
 )
-from dpe_sdk.protocol import CONTRACT_HEADER, DOC_HASH_HEADER, ERROR_CODE_HEADER
+from dpe_sdk.protocol import (
+    CONTRACT_HEADER,
+    DOC_HASH_HEADER,
+    ERROR_CODE_HEADER,
+    SESSION_EXPIRES_HEADER,
+    UPLOAD_OFFSET_HEADER,
+)
 from dpe_sdk.testing._engine import (
     BaseHash,
     Engine,
@@ -64,9 +70,6 @@ ASGIApp: TypeAlias = Callable[[Scope, Receive, Send], Awaitable[None]]
 #: 认证：``Authorization`` 头（缺省为 ``None``）→ 调用者身份；返回 ``None`` 即未认证（401）。
 #: 协议不定义鉴权方案（HTTP 绑定 §6），调用者身份对引擎是不透明字符串。
 Authenticator: TypeAlias = Callable[[str | None], str | None]
-
-SESSION_EXPIRES_HEADER = "DPE-Session-Expires"
-UPLOAD_OFFSET_HEADER = "DPE-Upload-Offset"
 
 _JSON = "application/json"
 _PROBLEM_JSON = "application/problem+json"

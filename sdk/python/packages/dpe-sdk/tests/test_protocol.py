@@ -189,7 +189,7 @@ def test_batch_head_single_batch_at_limit() -> None:
     (request,) = server.requests
     assert (request.method, request.target) == ("POST", "heads")
     assert request.headers["Content-Type"] == "application/json"
-    assert json.loads(request.body or b"") == {"uris": ["a:1", "a:2"]}
+    assert json.loads(request.body_bytes() or b"") == {"uris": ["a:1", "a:2"]}
 
 
 def test_batch_head_splits_by_batch_head_max() -> None:
@@ -199,7 +199,10 @@ def test_batch_head_splits_by_batch_head_max() -> None:
         ok({"heads": [{"doc_hash": H2}]}),
     )
     assert result == [None, H1, H2]
-    assert [json.loads(r.body or b"")["uris"] for r in server.requests] == [["a:1", "a:2"], ["a:3"]]
+    assert [json.loads(r.body_bytes() or b"")["uris"] for r in server.requests] == [
+        ["a:1", "a:2"],
+        ["a:3"],
+    ]
 
 
 def test_batch_head_rejects_a_single_string() -> None:
