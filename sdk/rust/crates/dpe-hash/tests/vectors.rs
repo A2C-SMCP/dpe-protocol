@@ -3,6 +3,7 @@
 mod common;
 
 use std::collections::{BTreeSet, HashSet};
+use std::path::Path;
 
 use dpe_hash::__private::{document_preimage_of, element_preimage_of, page_preimage_of};
 use dpe_hash::{
@@ -247,29 +248,96 @@ fn all_jcs_vectors_listed() {
 
 /// vectors/ 出现的 kind 是封闭集合，每个都必须有消费方；新增 kind 漏写消费测试时在此失败。
 ///
-/// `pattern`（connector 契约 §4.1.1 的正则子集）目前的消费方在 Python SDK 的 dpe-run
-/// （`sdk/python/packages/dpe-sdk/tests/test_run_pattern.py`）；Rust SDK 尚无清单校验实现，
-/// 将来实现 connector 时在本文件补消费测试（挂账 #85）。
+/// `pattern`（connector 契约 §4.1.1 的正则子集）自 #85 起由 dpe-sdk 的清单校验消费
+/// （`crates/dpe-sdk/tests/pattern_vectors.rs`）。跨 crate 的消费登记不是字面量宣言：
+/// [`external_consumers`] 读取 `sdk/rust/vector-consumers.json`，逐条核验消费文件存在、
+/// 且带 `vector-kind: <kind>` 标记——消费文件被删或改名，本测试即失败（文件级核验：只删
+/// 测试函数而保留标记不会被发现，仍需评审把关）。
 #[test]
 fn all_vector_kinds_have_consumers() {
     let kinds: BTreeSet<String> = common::all_vectors()
         .iter()
         .map(|v| v["kind"].as_str().unwrap().into())
         .collect();
-    // 已消费的 kind（本 crate 的测试逐类断言）与显式登记的待办。本断言是「变更探测器」：
-    // 新增/删除 kind 会在此失败；Rust 侧补齐 pattern 消费时，请把 "pattern" 从 pending 移入
-    // consumed 并同步下一行字面量，否则测试会失败。
+    // 本 crate 的测试逐类断言（含 dpe2 升级演练等的 document、jcs、uri、invalid，见本文件各测试）
     let consumed: BTreeSet<String> = ["document", "jcs", "uri", "invalid"]
         .map(String::from)
         .into();
-    let pending: BTreeSet<String> = ["pattern"].map(String::from).into();
-    let expected: BTreeSet<String> = consumed.union(&pending).cloned().collect();
-    assert_eq!(kinds, expected);
-    assert_eq!(pending, ["pattern"].map(String::from).into());
-    assert!(
-        consumed.is_disjoint(&pending),
-        "已消费与待办必须互斥：待办补齐消费后要移出 pending"
+    // 工作区兄弟 crate 的消费方：读登记文件并核验（#85：pattern → dpe-sdk 清单校验）
+    let consumed_elsewhere = external_consumers();
+    // 显式登记的待办：已清零（#85 解除 pattern 挂账后不得再留悬空项）。新增 kind 而没有消费方时，
+    // 下面的相等断言失败——要么补消费测试（本 crate 或经 vector-consumers.json 登记），要么在此
+    // 显式登记为 pending。
+    let pending: BTreeSet<String> = BTreeSet::new();
+    assert_eq!(
+        kinds,
+        consumed
+            .union(&consumed_elsewhere)
+            .chain(pending.iter())
+            .cloned()
+            .collect::<BTreeSet<String>>()
     );
+    assert!(
+        consumed.is_disjoint(&consumed_elsewhere),
+        "同一 kind 的消费方只能登记在一处（本 crate 或 vector-consumers.json）"
+    );
+}
+
+/// 读取 `sdk/rust/vector-consumers.json` 的跨 crate 消费登记，返回其中的 kind 集合。
+///
+/// 逐条核验：每个 kind 的消费方文件存在、且带 [`has_marker`] 约定的整行标记。任一登记指向不存在
+/// 的消费方（文件被删/改名/标记被移除）即 panic——登记与真实消费方脱钩时本测试失败。
+///
+/// 登记文件属于 sdk/rust 工作区，定位**不经过 [`common::vectors_dir`]**：`DPE_VECTORS_DIR`
+/// 覆盖的是向量位置（如指向仓库外的向量副本），不得牵动登记的核验。
+fn external_consumers() -> BTreeSet<String> {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate 位于 sdk/rust/crates/<名字>")
+        .to_path_buf();
+    let path = workspace.join("vector-consumers.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("读不到消费登记 {}：{e}", path.display()));
+    let registry: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("{} 不是合法 JSON：{e}", path.display()));
+    let consumers = registry["consumers"]
+        .as_object()
+        .unwrap_or_else(|| panic!("{} 缺少 consumers 对象", path.display()));
+    let mut kinds: BTreeSet<String> = BTreeSet::new();
+    for (kind, files) in consumers {
+        let files = files
+            .as_array()
+            .unwrap_or_else(|| panic!("{kind} 的消费方必须是文件路径数组"));
+        assert!(!files.is_empty(), "{kind} 的消费方列表不得为空");
+        for file in files {
+            let relative = file.as_str().expect("消费方是文件路径字符串");
+            let consumer = workspace.join(relative);
+            let content = std::fs::read_to_string(&consumer)
+                .unwrap_or_else(|e| panic!("消费方文件不可读 {}：{e}", consumer.display()));
+            assert!(
+                has_marker(&content, kind),
+                "{} 缺少整行标记 `vector-kind: {kind}`",
+                consumer.display()
+            );
+        }
+        kinds.insert(kind.clone());
+    }
+    kinds
+}
+
+/// 消费文件里的 kind 标记约定：某一行去掉行首空白、`//` / `//!` 注释标记与行尾空白后，
+/// 恰为 `vector-kind: <kind>`（整行匹配：`pattern-renamed` 之类的改写不命中）。
+fn has_marker(content: &str, kind: &str) -> bool {
+    let marker = format!("vector-kind: {kind}");
+    content.lines().any(|line| {
+        let line = line.trim();
+        line.strip_prefix("//!")
+            .or_else(|| line.strip_prefix("//"))
+            .unwrap_or(line)
+            .trim()
+            == marker
+    })
 }
 
 /// file_uri 语法规范化（core.md §1.1）：逐例输出一致；非法输入被拒且错误码一致；结果幂等。
