@@ -294,6 +294,33 @@ def test_order_commits_rejects_unreachable_records(tmp_path: Path) -> None:
         order_commits(records, main_tip)  # 另一支的提交不可达
 
 
+def test_order_commits_rejects_missing_order_from(tmp_path: Path) -> None:
+    """集合非空而起点不在其中：如实报错（不静默产出空页）；空集合才是空列表。"""
+    repo = simple_repo(tmp_path / "repo")
+    records = GitRepo(str(repo.root)).log("HEAD")
+    with pytest.raises(GitError, match="排序起点"):
+        order_commits(records, "no-such-sha")
+    assert order_commits([], "no-such-sha") == []  # 空分支页：空范围即空列表
+
+
+def test_shallow_clone_stops_at_the_graft_boundary(tmp_path: Path) -> None:
+    """浅克隆：git 把浅边界提交表现为**无父**（cauterize），枚举优雅止步、不报错。
+
+    防退化：若将来改用 ``cat-file`` 读父列表（会看到被切断的 parent 行）或换解析路径，
+    浅克隆源的 walk 会抛「提交图不完整」，把整篇文档变成永久条目级错误。
+    """
+    source = simple_repo(tmp_path / "source")  # 两个提交
+    shallow = tmp_path / "shallow"
+    run_git(tmp_path, "clone", "-q", "--depth", "1", "--no-local", str(source.root), str(shallow))
+    git = GitRepo(str(shallow))
+    tip = git.resolve_branch("main")
+    assert tip is not None
+    records = git.log(tip)
+    ordered = order_commits(records, tip)
+    assert [record.sha for record in ordered] == [tip]  # 只见边界提交本身
+    assert first_parent_chain(records, tip) == [tip]  # 边界提交表现为无父
+
+
 def test_log_parses_metadata_and_preserves_message(tmp_path: Path) -> None:
     repo = simple_repo(tmp_path / "repo")
     repo.commit(
