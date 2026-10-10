@@ -146,3 +146,24 @@ impl<'de> Visitor<'de> for NoDuplicateKeysVisitor {
         Ok(NoDuplicateKeys)
     }
 }
+
+/// 全部向量（不含 manifest），按文件名排序。
+pub fn all_vectors() -> Vec<Value> {
+    let mut names: Vec<String> = std::fs::read_dir(vectors_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".json") && n != "manifest.json")
+        .collect();
+    names.sort();
+    names.iter().map(|n| read(n)).collect()
+}
+
+/// `kind` 的全部向量；一个都没有即失败。
+pub fn load(kind: &str) -> Vec<Value> {
+    let selected: Vec<Value> = all_vectors()
+        .into_iter()
+        .filter(|v| v["kind"] == kind)
+        .collect();
+    assert!(!selected.is_empty(), "vectors/ 中没有 kind={kind} 的向量");
+    selected
+}

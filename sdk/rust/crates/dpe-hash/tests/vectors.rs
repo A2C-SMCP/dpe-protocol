@@ -8,7 +8,7 @@ use std::path::Path;
 use dpe_hash::__private::{document_preimage_of, element_preimage_of, page_preimage_of};
 use dpe_hash::{
     children, content_hash, doc_hash, document_hashes, jcs, normalize_file_uri, object_hash,
-    page_hash, DocumentHashes, ObjectKind, Result, DRILL_CONTRACT,
+    page_hash, page_hashes, DocumentHashes, ObjectKind, Result, DRILL_CONTRACT,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -160,6 +160,15 @@ fn document_vectors() {
                 assert_eq!(got, expected, "{label}");
                 assert_eq!(layered(document, contract).unwrap(), expected, "{label}");
                 assert_eq!(wire(document, contract).unwrap(), expected, "{label}");
+                // 单页展开入口与 document_hashes 的页段一致
+                for (i, page) in document["pages"].as_array().unwrap().iter().enumerate() {
+                    assert_eq!(
+                        page_hashes(page, contract)
+                            .unwrap_or_else(|e| panic!("{label}/pages/{i}: {e}")),
+                        expected.pages[i],
+                        "{label}/pages/{i}"
+                    );
+                }
                 if let Some(preimages) = preimages {
                     check_preimages(document, &got, preimages, contract, &label);
                 }
@@ -423,6 +432,19 @@ fn invalid_vectors() {
                 assert_eq!(err.code(), case["code"].as_str().unwrap(), "{label}: {err}");
                 if let Some(path) = case.get("path") {
                     assert_eq!(err.path(), path.as_str().unwrap(), "{label}: {err}");
+                }
+            }
+            if kind == "expanded_document" {
+                if let Some(path) = case.get("path") {
+                    // 单页展开入口：单独校验页时错误路径相对于页自身；未声明 path 的用例
+                    // 校验顺序跨页（如页 1 的字段先于页 0 的元素），单页语义下不适用
+                    let err = page_hashes(&obj["pages"][0], contract)
+                        .map(|_| ())
+                        .expect_err(&label);
+                    assert_eq!(err.code(), case["code"].as_str().unwrap(), "{label}: {err}");
+                    let path = path.as_str().unwrap();
+                    let relative = path.strip_prefix("/pages/0").unwrap_or(path);
+                    assert_eq!(err.path(), relative, "{label}: {err}");
                 }
             }
             checked += 1;

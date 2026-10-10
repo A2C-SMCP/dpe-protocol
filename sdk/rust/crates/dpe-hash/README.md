@@ -1,6 +1,6 @@
 # dpe-hash
 
-[DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），实现 file_uri 语法规范化，并导出契约常量。
+[DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），实现 file_uri 语法规范化与 I-JSON 严格解析（`parse_ijson`，core §2.8 第 0 步），并导出契约常量。
 
 - 不绑定异步运行时、不含 I/O，仅依赖 `sha2`、`serde`、`serde_json` 与 `ryu`；
 - 逐字节通过规范仓库的一致性向量，与 Python [`dpe-hash`](https://pypi.org/project/dpe-hash/) 行为对等；
@@ -30,4 +30,6 @@ assert_eq!(hashes.pages[0].elements, [h]);
 
 cargo feature 在同一构建内统一生效：开启 `arbitrary_precision` 后，`#[serde(flatten)]` 与 untagged enum 遇到数字会反序列化失败，依赖本 crate 的模型应避开这两种写法。
 
-重复键：serde_json 默认保留最后一个。需要按 I-JSON 拒绝重复键时（如服务端读取请求体），调用方须使用严格解析。
+## I-JSON 解析
+
+`parse_ijson` 把 JSON 文本严格解析为值（core §2.8 校验顺序第 0 步的解析部分）：拒绝重复键与孤立代理项，错误为 `DPE_VALIDATION`、位置为对象自身；数值不在解析阶段拒绝（`1e400` 等字面量保留，到校验第 4 步在出错的值上报告）。serde_json 直接 `from_str` 默认保留重复键的最后一个——需要 I-JSON 语义时（如服务端读取请求体）须改用 `parse_ijson`。

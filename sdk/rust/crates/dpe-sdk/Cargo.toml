@@ -20,10 +20,11 @@ http = ["dep:reqwest", "dep:tokio"]
 # 与 dpe-hash 锁步发布、精确同版本（版本串由 bump-my-version 与工作区版本一并维护）
 dpe-hash.workspace = true
 serde = { version = "1", features = ["derive"] }
-# 清单与实例配置校验只处理 JSON 值（不做 JCS）。arbitrary_precision（越界数值保留字面量，
-# 1e400 可解析、`as_f64()` 返回 None）与 float_roundtrip（正确舍入）是数值判定口径的前提：
-# dpe-hash 也声明了这两个 feature（同一构建内统一生效），这里显式声明把不变量放到使用点，
-# 避免 dpe-hash 依赖行变动时本 crate 静默改变判定（feature 可加性，无副作用）。
+# 清单与实例配置校验、数据模型（#20）都只处理 JSON 值（不做 JCS）。arbitrary_precision
+# （越界数值保留字面量，1e400 可解析、`as_f64()` 返回 None）与 float_roundtrip（正确舍入）
+# 是数值判定口径的前提：dpe-hash 也声明了这两个 feature（同一构建内统一生效），这里显式
+# 声明把不变量放到使用点，避免 dpe-hash 依赖行变动时本 crate 静默改变判定（feature 可加性，
+# 无副作用）。
 serde_json = { version = "1", features = ["arbitrary_precision", "float_roundtrip"] }
 # connector 契约 §4.1.1 子集 pattern 的匹配引擎：pattern 先转译为显式码点区间再交给 regex，
 # 不依赖其 `\w`、`$` 等默认语义（转译先于编译）；子集结构上界在默认编译限额内的余量
