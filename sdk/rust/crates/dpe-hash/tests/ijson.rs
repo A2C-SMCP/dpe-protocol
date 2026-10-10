@@ -177,11 +177,15 @@ fn string_escapes_validated() {
     }
     let value = parse_ijson(r#"{"a": "\u0000"}"#).unwrap();
     assert_eq!(value["a"].as_str().unwrap(), "\0");
-    // 合法代理对转义（𝄞 → 𝄞，U+1D11E）在值位置与键位置都解码成功
-    let value = parse_ijson(r#"{"𝄞": "𝄞"}"#).unwrap();
+    // 合法代理对转义（𝄞 → 𝄞，U+1D11E）在键位置与值位置都解码成功
+    let value = parse_ijson(r#"{"\uD834\uDD1E": "\uD834\uDD1E"}"#).unwrap();
     let key = value.as_object().unwrap().keys().next().unwrap();
     assert_eq!(key, "𝄞");
     assert_eq!(value["𝄞"], json!("𝄞"));
+    // 转义与多字节字面字符、其他转义混用（走慢路径的混合场景）
+    let value = parse_ijson(r#"{"a": "\uD834\uDD1E x\ty", "b": "\u0041"}"#).unwrap();
+    assert_eq!(value["a"], json!("𝄞 x\ty"));
+    assert_eq!(value["b"], json!("A"));
 }
 
 /// 数字按 RFC 8259 语法校验；越界与否不在此判定（第 4 步）。
