@@ -16,9 +16,10 @@ from dpe_sdk.testing import (
     IfNoneMatch,
     InvalidChunk,
     InvalidPrecondition,
+    PrefixAuthorizer,
     UploadChunk,
 )
-from engine_helpers import PrefixAuthorizer, inline, make_engine, negotiate_body, text_doc
+from engine_helpers import inline, make_engine, negotiate_body, text_doc
 
 C = dpe_hash.CONTRACT
 RAW = "FEISHU://Doc.Example/%61%2f"

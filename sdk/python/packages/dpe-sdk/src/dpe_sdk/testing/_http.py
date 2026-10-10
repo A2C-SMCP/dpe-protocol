@@ -30,7 +30,7 @@ from typing import Any, Literal, TypeAlias
 from urllib.parse import quote, unquote_to_bytes
 
 import anyio.to_thread
-import dpe_hash
+from dpe_hash.jcs import pointer
 from pydantic import BaseModel
 
 from dpe_sdk.errors import (
@@ -48,18 +48,23 @@ from dpe_sdk.protocol import (
     UPLOAD_OFFSET_HEADER,
 )
 from dpe_sdk.testing._engine import (
+    _SERVER_WRITE_MEMBERS,
     BaseHash,
     Engine,
     IfAbsent,
     IfNoneMatch,
     InvalidPrecondition,
     Precondition,
+    _envelope,
+    _parse_body,
 )
+from dpe_sdk.testing._hooks import AdjustableClock, HooksConfig
 from dpe_sdk.testing._staging import (
     InvalidChunk,
     UploadChunk,
     UploadOffsetError,
     UploadResult,
+    rfc3339_utc,
 )
 
 __all__ = ["ASGIApp", "Authenticator", "create_app", "open_access"]
@@ -181,6 +186,38 @@ _METHODS: dict[_Route, tuple[str, ...]] = {
     "blobs": ("PUT", "HEAD"),
 }
 
+#: 钩子请求体的封闭成员（#45）：自身写入 = commit 请求体 + 身份 / 前置条件 / 契约
+_SELF_WRITE_MEMBERS = _SERVER_WRITE_MEMBERS | {"file_uri", "base_hash", "if_absent", "contract"}
+_EXPIRE_SESSION_MEMBERS = frozenset({"session_id"})
+_CLOCK_ADVANCE_MEMBERS = frozenset({"advance_seconds"})
+
+
+def _hook_str(env: Mapping[str, Any], member: str) -> str | None:
+    """钩子请求的成员：缺省或 null 返回 ``None``，非字符串 → ``DPE_VALIDATION``。"""
+    value = env.get(member)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError(f"{member} 必须是字符串", pointer(member))
+    return value
+
+
+def _hook_required_str(env: Mapping[str, Any], member: str) -> str:
+    value = _hook_str(env, member)
+    if value is None:
+        raise ValidationError(f"请求体缺少 {member}")
+    return value
+
+
+def _hook_bool(env: Mapping[str, Any], member: str) -> bool:
+    """钩子请求的布尔成员：缺省或 null 为 ``False``，其它类型 → ``DPE_VALIDATION``。"""
+    value = env.get(member)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValidationError(f"{member} 必须是布尔值", pointer(member))
+    return value
+
 
 def create_app(
     engine: Engine,
@@ -190,6 +227,7 @@ def create_app(
     public_url: str | None = None,
     www_authenticate: str = 'Bearer realm="dpe"',
     max_threads: int = 64,
+    hooks: HooksConfig | None = None,
 ) -> ASGIApp:
     """把引擎按 HTTP 绑定暴露为 ASGI 应用。
 
@@ -203,6 +241,9 @@ def create_app(
       池）。授权器 / 认证器经 HTTP 回调本应用时，每层嵌套各占一个线程：并发请求数 × 嵌套深度
       须小于该上限，否则回调拿不到线程而互相等待。线程上限在首次请求时绑定当时的异步后端：
       一个应用实例只用于一种后端（asyncio 或 trio）。
+    - ``hooks``：一致性测试钩子的启动配置（#45）；缺省 ``None`` = 不挂载钩子（相关路径 404，
+      行为与规范默认一致）。钩子是**测试侧信道**，不属于 DPE 协议面：不做 DPE 认证、只在显式
+      启用时存在，且其路径与 ``prefix`` 互不遮蔽（校验见下）。
     """
     if prefix and (not prefix.startswith("/") or prefix.endswith("/")):
         raise ValueError(f"prefix 必须以 / 开头且不带尾部 /，实际为 {prefix!r}")
@@ -222,7 +263,32 @@ def create_app(
         raise ValueError(f"public_url 必须是已编码的 ASCII URL，实际为 {public_url!r}")
     if isinstance(max_threads, bool) or not isinstance(max_threads, int) or max_threads < 1:
         raise ValueError(f"max_threads 必须是正整数，实际为 {max_threads!r}")
-    return _App(engine, prefix, authenticate, public_url, www_authenticate, max_threads)
+    if hooks is not None:
+        _check_hooks(hooks, engine, prefix)
+    return _App(engine, prefix, authenticate, public_url, www_authenticate, max_threads, hooks)
+
+
+#: DPE 路由的固定段名（根 prefix 下钩子路径不得顶掉它们）
+_ROUTE_NAMES = frozenset({"capabilities", "documents", "heads", "move", "negotiate", "staging"})
+
+
+def _check_hooks(hooks: HooksConfig, engine: Engine, prefix: str) -> None:
+    """钩子配置的启动校验：路径形态、与 DPE remote 互不遮蔽、时钟可用且与引擎的是同一个实例。"""
+    path = hooks.path
+    if not path.startswith("/") or path.endswith("/") or quote(path, safe=_PATH_SAFE) != path:
+        raise ValueError(f"钩子路径必须以 / 开头且不带尾部 /，实际为 {path!r}")
+    # 空前缀（remote 挂在应用根）不与任何绝对路径遮蔽：段边界比较只在 prefix 非空时有意义
+    if prefix and (
+        path == prefix or path.startswith(prefix + "/") or prefix.startswith(path + "/")
+    ):
+        raise ValueError(f"钩子路径 {path!r} 与 DPE remote 的 prefix {prefix!r} 互相遮蔽")
+    head = path.split("/")[1]
+    if not prefix and head in _ROUTE_NAMES:
+        raise ValueError(f"钩子路径 {path!r} 会顶掉 DPE 端点 /{head}")
+    if not isinstance(hooks.clock, AdjustableClock):
+        raise ValueError("HooksConfig.clock 必须是 AdjustableClock（拨钟钩子要调它的 advance）")
+    if hooks.clock is not engine.config.clock:
+        raise ValueError("HooksConfig.clock 必须是注入引擎的同一个 AdjustableClock 实例")
 
 
 class _App:
@@ -234,6 +300,7 @@ class _App:
         public_url: str | None,
         www_authenticate: str,
         max_threads: int,
+        hooks: HooksConfig | None = None,
     ) -> None:
         self.engine = engine
         self._max_threads = max_threads
@@ -243,6 +310,7 @@ class _App:
         self.authenticate = authenticate
         self.public_url = public_url
         self.www_authenticate = www_authenticate
+        self.hooks = hooks
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
@@ -256,7 +324,13 @@ class _App:
     async def _respond(self, scope: Scope, receive: Receive) -> _Response:
         route: _Route | None = None
         try:
-            route, segments = self._route(scope)
+            path = self._app_path(scope)
+            if self.hooks is not None and (
+                path == self.hooks.path or path.startswith(self.hooks.path + "/")
+            ):
+                # 钩子通道：测试侧信道，不属于 DPE 协议面，不做 DPE 认证
+                return await self._hook(scope, path[len(self.hooks.path) :], receive)
+            route, segments = self._route(path)
             method = scope["method"]
             if method not in _METHODS[route]:
                 raise _NotDpe(405, [("Allow", ", ".join(_METHODS[route]))])
@@ -274,7 +348,7 @@ class _App:
         except DpeError as exc:
             # 带 If-Match 的 PUT / DELETE documents：文档不存在是条件头求值失败（§3.2）
             if_match = scope["method"] in ("PUT", "DELETE") and _has(scope, b"if-match")
-            response = _problem(exc, route, if_match=if_match)
+            response = _problem(exc, route, if_match=if_match, body_precondition=route == "move")
         if route == "documents":
             response.headers.append(_VARY)
         return response
@@ -284,14 +358,17 @@ class _App:
             self._limiter = anyio.CapacityLimiter(self._max_threads)
         return await anyio.to_thread.run_sync(partial(func, *args), limiter=self._limiter)
 
-    def _route(self, scope: Scope) -> tuple[_Route, tuple[str, ...]]:
+    def _app_path(self, scope: Scope) -> str:
+        """应用内路径：按段边界剥离挂载路径（``/api`` 不得吃掉 ``/apix`` 的前缀）。"""
         path: str = scope["path"]
         root_path: str = scope.get("root_path", "")
         if root_path:
-            # 按段边界剥离挂载路径：/api 不得吃掉 /apix 的前缀
             if path != root_path and not path.startswith(root_path + "/"):
                 raise _NotDpe(404)
             path = path[len(root_path) :]
+        return path
+
+    def _route(self, path: str) -> tuple[_Route, tuple[str, ...]]:
         if self.prefix:
             if not path.startswith(self.prefix + "/"):
                 raise _NotDpe(404)
@@ -324,6 +401,80 @@ class _App:
         if route == "documents":
             return await self._documents(request, caller)
         return await self._staging(route, request, caller)
+
+    # ------------------------------------------------------------------
+    # 一致性测试钩子（#45）：保留路径下的测试侧信道，不进入 DPE 协议面
+    # ------------------------------------------------------------------
+
+    async def _hook(self, scope: Scope, tail: str, receive: Receive) -> _Response:
+        """钩子通道的入口：POST + 保留路径之后一段（或 clock/advance 两段）。"""
+        segments = tuple(tail.split("/")[1:])
+        if scope["method"] != "POST":
+            raise _NotDpe(405, [("Allow", "POST")])
+        request = _Request(scope["method"], segments, {}, _headers(scope), scope, receive)
+        if segments == ("self-write",):
+            return await self._hook_self_write(request)
+        if segments == ("expire-session",):
+            return await self._hook_expire_session(request)
+        if segments == ("clock", "advance"):
+            return await self._hook_clock_advance(request)
+        raise _NotDpe(404)
+
+    async def _hook_self_write(self, request: _Request) -> _Response:
+        """服务端自身写入（core §2.4）：请求体是 commit 请求体加 ``file_uri`` / 前置条件 / 契约。
+
+        前置条件的载体与 DPE 不同（这里是请求体成员而不是条件头），语义相同：``base_hash`` /
+        ``if_absent`` / ``force`` 至多其一，缺省即 ``DPE_PRECONDITION_REQUIRED``；响应与 DPE 的
+        commit 同形容（created 201、其余 200，带 ``DPE-Doc-Hash`` 与 ``ETag``）。
+        """
+        env = _envelope(
+            _parse_body(await self._body(request), self.engine.config.max_payload_bytes),
+            _SELF_WRITE_MEMBERS,
+        )
+        uri = _hook_required_str(env, "file_uri")
+        contract = _hook_str(env, "contract")
+        base_hash = _hook_str(env, "base_hash")
+        if_absent = _hook_bool(env, "if_absent")
+        if base_hash is not None and if_absent:
+            raise ValidationError("base_hash 与 if_absent 不得并存")
+        if "document" not in env:
+            raise ValidationError("请求体缺少 document")
+        precondition: Precondition | None = (
+            IfAbsent() if if_absent else (None if base_hash is None else BaseHash(base_hash))
+        )
+        inner = {k: v for k, v in env.items() if k in _SERVER_WRITE_MEMBERS}
+        try:
+            result = await self._run(
+                self.engine.server_write, uri, _dumps(inner), contract, precondition
+            )
+        except DpeError as exc:
+            return _problem(exc, None, if_match=False, body_precondition=True)
+        response = _json(201 if result.status == "created" else 200, result)
+        response.headers.extend(_doc_hash_headers(result.doc_hash))
+        return response
+
+    async def _hook_expire_session(self, request: _Request) -> _Response:
+        """让一个暂存会话立即过期：之后的取用一律 ``DPE_SESSION_EXPIRED``。"""
+        env = _envelope(
+            _parse_body(await self._body(request), self.engine.config.max_payload_bytes),
+            _EXPIRE_SESSION_MEMBERS,
+        )
+        session_id = _hook_required_str(env, "session_id")
+        expired = await self._run(self.engine.expire_session, session_id)
+        return _json(200, {"expired": expired})
+
+    async def _hook_clock_advance(self, request: _Request) -> _Response:
+        """把时钟向前拨 ``advance_seconds`` 秒（参考服务端专有：精确断言会话续期与过期）。"""
+        env = _envelope(
+            _parse_body(await self._body(request), self.engine.config.max_payload_bytes),
+            _CLOCK_ADVANCE_MEMBERS,
+        )
+        seconds = env.get("advance_seconds")
+        if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 1:
+            raise ValidationError("advance_seconds 必须是正整数")
+        assert self.hooks is not None, "只有启用钩子通道时才会到达这里"
+        self.hooks.clock.advance(seconds)
+        return _json(200, {"now": rfc3339_utc(self.hooks.clock())})
 
     # ------------------------------------------------------------------
     # 文档资源（HTTP 绑定 §3、§4.3、§4.4、§4.8、§4.9）
@@ -386,12 +537,11 @@ class _App:
 
     async def _move(self, request: _Request, caller: str) -> _Response:
         body = await self._body(request)
-        result = await self._run(self.engine.move, caller, body, request.contract)
-        # 引擎已校验请求体：to_uri 必在且合法
-        to_uri = dpe_hash.normalize_file_uri(json.loads(body)["to_uri"])
-        location = f"{self._remote(request)}/documents?uri={quote(to_uri, safe='')}"
-        response = _json(200, result)
-        response.headers.append((DOC_HASH_HEADER, result.doc_hash))
+        outcome = await self._run(self.engine.move, caller, body, request.contract)
+        # 目标 URI 由引擎规范化后随结果返回，本层不再解析请求体
+        location = f"{self._remote(request)}/documents?uri={quote(outcome.to_uri, safe='')}"
+        response = _json(200, outcome.result)
+        response.headers.append((DOC_HASH_HEADER, outcome.result.doc_hash))
         response.headers.append(("Content-Location", location))
         return response
 
@@ -403,7 +553,8 @@ class _App:
         host = request.header("host")
         if host is None:
             server = scope.get("server") or ("localhost", None)
-            host = server[0] if server[1] is None else f"{server[0]}:{server[1]}"
+            name = f"[{server[0]}]" if ":" in server[0] else server[0]  # IPv6 字面量要加方括号
+            host = name if server[1] is None else f"{name}:{server[1]}"
         # root_path 是已解码的挂载路径：只编码 path 中不能直接出现的字符，保留 sub-delims 等
         root_path = quote(scope.get("root_path", ""), safe=_PATH_SAFE)
         return f"{scope.get('scheme', 'http')}://{host}{root_path}{self.prefix}"
@@ -479,8 +630,38 @@ def _coding(request: _Request) -> str:
     return "" if coding == "identity" else coding
 
 
+def _feed(decoder: Any, data: bytes, limit: int, out: bytearray) -> Any:
+    """把一块压缩数据喂给 ``decoder``，返回可继续加料的 decoder（跨 member 时换成新的）。
+
+    一个 member 结束后剩下的字节属于下一个 member——RFC 1952 允许拼接多个 member（``gzip``
+    命令的输出就是这样），因此换一个新的 decoder 继续解，而不是把尾随数据判成违例。
+    **总解压上限跨 member 累计**（由 ``out`` 与 ``limit`` 共同约束），换 member 不重置：
+    每轮先判产出是否已超限（``decompress`` 的 ``max_length`` 为 0 表示**不设上限**，为负会抛
+    ``ValueError``——两者都必须挡在这里），因此 ``max_length`` 恒为正。
+    """
+    while True:
+        if len(out) > limit:
+            raise PayloadTooLargeError(f"请求体解码后超过 max_payload_bytes={limit}")
+        try:
+            out.extend(decoder.decompress(data, limit + 1 - len(out)))
+        except zlib.error as exc:
+            raise ValidationError(f"gzip 请求体损坏：{exc}") from None
+        if decoder.unconsumed_tail:
+            raise PayloadTooLargeError(f"请求体解码后超过 max_payload_bytes={limit}")
+        rest = decoder.unused_data if decoder.eof else b""
+        if not rest:
+            return decoder
+        # 上一 member 已结束且还有剩余字节：作为下一个 member 继续
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        data = rest
+
+
 async def _read(receive: Receive, limit: int, decoder: Any) -> bytes:
-    """流式读取（并解压）请求体，产出超过 ``limit`` 即停止并报 413（防解压炸弹）。"""
+    """流式读取（并解压）请求体，产出超过 ``limit`` 即停止并报 413（防解压炸弹）。
+
+    压缩体按 RFC 1952 接受多个 member 拼接；原始字节的上限（压缩炸弹的另一半）同样跨 member
+    累计（``raw``）。
+    """
     out = bytearray()
     raw = 0
     more = True
@@ -493,22 +674,15 @@ async def _read(receive: Receive, limit: int, decoder: Any) -> bytes:
         raw += len(data)
         if decoder is None:
             out.extend(data)
-        else:
-            if decoder.eof and data:
-                raise ValidationError("gzip 请求体在结束标记之后还有数据")
-            try:
-                out.extend(decoder.decompress(data, limit + 1 - len(out)))
-            except zlib.error as exc:
-                raise ValidationError(f"gzip 请求体损坏：{exc}") from None
-            if decoder.unconsumed_tail:
-                raise PayloadTooLargeError(f"请求体解码后超过 max_payload_bytes={limit}")
+        elif data:
+            if decoder.eof and not decoder.unused_data:
+                # 上一 member 已完整结束、本块以新 member 开头：换 decoder（不把字节判成尾随垃圾）
+                decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            decoder = _feed(decoder, data, limit, out)
         if len(out) > limit or (decoder is not None and raw > 2 * limit + 1024):
             raise PayloadTooLargeError(f"请求体超过 max_payload_bytes={limit}")
-    if decoder is not None:
-        if not decoder.eof:
-            raise ValidationError("gzip 请求体不完整")
-        if decoder.unused_data:
-            raise ValidationError("gzip 请求体在结束标记之后还有数据")
+    if decoder is not None and not decoder.eof:
+        raise ValidationError("gzip 请求体不完整")
     return bytes(out)
 
 
@@ -680,18 +854,26 @@ def _upload(result: UploadResult) -> _Response:
     return response
 
 
-def _status(code: str, route: _Route | None, *, if_match: bool) -> int:
-    """code → 状态码（§5）：每个 code 在给定端点上只有一个状态码。"""
-    if route == "move" and code in ("DPE_PRECONDITION_FAILED", "DPE_ALREADY_EXISTS"):
+def _status(
+    code: str, route: _Route | None, *, if_match: bool, body_precondition: bool = False
+) -> int:
+    """code → 状态码（§5）：每个 code 在给定端点上只有一个状态码。
+
+    ``body_precondition`` 表示前置条件由请求体承载（move 与一致性测试钩子的 self-write）：
+    ``DPE_PRECONDITION_FAILED`` / ``DPE_ALREADY_EXISTS`` 按 §5 的口径取 409，而不是条件头的 412。
+    """
+    if body_precondition and code in ("DPE_PRECONDITION_FAILED", "DPE_ALREADY_EXISTS"):
         return 409  # 请求体中的前置条件（§3.2）
     if route == "documents" and code == "DPE_NOT_FOUND" and if_match:
         return 412  # 条件头求值失败（RFC 9110 §13.1.1）
     return _STATUS.get(code, 500)
 
 
-def _problem(exc: DpeError, route: _Route | None, *, if_match: bool) -> _Response:
+def _problem(
+    exc: DpeError, route: _Route | None, *, if_match: bool, body_precondition: bool = False
+) -> _Response:
     """RFC 9457 problem 体 + ``DPE-Error-Code``（§5）。HEAD 的体由 ``_send`` 丢弃。"""
-    status = _status(exc.code, route, if_match=if_match)
+    status = _status(exc.code, route, if_match=if_match, body_precondition=body_precondition)
     slug = exc.code.removeprefix("DPE_").lower().replace("_", "-")
     title = slug.replace("-", " ")
     problem: dict[str, Any] = {

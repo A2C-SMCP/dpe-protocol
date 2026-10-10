@@ -6,6 +6,9 @@
 ASGI 应用（#44）：可挂到 httpx 的 ``ASGITransport`` 上做零网络测试，也可经
 ``python -m dpe_sdk.testing``（需要 extra ``server``）独立监听端口。
 命名保持中性，不出现任何服务端私有概念。
+
+一致性测试钩子（#45，``_hooks``）让外部进程驱动自身写入、会话过期与拨钟；它们全部在启动配置中
+设定、**不进入 DPE 协议面**，默认关闭：``create_app(..., hooks=HooksConfig(...))``。
 """
 
 from dpe_sdk.testing._engine import (
@@ -18,8 +21,11 @@ from dpe_sdk.testing._engine import (
     IfAbsent,
     IfNoneMatch,
     InvalidPrecondition,
+    MoveOutcome,
     Precondition,
+    PrefixAuthorizer,
 )
+from dpe_sdk.testing._hooks import AdjustableClock, HooksConfig
 from dpe_sdk.testing._http import ASGIApp, Authenticator, create_app, open_access
 from dpe_sdk.testing._staging import (
     InvalidChunk,
@@ -32,6 +38,7 @@ from dpe_sdk.testing._staging import (
 
 __all__ = [
     "ASGIApp",
+    "AdjustableClock",
     "AllowAll",
     "Authenticator",
     "Authorizer",
@@ -39,11 +46,14 @@ __all__ = [
     "DedupScope",
     "Engine",
     "EngineConfig",
+    "HooksConfig",
     "IfAbsent",
     "IfNoneMatch",
     "InvalidChunk",
     "InvalidPrecondition",
+    "MoveOutcome",
     "Precondition",
+    "PrefixAuthorizer",
     "UploadChunk",
     "UploadOffsetError",
     "UploadResult",

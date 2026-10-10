@@ -88,7 +88,9 @@ __all__ = [
     "EngineConfig",
     "IfAbsent",
     "InvalidPrecondition",
+    "MoveOutcome",
     "Precondition",
+    "PrefixAuthorizer",
 ]
 
 PROTOCOL = "dpe/1"
@@ -112,6 +114,25 @@ class AllowAll:
         return True
 
 
+@dataclass(frozen=True)
+class PrefixAuthorizer:
+    """按 URI 前缀的写授权（多身份钩子）：调用者 → 可写前缀，另给有 force 权限的调用者。
+
+    前缀按 ``str.startswith`` 与规范化后的 file_uri 比较；空前缀 ``""`` 匹配任意 URI。
+    未列出的调用者不能写任何 URI，也不在 ``force`` 里就没有 force 权限。授权策略由服务端自行
+    决定（core §2.4、§8），这是参考服务端提供给一致性测试的一种实现。
+    """
+
+    prefixes: Mapping[str, Sequence[str]]
+    force: frozenset[str] = frozenset()
+
+    def can_write(self, caller: str, uri: str) -> bool:
+        return any(uri.startswith(prefix) for prefix in self.prefixes.get(caller, ()))
+
+    def can_force(self, caller: str, uri: str) -> bool:
+        return caller in self.force
+
+
 class DedupScope(Enum):
     """去重范围（core §3.3）：缺失清单与 commit 可得性判定使用同一范围。"""
 
@@ -124,6 +145,17 @@ class DedupScope(Enum):
 #: 条件头承载的前置条件（force 是请求体成员，不在此列）。``base_hash`` 按值比较，不做格式校验
 #: （core §5.2，#63）
 Precondition = BaseHash | IfAbsent
+
+
+@dataclass(frozen=True)
+class MoveOutcome:
+    """``move`` 的结果：响应模型（``MoveResult``）与规范化后的目标 URI。
+
+    HTTP 层据此拼 ``Content-Location``，不必二次解析请求体。
+    """
+
+    result: MoveResult
+    to_uri: str
 
 
 @dataclass(frozen=True)
@@ -207,6 +239,8 @@ class EngineConfig:
 
 
 _COMMIT_MEMBERS = frozenset({"document", "pages", "objects", "staging_session", "force"})
+#: 服务端自身写入的请求信封：与 commit 同形，但没有 staging_session（服务端没有会话身份）
+_SERVER_WRITE_MEMBERS = _COMMIT_MEMBERS - {"staging_session"}
 _NEGOTIATE_MEMBERS = frozenset({"file_uri", "document", "pages"})
 _MOVE_MEMBERS = frozenset({"from_uri", "to_uri", "base_hash"})
 _HEADS_MEMBERS = frozenset({"uris"})
@@ -477,17 +511,20 @@ class Engine:
         """
         data = _parse_body(body, self.config.max_payload_bytes)
         contract = self._contract(contract)
+        declared = self.config.contracts
         env = _envelope(data, _NEGOTIATE_MEMBERS)
         uri = _normalize_uri(_require(env, "file_uri", str, "字符串"), pointer("file_uri"))
         document = _require(env, "document", dict, "文档对象")
         pages = _optional(env, "pages", list, "页对象数组") or []
         _validated(
-            partial(dpe_hash.object_hash, document, "document", contract), pointer("document")
+            partial(dpe_hash.object_hash, document, "document", contract, contracts=declared),
+            pointer("document"),
         )
         attached: dict[str, dict[str, Any]] = {}
         for i, page in enumerate(pages):
             h = _validated(
-                partial(dpe_hash.object_hash, page, "page", contract), pointer("pages", i)
+                partial(dpe_hash.object_hash, page, "page", contract, contracts=declared),
+                pointer("pages", i),
             )
             attached[h] = page  # 同 hash 的等价页取后出现者（core §2.7 允许任一表示）
         self._forbid_unless(self.config.authorizer.can_write(caller, uri), uri)
@@ -532,7 +569,9 @@ class Engine:
             raise PayloadTooLargeError(
                 f"页对象 {len(body)} 字节，超过 page_max_bytes={self.config.page_max_bytes}"
             )
-        h = _validated(partial(dpe_hash.object_hash, data, "page", contract))
+        h = _validated(
+            partial(dpe_hash.object_hash, data, "page", contract, contracts=self.config.contracts)
+        )
         if h != page_hash:
             raise HashMismatchError(f"上传对象的 hash {h} 与路径 {page_hash} 不符")
         with self._lock:
@@ -590,7 +629,15 @@ class Engine:
                     )
                 # 到齐：解析、按 §2.8 校验、重算 hash 与路径比较；失败已丢弃已收内容
                 data = _parse_json(complete)
-                h = _validated(partial(dpe_hash.object_hash, data, "page", contract))
+                h = _validated(
+                    partial(
+                        dpe_hash.object_hash,
+                        data,
+                        "page",
+                        contract,
+                        contracts=self.config.contracts,
+                    )
+                )
                 if h != page_hash:
                     raise HashMismatchError(f"上传对象的 hash {h} 与路径 {page_hash} 不符")
                 session.pages[page_hash] = StagedPage(dict(data), contract, len(complete))
@@ -929,32 +976,96 @@ class Engine:
         contract: str | None,
         precondition: Precondition | InvalidPrecondition | None = None,
     ) -> CommitResult:
-        # 第 0–1 步：传输层上限与报文校验，只看请求本身；查询参数 uri 与请求信封同一步
-        data = _parse_body(body, self.config.max_payload_bytes)
-        contract = self._contract(contract)
-        uri = _normalize_uri(uri)
-        req = self._parse_commit(data, contract)
-        if isinstance(precondition, InvalidPrecondition):
-            raise ValidationError(precondition.reason)
-        if req.force and precondition is not None:
-            raise ValidationError("force 不得与 base_hash / if_absent 并存")
+        uri, contract, req, precondition = self._parse_write(
+            body, uri, contract, precondition, _COMMIT_MEMBERS
+        )
         # 第 2 步：授权
         auth = self.config.authorizer
         self._forbid_unless(auth.can_write(caller, uri), uri)
         if req.force:
             self._forbid_unless(auth.can_force(caller, uri), uri)
+        return self._commit_tail(caller, uri, contract, req, precondition)
+
+    def server_write(
+        self,
+        uri: str,
+        body: bytes,
+        contract: str | None = None,
+        precondition: Precondition | InvalidPrecondition | None = None,
+    ) -> CommitResult:
+        """服务端自身写入（core §2.4 同级写入）：整个过程与 ``commit`` 同一求值顺序，差别只有两处。
+
+        - **不做对外授权**：写的是服务端自己的内容（如它作为某个 URI 的来源），不是外部调用者的
+          请求，因此不询问 ``authorizer``；CAS 与全部报文校验照旧（不绕过 commit、不绕过前置条件）。
+        - **去重范围上界取全部持有文档**：服务端对自己的存储有完全的视野（core §3.3），不受调用者
+          写授权限制。
+
+        ``contract`` 缺省为主契约；``body`` 是与 ``commit`` 同形的请求体，但**不含
+        ``staging_session``**（会话绑定「调用者 + file_uri」，服务端没有会话身份），出现即
+        ``DPE_VALIDATION``。一致性测试钩子与 conformance 的「同级写入」场景用它。
+        """
+        uri, contract, req, precondition = self._parse_write(
+            body,
+            uri,
+            self._store.primary if contract is None else contract,
+            precondition,
+            _SERVER_WRITE_MEMBERS,
+        )
+        return self._commit_tail(None, uri, contract, req, precondition, all_holders=True)
+
+    def _parse_write(
+        self,
+        body: bytes,
+        uri: str,
+        contract: str | None,
+        precondition: Precondition | InvalidPrecondition | None,
+        members: frozenset[str],
+    ) -> tuple[str, str, _Commit, Precondition | None]:
+        """写操作的报文校验（第 0–1 步）：传输层上限、契约声明、请求信封、对象校验与条件头形式。
+
+        只看请求本身，与文档状态无关（core §3.3 第 1 步）；``commit`` 与 ``server_write`` 共用。
+        """
+        data = _parse_body(body, self.config.max_payload_bytes)
+        contract = self._contract(contract)
+        uri = _normalize_uri(uri)
+        req = self._parse_commit(data, contract, members)
+        if isinstance(precondition, InvalidPrecondition):
+            raise ValidationError(precondition.reason)
+        if req.force and precondition is not None:
+            raise ValidationError("force 不得与 base_hash / if_absent 并存")
+        return uri, contract, req, precondition
+
+    def _commit_tail(
+        self,
+        caller: str | None,
+        uri: str,
+        contract: str,
+        req: _Commit,
+        precondition: Precondition | None,
+        *,
+        all_holders: bool = False,
+    ) -> CommitResult:
+        """第 3–6 步与去重范围的两遍求值（core §3.3）：``commit`` 与 ``server_write`` 共用。
+
+        乐观求值：先只用去重范围下界（本文档当前状态）在锁内完成第 4–6 步；只有缺对象、
+        且范围是写授权级时，才在锁外为持有这些对象的文档调用授权器，再进锁重做第 4–6 步。
+        授权器可插拔，可能很慢，也可能回调本引擎，因此从不在锁内调用。``all_holders`` 为真时
+        上界是全部持有文档（``server_write``），不再询问授权器。
+        """
         # 第 3 步：前置条件存在性
         if precondition is None and not req.force:
             raise PreconditionRequiredError("写操作必须带 base_hash、if_absent 或 force")
-        # 乐观求值：先只用去重范围下界（本文档当前状态）在锁内完成第 4–6 步；只有缺对象、
-        # 且范围是写授权级时，才在锁外为持有这些对象的文档调用授权器，再进锁重做第 4–6 步。
-        # 授权器可插拔，可能很慢，也可能回调本引擎，因此从不在锁内调用。
         try:
             return self._apply_commit(caller, uri, contract, req, precondition, frozenset())
         except _Gap as gap:
-            if self.config.dedup_scope is not DedupScope.WRITABLE:
+            if all_holders:
+                # 服务端自身写入：全部持有文档都在它的去重范围里
+                writable = frozenset(holder for holders in gap.holders for holder in holders)
+            elif self.config.dedup_scope is not DedupScope.WRITABLE:
                 raise gap.error(self.config.missing_max) from None
-            writable = self._authorize_holders(caller, gap.holders)
+            else:
+                assert caller is not None, "只有 server_write 允许不传调用者"
+                writable = self._authorize_holders(caller, gap.holders)
             if not writable:
                 raise gap.error(self.config.missing_max) from None
         try:
@@ -964,7 +1075,7 @@ class Engine:
 
     def _apply_commit(
         self,
-        caller: str,
+        caller: str | None,
         uri: str,
         contract: str,
         req: _Commit,
@@ -995,6 +1106,7 @@ class Engine:
             # 第 6 步：会话与可得性
             session: Session | None = None
             if req.staging_session is not None:
+                assert caller is not None, "server_write 的请求信封不允许 staging_session"
                 session = self._resolve_session(caller, uri, req.staging_session)
             state = self._materialize(uri, contract, req, writable, session)
             self._store.replace(uri, state)
@@ -1027,26 +1139,30 @@ class Engine:
                     break
         return frozenset(writable)
 
-    def _parse_commit(self, data: Any, contract: str) -> _Commit:
-        env = _envelope(data, _COMMIT_MEMBERS)
+    def _parse_commit(self, data: Any, contract: str, members: frozenset[str]) -> _Commit:
+        env = _envelope(data, members)
         document = _require(env, "document", dict, "文档对象")
         pages = _optional(env, "pages", list, "页对象数组") or []
         objects = _optional(env, "objects", list, "元素对象数组") or []
         session = _optional(env, "staging_session", str, "字符串")
         force = _optional(env, "force", bool, "布尔值") or False
+        declared = self.config.contracts
         doc_hash = _validated(
-            partial(dpe_hash.object_hash, document, "document", contract), pointer("document")
+            partial(dpe_hash.object_hash, document, "document", contract, contracts=declared),
+            pointer("document"),
         )
         inline_pages: dict[str, dict[str, Any]] = {}
         for i, page in enumerate(pages):
             h = _validated(
-                partial(dpe_hash.object_hash, page, "page", contract), pointer("pages", i)
+                partial(dpe_hash.object_hash, page, "page", contract, contracts=declared),
+                pointer("pages", i),
             )
             inline_pages[h] = page  # 同 hash 的等价页取后出现者（core §2.7 允许任一表示）
         inline_elements: dict[str, dict[str, Any]] = {}
         for i, element in enumerate(objects):
             h = _validated(
-                partial(dpe_hash.object_hash, element, "element", contract), pointer("objects", i)
+                partial(dpe_hash.object_hash, element, "element", contract, contracts=declared),
+                pointer("objects", i),
             )
             inline_elements[h] = element
         return _Commit(document, doc_hash, inline_pages, inline_elements, session, force)
@@ -1267,9 +1383,13 @@ class Engine:
                 raise PreconditionFailedError(f"expected {base_hash}")
             self._store.replace(uri, None)
 
-    def move(self, caller: str, body: bytes, contract: str | None) -> MoveResult:
+    def move(self, caller: str, body: bytes, contract: str | None) -> MoveOutcome:
         """求值顺序见 core §5.2（#63）。``from_uri`` 与 ``to_uri`` 规范化后相等时，源存在即
-        「目标已存在」（第 5 步，base_hash 不符时 ``DPE_PRECONDITION_FAILED`` 优先）。"""
+        「目标已存在」（第 5 步，base_hash 不符时 ``DPE_PRECONDITION_FAILED`` 优先）。
+
+        返回 ``MoveOutcome``：本层的响应模型与规范化后的目标 URI（HTTP 层据此拼
+        ``Content-Location``，不再二次解析请求体）。
+        """
         data = _parse_body(body, self.config.max_payload_bytes)
         contract = self._contract(contract)
         env = _envelope(data, _MOVE_MEMBERS)
@@ -1288,14 +1408,23 @@ class Engine:
             if source is None:
                 # 目标状态已达成即成功（core §5.2 第 4 步）
                 if target is not None and target.matches(base_hash):
-                    return MoveResult(doc_hash=target.doc_hashes[contract])
+                    return MoveOutcome(MoveResult(doc_hash=target.doc_hashes[contract]), to_uri)
                 raise NotFoundError(f"{from_uri} 不存在")
             if not source.matches(base_hash):
                 raise PreconditionFailedError(f"expected {base_hash}")
             if target is not None:
                 raise AlreadyExistsError(f"{to_uri} 已存在")
             self._store.rename(from_uri, to_uri)
-            return MoveResult(doc_hash=source.doc_hashes[contract])
+            return MoveOutcome(MoveResult(doc_hash=source.doc_hashes[contract]), to_uri)
+
+    def expire_session(self, session_id: str) -> bool:
+        """让暂存会话立即过期（一致性测试钩子）：返回会话此前是否可用。
+
+        只影响这一个会话（其余会话不受影响），过期判定仍走 core §3.4 的真实 TTL 比较——之后的
+        negotiate / upload / commit 用它一律 ``DPE_SESSION_EXPIRED``。
+        """
+        with self._lock:
+            return self._sessions.expire(session_id)
 
 
 def _staged_size(session: Session, target: str) -> int:

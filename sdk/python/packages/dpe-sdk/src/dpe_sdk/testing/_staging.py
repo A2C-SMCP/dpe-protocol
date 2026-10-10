@@ -221,6 +221,19 @@ class SessionStore:
         """commit 成功后消费会话；未引用的暂存对象随之回收。"""
         self._sessions.pop(session.id, None)
 
+    def expire(self, session_id: str) -> bool:
+        """让会话立即过期（一致性测试钩子）：返回它此前是否存在且可用。
+
+        只是把过期时间置为此刻——之后的取用仍走 ``get`` 的真实 TTL 比较（core §3.4），得到与闲置
+        超过 TTL 相同的 ``DPE_SESSION_EXPIRED``；只影响这一个会话，其余会话照常续期与过期。
+        """
+        self._sweep()
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        session.expires_at = self.now()
+        return True
+
     def _sweep(self) -> None:
         now = self.now()
         for session_id in [s.id for s in self._sessions.values() if now >= s.expires_at]:

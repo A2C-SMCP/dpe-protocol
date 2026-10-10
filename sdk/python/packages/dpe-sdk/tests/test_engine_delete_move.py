@@ -8,8 +8,8 @@ from typing import Any
 import dpe_hash
 import pytest
 from dpe_sdk import errors
-from dpe_sdk.testing import BaseHash, Engine, IfAbsent
-from engine_helpers import PrefixAuthorizer, inline, make_engine, text_doc
+from dpe_sdk.testing import BaseHash, Engine, IfAbsent, PrefixAuthorizer
+from engine_helpers import inline, make_engine, text_doc
 
 C = dpe_hash.CONTRACT
 ABSENT_HASH = "dpe1:" + "0" * 64
@@ -21,7 +21,7 @@ def _put(engine: Engine, uri: str, text: str = "x", caller: str = "u") -> str:
 
 
 def _move(engine: Engine, caller: str = "u", contract: str | None = C, **payload: Any) -> str:
-    return engine.move(caller, json.dumps(payload).encode(), contract).doc_hash
+    return engine.move(caller, json.dumps(payload).encode(), contract).result.doc_hash
 
 
 # ---------------------------------------------------------------------------

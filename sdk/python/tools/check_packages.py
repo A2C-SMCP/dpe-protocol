@@ -92,14 +92,31 @@ def _import_roots(node: ast.AST) -> set[str]:
     return set()
 
 
+def _is_type_checking(test: ast.expr) -> bool:
+    """``if TYPE_CHECKING:`` 或 ``if typing.TYPE_CHECKING:``。"""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+
 def _imported_roots(source: str, filename: str) -> tuple[set[str], set[str]]:
-    """返回 (模块级 import 的根, 函数体内惰性 import 的根)。"""
+    """返回 (运行期模块级 import 的根, 惰性 import 的根：函数体内或 ``if TYPE_CHECKING:`` 下)。
+
+    ``if TYPE_CHECKING:`` 的体只在类型检查器里存在，运行期不会执行，因此不算模块顶层 import
+    （可选依赖常这样声明）；它的 ``else`` 分支照常按运行期处理。
+    """
     eager: set[str] = set()
     lazy: set[str] = set()
 
-    def visit(node: ast.AST, in_function: bool) -> None:
-        (lazy if in_function else eager).update(_import_roots(node))
-        nested = in_function or isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    def visit(node: ast.AST, in_lazy_scope: bool) -> None:
+        (lazy if in_lazy_scope else eager).update(_import_roots(node))
+        nested = in_lazy_scope or isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        if isinstance(node, ast.If) and _is_type_checking(node.test):
+            for branch in node.body:
+                visit(branch, True)
+            for branch in node.orelse:
+                visit(branch, nested)
+            return
         for child in ast.iter_child_nodes(node):
             visit(child, nested)
 

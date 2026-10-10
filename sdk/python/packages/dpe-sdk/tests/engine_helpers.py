@@ -69,20 +69,6 @@ def text_doc(*pages: Sequence[str], file_type: str = "md", **fields: Any) -> dic
     }
 
 
-@dataclass
-class PrefixAuthorizer:
-    """测试用授权器：调用者 → 可写前缀；``force`` 中的调用者有 force 权限。"""
-
-    prefixes: dict[str, tuple[str, ...]]
-    force: frozenset[str] = field(default_factory=frozenset)
-
-    def can_write(self, caller: str, uri: str) -> bool:
-        return any(uri.startswith(p) for p in self.prefixes.get(caller, ()))
-
-    def can_force(self, caller: str, uri: str) -> bool:
-        return caller in self.force
-
-
 def make_engine(**overrides: Any) -> Engine:
     """按 ``EngineConfig`` 的字段覆盖默认值构造引擎（默认授权器放行一切）。"""
     overrides.setdefault("authorizer", AllowAll())

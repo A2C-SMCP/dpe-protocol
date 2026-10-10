@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from dpe_hash import (
     DRILL_CONTRACT,
+    SUPPORTED_CONTRACTS,
     DpeHashError,
     children,
     content_hash,
@@ -108,7 +109,7 @@ def _check_preimages(
     assert _digest(contract, preimages["document"]) == got["doc_hash"]
     page_hashes = [p["page_hash"] for p in got["pages"]]
     assert preimages["document"] == _document_preimage(
-        document, page_hashes, contract, "", with_children=True
+        document, page_hashes, contract, "", with_children=True, contracts=SUPPORTED_CONTRACTS
     )
     for i, (page, page_pre, element_pres) in enumerate(
         zip(document["pages"], preimages["pages"], preimages["elements"], strict=True)
@@ -116,7 +117,12 @@ def _check_preimages(
         page_got = got["pages"][i]
         assert _digest(contract, page_pre) == page_got["page_hash"]
         assert page_pre == _page_preimage(
-            page, page_got["elements"], contract, pointer("pages", i), with_children=True
+            page,
+            page_got["elements"],
+            contract,
+            pointer("pages", i),
+            with_children=True,
+            contracts=SUPPORTED_CONTRACTS,
         )
         assert [_digest(contract, p) for p in element_pres] == page_got["elements"]
         assert element_pres == [_element_preimage(el, "") for el in page["elements"]]
