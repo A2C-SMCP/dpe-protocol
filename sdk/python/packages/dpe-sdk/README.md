@@ -82,6 +82,81 @@ async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
   python -m dpe_sdk.testing --port 0 --prefix /r/1   # stdout 第一行：{"url": "http://127.0.0.1:PORT/r/1"}
   ```
 
-  可用 `--max-payload-bytes` 等参数调整限额；一致性测试钩子随 #45 接入。
+  可用 `--max-payload-bytes` 等参数调整限额；钩子见下。
+
+### 一致性测试钩子（#45）
+
+一致性测试需要服务端配合的地方（多身份授权、服务端自身写入、会话过期、多契约、确定性会话 id）
+由**启动配置**提供。它们**不进入 DPE 协议面**（capabilities 与全部端点不变），默认全部关闭；
+不启用时行为与规范默认一致。
+
+```python
+import itertools
+
+from dpe_sdk.testing import (
+    AdjustableClock,
+    Engine,
+    EngineConfig,
+    HooksConfig,
+    PrefixAuthorizer,
+    create_app,
+)
+
+counter = itertools.count()
+clock = AdjustableClock()  # 可拨动的时钟：真实时间 + 可累计的偏移
+engine = Engine(
+    EngineConfig(
+        clock=clock,  # ③ 会话过期与续期用它
+        contracts=("dpe1", "dpe2"),  # ④ 同时声明两个契约（契约升级期）
+        session_id_factory=lambda: f"st-{next(counter)}",  # ⑤ 确定性且互不重复的会话 id
+        authorizer=PrefixAuthorizer(  # ① 多身份与按 URI 前缀的写授权
+            {"Bearer full": ("",), "Bearer limited": ("dpe://docs/a/",)},
+            force=frozenset({"Bearer full"}),
+        ),  # 空前缀 "" 匹配任意 URI；未列出的调用者不可写
+    )
+)
+app = create_app(engine, prefix="/r/1", hooks=HooksConfig(path="/__hooks__", clock=clock))
+```
+
+`HooksConfig.clock` 必须是注入引擎的那**同一个**实例（`create_app` 会校验）。各钩子的驱动方式：
+
+| 钩子 | 驱动方式 |
+| --- | --- |
+| ① 多身份 / 前缀授权 / force | 无需钩子通道：按 `Authorization` 头发 DPE 请求（身份 = 头原值），授权由 `PrefixAuthorizer` 判定 |
+| ② 服务端自身写入（core §2.4 同级写入） | `POST {hooks}/self-write` |
+| ③ 会话强制过期 | `POST {hooks}/expire-session` |
+| ③ 拨钟（精确断言续期与过期；参考服务端专有，跑分器不依赖它） | `POST {hooks}/clock/advance` |
+| ④ 同时声明 dpe1 与 dpe2 | `EngineConfig.contracts` |
+| ⑤ 可注入会话 id | `EngineConfig.session_id_factory` |
+
+```bash
+# ② 服务端自身写入：请求体是 commit 请求体加 file_uri 与前置条件（base_hash / if_absent / force
+#    至多其一，缺省即 428；前置条件在请求体里，冲突取 409，条件头才是 412）。同一求值顺序、
+#    同样受 CAS 约束；服务端身份只绕过对外授权。
+curl -X POST http://127.0.0.1:8000/__hooks__/self-write -d '{
+  "file_uri": "s3://bucket/a.md",
+  "document": {"file_type": "md", "pages": []},
+  "if_absent": true
+}'   # → 201/200 {status, doc_hash, delta}（与 DPE commit 同形容）；错误为 problem+json
+
+# ③ 让会话立即过期：之后的 negotiate / upload / commit 用它一律 DPE_SESSION_EXPIRED
+curl -X POST http://127.0.0.1:8000/__hooks__/expire-session -d '{"session_id": "st-0"}'
+
+# ③ 拨钟：「闲置超过 TTL 的会话过期」与「续期 = 此刻 + TTL」都可精确断言
+curl -X POST http://127.0.0.1:8000/__hooks__/clock/advance -d '{"advance_seconds": 3600}'
+```
+
+独立监听时钩子同样由命令行开启（`--hooks`、`--grant` / `--force`、`--contract`、
+`--session-id-prefix`），公布的一行 JSON 会带上钩子通道的 base URL：
+
+```bash
+python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
+  --contract dpe1 --contract dpe2 \
+  --grant 'Bearer full' '*' --grant 'Bearer limited' 'dpe://docs/a/' --force 'Bearer full' \
+  --session-id-prefix st-test-
+# {"url": "http://127.0.0.1:PORT/r/1", "hooks": "http://127.0.0.1:PORT/__hooks__"}
+```
+
+钩子通道是测试侧信道：不做 DPE 认证、默认关闭、只建议监听本机（缺省 127.0.0.1）。
 
 > 客户端协议核心、传输适配与增量推送尚在开发中（#12–#17）。
