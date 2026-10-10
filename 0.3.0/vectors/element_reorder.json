@@ -1,0 +1,93 @@
+{
+  "name": "element_reorder",
+  "kind": "document",
+  "description": "顺序属于内容（#3 S7）：同页元素对调，content_hash 多重集不变（delta 为 0），但 page_hash / doc_hash 变化。",
+  "documents": {
+    "before": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "他们离婚了"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "A 与 C 再婚了"
+            }
+          ]
+        }
+      ]
+    },
+    "after": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "A 与 C 再婚了"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "他们离婚了"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "before": {
+      "dpe1": {
+        "doc_hash": "dpe1:ec6aa64b53ecccb429a0cb6e5b5ecfabb0e84a47e84c7331f44bb5e35af71400",
+        "pages": [
+          {
+            "page_hash": "dpe1:d423c8cb4b1623fbefb2ed43d9248cb1f536e966f58c9f973615664dfd98a7fa",
+            "elements": [
+              "dpe1:28d18f4723bbee54dfb52b9f0eb93a241a5276a4228528f512565eca1ea8856c",
+              "dpe1:9a1c7163980c126ae2fa1be28d022119335dec6775fa22de32b4b57326678f17"
+            ]
+          }
+        ]
+      }
+    },
+    "after": {
+      "dpe1": {
+        "doc_hash": "dpe1:51c674e262ff7684c6c1e7d331e63b18879d2f837ec0cda55022733d62eb08e6",
+        "pages": [
+          {
+            "page_hash": "dpe1:29f3ce78f602eed6425dc2b27c92b0c489fdf4774c5d32c0c869ab200e5572b5",
+            "elements": [
+              "dpe1:9a1c7163980c126ae2fa1be28d022119335dec6775fa22de32b4b57326678f17",
+              "dpe1:28d18f4723bbee54dfb52b9f0eb93a241a5276a4228528f512565eca1ea8856c"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "before.pages.0.elements.0",
+        "after.pages.0.elements.1"
+      ]
+    },
+    {
+      "equal": [
+        "before.pages.0.elements.1",
+        "after.pages.0.elements.0"
+      ]
+    },
+    {
+      "distinct": [
+        "before.doc_hash",
+        "after.doc_hash"
+      ]
+    }
+  ]
+}
