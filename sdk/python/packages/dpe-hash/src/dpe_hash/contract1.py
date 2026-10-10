@@ -15,6 +15,10 @@
 - ``children``：对象引用的下一层（缺失清单）。
 
 ``contract`` 参数用于契约 1 §6 的原位重算；``dpe2`` 只在显式传入时接受（见 ``DRILL_CONTRACT``）。
+带子 hash 列表的入口（``page_hash`` / ``doc_hash`` / ``object_hash`` / ``children``）另有可选的
+关键字参数 ``contracts``：本次校验接受的「受支持契约」基准集合，缺省 ``SUPPORTED_CONTRACTS``。
+声明多契约的服务端（core §3.1）传自己的声明集合，于是 dpe1 对象引用 dpe2 子 hash 由「不受支持」
+改判契约混用。
 """
 
 from __future__ import annotations
@@ -176,17 +180,33 @@ def _metadata_part(obj: Mapping[str, Any], field: str, at: str) -> str:
     return canonical(value, strip_nulls=True, at=at + pointer(field))
 
 
-def _hash_list(value: object, contract: str, at: str) -> list[str]:
+def _base_contracts(contracts: Collection[str]) -> frozenset[str]:
+    """本次校验的「受支持契约」基准集合（``parse_hash`` 的参数校验同形）。
+
+    实际接受的集合是它与本次对象契约的并集（``_hash_list``）：演练契约 dpe2 只在被选为本次契约时
+    才算受支持；集合里出现本包不认识的契约直接拒绝。默认基准是 ``SUPPORTED_CONTRACTS``——
+    向量与已发布行为因此不变；声明多契约的服务端（core §3.1）传入自己的声明集合，
+    于是「受支持但与本对象不同」的契约按契约混用判 ``DPE_VALIDATION``。
+    """
+    if isinstance(contracts, str):
+        raise TypeError('contracts 必须是契约的集合（如 ("dpe1",)），不能是单个字符串')
+    accepted = frozenset(contracts)
+    unknown = accepted - KNOWN_CONTRACTS
+    if unknown:
+        raise ContractUnsupportedError(f"不支持的 hash 契约：{sorted(unknown)!r}")
+    return accepted
+
+
+def _hash_list(value: object, contract: str, at: str, contracts: Collection[str]) -> list[str]:
     """子对象 hash 列表：每项必须是同一契约下的合法 hash 值（契约 1 §5）。
 
-    前缀不是受支持的契约 → ``ContractUnsupportedError``；是受支持的契约、但与本对象的契约不同
-    （契约混用）→ ``ValidationError``。「受支持」= ``SUPPORTED_CONTRACTS`` 加上本次调用显式选择的
-    契约：演练契约 dpe2 只在被选中时才算受支持，因此 dpe1 对象引用 dpe2 子 hash 与生产服务端一样
-    得到 ``DPE_CONTRACT_UNSUPPORTED``。
+    接受集合 = ``contracts``（基准，缺省 ``SUPPORTED_CONTRACTS``）∪ {本次对象的契约}：前缀不在其中
+    → ``ContractUnsupportedError``；在其中、但与本对象的契约不同（契约混用）→ ``ValidationError``。
+    基准确认了「同意接受哪些契约」，并集里加入本次契约则让演练契约 dpe2 在被选中时才算受支持。
     """
     if isinstance(value, str) or not isinstance(value, (list, tuple)):
         raise ValidationError(f"必须是 hash 值数组，实际为 {type(value).__name__}", at)
-    accepted = frozenset({*SUPPORTED_CONTRACTS, contract})
+    accepted = _base_contracts(contracts) | {contract}
     for i, item in enumerate(value):
         prefix, _ = _split_hash(item, accepted, at + pointer(i))
         if prefix != contract:
@@ -196,9 +216,9 @@ def _hash_list(value: object, contract: str, at: str) -> list[str]:
     return list(value)
 
 
-def _hash_list_part(value: object, contract: str, at: str) -> str:
+def _hash_list_part(value: object, contract: str, at: str, contracts: Collection[str]) -> str:
     """子 hash 列表的 JCS 片段（已校验的 hash 值只含 ASCII 字母数字与冒号，无需转义）。"""
-    return "[" + ",".join(f'"{h}"' for h in _hash_list(value, contract, at)) + "]"
+    return "[" + ",".join(f'"{h}"' for h in _hash_list(value, contract, at, contracts)) + "]"
 
 
 def _assemble(parts: Mapping[str, str]) -> str:
@@ -251,10 +271,18 @@ def _page_parts(page: Mapping[str, Any], at: str, *, with_children: bool) -> dic
 
 
 def _page_preimage(
-    page: Mapping[str, Any], element_hashes: object, contract: str, at: str, *, with_children: bool
+    page: Mapping[str, Any],
+    element_hashes: object,
+    contract: str,
+    at: str,
+    *,
+    with_children: bool,
+    contracts: Collection[str],
 ) -> str:
     parts = _page_parts(page, at, with_children=with_children)
-    parts["elements"] = _hash_list_part(element_hashes, contract, at + pointer("elements"))
+    parts["elements"] = _hash_list_part(
+        element_hashes, contract, at + pointer("elements"), contracts
+    )
     return _assemble(parts)
 
 
@@ -283,10 +311,16 @@ def _document_parts(document: Mapping[str, Any], at: str, *, with_children: bool
 
 
 def _document_preimage(
-    document: Mapping[str, Any], page_hashes: object, contract: str, at: str, *, with_children: bool
+    document: Mapping[str, Any],
+    page_hashes: object,
+    contract: str,
+    at: str,
+    *,
+    with_children: bool,
+    contracts: Collection[str],
 ) -> str:
     parts = _document_parts(document, at, with_children=with_children)
-    parts["pages"] = _hash_list_part(page_hashes, contract, at + pointer("pages"))
+    parts["pages"] = _hash_list_part(page_hashes, contract, at + pointer("pages"), contracts)
     return _assemble(parts)
 
 
@@ -296,18 +330,20 @@ def _required(obj: Mapping[str, Any], field: str, at: str, what: str) -> Any:
     return obj[field]
 
 
-def _preimage(obj: object, kind: ObjectKind, contract: str) -> str:
+def _preimage(obj: object, kind: ObjectKind, contract: str, contracts: Collection[str]) -> str:
     """线上原像的 JCS 原像（``object_hash`` / ``children`` 共用）。"""
     if kind == "element":
         return _element_preimage(obj, "")
     if kind == "page":
         page = _mapping(obj, "", "页对象")
         elements = _required(page, "elements", "", "页对象")
-        return _page_preimage(page, elements, contract, "", with_children=True)
+        return _page_preimage(page, elements, contract, "", with_children=True, contracts=contracts)
     if kind == "document":
         document = _mapping(obj, "", "文档对象")
         pages = _required(document, "pages", "", "文档对象")
-        return _document_preimage(document, pages, contract, "", with_children=True)
+        return _document_preimage(
+            document, pages, contract, "", with_children=True, contracts=contracts
+        )
     raise ValueError(f"未知的对象层级：{kind!r}")
 
 
@@ -343,56 +379,95 @@ def content_hash(element: ElementObject, contract: str = CONTRACT) -> str:
     return _digest(_ijson_first(element, lambda: _element_preimage(element, "")), contract, salt)
 
 
-def page_hash(page: PageFields, element_hashes: Sequence[str], contract: str = CONTRACT) -> str:
+def page_hash(
+    page: PageFields,
+    element_hashes: Sequence[str],
+    contract: str = CONTRACT,
+    *,
+    contracts: Collection[str] = SUPPORTED_CONTRACTS,
+) -> str:
     """``page_hash``（契约 1 §5）：页自身字段 + 已有的 content_hash 列表（按页内顺序）。
 
     ``page`` 带 ``elements`` 键即报错，避免两份元素列表的歧义；``element_hashes`` 中的错误
-    路径记为 ``/elements/<i>``。
+    路径记为 ``/elements/<i>``。``contracts`` 是本次校验接受的「受支持契约」基准集合
+    （见 ``_base_contracts``）：声明多契约的服务端传自己的声明集合。
     """
     salt = _salt(contract)
     pre = _ijson_first(
         (page, element_hashes),
         lambda: _page_preimage(
-            _mapping(page, "", "页对象"), element_hashes, contract, "", with_children=False
+            _mapping(page, "", "页对象"),
+            element_hashes,
+            contract,
+            "",
+            with_children=False,
+            contracts=contracts,
         ),
     )
     return _digest(pre, contract, salt)
 
 
-def doc_hash(document: DocumentFields, page_hashes: Sequence[str], contract: str = CONTRACT) -> str:
+def doc_hash(
+    document: DocumentFields,
+    page_hashes: Sequence[str],
+    contract: str = CONTRACT,
+    *,
+    contracts: Collection[str] = SUPPORTED_CONTRACTS,
+) -> str:
     """``doc_hash``（契约 1 §5）：文档自身字段 + 已有的 page_hash 列表（按页序），不需加载元素。
 
     ``document`` 带 ``pages`` 键即报错，避免两份页序的歧义；``page_hashes`` 中的错误路径记为
-    ``/pages/<i>``。
+    ``/pages/<i>``；``contracts`` 同 ``page_hash``。
     """
     salt = _salt(contract)
     pre = _ijson_first(
         (document, page_hashes),
         lambda: _document_preimage(
-            _mapping(document, "", "文档对象"), page_hashes, contract, "", with_children=False
+            _mapping(document, "", "文档对象"),
+            page_hashes,
+            contract,
+            "",
+            with_children=False,
+            contracts=contracts,
         ),
     )
     return _digest(pre, contract, salt)
 
 
-def object_hash(obj: Mapping[str, Any], kind: ObjectKind, contract: str = CONTRACT) -> str:
+def object_hash(
+    obj: Mapping[str, Any],
+    kind: ObjectKind,
+    contract: str = CONTRACT,
+    *,
+    contracts: Collection[str] = SUPPORTED_CONTRACTS,
+) -> str:
     """线上原像的 hash：一步完成封闭 schema 校验、规范化、JCS 与摘要。
 
     页对象须带 ``elements``、文档对象须带 ``pages``（子 hash 列表，契约须与 ``contract`` 一致）。
-    对同一文档，结果与 ``content_hash`` / ``page_hash`` / ``doc_hash`` 逐层相等。
+    对同一文档，结果与 ``content_hash`` / ``page_hash`` / ``doc_hash`` 逐层相等；``contracts``
+    同 ``page_hash``。
     """
     salt = _salt(contract)
-    return _digest(_ijson_first(obj, lambda: _preimage(obj, kind, contract)), contract, salt)
+    return _digest(
+        _ijson_first(obj, lambda: _preimage(obj, kind, contract, contracts)), contract, salt
+    )
 
 
-def children(obj: Mapping[str, Any], kind: ObjectKind, contract: str = CONTRACT) -> list[str]:
+def children(
+    obj: Mapping[str, Any],
+    kind: ObjectKind,
+    contract: str = CONTRACT,
+    *,
+    contracts: Collection[str] = SUPPORTED_CONTRACTS,
+) -> list[str]:
     """线上原像引用的下一层（先按 ``object_hash`` 的规则完整校验）。
 
     页 → ``elements`` 的 content_hash；文档 → ``pages`` 的 page_hash；元素 → ``blob``
-    引用（没有则为空）。按出现顺序返回，重复保留，去重由调用方决定。
+    引用（没有则为空）。按出现顺序返回，重复保留，去重由调用方决定；``contracts`` 同
+    ``page_hash``。
     """
     _salt(contract)
-    _ijson_first(obj, lambda: _preimage(obj, kind, contract))
+    _ijson_first(obj, lambda: _preimage(obj, kind, contract, contracts))
     if kind == "element":
         blob = obj.get("blob")
         return [blob] if isinstance(blob, str) else []
@@ -405,7 +480,8 @@ def document_hashes(document: ExpandedDocument, contract: str = CONTRACT) -> Doc
     结果形如 ``{"doc_hash", "pages": [{"page_hash", "elements"}…]}``，同向量的 ``expected``。
 
     页序即 ``pages`` 数组顺序，页内元素序即 ``elements`` 数组顺序。用于整篇计算与契约 1 §6
-    的原位重算（按任一受支持契约重算已存的骨架与内容，结果按位置一一对应）。
+    的原位重算（按任一受支持契约重算已存的骨架与内容，结果按位置一一对应）。展开视图的子 hash
+    都由本函数算出、必与本次契约相同，因此没有 ``contracts`` 参数。
     """
     salt = _salt(contract)
     return _ijson_first(document, lambda: _document_hashes(document, contract, salt))
@@ -434,10 +510,15 @@ def _document_hashes(document: object, contract: str, salt: bytes) -> DocumentHa
             _digest(_element_preimage(el, at + pointer("elements", j)), contract, salt)
             for j, el in enumerate(elements)
         ]
-        page_parts["elements"] = _hash_list_part(element_hashes, contract, at + pointer("elements"))
+        # 子 hash 都是本函数按本次契约算出的，基准集合只在形式上参与（契约必在并集内）
+        page_parts["elements"] = _hash_list_part(
+            element_hashes, contract, at + pointer("elements"), SUPPORTED_CONTRACTS
+        )
         ph = _digest(_assemble(page_parts), contract, salt)
         page_hashes.append(ph)
         out_pages.append({"page_hash": ph, "elements": element_hashes})
-    doc_parts["pages"] = _hash_list_part(page_hashes, contract, pointer("pages"))
+    doc_parts["pages"] = _hash_list_part(
+        page_hashes, contract, pointer("pages"), SUPPORTED_CONTRACTS
+    )
     dh = _digest(_assemble(doc_parts), contract, salt)
     return {"doc_hash": dh, "pages": out_pages}
