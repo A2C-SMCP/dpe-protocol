@@ -141,7 +141,7 @@ def test_commit_if_absent_request() -> None:
     assert "If-Match" not in request.headers
     assert request.headers["Content-Type"] == "application/json"
     req = inline(text_doc(["x", "y"]))
-    assert json.loads(request.body or b"") == {
+    assert json.loads(request.body_bytes() or b"") == {
         "document": req.document,
         "pages": req.pages,
         "objects": req.objects,
@@ -154,14 +154,14 @@ def test_commit_base_hash_builds_if_match_itself() -> None:
     (request,) = server.requests
     assert request.headers["If-Match"] == f'"{H1}"'
     assert "If-None-Match" not in request.headers
-    assert "force" not in json.loads(request.body or b"")
+    assert "force" not in json.loads(request.body_bytes() or b"")
 
 
 def test_commit_force_has_no_condition_header() -> None:
     _, server = run(core().commit(URI, DOC, Force()), committed("updated", 1, 1, 1))
     (request,) = server.requests
     assert "If-Match" not in request.headers and "If-None-Match" not in request.headers
-    assert json.loads(request.body or b"")["force"] is True
+    assert json.loads(request.body_bytes() or b"")["force"] is True
 
 
 def test_commit_dedups_pages_and_objects() -> None:
@@ -173,7 +173,7 @@ def test_commit_dedups_pages_and_objects() -> None:
         "delta": {"added": 6, "removed": 0, "retained": 0},
     }
     _, server = run(core().commit(URI, document, IfAbsent()), ok(body, 201))
-    sent = json.loads(server.requests[0].body or b"")
+    sent = json.loads(server.requests[0].body_bytes() or b"")
     assert len(sent["document"]["pages"]) == 3
     assert len(sent["pages"]) == 2
     assert [o["text"] for o in sent["objects"]] == ["x", "y", "z"]
@@ -587,7 +587,7 @@ def test_move_request() -> None:
     (request,) = server.requests
     assert (request.method, request.target) == ("POST", "move")
     assert "If-Match" not in request.headers
-    assert json.loads(request.body or b"") == {
+    assert json.loads(request.body_bytes() or b"") == {
         "from_uri": URI,
         "to_uri": "s3://bucket/b.md",
         "base_hash": H1,
@@ -607,7 +607,7 @@ def test_move_lost_response_is_resent() -> None:
     """服务端对重发按「目标状态已达成」返回成功（core §5.2 第 4 步）。"""
     server = Flaky(2, moved())
     assert drive(core().move(URI, "s3://bucket/b.md", H1), server) == MoveResult(doc_hash=H1)
-    assert len(server.requests) == 3 and len({r.body for r in server.requests}) == 1
+    assert len(server.requests) == 3 and len({r.body_bytes() for r in server.requests}) == 1
 
 
 @pytest.mark.parametrize(
@@ -657,7 +657,8 @@ def engine_send(engine: Engine, caller: str = "u") -> Any:
                     if request.headers.get("If-None-Match") == "*"
                     else None
                 )
-                result = engine.commit(caller, uri, request.body or b"", contract, precondition)
+                body = request.body_bytes() or b""
+                result = engine.commit(caller, uri, body, contract, precondition)
                 status = 201 if result.status == "created" else 200
                 return ok(result.model_dump(), status, {"DPE-Doc-Hash": result.doc_hash})
             if request.method == "DELETE":
@@ -668,7 +669,7 @@ def engine_send(engine: Engine, caller: str = "u") -> Any:
                 head = engine.head(caller, uri, contract)
                 return head_found(head.doc_hash) if head else head_missing()
             assert (request.method, path) == ("POST", "move")
-            moved_to = engine.move(caller, request.body or b"", contract)
+            moved_to = engine.move(caller, request.body_bytes() or b"", contract)
             return ok(moved_to.model_dump(), 200, {"DPE-Doc-Hash": moved_to.doc_hash})
         except errors.DpeError as exc:
             return problem(exc.code, 400)

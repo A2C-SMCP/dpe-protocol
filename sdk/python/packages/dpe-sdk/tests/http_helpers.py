@@ -31,7 +31,7 @@ class Remote:
             request.method,
             f"{REMOTE}/{request.target}",
             headers=dict(request.headers),
-            content=request.body,
+            content=request.body_bytes(),
         )
         return Response(reply.status_code, dict(reply.headers), reply.content)
 

@@ -19,12 +19,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dpe_hash import DpeHashError
 from pydantic import ValidationError as PydanticValidationError
 
 from dpe_sdk.wire import Missing
+
+if TYPE_CHECKING:
+    from dpe_sdk.protocol import Session
 
 __all__ = [
     "AlreadyExistsError",
@@ -59,6 +62,10 @@ class DpeError(Exception):
     code: str
     #: 已知码以本地码表（core §6）为准，不采信 problem 体声明的值
     retryable: bool = False
+    #: 由 ``ProtocolCore.deliver`` 在失败时附加：当前暂存会话（无会话时为 ``None``）。
+    #: 上层可在重新读取文档后引用同一会话重提（core §3.4），已上传到会话的内容无需重传；
+    #: 会话只作缓存，失效时重开 negotiate 即可，结果与不复用时一致。
+    session: Session | None = None
 
     def __init__(
         self, message: str = "", path: str = "", *, retry_after: float | None = None
@@ -197,6 +204,8 @@ class ClientError(Exception):
     """客户端本地异常的共同基类：不是协议错误，没有 core §6 的码，一律不可原样重试。"""
 
     retryable = False
+    #: 同 ``DpeError.session``：``deliver`` 失败时附加的当前暂存会话。
+    session: Session | None = None
 
 
 class UnexpectedResponseError(ClientError):
