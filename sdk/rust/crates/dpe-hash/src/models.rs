@@ -1,21 +1,28 @@
 //! 三层对象的类型化结构（serde）：与 Python dpe-hash 的 TypedDict 一一对应。
 //!
 //! 运行时校验（封闭 schema、各 category 允许的字段、file_type 枚举、hash 格式）仍由 hash
-//! 函数完成，与类型无关；这些结构只保证字段名不拼错。反序列化带 `deny_unknown_fields`：
-//! 静默丢弃未定义字段会让 hash 与源内容不符（北极星 P2），因此直接拒绝。
+//! 函数完成，与类型无关；这些结构只保证字段名不拼错，字段是公开的，用结构体字面量（配合
+//! `..Default::default()`）构造。
+//!
+//! **只实现 `Serialize`、不实现 `Deserialize`**：`arbitrary_precision` 下 serde_json 用内部
+//! 保留键 `$serde_json::private::Number` 的单键对象表示数字，其 `Value` 反序列化会把源数据里
+//! 恰好同形的对象静默读成数字（或报错）——实现引入事实上的保留键，违反北极星 P2（源即内容）。
+//! 从 JSON 文本构造值请用 [`parse_ijson`](crate::parse_ijson)（保真、拒绝重复键与孤立代理项）；
+//! 需要带规范校验与「原样表示」的数据模型用 dpe-sdk 的 `models`（本结构的校验对等物）。
 //!
 //! - 线上原像（契约 1 §4–§5）：[`ElementObject`]、[`PageObject`]（带 `elements`）、
 //!   [`DocumentObject`]（带 `pages`）；
 //! - 不含子对象列表的自身字段：[`PageFields`]、[`DocumentFields`]，配合
 //!   [`page_hash`](crate::page_hash) / [`doc_hash`](crate::doc_hash) 用已存的子 hash 上溯；
 //! - 展开视图（vectors/README.md）：[`ExpandedDocument`] / [`ExpandedPage`]，配合
-//!   [`document_hashes`](crate::document_hashes)；其输出为 [`DocumentHashes`] / [`PageHashes`]。
+//!   [`document_hashes`](crate::document_hashes)；其输出为 [`DocumentHashes`] / [`PageHashes`]
+//!   （纯字符串结构，`Deserialize` 保留——不含任意 JSON 值，无上述缺陷）。
 //!
 //! 结构体都不使用 `#[serde(flatten)]`：serde_json 的 `arbitrary_precision` 下 flatten 无法
 //! 处理数字。
 //!
-//! 字段是公开的，便于用结构体字面量（配合 `..Default::default()`）构造；因此规范给对象新增
-//! 字段时，这里加字段属于不兼容变更，按版本约定与文档、Python SDK 同步升次版本（`bump minor`）。
+//! 因此规范给对象新增字段时，这里加字段属于不兼容变更，按版本约定与文档、Python SDK 同步升
+//! 次版本（`bump minor`）。
 
 use std::borrow::Cow;
 use std::fmt;
@@ -28,8 +35,7 @@ use serde_json::{Map, Value};
 pub type JsonObject = Map<String, Value>;
 
 /// 元素对象（core.md §2.3）。内容字段是否允许取决于 `category`（契约 1 §4.1）。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ElementObject {
     pub category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,8 +51,7 @@ pub struct ElementObject {
 }
 
 /// 页对象除 `elements` 之外的字段。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct PageFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -55,8 +60,7 @@ pub struct PageFields {
 }
 
 /// 页对象（core.md §2.2）：`elements` 为 content_hash 列表。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct PageObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -66,8 +70,7 @@ pub struct PageObject {
 }
 
 /// 文档对象除 `pages` 之外的字段。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct DocumentFields {
     pub file_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,8 +80,7 @@ pub struct DocumentFields {
 }
 
 /// 文档对象（core.md §2.1）：`pages` 为 page_hash 列表。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct DocumentObject {
     pub file_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,8 +91,7 @@ pub struct DocumentObject {
 }
 
 /// 展开视图中的页：`elements` 为元素对象本身。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ExpandedPage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -100,8 +101,7 @@ pub struct ExpandedPage {
 }
 
 /// 展开视图中的文档：`pages` 为展开的页。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ExpandedDocument {
     pub file_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

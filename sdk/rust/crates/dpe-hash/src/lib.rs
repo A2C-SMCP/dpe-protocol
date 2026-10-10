@@ -19,8 +19,9 @@
 //!
 //! # I-JSON 与数值（core §2.8）
 //!
-//! - 第 0 步 I-JSON：孤立代理项由 serde_json 在解析阶段拒绝（`str` 无法承载）；重复键
-//!   serde_json 默认保留最后一个，需要拒绝重复键的调用方（如服务端读取请求体）须用严格解析。
+//! - 第 0 步 I-JSON：用 [`parse_ijson`] 严格解析（自建单遍解析器，拒绝重复键与孤立代理项；
+//!   不复用 serde_json 的 `Value` 解析，理由见 [`parse_ijson`] 的模块文档）；serde_json 默认
+//!   保留重复键的最后一个，直接 `from_str` 的调用方须自行改用 [`parse_ijson`]。
 //! - 本 crate 为 serde_json 开启 `float_roundtrip`（浮点正确舍入）与 `arbitrary_precision`
 //!   （`1e400` 这类越界数值保留到第 4 步再拒绝）。后者在下游统一生效：同一构建中的
 //!   `#[serde(flatten)]` 与 untagged enum 遇到数字会反序列化失败，消费方的模型应避开这两种写法。
@@ -36,6 +37,7 @@
 mod constants;
 mod contract1;
 mod error;
+mod ijson;
 mod jcs;
 mod models;
 mod uri;
@@ -48,9 +50,10 @@ pub use constants::{
 pub use contract1::__private;
 pub use contract1::{
     blob_ref, children, content_hash, doc_hash, document_hashes, object_hash, page_hash,
-    parse_blob_ref, parse_hash, parse_hash_with,
+    page_hashes, parse_blob_ref, parse_hash, parse_hash_with,
 };
 pub use error::{Error, ErrorKind, Result};
+pub use ijson::parse_ijson;
 pub use jcs::jcs;
 pub use models::{
     DocumentFields, DocumentHashes, DocumentObject, ElementObject, ExpandedDocument, ExpandedPage,

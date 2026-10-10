@@ -545,6 +545,62 @@ pub fn children(
         .collect())
 }
 
+/// 一个展开页的字段与形状校验（core §2.8 阶段 1，次序与 §2.2 的字段顺序一致）：
+/// 页是对象 → `elements` 存在且非 null（必有字段）→ 页自身字段（封闭 schema、title、
+/// page_metadata）→ `elements` 是数组（第 4 步的字段类型检查）。
+/// 返回页字段片段与 `elements` 数组；`at` 为页的错误路径前缀。
+fn page_input<'a>(raw: &'a Value, at: &str) -> Result<(Vec<Part>, &'a [Value])> {
+    let page = mapping(raw, at, "页")?;
+    let elements = required(page, "elements", at, "页")?;
+    let parts = page_parts(page, at, true)?;
+    let Value::Array(elements) = elements else {
+        return Err(validation(
+            "elements 必须是数组",
+            pointer(at, &["elements"]),
+        ));
+    };
+    Ok((parts, elements))
+}
+
+/// 已校验页的计算（core §2.8 阶段 2）：各元素的 content_hash，再组装出 page_hash。
+fn page_hashes_of(
+    mut parts: Vec<Part>,
+    elements: &[Value],
+    at: &str,
+    contract: &str,
+    salt: &[u8],
+) -> Result<PageHashes> {
+    let element_hashes = elements
+        .iter()
+        .enumerate()
+        .map(|(j, el)| {
+            let preimage = element_preimage(el, "")
+                .map_err(|e| e.under(&pointer(at, &["elements", &j.to_string()])))?;
+            Ok(digest(&preimage, contract, salt))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    parts.push((
+        "elements",
+        hash_list_part(element_hashes.iter().map(String::as_str)),
+    ));
+    Ok(PageHashes {
+        page_hash: digest(&assemble(parts), contract, salt),
+        elements: element_hashes,
+    })
+}
+
+/// 单个展开页的校验与 hash（vectors/README.md 的页视图）：页自身字段 → 各元素（core §2.8），
+/// 元素对象内联给出；错误路径相对于页自身。输出形状同 `expected` 的页项。
+///
+/// 与 [`document_hashes`] 的页段同校验、同结果，用于单独构造/校验一个展开页，或按契约 1 §6
+/// 原位重算单页（[`document_hashes`] 一次算整篇）。
+pub fn page_hashes(page: &(impl ToJson + ?Sized), contract: &str) -> Result<PageHashes> {
+    let salt = salt(contract)?;
+    let page = page.to_json();
+    let (parts, elements) = page_input(&page, "")?;
+    page_hashes_of(parts, elements, "", contract, salt)
+}
+
 /// 展开视图（vectors/README.md）的三层 hash，形状同向量的 `expected`。
 ///
 /// 页序即 `pages` 数组顺序，页内元素序即 `elements` 数组顺序。用于整篇计算与契约 1 §6 的
@@ -562,39 +618,16 @@ pub fn document_hashes(
     let Value::Array(pages) = pages else {
         return Err(validation("pages 必须是数组", "/pages"));
     };
+    // 阶段 1 与阶段 2 分开：全部页的自身字段先于任何页的元素（core §2.8）
     let mut page_inputs = Vec::with_capacity(pages.len());
     for (i, raw_page) in pages.iter().enumerate() {
         let at = pointer("", &["pages", &i.to_string()]);
-        let page = mapping(raw_page, &at, "页")?;
-        let elements = required(page, "elements", &at, "页")?;
-        let parts = page_parts(page, &at, true)?;
-        let Value::Array(elements) = elements else {
-            return Err(validation(
-                "elements 必须是数组",
-                pointer(&at, &["elements"]),
-            ));
-        };
+        let (parts, elements) = page_input(raw_page, &at)?;
         page_inputs.push((at, parts, elements));
     }
     let mut out_pages = Vec::with_capacity(page_inputs.len());
-    for (at, mut parts, elements) in page_inputs {
-        let element_hashes = elements
-            .iter()
-            .enumerate()
-            .map(|(j, el)| {
-                let preimage = element_preimage(el, "")
-                    .map_err(|e| e.under(&pointer(&at, &["elements", &j.to_string()])))?;
-                Ok(digest(&preimage, contract, salt))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        parts.push((
-            "elements",
-            hash_list_part(element_hashes.iter().map(String::as_str)),
-        ));
-        out_pages.push(PageHashes {
-            page_hash: digest(&assemble(parts), contract, salt),
-            elements: element_hashes,
-        });
+    for (at, parts, elements) in page_inputs {
+        out_pages.push(page_hashes_of(parts, elements, &at, contract, salt)?);
     }
     let mut doc_parts = doc_parts;
     doc_parts.push((
