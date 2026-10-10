@@ -22,7 +22,16 @@ import re
 import sys
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import unquote_to_bytes
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pattern_subset import (  # noqa: E402
+    PatternOutsideSubset,
+    check_pattern,
+    search,
+    translate_pattern,
+)
 
 VECTORS_DIR = Path(__file__).resolve().parent.parent / "vectors"
 
@@ -236,7 +245,9 @@ def check_hash_list(value: Any, contract: str, path: str) -> None:
 
 def check_element(el: Any, path: str = "") -> None:
     """元素对象（core §2.3）：形状 → category → 封闭 schema → 逐字段。"""
-    if not isinstance(el, dict) or el.get("category") is None:  # 必有字段为 null 视同缺省
+    if (
+        not isinstance(el, dict) or el.get("category") is None
+    ):  # 必有字段为 null 视同缺省
         raise Reject(VALIDATION, path)
     cat = el["category"]
     if not isinstance(cat, str):
@@ -248,7 +259,9 @@ def check_element(el: Any, path: str = "") -> None:
     for field in fields:
         check_string(el, field, path)
         blob = el.get(field) if field == "blob" else None
-        if blob is not None and not (blob.startswith("sha256:") and _HEX64.fullmatch(blob[7:])):
+        if blob is not None and not (
+            blob.startswith("sha256:") and _HEX64.fullmatch(blob[7:])
+        ):
             raise Reject(VALIDATION, ptr(path, field))
     check_metadata(el, "metadata", path)
 
@@ -271,7 +284,11 @@ def check_document(doc: Any, contract: str, path: str = "") -> None:
 
 def check_document_fields(doc: Any, path: str) -> None:
     """文档对象除 pages 内容外的部分：形状 → 封闭 schema → file_type、title、doc_metadata。"""
-    if not isinstance(doc, dict) or doc.get("file_type") is None or doc.get("pages") is None:
+    if (
+        not isinstance(doc, dict)
+        or doc.get("file_type") is None
+        or doc.get("pages") is None
+    ):
         raise Reject(VALIDATION, path)
     check_closed(doc, ("file_type", "title", "doc_metadata", "pages"), path)
     if not isinstance(doc["file_type"], str) or doc["file_type"] not in FILE_TYPES:
@@ -402,17 +419,27 @@ def element_object(el: dict[str, Any]) -> dict[str, Any]:
     return obj
 
 
-def page_object(page: dict[str, Any], element_hashes: list[str], contract: str) -> dict[str, Any]:
+def page_object(
+    page: dict[str, Any], element_hashes: list[str], contract: str
+) -> dict[str, Any]:
     """展开视图中的页 + 已算出的子 hash → 页对象（先按线上原像校验）。"""
-    wire = {**{k: v for k, v in page.items() if k != "elements"}, "elements": element_hashes}
+    wire = {
+        **{k: v for k, v in page.items() if k != "elements"},
+        "elements": element_hashes,
+    }
     check_page(wire, contract)
-    obj: dict[str, Any] = {"page_metadata": metadata(page.get("page_metadata")), "elements": element_hashes}
+    obj: dict[str, Any] = {
+        "page_metadata": metadata(page.get("page_metadata")),
+        "elements": element_hashes,
+    }
     if page.get("title") is not None:
         obj["title"] = page["title"]
     return obj
 
 
-def document_object(doc: dict[str, Any], page_hashes: list[str], contract: str) -> dict[str, Any]:
+def document_object(
+    doc: dict[str, Any], page_hashes: list[str], contract: str
+) -> dict[str, Any]:
     wire = {**{k: v for k, v in doc.items() if k != "pages"}, "pages": page_hashes}
     check_document(wire, contract)
     obj: dict[str, Any] = {
@@ -445,7 +472,11 @@ def doc_hashes(
     dh, dpre = obj_hash(document_object(doc, page_hashes, contract), contract)
     out: dict[str, Any] = {"doc_hash": dh, "pages": pages_out}
     if with_preimages:
-        out["preimages"] = {"document": dpre, "pages": pre_pages, "elements": pre_elements}
+        out["preimages"] = {
+            "document": dpre,
+            "pages": pre_pages,
+            "elements": pre_elements,
+        }
     return out
 
 
@@ -822,9 +853,7 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
             "doc": doc(
                 page(
                     None,
-                    el(
-                        "Image", "架构图", blob=_BLOB, mime_type="image/png"
-                    ),
+                    el("Image", "架构图", blob=_BLOB, mime_type="image/png"),
                 )
             )
         },
@@ -1206,7 +1235,10 @@ URI_VECTORS: list[dict[str, Any]] = [
             {"input": "HTTP://EXAMPLE.com/Path", "expect": "http://example.com/Path"},
             {"input": "feishu://DOC/Path", "expect": "feishu://doc/Path"},
             {"input": "s3://Bucket.Name:9000/K", "expect": "s3://bucket.name:9000/K"},
-            {"input": "https://User@Example.com/A", "expect": "https://User@example.com/A"},
+            {
+                "input": "https://User@Example.com/A",
+                "expect": "https://User@example.com/A",
+            },
             {"input": "https://[2001:DB8::A]/x", "expect": "https://[2001:db8::a]/x"},
             {"input": "https://[FE80::1]:8080/x", "expect": "https://[fe80::1]:8080/x"},
             {"input": "weird+scheme.1-2://A/b", "expect": "weird+scheme.1-2://a/b"},
@@ -1225,7 +1257,10 @@ URI_VECTORS: list[dict[str, Any]] = [
             {"input": "s3://%41@B/k", "expect": "s3://A@b/k"},
             {"input": "s3://bucket/k?x=%7e", "expect": "s3://bucket/k?x=~"},
             # 不做 §6.2.3 / §6.2.4：保留默认端口、前导零端口、尾斜杠，不补空 path 的 "/"
-            {"input": "https://example.com:443/a", "expect": "https://example.com:443/a"},
+            {
+                "input": "https://example.com:443/a",
+                "expect": "https://example.com:443/a",
+            },
             {"input": "http://example.com:080/x", "expect": "http://example.com:080/x"},
             {"input": "s3://bucket/key/", "expect": "s3://bucket/key/"},
             {"input": "https://example.com", "expect": "https://example.com"},
@@ -1279,15 +1314,35 @@ _H2 = "dpe2:" + "a" * 64
 _HUGE = 2**53
 
 
-def bad(name: str, kind: str, input_: Any, code: str, path: str | None = None, contract: str = "dpe1") -> dict[str, Any]:
+def bad(
+    name: str,
+    kind: str,
+    input_: Any,
+    code: str,
+    path: str | None = None,
+    contract: str = "dpe1",
+) -> dict[str, Any]:
     """拒绝类用例：只有一处违例时给出 path；多处违例只断言 code（core §2.8）。"""
-    case: dict[str, Any] = {"name": name, "object_kind": kind, "contract": contract, "input": input_, "code": code}
+    case: dict[str, Any] = {
+        "name": name,
+        "object_kind": kind,
+        "contract": contract,
+        "input": input_,
+        "code": code,
+    }
     if path is not None:
         case["path"] = path
     return case
 
 
-def raw(name: str, kind: str, text: str, code: str, path: str | None = None, contract: str = "dpe1") -> dict[str, Any]:
+def raw(
+    name: str,
+    kind: str,
+    text: str,
+    code: str,
+    path: str | None = None,
+    contract: str = "dpe1",
+) -> dict[str, Any]:
     """以原始 JSON 文本给出输入的拒绝类用例（I-JSON 违例无法以解析后的 JSON 值表达）。"""
     case = bad(name, kind, None, code, path, contract)
     del case["input"]
@@ -1305,61 +1360,315 @@ INVALID_VECTORS: list[dict[str, Any]] = [
             # 元素对象
             bad("element_not_object", "element", ["NarrativeText"], V, ""),
             bad("element_missing_category", "element", {"text": "x"}, V, ""),
-            bad("element_category_not_string", "element", {"category": 1}, V, "/category"),
-            bad("element_category_unknown", "element", {"category": "Video"}, CU, "/category"),
-            bad("element_undefined_field", "element", {"category": "NarrativeText", "text_as_html": "<p/>"}, V, "/text_as_html"),
-            bad("element_blob_category_not_allowed", "element", {"category": "NarrativeText", "blob": _BLOB}, V, "/blob"),
-            bad("element_mime_type_category_not_allowed", "element", {"category": "Title", "mime_type": "image/png"}, V, "/mime_type"),
-            bad("element_text_not_string", "element", {"category": "Title", "text": 1}, V, "/text"),
-            bad("element_blob_not_ref", "element", {"category": "Image", "blob": "https://a.cdn/x.png"}, V, "/blob"),
-            bad("element_metadata_not_object", "element", {"category": "Title", "metadata": [1]}, V, "/metadata"),
-            bad("element_metadata_integer_out_of_range", "element", {"category": "Title", "metadata": {"a/b": [_HUGE]}}, V, "/metadata/a~1b/0"),
-            bad("element_category_before_closed_schema", "element", {"category": "Video", "foo": 1}, CU),
-            bad("element_category_null_is_missing", "element", {"category": None, "text": "x"}, V, ""),
+            bad(
+                "element_category_not_string",
+                "element",
+                {"category": 1},
+                V,
+                "/category",
+            ),
+            bad(
+                "element_category_unknown",
+                "element",
+                {"category": "Video"},
+                CU,
+                "/category",
+            ),
+            bad(
+                "element_undefined_field",
+                "element",
+                {"category": "NarrativeText", "text_as_html": "<p/>"},
+                V,
+                "/text_as_html",
+            ),
+            bad(
+                "element_blob_category_not_allowed",
+                "element",
+                {"category": "NarrativeText", "blob": _BLOB},
+                V,
+                "/blob",
+            ),
+            bad(
+                "element_mime_type_category_not_allowed",
+                "element",
+                {"category": "Title", "mime_type": "image/png"},
+                V,
+                "/mime_type",
+            ),
+            bad(
+                "element_text_not_string",
+                "element",
+                {"category": "Title", "text": 1},
+                V,
+                "/text",
+            ),
+            bad(
+                "element_blob_not_ref",
+                "element",
+                {"category": "Image", "blob": "https://a.cdn/x.png"},
+                V,
+                "/blob",
+            ),
+            bad(
+                "element_metadata_not_object",
+                "element",
+                {"category": "Title", "metadata": [1]},
+                V,
+                "/metadata",
+            ),
+            bad(
+                "element_metadata_integer_out_of_range",
+                "element",
+                {"category": "Title", "metadata": {"a/b": [_HUGE]}},
+                V,
+                "/metadata/a~1b/0",
+            ),
+            bad(
+                "element_category_before_closed_schema",
+                "element",
+                {"category": "Video", "foo": 1},
+                CU,
+            ),
+            bad(
+                "element_category_null_is_missing",
+                "element",
+                {"category": None, "text": "x"},
+                V,
+                "",
+            ),
             # 页对象
             bad("page_not_object", "page", [], V, ""),
             bad("page_missing_elements", "page", {"title": "p"}, V, ""),
-            bad("page_undefined_field", "page", {"number": 1, "elements": []}, V, "/number"),
-            bad("page_title_not_string", "page", {"title": 1, "elements": []}, V, "/title"),
-            bad("page_metadata_integer_out_of_range", "page", {"page_metadata": {"n": -_HUGE}, "elements": []}, V, "/page_metadata/n"),
+            bad(
+                "page_undefined_field",
+                "page",
+                {"number": 1, "elements": []},
+                V,
+                "/number",
+            ),
+            bad(
+                "page_title_not_string",
+                "page",
+                {"title": 1, "elements": []},
+                V,
+                "/title",
+            ),
+            bad(
+                "page_metadata_integer_out_of_range",
+                "page",
+                {"page_metadata": {"n": -_HUGE}, "elements": []},
+                V,
+                "/page_metadata/n",
+            ),
             bad("page_elements_not_array", "page", {"elements": _H1}, V, "/elements"),
-            bad("page_child_hash_not_string", "page", {"elements": [1]}, V, "/elements/0"),
-            bad("page_child_hash_no_prefix", "page", {"elements": ["a" * 64]}, CTU, "/elements/0"),
-            bad("page_child_hash_unknown_contract", "page", {"elements": [_H1, "dpe9:" + "a" * 64]}, CTU, "/elements/1"),
-            bad("page_child_hash_drill_contract_unsupported", "page", {"elements": [_H2]}, CTU, "/elements/0"),
-            bad("page_child_hash_uppercase_hex", "page", {"elements": ["dpe1:" + "A" * 64]}, V, "/elements/0"),
-            bad("page_child_hash_mixed_contract", "page", {"elements": [_H1]}, V, "/elements/0", contract="dpe2"),
+            bad(
+                "page_child_hash_not_string",
+                "page",
+                {"elements": [1]},
+                V,
+                "/elements/0",
+            ),
+            bad(
+                "page_child_hash_no_prefix",
+                "page",
+                {"elements": ["a" * 64]},
+                CTU,
+                "/elements/0",
+            ),
+            bad(
+                "page_child_hash_unknown_contract",
+                "page",
+                {"elements": [_H1, "dpe9:" + "a" * 64]},
+                CTU,
+                "/elements/1",
+            ),
+            bad(
+                "page_child_hash_drill_contract_unsupported",
+                "page",
+                {"elements": [_H2]},
+                CTU,
+                "/elements/0",
+            ),
+            bad(
+                "page_child_hash_uppercase_hex",
+                "page",
+                {"elements": ["dpe1:" + "A" * 64]},
+                V,
+                "/elements/0",
+            ),
+            bad(
+                "page_child_hash_mixed_contract",
+                "page",
+                {"elements": [_H1]},
+                V,
+                "/elements/0",
+                contract="dpe2",
+            ),
             bad("page_elements_null_is_missing", "page", {"elements": None}, V, ""),
-            bad("page_closed_schema_before_children", "page", {"number": 1, "elements": ["a" * 64]}, V),
-            bad("page_title_before_children", "page", {"title": 1, "elements": ["a" * 64]}, V),
-            bad("page_children_in_array_order_validation_first", "page", {"elements": ["dpe1:" + "A" * 64, "a" * 64]}, V),
-            bad("page_children_in_array_order_contract_first", "page", {"elements": ["a" * 64, "dpe1:" + "A" * 64]}, CTU),
-            bad("page_child_hash_prefix_before_hex", "page", {"elements": ["dpe9:" + "A" * 64]}, CTU),
-            bad("page_metadata_before_children", "page", {"page_metadata": {"n": _HUGE}, "elements": ["a" * 64]}, V),
+            bad(
+                "page_closed_schema_before_children",
+                "page",
+                {"number": 1, "elements": ["a" * 64]},
+                V,
+            ),
+            bad(
+                "page_title_before_children",
+                "page",
+                {"title": 1, "elements": ["a" * 64]},
+                V,
+            ),
+            bad(
+                "page_children_in_array_order_validation_first",
+                "page",
+                {"elements": ["dpe1:" + "A" * 64, "a" * 64]},
+                V,
+            ),
+            bad(
+                "page_children_in_array_order_contract_first",
+                "page",
+                {"elements": ["a" * 64, "dpe1:" + "A" * 64]},
+                CTU,
+            ),
+            bad(
+                "page_child_hash_prefix_before_hex",
+                "page",
+                {"elements": ["dpe9:" + "A" * 64]},
+                CTU,
+            ),
+            bad(
+                "page_metadata_before_children",
+                "page",
+                {"page_metadata": {"n": _HUGE}, "elements": ["a" * 64]},
+                V,
+            ),
             # 文档对象
             bad("document_missing_file_type", "document", {"pages": []}, V, ""),
             bad("document_missing_pages", "document", {"file_type": "md"}, V, ""),
-            bad("document_file_type_unknown", "document", {"file_type": "markdown", "pages": []}, V, "/file_type"),
-            bad("document_undefined_field", "document", {"file_type": "md", "pages": [], "attributes": {}}, V, "/attributes"),
-            bad("document_metadata_integer_out_of_range", "document", {"file_type": "md", "doc_metadata": {"n": _HUGE}, "pages": []}, V, "/doc_metadata/n"),
-            bad("document_child_hash_blob_prefix", "document", {"file_type": "md", "pages": ["sha256:" + "a" * 64]}, CTU, "/pages/0"),
+            bad(
+                "document_file_type_unknown",
+                "document",
+                {"file_type": "markdown", "pages": []},
+                V,
+                "/file_type",
+            ),
+            bad(
+                "document_undefined_field",
+                "document",
+                {"file_type": "md", "pages": [], "attributes": {}},
+                V,
+                "/attributes",
+            ),
+            bad(
+                "document_metadata_integer_out_of_range",
+                "document",
+                {"file_type": "md", "doc_metadata": {"n": _HUGE}, "pages": []},
+                V,
+                "/doc_metadata/n",
+            ),
+            bad(
+                "document_child_hash_blob_prefix",
+                "document",
+                {"file_type": "md", "pages": ["sha256:" + "a" * 64]},
+                CTU,
+                "/pages/0",
+            ),
             bad("document_shape_before_children", "document", {"pages": ["a" * 64]}, V),
-            bad("document_file_type_before_children", "document", {"file_type": "markdown", "pages": ["a" * 64]}, V),
-            bad("document_metadata_before_children", "document", {"file_type": "md", "doc_metadata": {"n": _HUGE}, "pages": ["a" * 64]}, V),
+            bad(
+                "document_file_type_before_children",
+                "document",
+                {"file_type": "markdown", "pages": ["a" * 64]},
+                V,
+            ),
+            bad(
+                "document_metadata_before_children",
+                "document",
+                {"file_type": "md", "doc_metadata": {"n": _HUGE}, "pages": ["a" * 64]},
+                V,
+            ),
             # I-JSON（第 0 步）：输入以原始 JSON 文本给出（input_json），消费方用严格的 I-JSON 解析器读取
-            raw("ijson_lone_surrogate", "element", '{"category": "Title", "text": "\\ud800"}', V, ""),
-            raw("ijson_lone_surrogate_in_key", "element", '{"category": "Title", "metadata": {"\\udc00": 1}}', V, ""),
-            raw("ijson_before_category", "element", '{"category": "Video", "text": "\\ud800"}', V),
-            raw("ijson_before_children", "page", '{"title": "\\ud800", "elements": ["a"]}', V),
-            raw("ijson_duplicate_key", "element", '{"category": "Title", "category": "Video"}', V, ""),
-            raw("ijson_after_contract_unsupported", "page", '{"elements": ["aaaa", "\\ud800"]}', V, ""),
+            raw(
+                "ijson_lone_surrogate",
+                "element",
+                '{"category": "Title", "text": "\\ud800"}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_lone_surrogate_in_key",
+                "element",
+                '{"category": "Title", "metadata": {"\\udc00": 1}}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_category",
+                "element",
+                '{"category": "Video", "text": "\\ud800"}',
+                V,
+            ),
+            raw(
+                "ijson_before_children",
+                "page",
+                '{"title": "\\ud800", "elements": ["a"]}',
+                V,
+            ),
+            raw(
+                "ijson_duplicate_key",
+                "element",
+                '{"category": "Title", "category": "Video"}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_after_contract_unsupported",
+                "page",
+                '{"elements": ["aaaa", "\\ud800"]}',
+                V,
+                "",
+            ),
             # 数值越界属于第 4 步（§2.6），不是解析阶段：位置指向出错的值，且排在 category 之后
-            raw("number_overflow_double", "element", '{"category": "Title", "metadata": {"a": 1e400}}', V, "/metadata/a"),
-            raw("number_overflow_after_category", "element", '{"category": "Video", "metadata": {"a": 1e400}}', CU),
+            raw(
+                "number_overflow_double",
+                "element",
+                '{"category": "Title", "metadata": {"a": 1e400}}',
+                V,
+                "/metadata/a",
+            ),
+            raw(
+                "number_overflow_after_category",
+                "element",
+                '{"category": "Video", "metadata": {"a": 1e400}}',
+                CU,
+            ),
             # 展开视图（vectors/README.md）：文档字段 → 各页字段 → 各页元素
-            bad("expanded_element_category_unknown", "expanded_document", {"file_type": "md", "pages": [{"elements": [{"category": "Video"}]}]}, CU, "/pages/0/elements/0/category"),
-            bad("expanded_page_fields_before_elements", "expanded_document", {"file_type": "md", "pages": [{"elements": [{"category": "Video"}]}, {"title": 1, "elements": []}]}, V),
-            bad("expanded_document_fields_before_pages", "expanded_document", {"file_type": "markdown", "pages": [{"elements": [{"category": "Video"}]}]}, V),
+            bad(
+                "expanded_element_category_unknown",
+                "expanded_document",
+                {"file_type": "md", "pages": [{"elements": [{"category": "Video"}]}]},
+                CU,
+                "/pages/0/elements/0/category",
+            ),
+            bad(
+                "expanded_page_fields_before_elements",
+                "expanded_document",
+                {
+                    "file_type": "md",
+                    "pages": [
+                        {"elements": [{"category": "Video"}]},
+                        {"title": 1, "elements": []},
+                    ],
+                },
+                V,
+            ),
+            bad(
+                "expanded_document_fields_before_pages",
+                "expanded_document",
+                {
+                    "file_type": "markdown",
+                    "pages": [{"elements": [{"category": "Video"}]}],
+                },
+                V,
+            ),
         ],
     },
 ]
@@ -1401,6 +1710,1453 @@ def check_relations(
             )
             if not ok:
                 raise AssertionError(f"{name}: relation {op} {refs} violated under {c}")
+
+
+# ---------------------------------------------------------------------------
+# connector 契约 §4.1.1：config_schema 的 pattern / patternProperties 可移植子集
+# （规范依据 spec/connector-contract.md §4.1.1；与 hash 契约无关）
+# ---------------------------------------------------------------------------
+
+#: 合法 pattern：MUST 被接受且可转译（生成器逐条断言）。note 供人阅读。
+PATTERN_VALID: list[dict[str, str]] = [
+    {"pattern": "^[a-z][a-z0-9_]*$", "note": "典型标识符"},
+    {"pattern": "^(?:ab|cd)+$", "note": "(?…) 分组、非捕获同义"},
+    {"pattern": "^[\\d\\w\\s-]+$", "note": "类内简写与类尾字面 -"},
+    {"pattern": "[-a]", "note": "类首字面 -"},
+    {"pattern": "[a-]", "note": "类尾字面 -"},
+    {"pattern": "[\\-]", "note": "转义 -"},
+    {"pattern": "[\\x00-\\x1f]", "note": "\\xHH 作区间端点"},
+    {"pattern": "\\xE9", "note": "\\xHH 十六进制大小写均可"},
+    {"pattern": "[^\\]a]", "note": "类内转义 ]"},
+    {"pattern": "(a|)", "note": "空分支"},
+    {"pattern": "()", "note": "空组至少计 1（分组至少计 1）"},
+    {"pattern": "\\S+", "note": "补集简写"},
+    {"pattern": "[\\D]", "note": "类内补集简写"},
+    {"pattern": "[^\\D]", "note": "取反类内的补集简写"},
+    {"pattern": "a{0}.*", "note": "0 次量词"},
+    {"pattern": "\\W{255}", "note": "结构上界内的常见形状"},
+    {"pattern": "[aaaa]{1024}", "note": "计数不去重：恰 4096（边界，合法）"},
+    {"pattern": "(?:a|bc){1365}", "note": "选择与嵌套：恰 4095"},
+    {"pattern": "a{4096}", "note": "恰 4096"},
+    {"pattern": "a{4096,}", "note": "{m,} 因子记 m：恰 4096"},
+    {"pattern": "a{1,4096}", "note": "恰 4096"},
+    {"pattern": "\\d{4}-\\d{2}-\\d{2}", "note": "日期"},
+    {"pattern": "[.]", "note": "类内元字符照字面（RFC 9485 / XSD 的类内语义）"},
+    {"pattern": "[a*b]", "note": "类内元字符照字面"},
+    {"pattern": "[^a$]", "note": "取反类内的元字符照字面"},
+    {"pattern": "[&]", "note": "单个 & 是类内字面（只要不构成未转义序列）"},
+    {
+        "pattern": "[a\\x26\\x26b]",
+        "note": "以 \\xHH 转义写出相邻的 &，不构成未转义序列",
+    },
+    {"pattern": "[a\\x7E\\x7Eb]", "note": "以 \\xHH 转义写出相邻的 ~"},
+    {"pattern": "[\\x2D\\x2D]", "note": "以 \\xHH 转义写出相邻的 -"},
+    {"pattern": "(?:){4096}", "note": "零尺寸原子的大计数：分组至少计 1，恰 4096"},
+    {"pattern": "", "note": "空 pattern：匹配任意串"},
+    {"pattern": "." * 1024, "note": "长度顶格（1024 个 .，展开规模 1024）"},
+    {
+        "pattern": "[" + "".join(chr(0x100 + 0x110 * k) for k in range(16)) + "]{255}",
+        "note": "最坏情况：16 个跨字节宽度的互不相邻码点的手写类 ×255（展开规模 4080；与探针 pattern_budget 同款，各实现 MUST 能编译并匹配）",
+    },
+    {
+        "pattern": "(" * 64 + "a" + ")" * 64,
+        "note": "嵌套深度顶格（64 层，展开规模 1）",
+    },
+    {
+        "pattern": "(" * 64 + "a{4096}" + ")" * 64,
+        "note": "嵌套深度与展开规模同时顶格",
+    },
+    {
+        "pattern": "(?:" * 64 + "[a]*" + ")*" * 64,
+        "note": "最坏嵌套形状：64 层分组且每层带量词（引擎的解析嵌套还计入量词与字符类，各实现 MUST 能编译并匹配）",
+    },
+]
+
+#: 越界 pattern：MUST 被拒绝（manifest_invalid）；reason 与参考实现一致，供人阅读。
+PATTERN_INVALID: list[dict[str, str]] = [
+    {"pattern": "(?=a)b", "reason": "lookaround", "note": "正向先行断言"},
+    {"pattern": "(?!a)b", "reason": "lookaround", "note": "负向先行断言"},
+    {"pattern": "(?<=a)b", "reason": "lookaround", "note": "正向后行断言"},
+    {"pattern": "(?<!a)b", "reason": "lookaround", "note": "负向后行断言"},
+    {
+        "pattern": "\\p{L}",
+        "reason": "unicode_property_escape",
+        "note": "Unicode 属性转义",
+    },
+    {
+        "pattern": "\\P{L}",
+        "reason": "unicode_property_escape",
+        "note": "Unicode 属性转义（补）",
+    },
+    {"pattern": "(a)\\1", "reason": "backreference", "note": "反向引用"},
+    {"pattern": "\\1", "reason": "backreference", "note": "反向引用（无组）"},
+    {"pattern": "(?i)a", "reason": "inline_flag", "note": "内联标志"},
+    {"pattern": "(?<n>a)", "reason": "named_group", "note": "命名组"},
+    {"pattern": "(?P<n>a)", "reason": "named_group", "note": "命名组（Python 语法）"},
+    {"pattern": "(?#c)", "reason": "comment_group", "note": "注释组"},
+    {"pattern": "a*?", "reason": "lazy_quantifier", "note": "惰性量词"},
+    {"pattern": "a??", "reason": "lazy_quantifier", "note": "惰性量词"},
+    {"pattern": "a{2}?", "reason": "lazy_quantifier", "note": "惰性量词（括号形）"},
+    {"pattern": "a*+", "reason": "possessive_quantifier", "note": "占有量词"},
+    {
+        "pattern": "a{2}+",
+        "reason": "possessive_quantifier",
+        "note": "占有量词（括号形）",
+    },
+    {"pattern": "a{2}{3}", "reason": "stacked_quantifier", "note": "叠加量词"},
+    {"pattern": "a**", "reason": "stacked_quantifier", "note": "叠加量词"},
+    {"pattern": "{,3}", "reason": "invalid_repetition", "note": "{,n} 形式"},
+    {"pattern": "a{", "reason": "invalid_repetition", "note": "未转义的字面 {"},
+    {"pattern": "a}", "reason": "invalid_repetition", "note": "未转义的字面 }"},
+    {"pattern": "a{2,1}", "reason": "invalid_repetition", "note": "下界大于上界"},
+    {"pattern": "[z-a]", "reason": "class_range_order", "note": "反向区间"},
+    {"pattern": "[\\d-z]", "reason": "class_range_endpoint", "note": "简写作区间端点"},
+    {"pattern": "[]", "reason": "empty_class", "note": "空类"},
+    {"pattern": "[^]", "reason": "empty_class", "note": "空类（取反）"},
+    {"pattern": "[a&&b]", "reason": "class_set_operation", "note": "类集合运算"},
+    {"pattern": "[a~~b]", "reason": "class_set_operation", "note": "类集合运算"},
+    {"pattern": "[--]", "reason": "class_set_operation", "note": "字面 -- 序列"},
+    {
+        "pattern": "[a\\--b]",
+        "reason": "class_set_operation",
+        "note": "相邻 -- 无论前一个是否转义都违例",
+    },
+    {"pattern": "a^b", "reason": "anchor_position", "note": "锚点不在分支首尾"},
+    {
+        "pattern": "(a$)",
+        "reason": "anchor_position",
+        "note": "锚点只允许在顶层分支首尾",
+    },
+    {
+        "pattern": "(?:^a)",
+        "reason": "anchor_position",
+        "note": "锚点只允许在顶层分支首尾",
+    },
+    {"pattern": "(^a)", "reason": "anchor_position", "note": "锚点不在顶层分支"},
+    {"pattern": "a$b", "reason": "anchor_position", "note": "$ 不在分支尾"},
+    {"pattern": "\\q", "reason": "unknown_escape", "note": "未知字母转义"},
+    {"pattern": "\\/", "reason": "unknown_escape", "note": "/ 不在转义白名单"},
+    {
+        "pattern": "\\u0041",
+        "reason": "unknown_escape",
+        "note": "\\uHHHH 不在白名单（用字面字符）",
+    },
+    {"pattern": "\\b", "reason": "unknown_escape", "note": "词边界不支持"},
+    {"pattern": "[a-b-c]", "reason": "class_dash_position", "note": "类中间的 -"},
+    {"pattern": "*a", "reason": "syntax", "note": "量词没有作用对象"},
+    {"pattern": "[aaaa]{1025}", "reason": "expansion", "note": "展开规模 4100（越界）"},
+    {
+        "pattern": "(?:a|bcd){1365}",
+        "reason": "expansion",
+        "note": "展开规模 5460（越界）",
+    },
+    {"pattern": "a{4097}", "reason": "expansion", "note": "展开规模 4097"},
+    {"pattern": "a{4097,}", "reason": "expansion", "note": "因子记 m：4097"},
+    {"pattern": "a{1,4097}", "reason": "expansion", "note": "展开规模 4097"},
+    {"pattern": "a" * 1025, "reason": "length", "note": "长度 1025（越界）"},
+    {
+        "pattern": "(?:){4097}",
+        "reason": "expansion",
+        "note": "零尺寸原子按至少计 1：4097",
+    },
+    {"pattern": "(){4294967296}", "reason": "expansion", "note": "空组 × 极大计数"},
+    {
+        "pattern": "(?:(?:){4096}){4096}",
+        "reason": "expansion",
+        "note": "零尺寸嵌套相乘后越界",
+    },
+    {
+        "pattern": "(" * 65 + "a" + ")" * 65,
+        "reason": "nesting_depth",
+        "note": "嵌套深度 65（越界）",
+    },
+    {
+        "pattern_json": '"\\ud800"',
+        "reason": "not_scalar_value",
+        "note": "孤立代理项不是 Unicode 标量值；manifest 经 I-JSON 已禁，此处同样判越界",
+    },
+]
+
+#: 匹配用例：**手写**的规范语义期望表（生成器只用参考匹配器交叉核对，不一致即生成失败）。
+PATTERN_MATCH_CASES: list[dict[str, Any]] = [
+    {"pattern": "^\\w+$", "value": "héllo", "match": False, "note": "\\w 为 ASCII"},
+    {"pattern": "^\\w+$", "value": "abc_9", "match": True},
+    {"pattern": "^\\d$", "value": "٣", "match": False, "note": "\\d 为 ASCII"},
+    {"pattern": "^\\d$", "value": "5", "match": True},
+    {"pattern": "^\\s$", "value": "\u000b", "match": True, "note": "\\s 含 \\v"},
+    {"pattern": "^\\s$", "value": " ", "match": False, "note": "\\s 不含 Unicode 空白"},
+    {"pattern": "a$", "value": "a\n", "match": False, "note": "$ 不匹配末尾换行之前"},
+    {"pattern": "a$", "value": "a", "match": True},
+    {"pattern": "^a", "value": "ba", "match": False},
+    {"pattern": "a", "value": "ba", "match": True, "note": "未锚定（search）"},
+    {"pattern": "^.$", "value": "\r", "match": False, "note": ". 排除 \\n 与 \\r"},
+    {"pattern": "^.$", "value": "\n", "match": False},
+    {"pattern": "^.$", "value": "a", "match": True},
+    {"pattern": "^.$", "value": "😀", "match": True, "note": "按码点，非 BMP 单字符"},
+    {"pattern": "^\\xE9$", "value": "é", "match": True},
+    {"pattern": "^[^\\D]$", "value": "5", "match": True},
+    {"pattern": "^[^\\D]$", "value": "x", "match": False},
+    {
+        "pattern": "^[\\W\\d]$",
+        "value": "x",
+        "match": False,
+        "note": "\\W 并 \\d 不含字母与下划线",
+    },
+    {"pattern": "^[\\W\\d]$", "value": "é", "match": True},
+    {"pattern": "^[\\W\\d]$", "value": "5", "match": True},
+    {"pattern": "^[^a]$", "value": "\n", "match": True, "note": "取反类含换行"},
+    {"pattern": "^\\S+$", "value": " ", "match": False},
+    {"pattern": "^(a{2}){3}$", "value": "aaaaaa", "match": True},
+    {
+        "pattern": "^[a-cb]$",
+        "value": "b",
+        "match": True,
+        "note": "计数不去重不影响语义",
+    },
+    {"pattern": "^\\d{4}-\\d{2}-\\d{2}$", "value": "2026-10-09", "match": True},
+    {"pattern": "^[a-]$", "value": "-", "match": True},
+    {"pattern": "^-?\\d+$", "value": "-12", "match": True},
+    {"pattern": "^\\|$", "value": "|", "match": True, "note": "转义元字符"},
+    {"pattern": "^\\x41$", "value": "A", "match": True},
+    {"pattern": "^\\n$", "value": "\n", "match": True},
+    {"pattern": "^é$", "value": "é", "match": True, "note": "字面非 ASCII 按码点"},
+    {"pattern": "^a{0}$", "value": "", "match": True},
+    {
+        "pattern": "",
+        "value": "任意文本",
+        "match": True,
+        "note": "空 pattern 匹配任意串",
+    },
+    {
+        "pattern": "^.$",
+        "value_json": '"\\ud800"',
+        "match": False,
+        "note": "匹配宇宙是 Unicode 标量值：孤立代理项不参与匹配（value 用原始 JSON 文本表达）",
+    },
+    {"pattern": "^[.]$", "value": ".", "match": True, "note": "类内元字符照字面"},
+    {"pattern": "^[a*b]+$", "value": "*ab", "match": True},
+    {
+        "pattern": "^[^a$]$",
+        "value": "$",
+        "match": False,
+        "note": "取反类里的 $ 是字面，被排除",
+    },
+    {"pattern": "^[^a$]$", "value": "b", "match": True},
+]
+
+
+def _nested_schema(levels: int) -> dict[str, Any]:
+    node: dict[str, Any] = {"type": "object"}
+    for _ in range(levels):
+        node = {"type": "object", "properties": {"a": node}}
+    return node
+
+
+def build_defs(n: int) -> dict[str, Any]:
+    """构造 n 条首尾相接的 $defs（引用链 n 跳，末端可匹配 "^a$"）。"""
+    defs: dict[str, Any] = {}
+    for i in range(n - 1):
+        defs[f"d{i}"] = {"$ref": f"#/$defs/d{i + 1}"}
+    defs[f"d{n - 1}"] = {"type": "string", "pattern": "^a$"}
+    return defs
+
+
+def build_layered_defs(n: int, layers: int) -> dict[str, Any]:
+    """n 条首尾相接的 $defs，每跳在 $ref 外面包 layers 层原地 allOf。"""
+    defs: dict[str, Any] = {}
+    for i in range(n):
+        node: Any = (
+            {"$ref": f"#/$defs/d{i + 1}"}
+            if i + 1 < n
+            else {"type": "string", "pattern": "^a$"}
+        )
+        for _ in range(layers):
+            node = {"allOf": [node]}
+        defs[f"d{i}"] = node
+    return defs
+
+
+def _nested_array(levels: int) -> Any:
+    node: Any = "x"
+    for _ in range(levels):
+        node = [node]
+    return node
+
+
+#: schema 遍历用例：封闭关键字子集、`$defs`/`$ref` 规则与求值结论。
+#: ``manifest_valid`` 由生成器用 §4.1.1 封闭检查器交叉核对；``config`` 与 ``config_valid``
+#: 是手写期望（生成器不做 JSON Schema 求值），由各实现逐条断言。
+PATTERN_SCHEMA_CASES: list[dict[str, Any]] = [
+    {
+        "name": "const 内的 pattern 键是数据",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"const": {"pattern": "(?=x)"}}},
+        },
+        "config": {"x": {"pattern": "(?=x)"}},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "default 内的 pattern 键是数据",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"type": "object", "default": {"pattern": "("}}},
+        },
+        "config": {},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "examples 内的 pattern 键是数据",
+        "schema": {
+            "type": "object",
+            "examples": [{"pattern": "[z-a]"}],
+            "properties": {},
+        },
+        "config": {},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "名为 pattern 的属性（值通过）",
+        "schema": {
+            "type": "object",
+            "properties": {"pattern": {"type": "string", "pattern": "^\\d+$"}},
+        },
+        "config": {"pattern": "123"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "名为 pattern 的属性（值不通过）",
+        "schema": {
+            "type": "object",
+            "properties": {"pattern": {"type": "string", "pattern": "^\\d+$"}},
+        },
+        "config": {"pattern": "abc"},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "patternProperties 键匹配属性名（通过）",
+        "schema": {
+            "type": "object",
+            "patternProperties": {"^x_[a-z]+$": {"type": "integer"}},
+        },
+        "config": {"x_ab": 1},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "patternProperties 键匹配属性名（不通过）",
+        "schema": {
+            "type": "object",
+            "patternProperties": {"^x_[a-z]+$": {"type": "integer"}},
+        },
+        "config": {"x_ab": "s"},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "additionalProperties 经 patternProperties 键判定（ASCII 边界）",
+        "schema": {
+            "type": "object",
+            "patternProperties": {"^\\w+$": {}},
+            "additionalProperties": False,
+        },
+        "config": {"é": 1},
+        "manifest_valid": True,
+        "config_valid": False,
+        "note": "\\w 为 ASCII：é 不被模式覆盖，additionalProperties 生效；实现不得只覆写 pattern 关键字而漏掉内部拼接路径",
+    },
+    {
+        "name": "additionalProperties 经 patternProperties 键判定（$ 语义）",
+        "schema": {
+            "type": "object",
+            "patternProperties": {"^\\w+$": {}},
+            "additionalProperties": False,
+        },
+        "config": {"a\n": 1},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "patternProperties 空键匹配任意属性名",
+        "schema": {
+            "type": "object",
+            "patternProperties": {"": {"type": "integer"}},
+            "additionalProperties": False,
+        },
+        "config": {"x": 1},
+        "manifest_valid": True,
+        "config_valid": True,
+        "note": "空 pattern 语义为匹配任意串；实现侧转译不得产出会被「|」拼接吞掉的空串",
+    },
+    {
+        "name": "patternProperties 键转译碰撞：子 schema 并存（不通过）",
+        "schema": {
+            "type": "object",
+            "patternProperties": {"\\d": {"type": "string"}, "[0-9]": {"maxLength": 1}},
+        },
+        "config": {"1": "ab"},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "patternProperties 键转译碰撞：子 schema 并存（通过）",
+        "schema": {
+            "type": "object",
+            "patternProperties": {"\\d": {"type": "string"}, "[0-9]": {"maxLength": 1}},
+        },
+        "config": {"1": "a"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "关键字 pattern 越界即清单不合法",
+        "schema": {
+            "type": "object",
+            "properties": {"repo": {"type": "string", "pattern": "(?=x)"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "patternProperties 键越界即清单不合法",
+        "schema": {"type": "object", "patternProperties": {"^(?=a)": {}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 指向 $defs（通过）",
+        "schema": {
+            "type": "object",
+            "$defs": {"name": {"type": "string", "pattern": "^\\w+$"}},
+            "properties": {"x": {"$ref": "#/$defs/name"}},
+        },
+        "config": {"x": "abc_9"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "$ref 目标处的 pattern 仍按子集语义匹配",
+        "schema": {
+            "type": "object",
+            "$defs": {"name": {"type": "string", "pattern": "^\\w+$"}},
+            "properties": {"x": {"$ref": "#/$defs/name"}},
+        },
+        "config": {"x": "héllo"},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "$ref 名字按 RFC 6901 §6 解码（键含空格）",
+        "schema": {
+            "type": "object",
+            "$defs": {"a b": {"type": "string", "pattern": "^a$"}},
+            "properties": {"x": {"$ref": "#/$defs/a%20b"}},
+        },
+        "config": {"x": "a"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "$ref 名字按 RFC 6901 §6 解码（键含非 ASCII）",
+        "schema": {
+            "type": "object",
+            "$defs": {"é": {"type": "string", "pattern": "^a$"}},
+            "properties": {"x": {"$ref": "#/$defs/%C3%A9"}},
+        },
+        "config": {"x": "a"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "$ref 名字按 RFC 6901 §6 解码（键含斜杠）",
+        "schema": {
+            "type": "object",
+            "$defs": {"a/b": {"type": "string", "pattern": "^a$"}},
+            "properties": {"x": {"$ref": "#/$defs/a%7E1b"}},
+        },
+        "config": {"x": "a"},
+        "manifest_valid": True,
+        "config_valid": True,
+        "note": "先百分号解码（%7E1 → ~1）再转义（~1 → /），顺序不可换",
+    },
+    {
+        "name": "$ref 指向不存在的 $defs 条目",
+        "schema": {
+            "type": "object",
+            "$defs": {"a": {}},
+            "properties": {"x": {"$ref": "#/$defs/nope"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 形式：根引用不合法",
+        "schema": {"type": "object", "properties": {"x": {"$ref": "#"}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 形式：锚点不合法",
+        "schema": {"type": "object", "properties": {"x": {"$ref": "#name"}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 形式：深于一层不合法",
+        "schema": {
+            "type": "object",
+            "$defs": {"a": {"properties": {"y": {}}}},
+            "properties": {"x": {"$ref": "#/$defs/a/properties/y"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 形式：其他位置不合法",
+        "schema": {"type": "object", "properties": {"x": {"$ref": "#/properties/x"}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 形式：空名字不合法",
+        "schema": {
+            "type": "object",
+            "$defs": {"": {}},
+            "properties": {"x": {"$ref": "#/$defs/"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 形式：%2F 解码成额外分隔符不合法",
+        "schema": {
+            "type": "object",
+            "$defs": {"a": True},
+            "properties": {"x": {"$ref": "#/$defs/a%2Fb"}},
+        },
+        "manifest_valid": False,
+        "note": "先百分号解码再按 / 拆分：%2F 成为分隔符，指针深于一层",
+    },
+    {
+        "name": "$ref 形式：外部 URI 不合法",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"$ref": "other.json#/$defs/x"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$defs 自引用成环",
+        "schema": {
+            "type": "object",
+            "$defs": {"a": {"$ref": "#/$defs/a"}},
+            "properties": {"x": {"$ref": "#/$defs/a"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$defs 互引成环",
+        "schema": {
+            "type": "object",
+            "$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$defs 只允许在根",
+        "schema": {"type": "object", "properties": {"x": {"$defs": {"d": {}}}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "引用布尔 schema 有效",
+        "schema": {
+            "type": "object",
+            "$defs": {"f": True},
+            "properties": {"x": {"$ref": "#/$defs/f"}},
+        },
+        "config": {"x": 1},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "布尔 schema 作为 additionalProperties",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"x": {}},
+        },
+        "config": {"x": 1},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "if/then/else 在允许集内",
+        "schema": {
+            "type": "object",
+            "if": {"required": ["a"]},
+            "then": {"required": ["b"]},
+        },
+        "config": {"a": 1},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "propertyNames 在允许集内（其中 pattern 受子集约束）",
+        "schema": {"type": "object", "propertyNames": {"pattern": "^[a-z]+$"}},
+        "config": {"ab": 1},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "propertyNames 的 pattern 越界判不合法",
+        "schema": {"type": "object", "propertyNames": {"pattern": "(?=a)"}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "items 单 schema 有效",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "array", "items": {"type": "string", "pattern": "^a$"}}
+            },
+        },
+        "config": {"x": ["a"]},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "items 数组形式不合法",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"type": "array", "items": [{"type": "string"}]}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$comment 在允许集内",
+        "schema": {"type": "object", "$comment": "说明", "properties": {}},
+        "config": {},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "contentEncoding / contentMediaType 只作注解",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "string",
+                    "contentEncoding": "base64",
+                    "contentMediaType": "image/png",
+                }
+            },
+        },
+        "config": {"x": "这不是 base64"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "contentSchema 不在允许集内",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"contentSchema": {"type": "string"}}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "multipleOf 不在允许集内",
+        "schema": {"type": "object", "properties": {"x": {"multipleOf": 2}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "$schema 仅根且必须 2020-12（带 # 等价）",
+        "schema": {
+            "type": "object",
+            "$schema": "https://json-schema.org/draft/2020-12/schema#",
+            "properties": {"x": {"type": "string", "pattern": "^a$"}},
+        },
+        "config": {"x": "a"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "嵌套 $schema 不合法",
+        "schema": {
+            "type": "object",
+            "$defs": {"d": {"$schema": "https://json-schema.org/draft/2020-12/schema"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$schema 非 2020-12 不合法",
+        "schema": {
+            "type": "object",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "禁止的关键字：$id",
+        "schema": {"type": "object", "properties": {"x": {"$id": "https://self/x"}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "禁止的关键字：$anchor / $dynamicAnchor / $dynamicRef",
+        "schema": {
+            "type": "object",
+            "$defs": {"a": {"$anchor": "n", "$dynamicAnchor": "m"}},
+            "properties": {"x": {"$dynamicRef": "#m"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "禁止的关键字：definitions / dependencies / unevaluatedProperties",
+        "schema": {
+            "type": "object",
+            "definitions": {"d": {}},
+            "dependencies": {"a": ["b"]},
+            "unevaluatedProperties": False,
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "禁止的关键字：prefixItems / contains",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "prefixItems": [{"type": "string"}],
+                    "contains": {"type": "string"},
+                }
+            },
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "未定义的关键字",
+        "schema": {"type": "object", "properties": {"x": {"customKeyword": 1}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "enum：1 与 1.0 相等",
+        "schema": {"type": "object", "properties": {"x": {"enum": [1]}}},
+        "config": {"x": 1.0},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "const：1 与 true 不等",
+        "schema": {"type": "object", "properties": {"x": {"const": 1}}},
+        "config": {"x": True},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "enum：0 与 false 不等",
+        "schema": {"type": "object", "properties": {"x": {"enum": [0]}}},
+        "config": {"x": False},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "uniqueItems：1 与 1.0 视为相同",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"type": "array", "uniqueItems": True}},
+        },
+        "config": {"x": [1, 1.0]},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "uniqueItems：0 与 false 视为不同",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"type": "array", "uniqueItems": True}},
+        },
+        "config": {"x": [0, False]},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "清单 JSON 嵌套深度 63（properties 链 30 层，未越界）",
+        "schema": _nested_schema(30),
+        "config": {},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "清单 JSON 嵌套深度越界（65：properties 链 31 层）",
+        "schema": _nested_schema(31),
+        "manifest_valid": False,
+    },
+    {
+        "name": "清单 JSON 嵌套深度顶格（64：default 值嵌 61 层数组）",
+        "schema": {"type": "object", "default": _nested_array(61)},
+        "manifest_valid": True,
+        "config": {},
+        "config_valid": True,
+        "note": "深度写在数据位置（default 的值）上同样受限",
+    },
+    {
+        "name": "清单 JSON 嵌套深度越界（65：default 值嵌 62 层数组）",
+        "schema": {"type": "object", "default": _nested_array(62)},
+        "manifest_valid": False,
+    },
+    {
+        "name": "展开深度顶格（64：纯引用链 62 跳，可求值）",
+        "schema": {
+            "type": "object",
+            "$defs": build_defs(62),
+            "properties": {"x": {"$ref": "#/$defs/d0"}},
+        },
+        "config": {"x": "a"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "展开深度越界（65：纯引用链 63 跳）",
+        "schema": {
+            "type": "object",
+            "$defs": build_defs(63),
+            "properties": {"x": {"$ref": "#/$defs/d0"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "链 × 原地嵌套（31 跳 × 1 层 allOf，未越界）",
+        "schema": {
+            "type": "object",
+            "$defs": build_layered_defs(31, 1),
+            "properties": {"x": {"$ref": "#/$defs/d0"}},
+        },
+        "config": {"x": "a"},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "未被引用的深 $defs 链不计入展开深度",
+        "schema": {
+            "type": "object",
+            "$defs": build_defs(200),
+            "properties": {"x": {"type": "string"}},
+        },
+        "config": {"x": "s"},
+        "manifest_valid": True,
+        "config_valid": True,
+        "note": "深度从根计起；从未被求值的条目不受上界约束",
+    },
+    {
+        "name": "deprecated 必须是布尔值",
+        "schema": {"type": "object", "deprecated": 1},
+        "manifest_valid": False,
+    },
+    {
+        "name": "链 × 原地嵌套（32 跳 × 1 层 allOf，越界）",
+        "schema": {
+            "type": "object",
+            "$defs": build_layered_defs(32, 1),
+            "properties": {"x": {"$ref": "#/$defs/d0"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "required 含非字符串成员",
+        "schema": {"type": "object", "required": [1]},
+        "manifest_valid": False,
+    },
+    {
+        "name": "required 成员重复",
+        "schema": {"type": "object", "required": ["a", "a"]},
+        "manifest_valid": False,
+    },
+    {
+        "name": "dependentRequired 的值不是字符串数组",
+        "schema": {"type": "object", "dependentRequired": {"a": "b"}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "maxLength 为负",
+        "schema": {"type": "object", "properties": {"x": {"maxLength": -1}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "pattern 不是字符串",
+        "schema": {"type": "object", "properties": {"x": {"pattern": 5}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "anyOf 为空数组",
+        "schema": {"type": "object", "anyOf": []},
+        "manifest_valid": False,
+    },
+    {
+        "name": "type 数组成员重复",
+        "schema": {"type": "object", "properties": {"x": {"type": ["string", "string"]}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "整数值的浮点边界合法（maxProperties 1.0）",
+        "schema": {"type": "object", "maxProperties": 1.0},
+        "config": {"a": 1},
+        "manifest_valid": True,
+        "config_valid": True,
+        "note": "2020-12 元模式接受整数值的浮点",
+    },
+    {
+        "name": "properties 不是对象",
+        "schema": {"type": "object", "properties": []},
+        "manifest_valid": False,
+    },
+    {
+        "name": "type 取值不认识",
+        "schema": {"type": "object", "properties": {"x": {"type": "strin"}}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "allOf 不是数组",
+        "schema": {"type": "object", "allOf": {}},
+        "manifest_valid": False,
+    },
+    {
+        "name": "enum 为空（合法但任何值都不通过）",
+        "schema": {"type": "object", "properties": {"x": {"enum": []}}},
+        "config": {"x": 1},
+        "manifest_valid": True,
+        "config_valid": False,
+        "note": "2020-12 元模式不要求 enum 非空",
+    },
+    {
+        "name": "$ref 前缀不得编码",
+        "schema": {
+            "type": "object",
+            "$defs": {"name": True},
+            "properties": {"x": {"$ref": "#%2F$defs%2Fname"}},
+        },
+        "manifest_valid": False,
+        "note": "前缀 MUST 是字面 #/",
+    },
+    {
+        "name": "$ref 名字含非法 ~ 转义",
+        "schema": {
+            "type": "object",
+            "$defs": {"a~2b": True},
+            "properties": {"x": {"$ref": "#/$defs/a~2b"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 名字含非法百分号序列",
+        "schema": {
+            "type": "object",
+            "$defs": {"a%ZZb": True},
+            "properties": {"x": {"$ref": "#/$defs/a%ZZb"}},
+        },
+        "manifest_valid": False,
+    },
+    {
+        "name": "$ref 名字的百分号序列不是合法 UTF-8",
+        "schema": {
+            "type": "object",
+            "$defs": {"a": True},
+            "properties": {"x": {"$ref": "#/$defs/a%FFb"}},
+        },
+        "manifest_valid": False,
+        "note": "%FF 解码后不是合法 UTF-8，拒绝（unquote 的宽松 U+FFFD 替换不可用）",
+    },
+    {
+        "name": "dependentRequired（不满足）",
+        "schema": {"type": "object", "dependentRequired": {"a": ["b"]}},
+        "config": {"a": 1},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "dependentRequired（满足）",
+        "schema": {"type": "object", "dependentRequired": {"a": ["b"]}},
+        "config": {"a": 1, "b": 2},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "allOf 求值",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"allOf": [{"minimum": 1}, {"maximum": 5}]}},
+        },
+        "config": {"x": 3},
+        "manifest_valid": True,
+        "config_valid": True,
+    },
+    {
+        "name": "oneOf 恰一分支",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"oneOf": [{"type": "integer"}, {"maximum": 2}]}},
+        },
+        "config": {"x": 1},
+        "manifest_valid": True,
+        "config_valid": False,
+        "note": "两个分支同时命中，oneOf 失败",
+    },
+    {
+        "name": "minItems / maxItems",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"type": "array", "minItems": 1, "maxItems": 2}},
+        },
+        "config": {"x": []},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "minProperties / maxProperties",
+        "schema": {"type": "object", "minProperties": 1, "maxProperties": 2},
+        "config": {},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "exclusiveMinimum / exclusiveMaximum",
+        "schema": {
+            "type": "object",
+            "properties": {"x": {"exclusiveMinimum": 0, "exclusiveMaximum": 10}},
+        },
+        "config": {"x": 0},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+    {
+        "name": "type 不匹配",
+        "schema": {"type": "object", "properties": {"x": {"type": "string"}}},
+        "config": {"x": 1},
+        "manifest_valid": True,
+        "config_valid": False,
+    },
+]
+
+
+#: §4.1.1 封闭关键字子集（与 SDK 同源）：允许的关键字与位置约束
+_ALLOWED_KEYWORDS = frozenset(
+    {
+        "type",
+        "properties",
+        "patternProperties",
+        "additionalProperties",
+        "required",
+        "propertyNames",
+        "items",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "$defs",
+        "$ref",
+        "$schema",
+        "enum",
+        "const",
+        "pattern",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minProperties",
+        "maxProperties",
+        "dependentRequired",
+        "title",
+        "description",
+        "default",
+        "examples",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "format",
+        "contentEncoding",
+        "contentMediaType",
+        "$comment",
+    }
+)
+_SUBSCHEMA_VALUE = (
+    "additionalProperties",
+    "propertyNames",
+    "items",
+    "not",
+    "if",
+    "then",
+    "else",
+)
+_SUBSCHEMA_LIST = ("allOf", "anyOf", "oneOf")
+_SUBSCHEMA_MAP = ("properties", "patternProperties")
+_DRAFT = "https://json-schema.org/draft/2020-12/schema"
+
+
+def _parse_defs_ref(ref: str) -> str | None:
+    """解析 §4.1.1 的 `$ref` 唯一形式；不合形式返回 None。
+
+    前缀必须是字面 `#/`；其后先百分号解码、再按 `/` 拆分、最后处理 `~1`/`~0`（RFC 6901 §6）；
+    非法百分号序列与 `~` 后非 0/1 一律不合法。
+    """
+    if not ref.startswith("#/"):
+        return None
+    fragment = ref[2:]
+    if re.search(r"%(?![0-9A-Fa-f]{2})", fragment):
+        return None
+    try:
+        decoded = unquote_to_bytes(fragment).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    segments = decoded.split("/")
+    if len(segments) != 2 or segments[0] != "$defs" or not segments[1]:
+        return None
+    name = segments[1]
+    if re.search(r"~(?![01])", name):
+        return None
+    return name.replace("~1", "/").replace("~0", "~")
+
+
+def _json_depth(value: Any) -> int:
+    """JSON 值的嵌套深度（对象与数组各计一层，标量计 1）。"""
+    depth = 0
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, level = stack.pop()
+        depth = max(depth, level)
+        if isinstance(item, dict):
+            stack.extend((child, level + 1) for child in item.values())
+        elif isinstance(item, list):
+            stack.extend((child, level + 1) for child in item)
+    return depth
+
+
+def _closed_schema_problems(schema: Any) -> list[str]:
+    """§4.1.1：封闭关键字子集、`$defs`/`$ref` 规则与 pattern 子集的全部违例（供生成器交叉核对）。
+
+    另按 §4.1 建模清单文件的 JSON 嵌套深度：向量的 schema 会被包进清单对象（+1 层），
+    超过 64 即判清单不合法。
+    """
+    problems: list[str] = []
+    if 1 + _json_depth(schema) > 64:
+        problems.append("清单的 JSON 嵌套深度超过 64（§4.1）")
+    defs = schema.get("$defs") if isinstance(schema, dict) else None
+    names = set(defs) if isinstance(defs, dict) else set()
+    edges: dict[str, set[str]] = {}
+
+    def check_node(node: Any, is_root: bool, position: str, owner: str | None) -> None:
+        if isinstance(node, bool):
+            return
+        if not isinstance(node, dict):
+            problems.append(f"{position}: 非对象/布尔 schema")
+            return
+        for keyword in node:
+            if keyword not in _ALLOWED_KEYWORDS:
+                problems.append(f"{position}: 不允许的关键字 {keyword!r}")
+            if keyword in ("$defs", "$schema") and not is_root:
+                problems.append(f"{position}: {keyword} 只允许出现在根上")
+        dialect = node.get("$schema")
+        if dialect is not None and dialect not in (_DRAFT, _DRAFT + "#"):
+            problems.append(f"{position}: $schema {dialect!r} 不是 draft 2020-12")
+        ref = node.get("$ref")
+        if ref is not None:
+            name = _parse_defs_ref(ref) if isinstance(ref, str) else None
+            if name is None:
+                problems.append(f"{position}: $ref {ref!r} 形式不合法")
+            elif name not in names:
+                problems.append(f"{position}: $ref {ref!r} 的目标不存在")
+            elif owner is not None:
+                edges.setdefault(owner, set()).add(name)
+        if isinstance(node.get("items"), list):
+            problems.append(f"{position}: items 只允许单个 schema")
+        pattern = node.get("pattern")
+        if isinstance(pattern, str):
+            try:
+                check_pattern(pattern)
+            except PatternOutsideSubset as exc:
+                problems.append(f"{position}: pattern {pattern!r} 越界（{exc.reason}）")
+        props = node.get("patternProperties")
+        if isinstance(props, dict):
+            for key in props:
+                if not isinstance(key, str):
+                    continue  # 键类型在下方映射分支统一报错
+                try:
+                    check_pattern(key)
+                except PatternOutsideSubset as exc:
+                    problems.append(
+                        f"{position}: patternProperties 键 {key!r} 越界（{exc.reason}）"
+                    )
+        types = node.get("type")
+        if "type" in node:
+            known = {
+                "object",
+                "array",
+                "string",
+                "number",
+                "integer",
+                "boolean",
+                "null",
+            }
+            if isinstance(types, str):
+                if types not in known:
+                    problems.append(
+                        f"{position}: type 取值 {types!r} 不是 2020-12 的已知类型"
+                    )
+            elif isinstance(types, list):
+                if not types or any(t not in known for t in types):
+                    problems.append(f"{position}: type 数组含未知类型")
+                elif len(set(types)) != len(types):
+                    problems.append(f"{position}: type 数组成员必须唯一")
+            else:
+                problems.append(f"{position}: type 必须是字符串或字符串数组")
+        if "enum" in node and not isinstance(node["enum"], list):
+            problems.append(f"{position}: enum 必须是数组")
+        for keyword in (
+            "title",
+            "description",
+            "$comment",
+            "format",
+            "contentEncoding",
+            "contentMediaType",
+        ):
+            if keyword in node and not isinstance(node[keyword], str):
+                problems.append(f"{position}: {keyword} 必须是字符串")
+        if "examples" in node and not isinstance(node["examples"], list):
+            problems.append(f"{position}: examples 必须是数组")
+        if "uniqueItems" in node and not isinstance(node["uniqueItems"], bool):
+            problems.append(f"{position}: uniqueItems 必须是布尔值")
+        for keyword in ("deprecated", "readOnly", "writeOnly"):
+            if keyword in node and not isinstance(node[keyword], bool):
+                problems.append(f"{position}: {keyword} 必须是布尔值")
+        if "pattern" in node and not isinstance(node["pattern"], str):
+            problems.append(f"{position}: pattern 必须是字符串")
+        for keyword in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
+            value = node.get(keyword)
+            if keyword in node and (isinstance(value, bool) or not isinstance(value, (int, float))):
+                problems.append(f"{position}: {keyword} 必须是数值（布尔不是数值）")
+        for keyword in (
+            "minLength",
+            "maxLength",
+            "minItems",
+            "maxItems",
+            "minProperties",
+            "maxProperties",
+        ):
+            value = node.get(keyword)
+            if keyword not in node:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                problems.append(f"{position}: {keyword} 必须是非负整数")
+            elif isinstance(value, float) and not value.is_integer():
+                problems.append(f"{position}: {keyword} 必须是非负整数（整数值的浮点可接受）")
+            elif value < 0:
+                problems.append(f"{position}: {keyword} 必须是非负整数")
+        if "required" in node:
+            required_names = node["required"]
+            if not isinstance(required_names, list) or any(
+                not isinstance(n, str) for n in required_names
+            ):
+                problems.append(f"{position}: required 必须是字符串数组")
+            elif len(set(required_names)) != len(required_names):
+                problems.append(f"{position}: required 的成员必须唯一")
+        if "dependentRequired" in node:
+            deps = node["dependentRequired"]
+            if not isinstance(deps, dict):
+                problems.append(
+                    f"{position}: dependentRequired 必须是「名字 → 字符串数组」映射"
+                )
+            else:
+                for key, items in deps.items():
+                    if not isinstance(items, list) or any(
+                        not isinstance(n, str) for n in items
+                    ):
+                        problems.append(
+                            f"{position}: dependentRequired[{key!r}] 必须是字符串数组"
+                        )
+                    elif len(set(items)) != len(items):
+                        problems.append(
+                            f"{position}: dependentRequired[{key!r}] 的成员必须唯一"
+                        )
+        for keyword in _SUBSCHEMA_VALUE:
+            if keyword in node:
+                check_node(node[keyword], False, f"{position}/{keyword}", owner)
+        for keyword in _SUBSCHEMA_LIST:
+            if keyword not in node:
+                continue
+            seq = node[keyword]
+            if not isinstance(seq, list):
+                problems.append(f"{position}/{keyword}: 必须是 schema 数组")
+                continue
+            if not seq:
+                problems.append(f"{position}/{keyword}: 必须是 schema 数组（至少一项）")
+            for index, item in enumerate(seq):
+                check_node(item, False, f"{position}/{keyword}/{index}", owner)
+        for keyword in _SUBSCHEMA_MAP:
+            if keyword not in node:
+                continue
+            mapping = node[keyword]
+            if not isinstance(mapping, dict):
+                problems.append(
+                    f"{position}/{keyword}: 必须是「名字 → schema」映射（对象）"
+                )
+                continue
+            if any(not isinstance(key, str) for key in mapping):
+                problems.append(f"{position}/{keyword}: 键必须是字符串")
+            for key, sub in mapping.items():
+                check_node(sub, False, f"{position}/{keyword}/{key}", owner)
+        if is_root and "$defs" in node:
+            root_defs = node["$defs"]
+            if not isinstance(root_defs, dict):
+                problems.append("/$defs: 必须是「名字 → schema」映射（对象）")
+            else:
+                for key, sub in root_defs.items():
+                    check_node(sub, False, f"/$defs/{key}", key)
+
+    check_node(schema, True, "", None)
+    # $defs 引用成环
+    state: dict[str, int] = {}
+
+    def visit(start: str) -> None:
+        state[start] = 1
+        stack: list[tuple[str, list[str]]] = [(start, sorted(edges.get(start, ())))]
+        while stack:
+            current, targets = stack[-1]
+            pending = False
+            for target in targets:
+                flag = state.get(target, 0)
+                if flag == 1:
+                    problems.append(f"$defs 引用成环（经 {target!r}）")
+                    state[current] = 2
+                    stack.pop()
+                    pending = True
+                    break
+                if flag == 0:
+                    state[target] = 1
+                    stack.append((target, sorted(edges.get(target, ()))))
+                    pending = True
+                    break
+            if not pending:
+                state[current] = 2
+                stack.pop()
+
+    for name in sorted(names):
+        if state.get(name, 0) == 0:
+            visit(name)
+    # 展开深度（§4.1.1）：迭代后序 + 记忆化；仅在图无环时计算（环上会不终止，且已判不合法）
+    had_cycle = any("成环" in problem for problem in problems)
+    def _children(node: dict[str, Any]) -> list[Any]:
+        out: list[Any] = []
+        for keyword in _SUBSCHEMA_VALUE:
+            if keyword in node:
+                out.append(node[keyword])
+        for keyword in _SUBSCHEMA_LIST:
+            seq = node.get(keyword)
+            if isinstance(seq, list):
+                out.extend(seq)
+        for keyword in _SUBSCHEMA_MAP:
+            mapping = node.get(keyword)
+            if isinstance(mapping, dict):
+                out.extend(mapping.values())
+        ref = node.get("$ref")
+        if isinstance(ref, str) and isinstance(defs, dict):
+            name = _parse_defs_ref(ref)
+            if name is not None and name in defs:
+                out.append(defs[name])
+        return out
+
+    if not had_cycle:
+        memo: dict[int, int] = {}
+        stack: list[tuple[Any, bool]] = [(schema, False)]
+        while stack:
+            node, visited = stack.pop()
+            if not isinstance(node, dict):
+                memo[id(node)] = 1
+                continue
+            if visited:
+                best = 0
+                for child in _children(node):
+                    best = max(best, memo.get(id(child), 1))
+                memo[id(node)] = best + 1
+                continue
+            if id(node) in memo:
+                continue
+            stack.append((node, True))
+            for child in _children(node):
+                if id(child) not in memo:
+                    stack.append((child, False))
+        if memo.get(id(schema), 1) > 64:
+            problems.append("schema 的展开深度超过 64（§4.1.1）")
+    return problems
+
+
+def pattern_vector() -> dict[str, Any]:
+    """构建 config_schema_patterns 向量；生成器逐条交叉核对，不一致即失败。"""
+    valid: list[dict[str, str]] = []
+    for entry in PATTERN_VALID:
+        try:
+            check_pattern(entry["pattern"])
+            translate_pattern(entry["pattern"])  # 合法 pattern 必须可转译
+        except PatternOutsideSubset as exc:
+            raise AssertionError(
+                f"valid_patterns/{entry['pattern']!r}: {exc}"
+            ) from None
+        valid.append(entry)
+    invalid: list[dict[str, str]] = []
+    for entry in PATTERN_INVALID:
+        pattern = entry.get("pattern")
+        if pattern is None:
+            # pattern_json：无法以普通字符串表达的输入（孤立代理项等），按原始 JSON 文本解析
+            pattern = strict_loads(entry["pattern_json"])
+        try:
+            check_pattern(pattern)
+        except PatternOutsideSubset as exc:
+            if exc.reason != entry["reason"]:
+                raise AssertionError(
+                    f"invalid_patterns/{entry!r}: 期望 {entry['reason']}，实得 {exc.reason}"
+                ) from None
+        else:
+            raise AssertionError(f"invalid_patterns/{entry!r}: 未被拒绝")
+        invalid.append(entry)
+    cases: list[dict[str, Any]] = []
+    for case in PATTERN_MATCH_CASES:
+        value = case.get("value")
+        if "value_json" in case:
+            value = strict_loads(case["value_json"])
+        got = search(case["pattern"], value)
+        if got != case["match"]:
+            raise AssertionError(
+                f"match_cases/{case['pattern']!r}: 期望 {case['match']}，实得 {got}"
+            )
+        cases.append(case)
+    schema_cases: list[dict[str, Any]] = []
+    for case in PATTERN_SCHEMA_CASES:
+        problems = _closed_schema_problems(case["schema"])
+        if case["manifest_valid"] and problems:
+            raise AssertionError(
+                f"schema_cases/{case['name']}: 清单应为有效却发现问题 {problems!r}"
+            )
+        if not case["manifest_valid"] and not problems:
+            raise AssertionError(
+                f"schema_cases/{case['name']}: 清单应为不合法，但未发现越界 pattern 或引用位置违例"
+            )
+        if ("config" in case) != ("config_valid" in case):
+            raise AssertionError(
+                f"schema_cases/{case['name']}: config 与 config_valid 必须成对给出"
+            )
+        schema_cases.append(case)
+    return {
+        "name": "config_schema_patterns",
+        "kind": "pattern",
+        "spec": "spec/connector-contract.md",
+        "section": "§4.1.1",
+        "description": "connector 契约 §4.1.1：config_schema 的 pattern / patternProperties 可移植子集——合法/越界 pattern、手写的语义匹配期望、schema 遍历用例",
+        "valid_patterns": valid,
+        "invalid_patterns": invalid,
+        "match_cases": cases,
+        "schema_cases": schema_cases,
+    }
 
 
 def build_files() -> dict[str, str]:
@@ -1451,9 +3207,13 @@ def build_files() -> dict[str, str]:
         for case in vec["cases"]:
             got = normalize_file_uri(case["input"])
             if got != case["expect"]:
-                raise AssertionError(f"{vec['name']}: {case['input']!r} → {got!r}，期望 {case['expect']!r}")
+                raise AssertionError(
+                    f"{vec['name']}: {case['input']!r} → {got!r}，期望 {case['expect']!r}"
+                )
             if normalize_file_uri(got) != got:
-                raise AssertionError(f"{vec['name']}: {case['input']!r} 的规范化结果不是不动点")
+                raise AssertionError(
+                    f"{vec['name']}: {case['input']!r} 的规范化结果不是不动点"
+                )
             cases.append({"input": case["input"], "normalized": got})
         invalid_cases = []
         for input_ in vec["invalid_cases"]:
@@ -1480,10 +3240,16 @@ def build_files() -> dict[str, str]:
     for vec in INVALID_VECTORS:
         for case in vec["cases"]:
             try:
-                obj = strict_loads(case["input_json"]) if "input_json" in case else case["input"]
+                obj = (
+                    strict_loads(case["input_json"])
+                    if "input_json" in case
+                    else case["input"]
+                )
                 CHECKERS[case["object_kind"]](obj, case["contract"])
             except Reject as rej:
-                if rej.code != case["code"] or ("path" in case and rej.path != case["path"]):
+                if rej.code != case["code"] or (
+                    "path" in case and rej.path != case["path"]
+                ):
                     raise AssertionError(
                         f"{vec['name']}/{case['name']}: got {rej.code} at {rej.path!r}"
                     ) from None
@@ -1498,15 +3264,19 @@ def build_files() -> dict[str, str]:
             }
         )
 
+    files["config_schema_patterns.json"] = dump_json(pattern_vector())
+
     manifest = {
         "contract": "dpe1",
         "spec": "spec/hash-contract-1.md",
         "status": "draft",
         "file_types": list(FILE_TYPES),
-        "category_content_fields": {c: list(f) for c, f in CATEGORY_CONTENT_FIELDS.items()},
+        "category_content_fields": {
+            c: list(f) for c, f in CATEGORY_CONTENT_FIELDS.items()
+        },
         "provenance": {
             "generator": "scripts/gen_vectors.py",
-            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1",
+            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1",
         },
         "files": [
             {

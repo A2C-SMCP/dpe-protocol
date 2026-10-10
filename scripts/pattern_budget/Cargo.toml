@@ -1,0 +1,13 @@
+# 上界测量探针：验证 connector 契约 §4.1.1 的结构上界（长度 ≤1024、展开规模 ≤4096）
+# 在 Rust regex 引擎的**默认限额**内可编译。独立工程：不属于 sdk/rust workspace，不进 CI；
+# 运行方法与当前结论见 README.md（Cargo.lock 随提交，用于固定 regex 版本基线）。
+[workspace]
+
+[package]
+name = "pattern_budget"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+regex = "1"

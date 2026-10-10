@@ -9,6 +9,7 @@ on:
       - "sdk/rust/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
+      - "scripts/pattern_subset.py"
       - "Makefile"
       - ".github/workflows/rust-sdk.yml"
   pull_request:
@@ -16,6 +17,7 @@ on:
       - "sdk/rust/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
+      - "scripts/pattern_subset.py"
       - "Makefile"
       - ".github/workflows/rust-sdk.yml"
   workflow_call:
