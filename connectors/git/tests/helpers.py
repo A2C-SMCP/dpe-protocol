@@ -1,11 +1,10 @@
-"""测试辅助：现场构造 git 仓库（确定性前提见下），供 conftest 与各测试模块共用。
+"""测试辅助：现场构造夹具仓库（确定性前提见下），供 conftest 与各测试模块共用。
 
 不使用入库的夹具仓库：嵌套的 ``.git`` 入版本库时 git 只存一个 gitlink（160000），克隆出来是空
-目录，做不成（实测）。测试用 ``subprocess`` 调 git 现场构造，覆盖非 ASCII 路径与边界情形。
-
-确定性前提：固定作者/提交者与时间戳（否则每次构造出不同的提交 id）、``git init -b main``
-显式钉分支名、``-c commit.gpgsign=false`` 防开发机全局签名、隔离全局配置并清掉继承的
-``GIT_DIR`` 等变量——构造出的仓库在不同机器、不同时间得到同一个提交 id。
+目录，做不成（实测）。测试用 ``subprocess`` 调 git 现场构造；**每个提交的作者与时间戳都显式
+固定**（否则每次构造出不同的提交 id），``git init -b`` 显式钉分支名、``-c commit.gpgsign=false``
+防开发机全局签名、隔离全局配置并清掉继承的 ``GIT_DIR`` 等变量——构造出的提交 id 在不同机器、
+不同时间都相同。
 """
 
 from __future__ import annotations
@@ -16,17 +15,20 @@ import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-#: 固定提交元信息
+#: 固定的默认作者/提交者（逐提交可换作者，但都来自固定取值）
+DEFAULT_AUTHOR = "Alice"
+DEFAULT_EMAIL = "alice@example.invalid"
+
+#: 固定提交元信息的环境底座（提交时间由每个提交显式给出）
 _FIXED_ENV = {
-    "GIT_AUTHOR_NAME": "dpe",
-    "GIT_AUTHOR_EMAIL": "dpe@example.invalid",
+    "GIT_AUTHOR_NAME": DEFAULT_AUTHOR,
+    "GIT_AUTHOR_EMAIL": DEFAULT_EMAIL,
     "GIT_AUTHOR_DATE": "2026-01-01T00:00:00+00:00",
-    "GIT_COMMITTER_NAME": "dpe",
-    "GIT_COMMITTER_EMAIL": "dpe@example.invalid",
+    "GIT_COMMITTER_NAME": DEFAULT_AUTHOR,
+    "GIT_COMMITTER_EMAIL": DEFAULT_EMAIL,
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00+00:00",
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -37,15 +39,22 @@ requires_git = pytest.mark.skipif(
 )
 
 
-def git_env() -> dict[str, str]:
+def git_env(overrides: Mapping[str, str] | None = None) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(_FIXED_ENV)
+    if overrides:
+        env.update(overrides)
     return env
 
 
-def run_git(cwd: Path, *args: str) -> str:
+def run_git(
+    cwd: Path,
+    *args: str,
+    env: Mapping[str, str] | None = None,
+    input: bytes | None = None,
+) -> str:
     completed = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, check=False, env=git_env()
+        ["git", *args], cwd=cwd, capture_output=True, check=False, env=git_env(env), input=input
     )
     if completed.returncode != 0:
         raise AssertionError(
@@ -54,28 +63,110 @@ def run_git(cwd: Path, *args: str) -> str:
     return completed.stdout.decode("utf-8", "replace")
 
 
-def init_repo(root: Path, files: Mapping[bytes | str, bytes]) -> str:
-    """在 ``root`` 现场构造一个提交，返回提交 id。
+class FixtureRepo:
+    """现场构造的夹具仓库：固定分支名、逐提交固定作者与时间戳。"""
 
-    路径可以是 ``str``（UTF-8）或 ``bytes``（非 UTF-8 的边界用例）；在 macOS 上非 UTF-8 的
-    文件名无法创建（APFS 拒绝，Errno 92），这类用例由调用方按平台跳过。
-    """
-    root.mkdir(parents=True, exist_ok=True)
-    run_git(root, "init", "-q", "-b", "main", ".")
-    for path, content in files.items():
-        if isinstance(path, bytes):
-            target_path: Path = root
-            raw_target = os.path.join(os.fsencode(target_path), path)
-            os.makedirs(os.path.dirname(raw_target), exist_ok=True)
-            with open(raw_target, "wb") as handle:
-                handle.write(content)
+    def __init__(self, root: Path, *, default_branch: str = "main") -> None:
+        self.root = root
+        root.mkdir(parents=True, exist_ok=True)
+        run_git(root, "init", "-q", "-b", default_branch, ".")
+
+    def sha(self, rev: str = "HEAD") -> str:
+        return run_git(self.root, "rev-parse", rev).strip()
+
+    def files(self, files: Mapping[str, str | bytes]) -> None:
+        for name, content in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(content, encoding="utf-8")
+        run_git(self.root, "add", "-A")
+
+    def commit(
+        self,
+        message: str,
+        *,
+        date: str,
+        files: Mapping[str, str | bytes] | None = None,
+        author: str = DEFAULT_AUTHOR,
+        email: str = DEFAULT_EMAIL,
+        allow_empty: bool = True,
+        message_file: bool = False,
+    ) -> str:
+        """在**当前分支**上加一个提交；``date`` 是 ISO 8601（作者与提交者同一时刻）。
+
+        ``message_file`` 经 ``-F`` 从文件读说明——超大说明（超过 argv 上限，如 1 MiB 以上）
+        只能走这条路。
+        """
+        if files:
+            self.files(files)
+        if message_file:
+            message_path = self.root / ".git" / "dpe-test-message.txt"
+            message_path.write_text(message, encoding="utf-8")
+            args = ["commit", "-q", "-F", str(message_path)]
         else:
-            target = root / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
-    run_git(root, "add", "-A")
-    run_git(root, "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
-    return run_git(root, "rev-parse", "HEAD").strip()
+            args = ["commit", "-q", "-m", message]
+        if allow_empty:
+            args.insert(2, "--allow-empty")
+        run_git(
+            self.root,
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+            env={
+                "GIT_AUTHOR_NAME": author,
+                "GIT_AUTHOR_EMAIL": email,
+                "GIT_AUTHOR_DATE": date,
+                "GIT_COMMITTER_NAME": author,
+                "GIT_COMMITTER_EMAIL": email,
+                "GIT_COMMITTER_DATE": date,
+            },
+        )
+        return self.sha()
+
+    def branch(self, name: str, *, at: str | None = None) -> None:
+        """从 ``at``（缺省当前 HEAD）创建并切到新分支。"""
+        run_git(self.root, "checkout", "-q", "-b", name, *([at] if at else []))
+
+    def checkout(self, name: str) -> None:
+        run_git(self.root, "checkout", "-q", name)
+
+    def merge(self, branch: str, message: str, *, date: str, author: str = DEFAULT_AUTHOR) -> str:
+        """``--no-ff`` 合并（必产生合并提交），时间戳显式固定。"""
+        run_git(
+            self.root,
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "--no-ff",
+            "-q",
+            "-m",
+            message,
+            branch,
+            env={
+                "GIT_AUTHOR_NAME": author,
+                "GIT_AUTHOR_EMAIL": DEFAULT_EMAIL,
+                "GIT_AUTHOR_DATE": date,
+                "GIT_COMMITTER_NAME": author,
+                "GIT_COMMITTER_EMAIL": DEFAULT_EMAIL,
+                "GIT_COMMITTER_DATE": date,
+            },
+        )
+        return self.sha()
+
+    def add_remote_branch(self, name: str, *, at: str | None = None) -> None:
+        """建一个 ``refs/remotes/origin/<name>``（不建 origin/HEAD）：``at`` 缺省取同名本地分支。"""
+        target = at or run_git(self.root, "rev-parse", f"refs/heads/{name}").strip()
+        run_git(self.root, "update-ref", f"refs/remotes/origin/{name}", target)
+
+    def set_origin_head(self, name: str) -> None:
+        """建 ``refs/remotes/origin/<name>`` 并把 ``origin/HEAD`` 符号指向它（默认分支的来源）。"""
+        self.add_remote_branch(name)
+        run_git(
+            self.root, "symbolic-ref", "refs/remotes/origin/HEAD", f"refs/remotes/origin/{name}"
+        )
 
 
 def command_for(script: str) -> list[str]:
@@ -86,7 +177,3 @@ def command_for(script: str) -> list[str]:
     （契约 §4.4）。
     """
     return [str(Path(sys.executable).parent / script)]
-
-
-def config_for(repo: Path) -> dict[str, Any]:
-    return {"repo": str(repo), "ref": "main"}

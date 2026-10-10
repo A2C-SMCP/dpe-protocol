@@ -6,7 +6,7 @@
 [project]
 name = "dpe-git-connector"
 version = "0.3.0-dev"
-description = "官方 Git connector：把 Git 仓库的文件映射为 DPE 文档（dpe-run 插件）"
+description = "官方 Git connector：把 Git 仓库的提交历史映射为 DPE 文档（dpe-run 插件）"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -24,8 +24,6 @@ classifiers = [
 dependencies = [
     # 契约常量与 file_uri 规范化：connector 不得有自有 hash 实现（CLAUDE.md）
     "dpe-hash>=0.3,<0.4",
-    # markdown 块结构解析（CommonMark + GFM 表格）；版本钉在锁文件里，见 README「映射规则」
-    "markdown-it-py>=4.0,<5",
 ]
 # 注意：插件不链接 SDK（契约 §6.1）——src 不 import dpe-sdk，它只在测试里用（宿主与清单校验
 # 是插件的对手方，测试要按运行器的方式驱动它），因此放 dev 组，不进运行时依赖。
