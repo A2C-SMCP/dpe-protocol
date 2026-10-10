@@ -21,7 +21,7 @@ def _put(engine: Engine, uri: str, text: str = "x", caller: str = "u") -> str:
 
 
 def _move(engine: Engine, caller: str = "u", contract: str | None = C, **payload: Any) -> str:
-    return engine.move(caller, json.dumps(payload).encode(), contract).doc_hash
+    return engine.move(caller, json.dumps(payload).encode(), contract).result.doc_hash
 
 
 # ---------------------------------------------------------------------------

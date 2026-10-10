@@ -704,8 +704,12 @@ def engine_send(engine: Engine, caller: str = "u") -> Any:
                 head = engine.head(caller, uri, contract)
                 return head_found(head.doc_hash) if head else head_missing()
             assert (request.method, path) == ("POST", "move")
-            moved_to = engine.move(caller, request.body_bytes() or b"", contract)
-            return ok(moved_to.model_dump(), 200, {"DPE-Doc-Hash": moved_to.doc_hash})
+            outcome = engine.move(caller, request.body_bytes() or b"", contract)
+            return ok(
+                outcome.result.model_dump(),
+                200,
+                {"DPE-Doc-Hash": outcome.result.doc_hash},
+            )
         except errors.DpeError as exc:
             return problem(exc.code, 400)
 

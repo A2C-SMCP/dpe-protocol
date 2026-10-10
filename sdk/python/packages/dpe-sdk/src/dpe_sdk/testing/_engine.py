@@ -127,6 +127,17 @@ Precondition = BaseHash | IfAbsent
 
 
 @dataclass(frozen=True)
+class MoveOutcome:
+    """``move`` 的结果：响应模型（``MoveResult``）与规范化后的目标 URI。
+
+    HTTP 层据此拼 ``Content-Location``，不必二次解析请求体。
+    """
+
+    result: MoveResult
+    to_uri: str
+
+
+@dataclass(frozen=True)
 class InvalidPrecondition:
     """绑定层无法解释的条件头（HTTP：写操作的 ``If-Match: *``、多个 entity-tag、``If-Match`` 与
     ``If-None-Match`` 并存；GET 的 ``If-None-Match`` 既不是单独的 ``*`` 也不是合法的 entity-tag
@@ -1267,9 +1278,13 @@ class Engine:
                 raise PreconditionFailedError(f"expected {base_hash}")
             self._store.replace(uri, None)
 
-    def move(self, caller: str, body: bytes, contract: str | None) -> MoveResult:
+    def move(self, caller: str, body: bytes, contract: str | None) -> MoveOutcome:
         """求值顺序见 core §5.2（#63）。``from_uri`` 与 ``to_uri`` 规范化后相等时，源存在即
-        「目标已存在」（第 5 步，base_hash 不符时 ``DPE_PRECONDITION_FAILED`` 优先）。"""
+        「目标已存在」（第 5 步，base_hash 不符时 ``DPE_PRECONDITION_FAILED`` 优先）。
+
+        返回 ``MoveOutcome``：本层的响应模型与规范化后的目标 URI（HTTP 层据此拼
+        ``Content-Location``，不再二次解析请求体）。
+        """
         data = _parse_body(body, self.config.max_payload_bytes)
         contract = self._contract(contract)
         env = _envelope(data, _MOVE_MEMBERS)
@@ -1288,14 +1303,23 @@ class Engine:
             if source is None:
                 # 目标状态已达成即成功（core §5.2 第 4 步）
                 if target is not None and target.matches(base_hash):
-                    return MoveResult(doc_hash=target.doc_hashes[contract])
+                    return MoveOutcome(MoveResult(doc_hash=target.doc_hashes[contract]), to_uri)
                 raise NotFoundError(f"{from_uri} 不存在")
             if not source.matches(base_hash):
                 raise PreconditionFailedError(f"expected {base_hash}")
             if target is not None:
                 raise AlreadyExistsError(f"{to_uri} 已存在")
             self._store.rename(from_uri, to_uri)
-            return MoveResult(doc_hash=source.doc_hashes[contract])
+            return MoveOutcome(MoveResult(doc_hash=source.doc_hashes[contract]), to_uri)
+
+    def expire_session(self, session_id: str) -> bool:
+        """让暂存会话立即过期（一致性测试钩子）：返回会话此前是否可用。
+
+        只影响这一个会话（其余会话不受影响），过期判定仍走 core §3.4 的真实 TTL 比较——之后的
+        negotiate / upload / commit 用它一律 ``DPE_SESSION_EXPIRED``。
+        """
+        with self._lock:
+            return self._sessions.expire(session_id)
 
 
 def _staged_size(session: Session, target: str) -> int:

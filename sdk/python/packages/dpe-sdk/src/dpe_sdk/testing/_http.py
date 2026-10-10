@@ -386,12 +386,11 @@ class _App:
 
     async def _move(self, request: _Request, caller: str) -> _Response:
         body = await self._body(request)
-        result = await self._run(self.engine.move, caller, body, request.contract)
-        # 引擎已校验请求体：to_uri 必在且合法
-        to_uri = dpe_hash.normalize_file_uri(json.loads(body)["to_uri"])
-        location = f"{self._remote(request)}/documents?uri={quote(to_uri, safe='')}"
-        response = _json(200, result)
-        response.headers.append((DOC_HASH_HEADER, result.doc_hash))
+        outcome = await self._run(self.engine.move, caller, body, request.contract)
+        # 目标 URI 由引擎规范化后随结果返回，本层不再解析请求体
+        location = f"{self._remote(request)}/documents?uri={quote(outcome.to_uri, safe='')}"
+        response = _json(200, outcome.result)
+        response.headers.append((DOC_HASH_HEADER, outcome.result.doc_hash))
         response.headers.append(("Content-Location", location))
         return response
 
