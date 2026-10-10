@@ -81,6 +81,55 @@ def with_host(
     return run(scenario())
 
 
+def _child_pid(lines: list[str]) -> int:
+    return int(next(line for line in lines if line.startswith("child=")).split("=")[1])
+
+
+#: 能否读到进程状态位（Linux 且 procfs 可用）：读不到时不把「观测不到」当成「已终止」。
+#: 用功能探针而非 ``isdir("/proc")``——以空目录覆盖 /proc 的隔离运行下路径存在但 procfs 不可用。
+_CAN_READ_STATE = sys.platform.startswith("linux") and os.path.isfile("/proc/self/stat")
+
+
+def _terminated(pid: int) -> bool:
+    """进程已不再运行：已从进程表消失，或（Linux + procfs）已是僵尸。
+
+    被杀 ≠ 已回收：孤儿是插件进程的子进程，不是宿主的子进程，宿主无法 ``waitpid``，回收由系统
+    init / subreaper 负责，宿主既不可观测也无法等待。僵尸仍能被 ``kill(pid, 0)`` 找到，因此
+    「不再运行」的判据还要看 ``/proc/<pid>/stat`` 的状态位；读不到状态位时只认「已消失」，宁可
+    等满超时而失败，也不把不可观测当成已终止。仅限 POSIX：Windows 上 ``os.kill(pid, 0)`` 会
+    真的终止进程。
+    """
+    assert os.name == "posix", "存活探测是 POSIX 语义，Windows 的 os.kill 会终止目标进程"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:  # pid 被复用为他人进程等：进程仍在，按未终止继续轮询
+        return False
+    if not _CAN_READ_STATE:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            # comm 可含空格与括号，取最后一对括号之后的状态位
+            state = fh.read().decode("ascii", "replace").rsplit(")", 1)[1].split()[0]
+    except (FileNotFoundError, IndexError):  # 与上一步之间的竞态：条目已消失
+        return True
+    return state == "Z"
+
+
+def _wait_terminated(pid: int, timeout: float = 5.0) -> bool:
+    """有界等待 ``pid`` 不再运行（被杀到回收之间由系统调度，无法事件驱动地等待）。
+
+    超时返回 ``False``。
+    """
+    deadline = time.monotonic() + timeout
+    while not _terminated(pid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
 # ---------------------------------------------------------------- 握手与正常关闭
 
 
@@ -238,10 +287,10 @@ def test_stubborn_plugin_is_killed_with_its_process_group() -> None:
 
     elapsed = run(scenario())
     assert elapsed < 10
-    child = int(next(line for line in lines if line.startswith("child=")).split("=")[1])
     if os.name == "posix":
-        with pytest.raises(ProcessLookupError):
-            os.kill(child, 0)
+        # 有界等待残留子进程不再运行（回收由系统 init 负责，见 #102）
+        child = _child_pid(lines)
+        assert _wait_terminated(child), f"残留子进程 {child} 未被终止（仍在运行）"
 
 
 # ---------------------------------------------------------------- 取消与超时
@@ -346,10 +395,6 @@ def test_missing_executable_is_definition_invalid() -> None:
 # ---------------------------------------------------------------- 复审回归
 
 
-def _child_pid(lines: list[str]) -> int:
-    return int(next(line for line in lines if line.startswith("child=")).split("=")[1])
-
-
 def test_crash_with_orphan_holding_pipes_is_detected_on_exit() -> None:
     # 插件退出后其子进程仍持有 stdout/stderr：退出必须被及时识别，不得等管道关闭
     lines: list[str] = []
@@ -366,8 +411,9 @@ def test_crash_with_orphan_holding_pipes_is_detected_on_exit() -> None:
     assert failure.code == "plugin_crashed"
     assert elapsed < 5  # 宽限期 1 秒，远小于子进程的 120 秒
     if os.name == "posix":
-        with pytest.raises(ProcessLookupError):
-            os.kill(_child_pid(lines), 0)  # close 按进程组终止了残留子进程
+        # close 按进程组终止了残留子进程：有界等待它不再运行（回收由系统 init 负责，见 #102）
+        child = _child_pid(lines)
+        assert _wait_terminated(child), f"残留子进程 {child} 未被终止（仍在运行）"
 
 
 def test_plugin_not_reading_stdin_times_out() -> None:
