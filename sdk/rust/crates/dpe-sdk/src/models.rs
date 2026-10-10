@@ -7,17 +7,20 @@
 //! 与 dpe-hash 的同名结构（只保证字段名、不做校验的 hash 输入结构）不同，本模块的模型带规范
 //! 校验与「原样表示」语义，是 SDK 对外的主类型。
 //!
-//! # 校验只有一份实现
+//! # 构造入口
 //!
-//! [`parse`](ElementObject::parse) / [`from_value`](ElementObject::from_value) 在原始输入上调用
-//! dpe-hash，按 core §2.8 的顺序校验整个对象（展开视图含全部子对象）；失败返回
+//! [`parse`](ElementObject::parse)（JSON 文本，I-JSON 严格解析）与
+//! [`from_value`](ElementObject::from_value)（已解析的值）是唯一的反序列化入口：都在原始输入
+//! 上调用 dpe-hash，按 core §2.8 的顺序校验整个对象（展开视图含全部子对象）；失败返回
 //! [`dpe_hash::Error`]，`code()` 与 `path()` 同一致性向量，`path()` 相对于被构造的对象。
-//! category 允许的字段、file_type 枚举都取自 dpe-hash，SDK 不维护副本。
+//! category 允许的字段、file_type 枚举都取自 dpe-hash，SDK 不维护副本。校验通过后直接提取
+//! 字段（只做搬运与克隆），不经 serde 的 `Value` 反序列化——`arbitrary_precision` 下它会
+//! 把「首键为内部数字 token `$serde_json::private::Number` 的对象」改写为数字或直接报错，
+//! 而源数据里同形的对象是内容（P2：不设保留键、不做过滤）。因此模型只 derive `Serialize`
+//! （序列化输出原样表示），**不提供** serde 反序列化。
 //!
-//! serde 反序列化（`serde_json::from_str::<ElementObject>` 等）只做结构层解析（拒绝未知字段），
-//! **不做** core §2.8 校验，错误也不带规范错误码——需要规范错误码与位置时用 `parse` /
-//! `from_value`。结构体字面量构造不被阻止；hash 方法每次都经 dpe-hash 重新校验，字面量构造
-//! 的非法对象在算 hash 时同样被拒绝（hash 不缓存）。
+//! 结构体字面量构造不被阻止；hash 方法每次都经 dpe-hash 重新校验，字面量构造的非法对象在
+//! 算 hash 时同样被拒绝（hash 不缓存）。
 //!
 //! # 表示与等价
 //!
@@ -61,101 +64,73 @@
 
 use std::borrow::Cow;
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde::Serialize;
+use serde_json::{Map, Value};
 
 use dpe_hash::{
     document_hashes, object_hash, page_hashes, parse_ijson, DocumentHashes, JsonObject, ObjectKind,
     Result, ToJson,
 };
 
-/// 三态可选字段的反序列化：字段存在时必定调用（外层 `Some` 包裹），`null` 反序列化为
-/// `None`，因此 `Some(None)` 就是显式 null；字段缺失走 `#[serde(default)]`，得到外层 `None`。
-fn double_option<'de, T, D>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    Deserialize::deserialize(deserializer).map(Some)
-}
-
 /// 元素对象（core §2.3）。内容字段是否允许取决于 `category`（契约 1 §4.1）。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ElementObject {
     pub category: String,
     /// 显式 null 保留为 `Some(None)`，缺省为 `None`（下同）。
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<Option<String>>,
     /// 仅 `Table` / `Formula`。
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_as_html: Option<Option<String>>,
     /// 仅允许携带 blob 的 category（目前为 `Image`）；blob 引用 `"sha256:…"`。
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blob: Option<Option<String>>,
     /// blob 字节的媒体类型（如 `image/png`）。
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<Option<String>>,
     /// 版面坐标、图片 url 等源提供的信息，缺省视同 `{}`。
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Option<JsonObject>>,
 }
 
 /// 页对象（core §2.2）：`elements` 为 content_hash 列表，数组顺序即页内阅读顺序。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct PageObject {
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_metadata: Option<Option<JsonObject>>,
     pub elements: Vec<String>,
 }
 
 /// 文档对象（core §2.1）：`pages` 为 page_hash 列表，数组顺序即页的阅读顺序。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct DocumentObject {
     /// 封闭枚举；取值见 `dpe_hash::FILE_TYPES`。
     pub file_type: String,
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_metadata: Option<Option<JsonObject>>,
     pub pages: Vec<String>,
 }
 
 /// 展开视图中的页：`elements` 为元素对象本身（vectors/README.md）。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ExpandedPage {
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_metadata: Option<Option<JsonObject>>,
     pub elements: Vec<ElementObject>,
 }
 
 /// 展开视图中的文档：页与元素内联给出，数组顺序即阅读顺序（vectors/README.md）。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ExpandedDocument {
     pub file_type: String,
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_metadata: Option<Option<JsonObject>>,
     pub pages: Vec<ExpandedPage>,
@@ -168,11 +143,11 @@ impl ElementObject {
         Self::from_value(&parse_ijson(text)?, contract)
     }
 
-    /// 从已解析的 JSON 值构造：经 `content_hash` 校验后转换；失败返回 [`dpe_hash::Error`]
+    /// 从已解析的 JSON 值构造：经 `content_hash` 校验后提取；失败返回 [`dpe_hash::Error`]
     /// （`code()` / `path()` 同一致性向量）。
     pub fn from_value(value: &Value, contract: &str) -> Result<Self> {
         dpe_hash::content_hash(value, contract)?;
-        Ok(Self::deserialize(value).expect("已通过 dpe-hash 校验，反序列化不会失败"))
+        Ok(element_of(value))
     }
 
     /// 元素对象的 `content_hash`（契约 1 §4）：每次调用都经 dpe-hash 重新校验并计算，不缓存。
@@ -187,11 +162,11 @@ impl PageObject {
         Self::from_value(&parse_ijson(text)?, contract)
     }
 
-    /// 从已解析的 JSON 值构造：经 `page_hash` 校验后转换（`elements` 为 content_hash 列表，
+    /// 从已解析的 JSON 值构造：经 `page_hash` 校验后提取（`elements` 为 content_hash 列表，
     /// 按 `contract` 校验）。
     pub fn from_value(value: &Value, contract: &str) -> Result<Self> {
         object_hash(value, ObjectKind::Page, contract)?;
-        Ok(Self::deserialize(value).expect("已通过 dpe-hash 校验，反序列化不会失败"))
+        Ok(page_of(value))
     }
 
     /// 页对象的 `page_hash`（契约 1 §5）。
@@ -206,11 +181,11 @@ impl DocumentObject {
         Self::from_value(&parse_ijson(text)?, contract)
     }
 
-    /// 从已解析的 JSON 值构造：经 `doc_hash` 校验后转换（`pages` 为 page_hash 列表，
+    /// 从已解析的 JSON 值构造：经 `doc_hash` 校验后提取（`pages` 为 page_hash 列表，
     /// 按 `contract` 校验）。
     pub fn from_value(value: &Value, contract: &str) -> Result<Self> {
         object_hash(value, ObjectKind::Document, contract)?;
-        Ok(Self::deserialize(value).expect("已通过 dpe-hash 校验，反序列化不会失败"))
+        Ok(document_of(value))
     }
 
     /// 文档对象的 `doc_hash`（契约 1 §5）。
@@ -225,10 +200,10 @@ impl ExpandedPage {
         Self::from_value(&parse_ijson(text)?, contract)
     }
 
-    /// 从已解析的 JSON 值构造：经 `page_hashes` 校验后转换；错误位置相对于页自身。
+    /// 从已解析的 JSON 值构造：经 `page_hashes` 校验后提取；错误位置相对于页自身。
     pub fn from_value(value: &Value, contract: &str) -> Result<Self> {
         page_hashes(value, contract)?;
-        Ok(Self::deserialize(value).expect("已通过 dpe-hash 校验，反序列化不会失败"))
+        Ok(expanded_page_of(value))
     }
 }
 
@@ -238,11 +213,11 @@ impl ExpandedDocument {
         Self::from_value(&parse_ijson(text)?, contract)
     }
 
-    /// 从已解析的 JSON 值构造：经 `document_hashes` 校验后转换（校验顺序：文档字段 → 各页
+    /// 从已解析的 JSON 值构造：经 `document_hashes` 校验后提取（校验顺序：文档字段 → 各页
     /// 字段 → 各页的元素）。
     pub fn from_value(value: &Value, contract: &str) -> Result<Self> {
         document_hashes(value, contract)?;
-        Ok(Self::deserialize(value).expect("已通过 dpe-hash 校验，反序列化不会失败"))
+        Ok(expanded_document_of(value))
     }
 
     /// 三层 hash，形如 `{doc_hash, pages: [{page_hash, elements}…]}`；形状同向量的 `expected`。
@@ -253,6 +228,129 @@ impl ExpandedDocument {
     /// 展开文档的 `doc_hash`；需要三层 hash 时用 [`hashes`](Self::hashes)。
     pub fn doc_hash(&self, contract: &str) -> Result<String> {
         self.hashes(contract).map(|hashes| hashes.doc_hash)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 已校验值的字段提取
+// ---------------------------------------------------------------------------
+//
+// 前提：调用方（上面的 `from_value`）已用 dpe-hash 按 core §2.8 校验过同一个值，形状由校验的
+// 契约语义保证（元素：category 是字符串、允许的内容字段是字符串或 null、metadata 是对象或
+// null；页与文档：见 core §2.1–§2.3、契约 1 §5）。这里的提取只做搬运与 clone，`panic` 分支
+// 只能由 dpe-hash 违反自身校验契约触发，公开入口无法到达。
+//
+// 不经过 serde 的 `Value` 反序列化：`arbitrary_precision` 下它会把「首键为内部数字 token
+// `$serde_json::private::Number` 的对象」改写为数字或直接报错，而源数据里同形的对象是内容
+// （P2：不设保留键、不做过滤）；clone 只复制 JSON 树，原样保留。
+
+fn expect_object(value: &Value) -> &Map<String, Value> {
+    value
+        .as_object()
+        .unwrap_or_else(|| panic!("dpe-hash 校验已保证值是对象"))
+}
+
+/// 必有字符串字段（`category` / `file_type`）。
+fn required_string(map: &Map<String, Value>, key: &str) -> String {
+    match map.get(key) {
+        Some(Value::String(text)) => text.clone(),
+        _ => panic!("dpe-hash 校验已保证 {key} 是非 null 字符串"),
+    }
+}
+
+/// 可选字符串字段（三态：缺省 / 显式 null / 值）。
+fn triple_string(map: &Map<String, Value>, key: &str) -> Option<Option<String>> {
+    match map.get(key) {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(text)) => Some(Some(text.clone())),
+        Some(_) => panic!("dpe-hash 校验已保证 {key} 是字符串或 null"),
+    }
+}
+
+/// 可选对象字段（三态）。
+fn triple_object(map: &Map<String, Value>, key: &str) -> Option<Option<JsonObject>> {
+    match map.get(key) {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::Object(obj)) => Some(Some(obj.clone())),
+        Some(_) => panic!("dpe-hash 校验已保证 {key} 是对象或 null"),
+    }
+}
+
+/// 字符串数组字段（`elements` / `pages` 的 hash 列表）。
+fn string_list(map: &Map<String, Value>, key: &str) -> Vec<String> {
+    map.get(key)
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("dpe-hash 校验已保证 {key} 是数组"))
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .unwrap_or_else(|| panic!("dpe-hash 校验已保证 {key} 的每项是字符串"))
+                .to_owned()
+        })
+        .collect()
+}
+
+fn element_of(value: &Value) -> ElementObject {
+    let map = expect_object(value);
+    ElementObject {
+        category: required_string(map, "category"),
+        text: triple_string(map, "text"),
+        text_as_html: triple_string(map, "text_as_html"),
+        blob: triple_string(map, "blob"),
+        mime_type: triple_string(map, "mime_type"),
+        metadata: triple_object(map, "metadata"),
+    }
+}
+
+fn page_of(value: &Value) -> PageObject {
+    let map = expect_object(value);
+    PageObject {
+        title: triple_string(map, "title"),
+        page_metadata: triple_object(map, "page_metadata"),
+        elements: string_list(map, "elements"),
+    }
+}
+
+fn document_of(value: &Value) -> DocumentObject {
+    let map = expect_object(value);
+    DocumentObject {
+        file_type: required_string(map, "file_type"),
+        title: triple_string(map, "title"),
+        doc_metadata: triple_object(map, "doc_metadata"),
+        pages: string_list(map, "pages"),
+    }
+}
+
+fn expanded_page_of(value: &Value) -> ExpandedPage {
+    let map = expect_object(value);
+    ExpandedPage {
+        title: triple_string(map, "title"),
+        page_metadata: triple_object(map, "page_metadata"),
+        elements: map
+            .get("elements")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("dpe-hash 校验已保证 elements 是数组"))
+            .iter()
+            .map(element_of)
+            .collect(),
+    }
+}
+
+fn expanded_document_of(value: &Value) -> ExpandedDocument {
+    let map = expect_object(value);
+    ExpandedDocument {
+        file_type: required_string(map, "file_type"),
+        title: triple_string(map, "title"),
+        doc_metadata: triple_object(map, "doc_metadata"),
+        pages: map
+            .get("pages")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("dpe-hash 校验已保证 pages 是数组"))
+            .iter()
+            .map(expanded_page_of)
+            .collect(),
     }
 }
 

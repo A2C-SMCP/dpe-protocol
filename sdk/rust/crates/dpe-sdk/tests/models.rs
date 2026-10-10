@@ -443,27 +443,55 @@ fn wire_contract_from_argument() {
 }
 
 // ---------------------------------------------------------------------------
-// serde 结构层与其余入口（模块文档承诺的行为）
+// 保留 token 回归（模型层的「源即内容」）与其余入口
 // ---------------------------------------------------------------------------
 
 #[test]
-fn serde_rejects_unknown_fields() {
-    // 结构层解析（deny_unknown_fields）：五个类型都拒绝未知字段；不做 §2.8 校验
-    assert!(serde_json::from_str::<ElementObject>(r#"{"category": "Title", "nope": 1}"#).is_err());
-    assert!(serde_json::from_str::<PageObject>(r#"{"elements": [], "number": 1}"#).is_err());
-    assert!(
-        serde_json::from_str::<DocumentObject>(r#"{"file_type": "md", "pages": [], "x": 1}"#)
-            .is_err()
+fn private_number_token_is_source_content() {
+    // serde_json 在 arbitrary_precision 下用 `$serde_json::private::Number` 的单键对象表示
+    // 数字；源数据里恰好同形的对象是内容（P2：不设保留键），构造与序列化都不得改写它。
+    let text = r#"{"category":"Title","metadata":{"x":{"$serde_json::private::Number":"1"}}}"#;
+    let el = ElementObject::parse(text, CONTRACT).unwrap();
+    assert_eq!(
+        serde_json::to_value(&el).unwrap(),
+        dpe_hash::parse_ijson(text).unwrap()
     );
-    assert!(serde_json::from_str::<ExpandedPage>(r#"{"elements": [], "x": 1}"#).is_err());
-    assert!(serde_json::from_str::<ExpandedDocument>(
-        r#"{"file_type": "md", "pages": [], "x": 1}"#
-    )
-    .is_err());
-    // 结构合法但违反规范的值可以通过反序列化，规范校验在 hash 方法处兜底
-    let element: ElementObject = serde_json::from_str(r#"{"category": "Video"}"#).unwrap();
-    let err = element.content_hash(CONTRACT).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::CategoryUnknown);
+    assert_eq!(
+        el.content_hash(CONTRACT).unwrap(),
+        content_hash(
+            &json!({"category": "Title", "metadata": {"x": {"$serde_json::private::Number": "1"}}}),
+            CONTRACT
+        )
+        .unwrap()
+    );
+
+    // 非数值串值、多键、嵌套数组：全部保留为对象
+    for text in [
+        r#"{"category":"Title","metadata":{"x":{"$serde_json::private::Number":"abc"}}}"#,
+        r#"{"category":"Title","metadata":{"x":{"$serde_json::private::Number":"1","y":2}}}"#,
+        r#"{"category":"Title","metadata":{"a":[{"$serde_json::private::Number":"1"}]}}"#,
+    ] {
+        let el = ElementObject::parse(text, CONTRACT).unwrap_or_else(|e| panic!("{text}: {e}"));
+        assert_eq!(
+            serde_json::to_value(&el).unwrap(),
+            dpe_hash::parse_ijson(text).unwrap(),
+            "{text}"
+        );
+    }
+
+    // 展开文档：doc_metadata 与元素 metadata 均原样保留，doc_hash 对真实内容计算
+    let text = r#"{"file_type":"md","doc_metadata":{"x":{"$serde_json::private::Number":"1"}},"pages":[{"elements":[{"category":"Title","metadata":{"y":{"$serde_json::private::Number":"2"}}}]}]}"#;
+    let doc = ExpandedDocument::parse(text, CONTRACT).unwrap();
+    assert_eq!(
+        serde_json::to_value(&doc).unwrap(),
+        dpe_hash::parse_ijson(text).unwrap()
+    );
+    assert_eq!(
+        doc.doc_hash(CONTRACT).unwrap(),
+        dpe_hash::document_hashes(&dpe_hash::parse_ijson(text).unwrap(), CONTRACT)
+            .unwrap()
+            .doc_hash
+    );
 }
 
 #[test]

@@ -32,8 +32,8 @@ cargo feature 在同一构建内统一生效：开启 `arbitrary_precision` 后�
 
 ## I-JSON 解析
 
-`parse_ijson` 把 JSON 文本严格解析为值（core §2.8 校验顺序第 0 步的解析部分）：拒绝重复键与孤立代理项，错误为 `DPE_VALIDATION`、位置为对象自身；数值不在解析阶段拒绝（`1e400` 等字面量保留，到校验第 4 步在出错的值上报告）。
+`parse_ijson` 把 JSON 文本严格解析为值（core §2.8 校验顺序第 0 步的解析部分）：拒绝重复键与孤立代理项，错误为 `DPE_VALIDATION`、位置为对象自身；数值不在解析阶段拒绝（越界留到校验第 4 步在出错的值上报告；字面量经 serde_json 构造为 `Number`，拼写可能被规范化，如 `1e2` → `1e+2`、`-0` → `0`，值不变、hash 不受影响）。
 
-实现是自建的单遍解析器，不复用 serde_json 的 `Value` 解析：`arbitrary_precision` 下 serde_json 用内部数字 token `$serde_json::private::Number` 的单键对象表示数字，会把源数据里恰好同形的对象读成数字或误拒——而源即内容（P2），实现不得引入保留键。已知偏差：嵌套深度上限 128 层（与 serde_json 的默认一致；Python 标准库的对应边界约千层）。
+实现是自建的单遍解析器，不复用 serde_json 的 `Value` 解析：`arbitrary_precision` 下 serde_json 用内部数字 token `$serde_json::private::Number` 的单键对象表示数字，会把源数据里恰好同形的对象读成数字或误拒——而源即内容（P2），实现不得引入保留键。已知偏差：嵌套深度上限 128 层（serde_json 默认在 128 层即拒，本实现 128 通过、129 拒绝；Python 标准库的对应边界约千层）。
 
 serde_json 直接 `from_str` 默认保留重复键的最后一个——需要 I-JSON 语义时（如服务端读取请求体）须改用 `parse_ijson`。

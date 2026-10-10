@@ -177,8 +177,11 @@ fn string_escapes_validated() {
     }
     let value = parse_ijson(r#"{"a": "\u0000"}"#).unwrap();
     assert_eq!(value["a"].as_str().unwrap(), "\0");
-    let value = parse_ijson(r#"{"a": "𝄞"}"#).unwrap();
-    assert_eq!(value["a"].as_str().unwrap(), "𝄞");
+    // 合法代理对转义（𝄞 → 𝄞，U+1D11E）在值位置与键位置都解码成功
+    let value = parse_ijson(r#"{"𝄞": "𝄞"}"#).unwrap();
+    let key = value.as_object().unwrap().keys().next().unwrap();
+    assert_eq!(key, "𝄞");
+    assert_eq!(value["𝄞"], json!("𝄞"));
 }
 
 /// 数字按 RFC 8259 语法校验；越界与否不在此判定（第 4 步）。
@@ -227,7 +230,8 @@ fn structure_syntax_validated() {
     }
 }
 
-/// 嵌套深度上限 128 层（含顶层）：128 层容器通过，129 层拒绝（与 serde_json 默认一致）。
+/// 嵌套深度上限 128 层（含顶层）：128 层容器通过，129 层拒绝
+/// （serde_json 默认在 128 层即拒，本实现宽一层）。
 #[test]
 fn depth_limit() {
     let ok = format!("{}1{}", "[".repeat(128), "]".repeat(128));

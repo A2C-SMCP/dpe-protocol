@@ -1,15 +1,17 @@
 //! I-JSON 严格解析（RFC 7493；core §2.8 校验顺序第 0 步的解析部分）。
 //!
-//! 单遍自建解析器：拒绝重复键与孤立代理项，数值保留字面量（不在解析阶段拒绝越界，留到校验
-//! 第 4 步在出错的值上报告）。**不复用 serde_json 的 `Value` 解析**：`arbitrary_precision`
-//! 下数字以内部保留键 `$serde_json::private::Number` 的单键对象形态流传，直接解析会把源数据
-//! 里恰好同形的对象静默读成数字、或把多键的同形对象误拒——源即内容（北极星 P2），
-//! 实现不得引入任何保留键。数值字面量在这里自行校验语法后，逐字面量交给 serde_json 构造
-//! `Number`（该路径不含用户对象，不存在上述歧义）。
+//! 单遍自建解析器：拒绝重复键与孤立代理项，数值不在解析阶段拒绝（越界留到校验第 4 步在出错
+//! 的值上报告；字面量经 serde_json 构造为 `Number`，拼写可能被规范化，如 `1e2` → `1e+2`、
+//! `-0` → `0`，值不变、hash 不受影响）。**不复用 serde_json 的 `Value` 解析**：
+//! `arbitrary_precision` 下数字以内部保留键 `$serde_json::private::Number` 的单键对象形态
+//! 流传，直接解析会把源数据里恰好同形的对象静默读成数字、或把多键的同形对象误拒——源即内容
+//! （北极星 P2），实现不得引入任何保留键。数值字面量在这里自行校验语法后，逐字面量交给
+//! serde_json 构造 `Number`（该路径不含用户对象，不存在上述歧义）。
 //!
 //! 与 Python dpe-sdk 的 `_ijson.loads` 行为对等：违规同为 `DPE_VALIDATION`、位置为对象自身。
-//! 已知偏差：嵌套深度上限 [`MAX_DEPTH`] 层（与 serde_json 的默认一致）；Python 标准库的对应
-//! 边界约千层。独立的解析实现仍在 `tests/common/mod.rs`（只用于读向量夹具，不依赖本模块）。
+//! 已知偏差：嵌套深度上限 [`MAX_DEPTH`] 层（128 层通过、129 层拒绝；serde_json 默认在 128
+//! 层即拒，本实现宽一层）；Python 标准库的对应边界约千层。独立的解析实现仍在
+//! `tests/common/mod.rs`（只用于读向量夹具，不依赖本模块）。
 
 use serde_json::{Map, Number, Value};
 
@@ -17,7 +19,8 @@ use crate::error::{Error, ErrorKind, Result};
 
 /// 容器嵌套深度上限（顶层值为 1 层）。
 ///
-/// 比 Python 标准库（约千层递归）保守，与 serde_json 的默认一致；防解析递归耗尽栈。
+/// 比 Python 标准库（约千层递归）保守；serde_json 默认在 128 层即拒，本实现宽一层
+/// （128 层通过、129 层拒绝）。防解析递归耗尽栈。
 const MAX_DEPTH: u32 = 128;
 
 /// 把 JSON 文本严格解析为值：拒绝重复键与孤立代理项（core §2.8 第 0 步）。
@@ -292,7 +295,8 @@ impl<'a> Parser<'a> {
     }
 
     /// 数字字面量：按 RFC 8259 语法逐字符校验后，整段交给 serde_json 构造 `Number`
-    /// （`arbitrary_precision` 下保留字面量；纯数字文本无对象，不经过保留键判定）。
+    /// （`arbitrary_precision` 下按字面量构造，拼写可能被规范化但值不变；纯数字文本无对象，
+    /// 不经过保留键判定）。
     fn number(&mut self) -> Result<Value> {
         let start = self.pos;
         if self.peek() == Some(b'-') {
@@ -329,8 +333,9 @@ impl<'a> Parser<'a> {
             }
         }
         let literal = &self.text[start..self.pos];
-        // 依赖 arbitrary_precision（Cargo.toml，硬开）：超越 double 的字面量保留在 Number 中、
-        // 不在此拒绝（core §2.8 第 4 步）；语法已校验，此处的失败分支只是兜底
+        // 依赖 arbitrary_precision（Cargo.toml，硬开）：超越 double 的字面量在 Number 中保留、
+        // 不在此拒绝（core §2.8 第 4 步；拼写可能被规范化，值不变）；语法已校验，
+        // 此处的失败分支只是兜底
         let number: Number =
             serde_json::from_str(literal).map_err(|_| self.error("数字字面量不被支持"))?;
         Ok(Value::Number(number))
