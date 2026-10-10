@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73、#81 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -61,8 +61,9 @@
 - 带 `force: true` 的请求同时带条件头时返回 `DPE_VALIDATION`。
 - **commit 的 unchanged 先于条件求值**（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 `200` + `unchanged`，即使条件头不满足。对 `If-Match`，这符合 RFC 9110 §13.1.1：状态变更请求所要求的结果已经生效时，源服务器可以返回 2xx 而不是 412。对 `If-None-Match: *`，RFC 9110 §13.1.2 要求条件不满足时返回 412，这里是**有意偏离**：内容已经是提交的值时，DPE 以内容幂等（core.md §5.2）为准返回 `unchanged`。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。
 - 同一个 `code` 在不同端点可能映射到不同状态码（如 `DPE_PRECONDITION_FAILED` 在 PUT 上是 412、在 move 上是 409）。**客户端 MUST 依据错误的 `code` 分派**（有 problem 体时取体中的 `code`，HEAD 取 `DPE-Error-Code` 头，§5），MUST NOT 依据状态码分派。
-- 若仍收到既无 problem 体、也无 `DPE-Error-Code` 头的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定：
-  - PUT：doc_hash 等于提交内容 → 成功；不存在 → `DPE_NOT_FOUND`；否则 → `DPE_PRECONDITION_FAILED`（`If-None-Match: *` 时为 `DPE_ALREADY_EXISTS`）。
+- 带条件头的写操作若仍收到既无 problem 体、也无 `DPE-Error-Code` 头的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定；判定为「可原样重试」时，重试得到的响应若仍是这样的 `412`，同样 MUST 先 `head` 再判定，重试至多一次（不带条件头的 `force` 提交收到 `412` 时无从判定来自哪次求值，按非协议错误上报，§5）：
+  - PUT（`If-Match: "H"`）：doc_hash 等于提交内容 → 成功；不存在 → `DPE_NOT_FOUND`；否则 → `DPE_PRECONDITION_FAILED`。
+  - PUT（`If-None-Match: *`）：doc_hash 等于提交内容 → 成功；存在 → `DPE_ALREADY_EXISTS`；不存在 → 前置条件实际成立，是中间层误判，可原样重试一次，仍如此则按非协议错误上报（§5），MUST NOT 报 `DPE_NOT_FOUND`。
   - DELETE：不存在 → 成功（§5.2）；doc_hash 等于 `If-Match` 的值 → 中间层误判，可原样重试一次，仍如此则上报；否则 → `DPE_PRECONDITION_FAILED`。
 
 ### 3.3 响应头
