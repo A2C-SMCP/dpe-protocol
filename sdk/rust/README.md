@@ -1,14 +1,27 @@
 # Rust SDK workspace
 
 ```
-Cargo.toml            # workspace 根（不是 crate）：成员、共享元数据、SDK 版本管理与依赖预算
-.cargo/config.toml    # resolver MSRV 回退：依赖解析优先选与 rust-version 1.80 兼容的版本
-pyproject.toml        # bump-my-version（版本工具是 Python 的，与 sdk/python/ 同款两态约定）
-crates/dpe-hash/      # dpe-hash：hash 核心、file_uri 规范化与契约常量，仅依赖 sha2 + serde + serde_json + ryu
-crates/dpe-sdk/       # dpe-sdk：sans-IO 协议核心；默认 feature `http` 提供 reqwest / tokio 适配
+Cargo.toml               # workspace 根（不是 crate）：成员、共享元数据、SDK 版本管理与依赖预算
+.cargo/config.toml       # resolver MSRV 回退：依赖解析优先选与 rust-version 1.80 兼容的版本
+pyproject.toml           # bump-my-version（版本工具是 Python 的，与 sdk/python/ 同款两态约定）
+vector-consumers.json    # 跨 crate 的向量消费登记（kind → 消费文件），见下
+crates/dpe-hash/         # dpe-hash：hash 核心、file_uri 规范化与契约常量，仅依赖 sha2 + serde + serde_json + ryu
+crates/dpe-sdk/          # dpe-sdk：sans-IO 协议核心（`run`：connector 清单与实例配置校验，§4.1–§4.2）；
+                         # 默认 feature `http` 提供 reqwest / tokio 适配
 ```
 
 两个 crate 与 Python SDK 行为对等（CLAUDE.md「两个 SDK 行为对等」）：测试**直接读取仓库根目录的 `vectors/`**（不复制），逐字节校验；crate 测试失败而 `make check-vectors` 通过时，错的是 SDK。向量位置可用 `DPE_VECTORS_DIR` 覆盖（如在仓库之外运行测试）。
+
+## 向量消费登记
+
+`vectors/` 出现的每个 kind 都必须有消费方，由 `dpe-hash/tests/vectors.rs` 的
+`all_vector_kinds_have_consumers` 做「变更探测器」（新增/删除 kind 即失败）。dpe-hash 自身消费的
+kind 在该测试的 `consumed` 集合声明；由其他 crate 消费的 kind 登记在 `vector-consumers.json`
+（kind → 消费文件，路径相对本目录），核验逐条落到文件系统：消费文件必须存在，且有一行去掉行首
+空白、`//` / `//!` 注释标记与行尾空白后恰为 `vector-kind: <kind>`（整行匹配）——登记与真实消费
+方脱钩（文件被删、改名、标记被移除）时测试失败，只改字面量不够。核验止于**文件与标记层面**：
+把消费测试函数删掉而保留标记不会被自动发现，仍靠评审把关。`pattern`（connector 契约 §4.1.1）
+自 #85 起登记在 dpe-sdk（`crates/dpe-sdk/tests/pattern_vectors.rs`）。
 
 ## 开发
 

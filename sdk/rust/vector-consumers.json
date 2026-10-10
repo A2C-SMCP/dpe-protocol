@@ -1,0 +1,6 @@
+{
+  "note": "sdk/rust workspace 的向量消费登记：kind → 消费文件（路径相对 sdk/rust/）。本文件由 dpe-hash/tests/vectors.rs 的 all_vector_kinds_have_consumers 读取：每个消费文件必须存在，且有一行（去掉行首空白、// 或 //! 注释标记与行尾空白后）恰为 `vector-kind: <kind>`——整行匹配，登记因此不会与真实消费方脱钩（只改字面量不够）。由 dpe-hash 测试以外的 crate 消费的向量 kind 在此登记（dpe-hash 自身消费的 kind 由该测试的 consumed 集合声明）。",
+  "consumers": {
+    "pattern": ["crates/dpe-sdk/tests/pattern_vectors.rs"]
+  }
+}
