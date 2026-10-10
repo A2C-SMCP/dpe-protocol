@@ -8,7 +8,7 @@ from typing import Any
 import dpe_hash
 import pytest
 from dpe_sdk import errors
-from dpe_sdk.testing import BaseHash, DedupScope, Engine, IfAbsent
+from dpe_sdk.testing import BaseHash, Engine, IfAbsent
 from engine_helpers import (
     FakeClock,
     commit_body,
@@ -278,23 +278,27 @@ def test_staging_invisible_until_commit() -> None:
     assert after is not None and after.doc_hash == v2.doc_hash
 
 
-def test_staged_commit_promotes_blob_and_dedups_across_documents() -> None:
-    """会话中的 blob 随提交进入对象存储并按引用计数回收；可写范围内跨文档去重。"""
-    engine = make_engine(dedup_scope=DedupScope.WRITABLE, session_id_factory=id_factory())
+def test_staged_commit_promotes_blob_and_dedups_physically() -> None:
+    """会话中的 blob 随提交进入对象存储并按引用计数回收：协议面各传各的（去重范围固定为本文档），
+    存储层同内容只存一份（core §3.3、§8 允许的物理去重）。"""
+    engine = make_engine(session_id_factory=id_factory())
     blob = b"\x89PNG-dedup"
     ref = dpe_hash.blob_ref(blob)
     image = {"category": "Image", "blob": ref, "mime_type": "image/png"}
     ih = dpe_hash.object_hash(image, "element", C)
     page, ph = _page([ih])
-    sid = _open(engine)
-    engine.upload_page("u", sid, ph, json.dumps(page).encode(), C)
-    engine.upload_element("u", sid, ih, json.dumps(image).encode(), C)
-    engine.upload_blob("u", sid, ref, blob, C)
     doc = {"file_type": "md", "pages": [ph]}
-    first = engine.commit("u", URI, commit_body(doc, staging_session=sid), C, IfAbsent())
-    # 第二篇文档走快路径复用同一元素与 blob（在可写范围内，无需再传）
-    v2 = inline({"file_type": "md", "pages": [{"elements": [image]}]})
-    second = engine.commit("u", OTHER_URI, v2.body(), C, IfAbsent())
+
+    def stage_and_commit(uri: str, precondition: Any) -> Any:
+        sid = _open(engine, uri=uri)
+        engine.upload_page("u", sid, ph, json.dumps(page).encode(), C)
+        engine.upload_element("u", sid, ih, json.dumps(image).encode(), C)
+        engine.upload_blob("u", sid, ref, blob, C)
+        return engine.commit("u", uri, commit_body(doc, staging_session=sid), C, precondition)
+
+    first = stage_and_commit(URI, IfAbsent())
+    # 第二篇文档经自己的会话上传同一 blob 字节；存储层物理去重，引用计数为 2
+    second = stage_and_commit(OTHER_URI, IfAbsent())
     assert engine._store.blobs[ref].refs == 2
     engine.delete("u", URI, C, first.doc_hash)
     assert engine._store.blobs[ref].refs == 1
@@ -321,9 +325,10 @@ def test_session_page_representation_wins_over_scope() -> None:
     assert skeleton.pages[0].title is None
 
 
-def test_commit_session_with_writable_scope_second_pass() -> None:
-    """会话页的元素在会话、其 blob 仅由另一可写文档持有：二阶段授权后 commit 成功。"""
-    engine = make_engine(dedup_scope=DedupScope.WRITABLE, session_id_factory=id_factory())
+def test_session_blob_held_by_another_document_is_missing() -> None:
+    """blob 层：blob 只由另一篇文档持有（即使本文档的页与元素都在会话中），仍列为缺失；
+    补传到本会话后即可提交（去重范围固定为本文档，core §3.3）。"""
+    engine = make_engine(session_id_factory=id_factory())
     blob = b"\x00two-phase"
     ref = dpe_hash.blob_ref(blob)
     image = {"category": "Image", "blob": ref, "mime_type": "image/png"}
@@ -336,10 +341,15 @@ def test_commit_session_with_writable_scope_second_pass() -> None:
     engine.upload_element("u", holder_sid, ih, json.dumps(image).encode(), C)
     engine.upload_blob("u", holder_sid, ref, blob, C)
     engine.commit("u", OTHER_URI, commit_body(doc, staging_session=holder_sid), C, IfAbsent())
-    # 目标文档：页与元素在会话，blob 仅由持有文档持有（可写）→ 第一遍缺 blob，二阶段后成功
+    # 目标文档：页与元素在会话，blob 只由另一篇文档持有 → 缺 blob
     sid = _open(engine)
     engine.upload_page("u", sid, ph, json.dumps(page).encode(), C)
     engine.upload_element("u", sid, ih, json.dumps(image).encode(), C)
+    with pytest.raises(errors.MissingContentError) as info:
+        engine.commit("u", URI, commit_body(doc, staging_session=sid), C, IfAbsent())
+    assert info.value.missing.blobs == [ref]
+    # 补传到同一会话后重新 commit 成功
+    engine.upload_blob("u", sid, ref, blob, C)
     result = engine.commit("u", URI, commit_body(doc, staging_session=sid), C, IfAbsent())
     assert result.status == "created"
 

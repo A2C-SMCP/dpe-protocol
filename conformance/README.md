@@ -8,7 +8,7 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 
 - capabilities 协商与限额如实声明（`staging_ttl_seconds` ≥ 3600）；
 - 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出；断点查询（`HEAD`）带 `DPE-Session-Expires` 但不续期；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
-- 去重范围的上下界：只靠该文档当前状态即可得的对象不出现在缺失清单中；调用者无写授权的文档中的对象一律视为缺失；
+- 去重范围固定为本文档：只靠该文档当前状态（或本次暂存会话）即可得的对象不出现在缺失清单中；其他文档持有的对象一律视为缺失（不因它存在于别处而变化）；
 - 快路径 / 暂存路径的 commit 语义与原子性（分批期间读接口不可见中间态）；
 - delta 与 `get_skeleton` 读回结果互相印证（不制造伪变更）；
 - `get_skeleton` 读回的内容与推送内容一致，不含任何服务端衍生数据；服务端回报的 doc_hash 等于按契约 1 对推送内容算出的值；
@@ -66,10 +66,10 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 
 ## 安全（#4 B9）
 
-- 调用者 A 只对前缀 P 有写授权，前缀 Q 下的文档含内容 X：
+- 调用者 A 提交的内容 X 已存于另一篇文档（无论 A 对该文档是否有写授权；去重范围固定为本文档）：
   - 缺失清单必须把 X 列为缺失，按 X 所在的层核对：X 是页对象时，出现在 negotiate 的 `missing_pages` 中；X 是元素对象时，出现在附带了引用它的页的 negotiate 响应、或该页对象上传响应的 `missing_content_hashes` 中；X 是 blob 时，出现在引用它的元素对象上传响应的 `missing_blobs` 中；
   - A 在 commit 中引用 X 而不上传，必须返回 `DPE_MISSING_CONTENT`；
-  - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于 Q 而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
+  - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于别处而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
 - 对无写授权的 URI 提交与其当前内容相同的 commit，必须返回 `403`，而不是 `unchanged`。
 - 对无写授权的 URI 做 delete，无论文档是否存在都返回 `403`；对源或目标任一侧无写授权的 move，无论两侧状态如何都返回 `403`（#6 F3）。
 

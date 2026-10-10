@@ -56,7 +56,7 @@ engine.upload_offset(
 ```
 
 - 带 JSON 请求体的操作（`batch_head`、`negotiate`、`commit`、`move`）接收原始字节，传输层上限、I-JSON、契约声明、请求信封、对象校验、授权、前置条件都在引擎内按 core §3.3、§3.4、§5.2 的顺序判定；`upload_page` / `upload_element` / `upload_blob` 按 HTTP 绑定 §4.6、§4.7 的两套阶梯处理，结果为 `UploadResult`（含续期后的 `expires_at` 与下一层缺失清单）；
-- negotiate 与上传响应的缺失清单、commit 的可得性判定使用同一去重范围；可配置限额、受支持契约（第一个为主契约）、去重范围（`DedupScope.DOCUMENT` / `WRITABLE`）与可插拔授权器（`can_write` / `can_force`）；
+- negotiate 与上传响应的缺失清单、commit 的可得性判定使用同一去重范围——固定为本文档（当前状态引用的对象 ∪ 本次暂存会话，core §3.3，不做跨文档比较）；可配置限额、受支持契约（第一个为主契约）与可插拔授权器（`can_write` / `can_force`）；
 - `EngineConfig` 的 `clock` 与 `session_id_factory` 可注入（会话过期与确定性测试）；
 - 所有接受 file_uri 的入口按 core §1.1 校验与规范化（`dpe_hash.normalize_file_uri`），规范化形式即身份；`list` 的前缀按原样匹配；
 - 错误以 `dpe_sdk.errors` 抛出（分块偏移不连续为 `UploadOffsetError`，带 `offset`）。绑定层无法解释的条件头与分块参数以 `InvalidPrecondition` / `InvalidChunk` 传入，在规范规定的那一步判定。

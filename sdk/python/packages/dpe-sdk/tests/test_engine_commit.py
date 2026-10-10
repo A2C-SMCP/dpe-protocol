@@ -13,7 +13,7 @@ from typing import Any
 import dpe_hash
 import pytest
 from dpe_sdk import errors
-from dpe_sdk.testing import BaseHash, DedupScope, Engine, IfAbsent, Precondition, PrefixAuthorizer
+from dpe_sdk.testing import BaseHash, Engine, IfAbsent, Precondition, PrefixAuthorizer
 from engine_helpers import Inline, inline, make_engine, negotiate_body, text_doc
 
 URI = "test://docs/a"
@@ -484,7 +484,7 @@ def test_missing_truncated() -> None:
 
 
 def test_fast_path_reuses_current_document_objects() -> None:
-    """去重范围下界：本文档当前状态引用的对象不必重传。"""
+    """去重范围固定为本文档：本文档当前状态引用的对象不必重传。"""
     engine = make_engine()
     first = _create(engine, text_doc(["a", "b"], ["c"]))
     second = inline(text_doc(["a", "b"], ["c"], ["d"]))
@@ -497,28 +497,14 @@ def test_fast_path_reuses_current_document_objects() -> None:
     assert result.delta.model_dump() == {"added": 1, "removed": 0, "retained": 3}
 
 
-def test_dedup_scope_document_hides_other_documents() -> None:
+def test_missing_list_ignores_objects_held_by_other_documents() -> None:
+    """去重范围固定为本文档（core §3.3）：另一篇文档已存有同一对象时，缺失清单仍列出它。"""
     engine = make_engine()
     other = _create(engine, text_doc(["shared"]), uri="test://docs/other")
     body = json.dumps({"document": other.document}).encode()
     with pytest.raises(errors.MissingContentError) as info:
         engine.commit("u", URI, body, C, IfAbsent())
     assert info.value.missing.pages == other.page_hashes
-
-
-def test_dedup_scope_writable() -> None:
-    auth = PrefixAuthorizer({"a": ("test://a/",), "admin": ("test://",)})
-    engine = make_engine(dedup_scope=DedupScope.WRITABLE, authorizer=auth)
-    mine = _create(engine, text_doc(["mine"]), uri="test://a/1", caller="admin")
-    theirs = _create(engine, text_doc(["theirs"]), uri="test://b/1", caller="admin")
-    # 调用者可写的文档中的对象可得
-    body = json.dumps({"document": mine.document}).encode()
-    assert engine.commit("a", "test://a/2", body, C, IfAbsent()).status == "created"
-    # 无写授权的文档中的对象一律视为缺失（core §8）
-    body = json.dumps({"document": theirs.document}).encode()
-    with pytest.raises(errors.MissingContentError) as info:
-        engine.commit("a", "test://a/3", body, C, IfAbsent())
-    assert info.value.missing.pages == theirs.page_hashes
 
 
 def test_deleted_objects_are_not_available() -> None:
@@ -682,29 +668,22 @@ def test_update_reads_back_latest_representation_of_retained_page() -> None:
     assert skeleton.pages[0].model_dump() == second.pages[0]
 
 
-def test_writable_scope_inline_page_with_elements_from_other_document() -> None:
-    auth = PrefixAuthorizer({"a": ("test://a/",), "admin": ("test://",)})
-    engine = make_engine(dedup_scope=DedupScope.WRITABLE, authorizer=auth)
-    _create(engine, text_doc(["shared"]), uri="test://a/1", caller="admin")
-    _create(engine, text_doc(["secret"]), uri="test://b/1", caller="admin")
-    # 新页内联，元素来自调用者可写的另一篇文档：可得
-    req = inline(text_doc(["shared"], ["shared", "new"]))
-    body = json.dumps(
-        {"document": req.document, "pages": req.pages, "objects": [req.objects[2]]}
-    ).encode()
-    assert engine.commit("a", "test://a/2", body, C, IfAbsent()).status == "created"
-    # 元素只存在于无写授权的文档：缺失
-    req = inline(text_doc(["secret", "new"]))
+def test_inline_page_with_elements_held_by_another_document_is_missing() -> None:
+    """元素层：元素只存在于另一篇文档时，本文档的提交仍把它列为缺失（去重范围固定为本文档）。"""
+    engine = make_engine()
+    _create(engine, text_doc(["shared"]), uri="test://docs/other")
+    # 新页内联且只补传新元素：已存于另一篇文档的 "shared" 不在本文档范围，列为缺失
+    req = inline(text_doc(["shared", "new"]))
     body = json.dumps(
         {"document": req.document, "pages": req.pages, "objects": [req.objects[1]]}
     ).encode()
     with pytest.raises(errors.MissingContentError) as info:
-        engine.commit("a", "test://a/3", body, C, IfAbsent())
+        engine.commit("u", URI, body, C, IfAbsent())
     assert info.value.missing.content_hashes == [req.content_hashes[0][0]]
 
 
 # ---------------------------------------------------------------------------
-# 授权器在锁外调用；去重范围只看本次引用的对象
+# 授权器在锁外调用
 # ---------------------------------------------------------------------------
 
 
@@ -726,41 +705,82 @@ class _ReentrantAuthorizer:
 
 
 def test_authorizer_may_call_back_into_engine() -> None:
+    """授权在锁外调用（core §5 总则）：授权器回调引擎时不得死锁，只为目标文档授权。"""
     auth = _ReentrantAuthorizer()
-    engine = make_engine(dedup_scope=DedupScope.WRITABLE, authorizer=auth)
+    engine = make_engine(authorizer=auth)
     auth.engine = engine
-    other = _create(engine, text_doc(["shared"]), uri="test://other")
-    body = json.dumps({"document": other.document}).encode()
     done: list[str] = []
     worker = threading.Thread(
-        target=lambda: done.append(engine.commit("u", URI, body, C, IfAbsent()).status)
+        target=lambda: done.append(
+            engine.commit("u", URI, inline(text_doc(["fresh"])).body(), C, IfAbsent()).status
+        )
     )
     worker.start()
     worker.join(timeout=5)
     assert not worker.is_alive(), "授权器回调引擎时死锁"
     assert done == ["created"]
-
-
-def test_writable_scope_only_authorizes_documents_that_hold_referenced_objects() -> None:
-    auth = _ReentrantAuthorizer()
-    engine = make_engine(dedup_scope=DedupScope.WRITABLE, authorizer=auth)
-    auth.engine = engine
-    for i in range(5):
-        _create(engine, text_doc([f"doc {i}"]), uri=f"test://unrelated/{i}")
-    shared = _create(engine, text_doc(["shared"]), uri="test://holder")
-    auth.calls.clear()
-    # 全部内联、不引用别的文档的对象：只为目标文档本身授权
-    engine.commit("u", URI, inline(text_doc(["fresh"])).body(), C, IfAbsent())
     assert auth.calls == [URI]
-    # 引用 holder 中的页：只多授权 holder
-    auth.calls.clear()
-    body = json.dumps({"document": shared.document}).encode()
-    engine.commit("u", "test://b", body, C, IfAbsent())
-    assert sorted(auth.calls) == ["test://b", "test://holder"]
+
+
+@dataclass
+class _WindowAuthorizer:
+    """首次判定任一 URI 时执行一次钩子（模拟授权窗口内他人写入目标）。"""
+
+    hook: Callable[[], object] | None = None
+
+    def can_write(self, caller: str, uri: str) -> bool:
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            hook()
+        return True
+
+    def can_force(self, caller: str, uri: str) -> bool:
+        return True
+
+
+def test_cas_is_decided_after_the_authorization_window() -> None:
+    """授权在锁外、CAS 在锁内裁决：窗口内他人写入目标，外层 commit 按最新状态返回 AlreadyExists。"""
+    auth = _WindowAuthorizer()
+    engine = make_engine(authorizer=auth)
+    auth.hook = lambda: engine.commit("u", URI, inline(text_doc(["rival"])).body(), C, IfAbsent())
+    with pytest.raises(errors.AlreadyExistsError):
+        engine.commit("u", URI, inline(text_doc(["mine"])).body(), C, IfAbsent())
+
+
+def test_target_reaching_same_content_in_window_is_unchanged() -> None:
+    """窗口内他人写入与本次提交相同的内容：外层 commit 得到 unchanged（core §5.2）。"""
+    auth = _WindowAuthorizer()
+    engine = make_engine(authorizer=auth)
+    same = inline(text_doc(["mine"]))
+    auth.hook = lambda: engine.commit("u", URI, same.body(), C, IfAbsent())
+    assert engine.commit("u", URI, same.body(), C, IfAbsent()).status == "unchanged"
+
+
+def test_missing_content_is_decided_after_the_authorization_window() -> None:
+    """授权在锁外、可得性在锁内按最新状态裁决：窗口内目标被改写后，本次提交依赖的页不再可得。"""
+    auth = _WindowAuthorizer()
+    engine = make_engine(authorizer=auth)
+    first = _create(engine, text_doc(["keep"], ["drop"]))
+    wanted = inline(text_doc(["keep"], ["new"]))
+    assert wanted.page_hashes[0] == first.page_hashes[0]  # "keep" 页只在目标文档的当前状态里
+    rewrite = inline(text_doc(["rewritten"]))
+    auth.hook = lambda: engine.commit("u", URI, rewrite.body(), C, BaseHash(first.doc_hash))
+    # force 跳过前置条件：可得性须按锁内最新状态判定，"keep" 页已随改写不可得
+    body = json.dumps(
+        {
+            "document": wanted.document,
+            "pages": [wanted.pages[1]],
+            "objects": [wanted.objects[1]],
+            "force": True,
+        }
+    ).encode()
+    with pytest.raises(errors.MissingContentError) as info:
+        engine.commit("u", URI, body, C, None)
+    assert info.value.missing.pages == [wanted.page_hashes[0]]
 
 
 def test_moved_document_keeps_serving_its_objects() -> None:
-    """move 维护反向索引：目标 URI 的当前状态照常作为去重范围下界。"""
+    """move 后目标 URI 的当前状态照常作为去重范围。"""
     engine = make_engine()
     req = _create(engine, text_doc(["x"], ["y"]), uri="test://from")
     engine.move(
@@ -774,164 +794,3 @@ def test_moved_document_keeps_serving_its_objects() -> None:
     # 源 URI 不再提供任何对象
     with pytest.raises(errors.MissingContentError):
         engine.commit("u", "test://from", body, C, IfAbsent())
-
-
-@dataclass
-class _HookAuthorizer:
-    """测试用授权器：``deny`` 中的 URI 不可写；``hooks[uri]`` 在首次判定该 URI 时执行一次。"""
-
-    deny: frozenset[str] = frozenset()
-    hooks: dict[str, Callable[[], object]] = field(default_factory=dict)
-    explode: frozenset[str] = frozenset()
-    calls: list[str] = field(default_factory=list)
-
-    def can_write(self, caller: str, uri: str) -> bool:
-        self.calls.append(uri)
-        if uri in self.explode:
-            raise RuntimeError("远程 ACL 不可用")
-        hook = self.hooks.pop(uri, None)
-        if hook is not None:
-            hook()
-        return uri not in self.deny
-
-    def can_force(self, caller: str, uri: str) -> bool:
-        return True
-
-
-def _writable_engine(auth: _HookAuthorizer) -> Engine:
-    return make_engine(dedup_scope=DedupScope.WRITABLE, authorizer=auth)
-
-
-def test_holder_authorization_only_when_content_is_missing() -> None:
-    """授权器只在下界不够时才被调用：前置条件失败、unchanged 都不触发持有者授权。"""
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    holder = _create(engine, text_doc(["only-in-holder"]), uri="test://holder")
-    mine = _create(engine, text_doc(["mine"]))
-    # 此后 holder 授权会抛异常。下面的请求只引用 holder 独有的页：若持有者授权排在第 5 步之前，
-    # 异常就会冒出来
-    auth.explode = frozenset({"test://holder"})
-    auth.calls.clear()
-    body = json.dumps({"document": holder.document}).encode()
-    with pytest.raises(errors.PreconditionFailedError):
-        engine.commit("u", URI, body, C, BaseHash(ABSENT_HASH))
-    with pytest.raises(errors.AlreadyExistsError):
-        engine.commit("u", URI, body, C, IfAbsent())
-    same = json.dumps({"document": mine.document}).encode()
-    assert engine.commit("u", URI, same, C, BaseHash(ABSENT_HASH)).status == "unchanged"
-    assert "test://holder" not in auth.calls
-    # 真正缺对象时才授权持有者（这里授权器抛异常，原样上抛）
-    with pytest.raises(RuntimeError):
-        engine.commit("u", URI, body, C, BaseHash(mine.doc_hash))
-
-
-def test_holder_authorization_short_circuits_per_object() -> None:
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    shared = inline(text_doc(["footer"]))
-    for i in range(4):
-        engine.commit("u", f"test://h/{i}", shared.body(), C, IfAbsent())
-    auth.deny = frozenset({"test://h/0"})
-    auth.calls.clear()
-    body = json.dumps({"document": shared.document}).encode()
-    assert engine.commit("u", URI, body, C, IfAbsent()).status == "created"
-    # 目标本身 + 按码点序判定持有者：h/0 不可写，h/1 可写即停
-    assert auth.calls == [URI, "test://h/0", "test://h/1"]
-
-
-def test_cas_is_decided_after_authorization_window() -> None:
-    """两次加锁之间他人写入目标：第二次求值按最新状态裁决 CAS。"""
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    holder = _create(engine, text_doc(["shared"]), uri="test://holder")
-    rival = inline(text_doc(["rival"]))
-    auth.hooks["test://holder"] = lambda: engine.commit("u", URI, rival.body(), C, IfAbsent())
-    body = json.dumps({"document": holder.document}).encode()
-    with pytest.raises(errors.AlreadyExistsError):
-        engine.commit("u", URI, body, C, IfAbsent())
-    assert _head(engine) == rival.doc_hash
-
-
-def test_target_reaching_same_content_in_window_is_unchanged() -> None:
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    holder = _create(engine, text_doc(["shared"]), uri="test://holder")
-    same = inline(text_doc(["shared"]))
-    auth.hooks["test://holder"] = lambda: engine.commit("u", URI, same.body(), C, IfAbsent())
-    body = json.dumps({"document": holder.document}).encode()
-    assert engine.commit("u", URI, body, C, IfAbsent()).status == "unchanged"
-
-
-def test_holder_deleted_in_window_shrinks_scope() -> None:
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    holder = _create(engine, text_doc(["shared"]), uri="test://holder")
-    auth.hooks["test://holder"] = lambda: engine.delete("u", "test://holder", C, holder.doc_hash)
-    body = json.dumps({"document": holder.document}).encode()
-    with pytest.raises(errors.MissingContentError) as info:
-        engine.commit("u", URI, body, C, IfAbsent())
-    assert info.value.missing.pages == holder.page_hashes
-    assert engine.head("u", URI, C) is None
-
-
-def test_retained_shared_page_stays_available_to_third_document() -> None:
-    """同 URI 更新时新旧状态共享的页，反向索引仍指向该文档。"""
-    engine = _writable_engine(_HookAuthorizer())
-    first = _create(engine, text_doc(["keep"], ["drop"]), uri="test://a")
-    second = inline(text_doc(["keep"], ["new"]))
-    engine.commit("u", "test://a", second.body(), C, BaseHash(first.doc_hash))
-    third = inline(text_doc(["keep"]))
-    body = json.dumps({"document": third.document}).encode()
-    assert engine.commit("u", "test://c", body, C, IfAbsent()).status == "created"
-
-
-def test_known_writable_holder_is_reused_across_objects() -> None:
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    _create(engine, text_doc(["p"]), uri="test://a")
-    _create(engine, text_doc(["q"]), uri="test://m")
-    both = _create(engine, text_doc(["p"], ["q"]), uri="test://z")
-    auth.deny = frozenset({"test://a"})
-    auth.calls.clear()
-    body = json.dumps({"document": both.document}).encode()
-    assert engine.commit("u", URI, body, C, IfAbsent()).status == "created"
-    # 页 p：a 不可写 → z 可写；页 q 的持有者 {m, z} 已含已知可写的 z，不再判定 m
-    assert auth.calls == [URI, "test://a", "test://z"]
-
-
-def test_new_gap_in_second_pass_is_not_reauthorized() -> None:
-    """窗口内目标不再持有某页：第二次求值新出现的缺口按范围外处理，不再追加授权。"""
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    first = _create(engine, text_doc(["kept"]))
-    elsewhere = _create(engine, text_doc(["other"]), uri="test://holder")
-    _create(engine, text_doc(["kept"]), uri="test://late")
-    wanted = inline(text_doc(["kept"], ["other"]))
-    rewrite = inline(text_doc(["rewritten"]))
-    assert elsewhere.page_hashes[0] == wanted.page_hashes[1]  # 前提："other" 页只由 holder 持有
-    auth.hooks["test://holder"] = lambda: engine.commit(
-        "u", URI, rewrite.body(), C, BaseHash(first.doc_hash)
-    )
-    auth.calls.clear()
-    # force：两次求值都不因前置条件失败；第一次只缺 "other"（"kept" 在下界内）
-    body = json.dumps({"document": wanted.document, "force": True}).encode()
-    with pytest.raises(errors.MissingContentError) as info:
-        engine.commit("u", URI, body, C, None)
-    assert info.value.missing.pages == [wanted.page_hashes[0]]
-    assert "test://late" not in auth.calls
-
-
-def test_fallback_representation_comes_from_an_in_scope_holder() -> None:
-    """范围内的页没有内联、本文档也没有时，读回取范围内持有者的原样表示，不取范围外文档的。"""
-    auth = _HookAuthorizer()
-    engine = _writable_engine(auth)
-    secret = inline(text_doc(["p"]))
-    secret.pages[0]["title"] = None  # 等价的另一种写法，先登记进对象表
-    engine.commit("u", "test://secret", secret.body(), C, IfAbsent())
-    plain = _create(engine, text_doc(["p"]), uri="test://open")
-    auth.deny = frozenset({"test://secret"})
-    body = json.dumps({"document": plain.document}).encode()
-    engine.commit("u", URI, body, C, IfAbsent())
-    skeleton = engine.get_skeleton("u", URI, C)
-    assert skeleton is not None
-    assert skeleton.pages[0].model_dump() == plain.pages[0]
