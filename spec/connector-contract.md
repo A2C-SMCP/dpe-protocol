@@ -1,6 +1,6 @@
 # DPE Connector 契约
 
-> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集，经 Issue #95 同步 §6.6 的 `file_type` 语法措辞）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
+> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集，经 Issue #95 同步 §6.6 的 `file_type` 语法措辞，经 Issue #94 将 §4.1 / §4.4 的 JSON 嵌套深度统一为 core.md §2.8 的计数口径）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
 > 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §11。
 > 这是独立的中立规范，**不属于 Core**：核心投递协议完全不知道 connector 的存在（类比 git 与 remote-helper）。
 > Issue #2 已关闭：平台不引入 connector 运行环境，connector 由用户自行开发、自行部署；托管运行若将来需要，另立独立产品。v1 官方 connector 只有 Git connector（本仓 `connectors/git/`）。
@@ -75,7 +75,7 @@
 | `config_schema` | 是 | JSON Schema（draft 2020-12）对象，根 MUST 为 `"type": "object"`；插件无配置时为 `{"type": "object", "additionalProperties": false}` |
 | `secrets` | 否 | 数据源凭证声明数组，缺省为 `[]`；每项为 `{name, description?, required?}`，见下 |
 
-- 清单文件的 JSON 嵌套深度（根计 1，每层对象/数组再 +1，最深的标量叶子计其所在层——如 `{}` 为 1、`{"a": 1}` 为 2）MUST ≤ 64；超出即拒绝（`manifest_invalid`，§7.4），在读取阶段判定、不进入任何语义校验。上界使合法文件在各实现的默认 JSON 解析限额（如 serde_json 的递归限额 128）内也能被读取。
+- 清单文件的 JSON 嵌套深度（计数口径见 core.md §2.8 第 0 步，全协议只有这一处定义）MUST ≤ 64；超出即拒绝（`manifest_invalid`，§7.4），在读取阶段判定、不进入任何语义校验。上界使合法文件在各实现的默认 JSON 解析限额（如 serde_json 的递归限额 128）内也能被读取。
 - 清单是封闭 schema：出现未定义的成员（含 `secrets` 项内）或成员类型不符时，运行器 MUST 拒绝该清单（`manifest_invalid`，§7.4）。
 - `config_schema` MUST 自包含：`$ref` 只能引用本文档内的位置，运行器 MUST NOT 解析外部引用（不得因校验配置而访问网络或文件）；`format` 只作注解，运行器 MUST NOT 据此判定校验失败——使不同实现对同一配置得出相同的校验结论。插件 SHOULD 在根上设 `"additionalProperties": false`。它 MUST NOT 声明凭证字段：实例配置经线协议原样交给插件（§6.3），不是凭证通道；凭证一律经 `secrets` 声明、按 §4.3 注入。**`config_schema` 是封闭 schema**（与 DPE 的三层对象同理）：只允许 §4.1.1 列出的关键字，`$ref` 只允许 §4.1.1 规定的唯一形式；`pattern` 的值与 `patternProperties` 的每个键 MUST 属于 §4.1.1 的正则子集。content 词（`contentEncoding`、`contentMediaType`）与 `format` 一样只作注解：运行器 MUST NOT 据此判定校验失败；`contentSchema` 不允许出现（见 §4.1.1）。
 - `secrets` 每项：
@@ -201,7 +201,7 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 
 ### 4.4 实例定义（独立运行器规范档）
 
-独立运行器 MUST 接受以下格式的实例定义：一个 UTF-8 JSON 文件（I-JSON），描述一个实例。定义文件（含 `config`）的 JSON 嵌套深度（根计 1，每层对象/数组再 +1，最深的标量叶子计其所在层）MUST ≤ 64；超出时按 `definition_invalid` 拒绝（§7.4），在读取阶段判定。宿主 MAY 以自己的存储表达同样的信息，但 MUST 满足 §3–§4.3 的要求。
+独立运行器 MUST 接受以下格式的实例定义：一个 UTF-8 JSON 文件（I-JSON），描述一个实例。定义文件（含 `config`）的 JSON 嵌套深度（计数口径见 core.md §2.8 第 0 步，全协议只有这一处定义）MUST ≤ 64；超出时按 `definition_invalid` 拒绝（§7.4），在读取阶段判定。宿主 MAY 以自己的存储表达同样的信息，但 MUST 满足 §3–§4.3 的要求。
 
 ```json
 { "definition_version": 1,

@@ -1506,166 +1506,7 @@
       "config_valid": true
     },
     {
-      "name": "清单 JSON 嵌套深度 63（properties 链 30 层，未越界）",
-      "schema": {
-        "type": "object",
-        "properties": {
-          "a": {
-            "type": "object",
-            "properties": {
-              "a": {
-                "type": "object",
-                "properties": {
-                  "a": {
-                    "type": "object",
-                    "properties": {
-                      "a": {
-                        "type": "object",
-                        "properties": {
-                          "a": {
-                            "type": "object",
-                            "properties": {
-                              "a": {
-                                "type": "object",
-                                "properties": {
-                                  "a": {
-                                    "type": "object",
-                                    "properties": {
-                                      "a": {
-                                        "type": "object",
-                                        "properties": {
-                                          "a": {
-                                            "type": "object",
-                                            "properties": {
-                                              "a": {
-                                                "type": "object",
-                                                "properties": {
-                                                  "a": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                      "a": {
-                                                        "type": "object",
-                                                        "properties": {
-                                                          "a": {
-                                                            "type": "object",
-                                                            "properties": {
-                                                              "a": {
-                                                                "type": "object",
-                                                                "properties": {
-                                                                  "a": {
-                                                                    "type": "object",
-                                                                    "properties": {
-                                                                      "a": {
-                                                                        "type": "object",
-                                                                        "properties": {
-                                                                          "a": {
-                                                                            "type": "object",
-                                                                            "properties": {
-                                                                              "a": {
-                                                                                "type": "object",
-                                                                                "properties": {
-                                                                                  "a": {
-                                                                                    "type": "object",
-                                                                                    "properties": {
-                                                                                      "a": {
-                                                                                        "type": "object",
-                                                                                        "properties": {
-                                                                                          "a": {
-                                                                                            "type": "object",
-                                                                                            "properties": {
-                                                                                              "a": {
-                                                                                                "type": "object",
-                                                                                                "properties": {
-                                                                                                  "a": {
-                                                                                                    "type": "object",
-                                                                                                    "properties": {
-                                                                                                      "a": {
-                                                                                                        "type": "object",
-                                                                                                        "properties": {
-                                                                                                          "a": {
-                                                                                                            "type": "object",
-                                                                                                            "properties": {
-                                                                                                              "a": {
-                                                                                                                "type": "object",
-                                                                                                                "properties": {
-                                                                                                                  "a": {
-                                                                                                                    "type": "object",
-                                                                                                                    "properties": {
-                                                                                                                      "a": {
-                                                                                                                        "type": "object",
-                                                                                                                        "properties": {
-                                                                                                                          "a": {
-                                                                                                                            "type": "object",
-                                                                                                                            "properties": {
-                                                                                                                              "a": {
-                                                                                                                                "type": "object"
-                                                                                                                              }
-                                                                                                                            }
-                                                                                                                          }
-                                                                                                                        }
-                                                                                                                      }
-                                                                                                                    }
-                                                                                                                  }
-                                                                                                                }
-                                                                                                              }
-                                                                                                            }
-                                                                                                          }
-                                                                                                        }
-                                                                                                      }
-                                                                                                    }
-                                                                                                  }
-                                                                                                }
-                                                                                              }
-                                                                                            }
-                                                                                          }
-                                                                                        }
-                                                                                      }
-                                                                                    }
-                                                                                  }
-                                                                                }
-                                                                              }
-                                                                            }
-                                                                          }
-                                                                        }
-                                                                      }
-                                                                    }
-                                                                  }
-                                                                }
-                                                              }
-                                                            }
-                                                          }
-                                                        }
-                                                      }
-                                                    }
-                                                  }
-                                                }
-                                              }
-                                            }
-                                          }
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "config": {},
-      "manifest_valid": true,
-      "config_valid": true
-    },
-    {
-      "name": "清单 JSON 嵌套深度越界（65：properties 链 31 层）",
+      "name": "清单 JSON 嵌套深度顶格（64：properties 链 31 层，未越界）",
       "schema": {
         "type": "object",
         "properties": {
@@ -1824,143 +1665,179 @@
           }
         }
       },
+      "config": {},
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "清单 JSON 嵌套深度越界（66：properties 链 32 层）",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "object",
+                    "properties": {
+                      "a": {
+                        "type": "object",
+                        "properties": {
+                          "a": {
+                            "type": "object",
+                            "properties": {
+                              "a": {
+                                "type": "object",
+                                "properties": {
+                                  "a": {
+                                    "type": "object",
+                                    "properties": {
+                                      "a": {
+                                        "type": "object",
+                                        "properties": {
+                                          "a": {
+                                            "type": "object",
+                                            "properties": {
+                                              "a": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "a": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "a": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                          "a": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                              "a": {
+                                                                "type": "object",
+                                                                "properties": {
+                                                                  "a": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                      "a": {
+                                                                        "type": "object",
+                                                                        "properties": {
+                                                                          "a": {
+                                                                            "type": "object",
+                                                                            "properties": {
+                                                                              "a": {
+                                                                                "type": "object",
+                                                                                "properties": {
+                                                                                  "a": {
+                                                                                    "type": "object",
+                                                                                    "properties": {
+                                                                                      "a": {
+                                                                                        "type": "object",
+                                                                                        "properties": {
+                                                                                          "a": {
+                                                                                            "type": "object",
+                                                                                            "properties": {
+                                                                                              "a": {
+                                                                                                "type": "object",
+                                                                                                "properties": {
+                                                                                                  "a": {
+                                                                                                    "type": "object",
+                                                                                                    "properties": {
+                                                                                                      "a": {
+                                                                                                        "type": "object",
+                                                                                                        "properties": {
+                                                                                                          "a": {
+                                                                                                            "type": "object",
+                                                                                                            "properties": {
+                                                                                                              "a": {
+                                                                                                                "type": "object",
+                                                                                                                "properties": {
+                                                                                                                  "a": {
+                                                                                                                    "type": "object",
+                                                                                                                    "properties": {
+                                                                                                                      "a": {
+                                                                                                                        "type": "object",
+                                                                                                                        "properties": {
+                                                                                                                          "a": {
+                                                                                                                            "type": "object",
+                                                                                                                            "properties": {
+                                                                                                                              "a": {
+                                                                                                                                "type": "object",
+                                                                                                                                "properties": {
+                                                                                                                                  "a": {
+                                                                                                                                    "type": "object",
+                                                                                                                                    "properties": {
+                                                                                                                                      "a": {
+                                                                                                                                        "type": "object"
+                                                                                                                                      }
+                                                                                                                                    }
+                                                                                                                                  }
+                                                                                                                                }
+                                                                                                                              }
+                                                                                                                            }
+                                                                                                                          }
+                                                                                                                        }
+                                                                                                                      }
+                                                                                                                    }
+                                                                                                                  }
+                                                                                                                }
+                                                                                                              }
+                                                                                                            }
+                                                                                                          }
+                                                                                                        }
+                                                                                                      }
+                                                                                                    }
+                                                                                                  }
+                                                                                                }
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "manifest_valid": false
     },
     {
-      "name": "清单 JSON 嵌套深度顶格（64：default 值嵌 61 层数组）",
-      "schema": {
-        "type": "object",
-        "default": [
-          [
-            [
-              [
-                [
-                  [
-                    [
-                      [
-                        [
-                          [
-                            [
-                              [
-                                [
-                                  [
-                                    [
-                                      [
-                                        [
-                                          [
-                                            [
-                                              [
-                                                [
-                                                  [
-                                                    [
-                                                      [
-                                                        [
-                                                          [
-                                                            [
-                                                              [
-                                                                [
-                                                                  [
-                                                                    [
-                                                                      [
-                                                                        [
-                                                                          [
-                                                                            [
-                                                                              [
-                                                                                [
-                                                                                  [
-                                                                                    [
-                                                                                      [
-                                                                                        [
-                                                                                          [
-                                                                                            [
-                                                                                              [
-                                                                                                [
-                                                                                                  [
-                                                                                                    [
-                                                                                                      [
-                                                                                                        [
-                                                                                                          [
-                                                                                                            [
-                                                                                                              [
-                                                                                                                [
-                                                                                                                  [
-                                                                                                                    [
-                                                                                                                      [
-                                                                                                                        [
-                                                                                                                          [
-                                                                                                                            [
-                                                                                                                              [
-                                                                                                                                [
-                                                                                                                                  "x"
-                                                                                                                                ]
-                                                                                                                              ]
-                                                                                                                            ]
-                                                                                                                          ]
-                                                                                                                        ]
-                                                                                                                      ]
-                                                                                                                    ]
-                                                                                                                  ]
-                                                                                                                ]
-                                                                                                              ]
-                                                                                                            ]
-                                                                                                          ]
-                                                                                                        ]
-                                                                                                      ]
-                                                                                                    ]
-                                                                                                  ]
-                                                                                                ]
-                                                                                              ]
-                                                                                            ]
-                                                                                          ]
-                                                                                        ]
-                                                                                      ]
-                                                                                    ]
-                                                                                  ]
-                                                                                ]
-                                                                              ]
-                                                                            ]
-                                                                          ]
-                                                                        ]
-                                                                      ]
-                                                                    ]
-                                                                  ]
-                                                                ]
-                                                              ]
-                                                            ]
-                                                          ]
-                                                        ]
-                                                      ]
-                                                    ]
-                                                  ]
-                                                ]
-                                              ]
-                                            ]
-                                          ]
-                                        ]
-                                      ]
-                                    ]
-                                  ]
-                                ]
-                              ]
-                            ]
-                          ]
-                        ]
-                      ]
-                    ]
-                  ]
-                ]
-              ]
-            ]
-          ]
-        ]
-      },
-      "manifest_valid": true,
-      "config": {},
-      "config_valid": true,
-      "note": "深度写在数据位置（default 的值）上同样受限"
-    },
-    {
-      "name": "清单 JSON 嵌套深度越界（65：default 值嵌 62 层数组）",
+      "name": "清单 JSON 嵌套深度顶格（64：default 值嵌 62 层数组）",
       "schema": {
         "type": "object",
         "default": [
@@ -2026,6 +1903,143 @@
                                                                                                                                 [
                                                                                                                                   [
                                                                                                                                     "x"
+                                                                                                                                  ]
+                                                                                                                                ]
+                                                                                                                              ]
+                                                                                                                            ]
+                                                                                                                          ]
+                                                                                                                        ]
+                                                                                                                      ]
+                                                                                                                    ]
+                                                                                                                  ]
+                                                                                                                ]
+                                                                                                              ]
+                                                                                                            ]
+                                                                                                          ]
+                                                                                                        ]
+                                                                                                      ]
+                                                                                                    ]
+                                                                                                  ]
+                                                                                                ]
+                                                                                              ]
+                                                                                            ]
+                                                                                          ]
+                                                                                        ]
+                                                                                      ]
+                                                                                    ]
+                                                                                  ]
+                                                                                ]
+                                                                              ]
+                                                                            ]
+                                                                          ]
+                                                                        ]
+                                                                      ]
+                                                                    ]
+                                                                  ]
+                                                                ]
+                                                              ]
+                                                            ]
+                                                          ]
+                                                        ]
+                                                      ]
+                                                    ]
+                                                  ]
+                                                ]
+                                              ]
+                                            ]
+                                          ]
+                                        ]
+                                      ]
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      },
+      "manifest_valid": true,
+      "config": {},
+      "config_valid": true,
+      "note": "深度写在数据位置（default 的值）上同样受限；计数口径见 core §2.8（标量记 0）"
+    },
+    {
+      "name": "清单 JSON 嵌套深度越界（65：default 值嵌 63 层数组）",
+      "schema": {
+        "type": "object",
+        "default": [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      [
+                        [
+                          [
+                            [
+                              [
+                                [
+                                  [
+                                    [
+                                      [
+                                        [
+                                          [
+                                            [
+                                              [
+                                                [
+                                                  [
+                                                    [
+                                                      [
+                                                        [
+                                                          [
+                                                            [
+                                                              [
+                                                                [
+                                                                  [
+                                                                    [
+                                                                      [
+                                                                        [
+                                                                          [
+                                                                            [
+                                                                              [
+                                                                                [
+                                                                                  [
+                                                                                    [
+                                                                                      [
+                                                                                        [
+                                                                                          [
+                                                                                            [
+                                                                                              [
+                                                                                                [
+                                                                                                  [
+                                                                                                    [
+                                                                                                      [
+                                                                                                        [
+                                                                                                          [
+                                                                                                            [
+                                                                                                              [
+                                                                                                                [
+                                                                                                                  [
+                                                                                                                    [
+                                                                                                                      [
+                                                                                                                        [
+                                                                                                                          [
+                                                                                                                            [
+                                                                                                                              [
+                                                                                                                                [
+                                                                                                                                  [
+                                                                                                                                    [
+                                                                                                                                      "x"
+                                                                                                                                    ]
                                                                                                                                   ]
                                                                                                                                 ]
                                                                                                                               ]

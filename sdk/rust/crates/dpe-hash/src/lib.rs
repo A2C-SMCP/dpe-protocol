@@ -36,6 +36,7 @@
 
 mod constants;
 mod contract1;
+mod depth;
 mod error;
 mod file_type;
 mod ijson;
@@ -45,7 +46,7 @@ mod uri;
 
 pub use constants::{
     content_fields, CATEGORY_CONTENT_FIELDS, CONTRACT, DRILL_CONTRACT, KNOWN_CONTRACTS,
-    RECOMMENDED_FILE_TYPES, SUPPORTED_CONTRACTS,
+    MAX_NESTING_DEPTH, RECOMMENDED_FILE_TYPES, SUPPORTED_CONTRACTS,
 };
 #[doc(hidden)]
 pub use contract1::__private;
@@ -53,6 +54,7 @@ pub use contract1::{
     blob_ref, children, content_hash, doc_hash, document_hashes, object_hash, page_hash,
     page_hashes, parse_blob_ref, parse_hash, parse_hash_with,
 };
+pub use depth::nesting_depth;
 pub use error::{Error, ErrorKind, Result};
 pub use file_type::{is_valid_file_type, validate_file_type};
 pub use ijson::parse_ijson;

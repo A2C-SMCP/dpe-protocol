@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use dpe_hash::{nesting_depth, MAX_NESTING_DEPTH};
 use serde_json::{Map, Number, Value};
 
 use crate::run::pattern::check_pattern;
@@ -21,9 +22,6 @@ use crate::run::InstanceFailure;
 
 /// 清单的文件名（§4.1）；`plugin.manifest` 指向的文件不强制此名。
 pub const MANIFEST_FILENAME: &str = "dpe-connector.json";
-
-/// §4.1 / §4.4：清单与实例定义文件的 JSON 嵌套深度上限。
-pub const MAX_JSON_DEPTH: usize = 64;
 
 /// §4.1.1：schema 的展开深度上限（根计 1，schema 位置与 `$ref` 跳转各 +1）。
 const MAX_EXPANDED_DEPTH: u64 = 64;
@@ -215,10 +213,11 @@ pub fn parse_manifest(data: &Value) -> Result<Manifest, InstanceFailure> {
     let map = data
         .as_object()
         .ok_or_else(|| invalid("清单必须是 JSON 对象"))?;
-    // §4.1：JSON 嵌套深度 ≤ 64（读取阶段判定，先于任何语义校验）
-    if json_depth(data) > MAX_JSON_DEPTH {
+    // §4.1：JSON 嵌套深度 ≤ MAX_NESTING_DEPTH，计数口径见 core §2.8 第 0 步
+    // （读取阶段判定，先于任何语义校验；计数复用 dpe-hash，不另写一份）
+    if nesting_depth(data, None) > MAX_NESTING_DEPTH {
         return Err(invalid(format!(
-            "清单的 JSON 嵌套深度超过 {MAX_JSON_DEPTH}（§4.1）"
+            "清单的 JSON 嵌套深度超过 {MAX_NESTING_DEPTH}（§4.1）"
         )));
     }
     // §4.1：封闭成员；可选成员只能缺省，显式的 null 是类型不符
@@ -851,23 +850,8 @@ fn schema_children<'a>(node: &'a Value, defs: &'a Map<String, Value>) -> Vec<&'a
 }
 
 // ---------------------------------------------------------------------------
-// JSON 深度与越界数值（§4.1、core §2.6）
+// 越界数值（core §2.6）；JSON 深度计数复用 dpe_hash::nesting_depth（core §2.8 唯一定义）
 // ---------------------------------------------------------------------------
-
-/// JSON 值的嵌套深度（对象与数组各计一层，标量计 1；迭代实现，不受递归限额影响）。
-pub(crate) fn json_depth(value: &Value) -> usize {
-    let mut depth = 0usize;
-    let mut stack: Vec<(&Value, usize)> = vec![(value, 1)];
-    while let Some((item, level)) = stack.pop() {
-        depth = depth.max(level);
-        match item {
-            Value::Object(map) => stack.extend(map.values().map(|child| (child, level + 1))),
-            Value::Array(items) => stack.extend(items.iter().map(|child| (child, level + 1))),
-            _ => {}
-        }
-    }
-    depth
-}
 
 /// 值中是否有越界数值（core §2.6）：整数绝对值超过 2^53−1，或超出 double 范围的数（如 `1e400`）。
 pub(crate) fn has_numeric_violation(value: &Value) -> bool {

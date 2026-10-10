@@ -234,14 +234,16 @@ fn structure_syntax_validated() {
     }
 }
 
-/// 嵌套深度上限 128 层（含顶层）：128 层容器通过，129 层拒绝
-/// （serde_json 默认在 128 层即拒，本实现宽一层）。
+/// 解析防护上限（core §2.8 的 64 加展开视图的 4 层信封 = 68 层容器）：68 层通过、69 层拒绝。
+///
+/// 它只防递归耗尽栈，不是对象深度上界：对象界由校验按对象自身判定（见
+/// `tests/nesting_depth.rs`），只要每个 DPE 对象都在上界内，解析不得拒收。
 #[test]
-fn depth_limit() {
-    let ok = format!("{}1{}", "[".repeat(128), "]".repeat(128));
-    parse_ijson(&ok).expect("128 层容器应通过");
-    let deep = format!("{}1{}", "[".repeat(129), "]".repeat(129));
-    let e = parse_ijson(&deep).expect_err("129 层容器应被拒绝");
+fn parse_depth_guard() {
+    let ok = format!("{}1{}", "[".repeat(68), "]".repeat(68));
+    parse_ijson(&ok).expect("68 层容器应通过");
+    let deep = format!("{}1{}", "[".repeat(69), "]".repeat(69));
+    let e = parse_ijson(&deep).expect_err("69 层容器应被拒绝");
     assert_eq!(e.code(), "DPE_VALIDATION");
     assert_eq!(e.path(), "");
 }

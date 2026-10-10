@@ -389,7 +389,8 @@ def test_object_keywords_require_string_keys() -> None:
 
 
 def test_manifest_json_depth_bound() -> None:
-    """§4.1：清单文件的 JSON 嵌套深度 ≤ 64，超出（含数据位置上的深度）判 manifest_invalid。"""
+    """§4.1：清单文件的 JSON 嵌套深度 ≤ 64（计数口径见 core §2.8 第 0 步），超出（含数据位置
+    上的深度）判 manifest_invalid。"""
 
     def nested_properties(levels: int) -> dict[str, Any]:
         node: dict[str, Any] = {"type": "object"}
@@ -403,20 +404,21 @@ def test_manifest_json_depth_bound() -> None:
             node = [node]
         return node
 
-    manifest = parse_manifest(with_schema(nested_properties(30)))  # 清单深度 63
+    manifest = parse_manifest(with_schema(nested_properties(31)))  # 清单深度 64
     validate_config(manifest, {})
     with pytest.raises(InstanceFailure) as info:
-        parse_manifest(with_schema(nested_properties(31)))  # 清单深度 65
+        parse_manifest(with_schema(nested_properties(32)))  # 清单深度 66
     assert info.value.code == "manifest_invalid"
 
-    parse_manifest(with_schema({"type": "object", "default": nested_array(61)}))  # 深度 64
+    parse_manifest(with_schema({"type": "object", "default": nested_array(62)}))  # 深度 64
     with pytest.raises(InstanceFailure) as info:
-        parse_manifest(with_schema({"type": "object", "default": nested_array(62)}))  # 深度 65
+        parse_manifest(with_schema({"type": "object", "default": nested_array(63)}))  # 深度 65
     assert info.value.code == "manifest_invalid"
 
 
 def test_definition_json_depth_bound() -> None:
-    """§4.4：实例定义（含 config）的 JSON 嵌套深度 ≤ 64，超出判 definition_invalid。"""
+    """§4.4：实例定义（含 config）的 JSON 嵌套深度 ≤ 64（计数口径见 core §2.8 第 0 步），
+    超出判 definition_invalid。"""
     from dpe_sdk.run.definition import parse_definition
 
     def nested_object(levels: int) -> dict[str, Any]:

@@ -22,6 +22,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::constants::{content_fields, DRILL_CONTRACT, KNOWN_CONTRACTS, SUPPORTED_CONTRACTS};
+use crate::depth::check_depth;
 use crate::error::{Error, ErrorKind, Result};
 use crate::file_type::is_valid_file_type;
 use crate::jcs::{canonical, pointer, utf16_cmp, write_string};
@@ -436,8 +437,18 @@ fn document_preimage(
     Ok(assemble(parts))
 }
 
+/// 各层对象的子 hash 列表字段（core §2.8 第 0 步：深度计数时不向内展开）。
+fn child_field(kind: ObjectKind) -> Option<&'static str> {
+    match kind {
+        ObjectKind::Element => None,
+        ObjectKind::Page => Some("elements"),
+        ObjectKind::Document => Some("pages"),
+    }
+}
+
 /// 线上原像的 JCS 原像（[`object_hash`] / [`children`] 共用）。
 fn preimage(obj: &Value, kind: ObjectKind, contract: &str) -> Result<String> {
+    check_depth(obj, child_field(kind))?;
     match kind {
         ObjectKind::Element => element_preimage(obj, ""),
         ObjectKind::Page => {
@@ -461,6 +472,7 @@ fn preimage(obj: &Value, kind: ObjectKind, contract: &str) -> Result<String> {
 pub fn content_hash(element: &(impl ToJson + ?Sized), contract: &str) -> Result<String> {
     let salt = salt(contract)?;
     let element = element.to_json();
+    check_depth(&element, None)?;
     Ok(digest(&element_preimage(&element, "")?, contract, salt))
 }
 
@@ -475,6 +487,7 @@ pub fn page_hash<S: AsRef<str>>(
 ) -> Result<String> {
     let salt = salt(contract)?;
     let page = page.to_json();
+    check_depth(&page, Some("elements"))?;
     let mut parts = page_parts(mapping(&page, "", "页对象")?, "", false)?;
     parts.push((
         "elements",
@@ -494,6 +507,7 @@ pub fn doc_hash<S: AsRef<str>>(
 ) -> Result<String> {
     let salt = salt(contract)?;
     let document = document.to_json();
+    check_depth(&document, Some("pages"))?;
     let mut parts = document_parts(mapping(&document, "", "文档对象")?, "", false)?;
     parts.push(("pages", slice_hash_list(page_hashes, contract, "/pages")?));
     Ok(digest(&assemble(parts), contract, salt))
@@ -545,10 +559,11 @@ pub fn children(
 }
 
 /// 一个展开页的字段与形状校验（core §2.8 阶段 1，次序与 §2.2 的字段顺序一致）：
-/// 页是对象 → `elements` 存在且非 null（必有字段）→ 页自身字段（封闭 schema、title、
-/// page_metadata）→ `elements` 是数组（第 4 步的字段类型检查）。
+/// 嵌套深度（第 0 步，按页自身）→ 页是对象 → `elements` 存在且非 null（必有字段）→ 页自身字段
+/// （封闭 schema、title、page_metadata）→ `elements` 是数组（第 4 步的字段类型检查）。
 /// 返回页字段片段与 `elements` 数组；`at` 为页的错误路径前缀。
 fn page_input<'a>(raw: &'a Value, at: &str) -> Result<(Vec<Part>, &'a [Value])> {
+    check_depth(raw, Some("elements"))?;
     let page = mapping(raw, at, "页")?;
     let elements = required(page, "elements", at, "页")?;
     let parts = page_parts(page, at, true)?;
@@ -573,6 +588,7 @@ fn page_hashes_of(
         .iter()
         .enumerate()
         .map(|(j, el)| {
+            check_depth(el, None)?;
             let preimage = element_preimage(el, "")
                 .map_err(|e| e.under(&pointer(at, &["elements", &j.to_string()])))?;
             Ok(digest(&preimage, contract, salt))
@@ -611,6 +627,7 @@ pub fn document_hashes(
 ) -> Result<DocumentHashes> {
     let salt = salt(contract)?;
     let document = document.to_json();
+    check_depth(&document, Some("pages"))?;
     let doc = mapping(&document, "", "文档")?;
     let pages = required(doc, "pages", "", "文档")?;
     let doc_parts = document_parts(doc, "", true)?;
