@@ -246,16 +246,30 @@ fn all_jcs_vectors_listed() {
 }
 
 /// vectors/ 出现的 kind 是封闭集合，每个都必须有消费方；新增 kind 漏写消费测试时在此失败。
+///
+/// `pattern`（connector 契约 §4.1.1 的正则子集）目前的消费方在 Python SDK 的 dpe-run
+/// （`sdk/python/packages/dpe-sdk/tests/test_run_pattern.py`）；Rust SDK 尚无清单校验实现，
+/// 将来实现 connector 时在本文件补消费测试（挂账 #85）。
 #[test]
 fn all_vector_kinds_have_consumers() {
     let kinds: BTreeSet<String> = common::all_vectors()
         .iter()
         .map(|v| v["kind"].as_str().unwrap().into())
         .collect();
-    let expected: BTreeSet<String> = ["document", "jcs", "uri", "invalid"]
+    // 已消费的 kind（本 crate 的测试逐类断言）与显式登记的待办。本断言是「变更探测器」：
+    // 新增/删除 kind 会在此失败；Rust 侧补齐 pattern 消费时，请把 "pattern" 从 pending 移入
+    // consumed 并同步下一行字面量，否则测试会失败。
+    let consumed: BTreeSet<String> = ["document", "jcs", "uri", "invalid"]
         .map(String::from)
         .into();
+    let pending: BTreeSet<String> = ["pattern"].map(String::from).into();
+    let expected: BTreeSet<String> = consumed.union(&pending).cloned().collect();
     assert_eq!(kinds, expected);
+    assert_eq!(pending, ["pattern"].map(String::from).into());
+    assert!(
+        consumed.is_disjoint(&pending),
+        "已消费与待办必须互斥：待办补齐消费后要移出 pending"
+    );
 }
 
 /// file_uri 语法规范化（core.md §1.1）：逐例输出一致；非法输入被拒且错误码一致；结果幂等。
