@@ -37,11 +37,15 @@ fn valid_patterns_are_accepted_and_compilable() {
     let vector = patterns_vector();
     let cases = vector["valid_patterns"].as_array().unwrap();
     assert!(!cases.is_empty(), "向量不应为空");
+    let mut consumed = 0usize;
     for entry in cases {
         let pattern = entry["pattern"].as_str().unwrap();
         check_pattern(pattern).unwrap_or_else(|e| panic!("{pattern:?}: {e}"));
         Pattern::new(pattern).unwrap_or_else(|e| panic!("{pattern:?} 不可转译/编译：{e}"));
+        consumed += 1;
     }
+    // 逐条消费的守卫：静默过滤/跳过条目（如重构时误漏某条）会在条目数上失败
+    assert_eq!(consumed, cases.len(), "valid_patterns 必须逐条消费");
 }
 
 /// invalid_patterns：MUST 被拒绝。`pattern_json` 的输入（孤立代理项）无法以 Rust 字符串表达，
@@ -52,6 +56,7 @@ fn invalid_patterns_are_rejected() {
     let vector = patterns_vector();
     let cases = vector["invalid_patterns"].as_array().unwrap();
     assert!(!cases.is_empty(), "向量不应为空");
+    let mut consumed = 0usize;
     for entry in cases {
         match entry.get("pattern") {
             Some(pattern) => {
@@ -66,7 +71,9 @@ fn invalid_patterns_are_rejected() {
                 }
             },
         }
+        consumed += 1; // 两条路径都做了裁定断言
     }
+    assert_eq!(consumed, cases.len(), "invalid_patterns 必须逐条消费");
 }
 
 /// match_cases：逐条钉住 §4.1.1 的匹配语义；`value_json` 同 `pattern_json` 的约定。
@@ -75,25 +82,36 @@ fn match_cases_follow_spec_semantics() {
     let vector = patterns_vector();
     let cases = vector["match_cases"].as_array().unwrap();
     assert!(!cases.is_empty(), "向量不应为空");
+    let check = |pattern: &str, value: &str, expected: bool| {
+        let got = search(pattern, value).unwrap_or_else(|e| panic!("{pattern:?}: {e}"));
+        assert_eq!(got, expected, "pattern {pattern:?} 对 {value:?}");
+    };
+    let mut consumed = 0usize;
     for case in cases {
         let pattern = case["pattern"].as_str().unwrap();
         let expected = case["match"].as_bool().unwrap();
-        let value = match case.get("value") {
-            Some(value) => value.clone(),
+        match case.get("value") {
+            Some(value) => check(
+                pattern,
+                value.as_str().expect("向量的 value 是字符串"),
+                expected,
+            ),
             None => match common::parse_strict(case["value_json"].as_str().unwrap()) {
-                Ok(value) => value,
+                Ok(value) => check(
+                    pattern,
+                    value.as_str().expect("向量的 value 是字符串"),
+                    expected,
+                ),
                 Err(common::Rejected) => {
                     // 含孤立代理项的值不是 Unicode 标量值序列，Rust 侧不可表达；
-                    // 匹配宇宙是标量值，本向量对此类输入的期望即「不匹配」——核对该期望后跳过。
+                    // 匹配宇宙是标量值，本向量对此类输入的期望即「不匹配」——核对该期望即可。
                     assert!(!expected, "不可表达的值只允许期望不匹配：{case}");
-                    continue;
                 }
             },
-        };
-        let value = value.as_str().expect("向量的 value 是字符串");
-        let got = search(pattern, value).unwrap_or_else(|e| panic!("{pattern:?}: {e}"));
-        assert_eq!(got, expected, "pattern {pattern:?} 对 {value:?}");
+        }
+        consumed += 1; // 两条路径都做了裁定断言
     }
+    assert_eq!(consumed, cases.len(), "match_cases 必须逐条消费");
 }
 
 /// schema_cases：清单合法性（manifest_valid）与实例配置求值（config / config_valid）逐条消费，
@@ -103,6 +121,7 @@ fn schema_cases() {
     let vector = patterns_vector();
     let cases = vector["schema_cases"].as_array().unwrap();
     assert!(!cases.is_empty(), "向量不应为空");
+    let mut consumed = 0usize;
     for case in cases {
         let name = case["name"].as_str().unwrap();
         let manifest_data = with_schema(case["schema"].clone());
@@ -124,5 +143,7 @@ fn schema_cases() {
                 parse_manifest(&manifest_data).expect_err(&format!("{name}：清单应不合法却通过"));
             assert_eq!(error.code(), "manifest_invalid", "{name}");
         }
+        consumed += 1;
     }
+    assert_eq!(consumed, cases.len(), "schema_cases 必须逐条消费");
 }
