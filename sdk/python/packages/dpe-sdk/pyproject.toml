@@ -1,6 +1,6 @@
 [project]
 name = "dpe-sdk"
-version = "0.3.0"
+version = "0.3.1-dev"
 description = "DPE 协议 Python SDK：sans-IO 协议核心、传输适配、增量推送与 dpe-run 运行器"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = [
     # 与 dpe-hash 同一标签发布、精确同版本（版本串由 bump-my-version 维护）
-    "dpe-hash==0.3.0",
+    "dpe-hash==0.3.1-dev",
     "pydantic>=2.7,<3",
     "httpx>=0.27,<1",
     # testing 的 ASGI 应用把引擎调用放到工作线程（引擎持线程锁，授权器可能慢或回调引擎）；
