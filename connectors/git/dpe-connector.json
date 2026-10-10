@@ -1,0 +1,27 @@
+{
+  "manifest_version": 1,
+  "name": "git-connector",
+  "version": "0.3.0-dev",
+  "description": "以 Git 仓库为内容源：把仓库中的文件映射为 DPE 文档，全量枚举",
+  "protocol_versions": ["dpe-connector/1"],
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "repo": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Git 仓库的本地路径（本连接器以本机 git 读取，不代为访问远端）"
+      },
+      "ref": {
+        "type": "string",
+        "minLength": 1,
+        "default": "HEAD",
+        "description": "要枚举的提交：HEAD、分支、标签或提交 id"
+      }
+    },
+    "required": ["repo"],
+    "additionalProperties": false
+  },
+  "secrets": []
+}

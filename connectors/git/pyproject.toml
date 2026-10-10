@@ -1,0 +1,111 @@
+# 官方 Git connector：dpe-run 的插件（connector 契约 §6），独立于 sdk/python 的 uv workspace。
+# 独立项目的理由：connector 与 SDK 是两条独立的版本线（插件给 dpe-run 用，SDK 给内核与运行器用），
+# 主流做法是「同仓、独立项目单元」（OpenTelemetry contrib、langchain libs、dbt-adapters 等）。
+# 开发时用 path 源指向 sdk/python 的成员包（见 [tool.uv.sources]）；发布元数据里只写版本约束，
+# path 源不进 wheel 的依赖声明。
+[project]
+name = "dpe-git-connector"
+version = "0.3.0-dev"
+description = "官方 Git connector：把 Git 仓库的文件映射为 DPE 文档（dpe-run 插件）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+# 仓库根 LICENSE 的副本（构建后端只收录包目录内的文件）
+license-files = ["LICENSE"]
+authors = [
+    {name = "TuringFocus Team", email = "dev@turingfocus.cn"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = [
+    # 契约常量与 file_uri 规范化：connector 不得有自有 hash 实现（CLAUDE.md）
+    "dpe-hash>=0.3,<0.4",
+    # markdown 块结构解析（CommonMark + GFM 表格）；版本钉在锁文件里，见 README「映射规则」
+    "markdown-it-py>=4.0,<5",
+]
+# 注意：插件不链接 SDK（契约 §6.1）——src 不 import dpe-sdk，它只在测试里用（宿主与清单校验
+# 是插件的对手方，测试要按运行器的方式驱动它），因此放 dev 组，不进运行时依赖。
+
+[project.scripts]
+dpe-git-connector = "dpe_git_connector.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/A2C-SMCP/dpe-protocol"
+Documentation = "https://doc.turingfocus.cn/dpe/"
+Repository = "https://github.com/A2C-SMCP/dpe-protocol"
+
+[dependency-groups]
+dev = [
+    # 测试按运行器的方式驱动插件：清单校验、实例定义与插件宿主都来自 dpe-sdk
+    "dpe-sdk>=0.3,<0.4",
+    "pytest>=8.3",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+# 开发用 path 源：显式映射两个包，不依赖「外部 path 目标能解析其 workspace 依赖」的隐式行为。
+# 发布元数据（wheel 的 Requires-Dist）只含上面的版本约束，路径不会进发布物。
+[tool.uv.sources]
+dpe-sdk = { path = "../../sdk/python/packages/dpe-sdk", editable = true }
+dpe-hash = { path = "../../sdk/python/packages/dpe-hash", editable = true }
+
+[tool.uv]
+# 避开过旧的解析行为，同时不把版本钉死到具体补丁（实测 0.8.23 与 0.12.17 都能 lock/sync/test）
+required-version = ">=0.8"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dpe_git_connector"]
+# 清单随分发附带（契约 §4.1）：宿主与运行器必须能在不启动插件的前提下读到它
+force-include = { "dpe-connector.json" = "dpe_git_connector/dpe-connector.json" }
+
+# 本包的版本管理（独立于文档版本与 SDK 版本，延续仓库「版本单一来源」的约定）：
+# 在 connectors/git/ 下运行 `uvx bump-my-version bump patch|minor|major`。
+# 清单的 version MUST 与包版本相同（契约 §4.1：运行器核对 initialize 自报值），
+# 两处由同一次 bump 原子更新，不手改任一处。
+[tool.bumpversion]
+current_version = "0.3.0-dev"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)(?:-(?P<pre_l>dev))?"
+serialize = [
+    "{major}.{minor}.{patch}-{pre_l}",
+    "{major}.{minor}.{patch}",
+]
+commit = true
+tag = false
+message = "Bump git-connector version: {current_version} → {new_version}"
+pre_commit_hooks = ["uv lock --quiet", "git add uv.lock"]
+
+[tool.bumpversion.parts.pre_l]
+values = ["dev", "final"]
+optional_value = "final"
+
+[[tool.bumpversion.files]]
+filename = "dpe-connector.json"
+search = '"version": "{current_version}"'
+replace = '"version": "{new_version}"'
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# 文档与注释用中文（CLAUDE.md 约定），全角标点不是歧义字符
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib", "--strict-markers"]
+testpaths = ["tests"]
+pythonpath = ["tests"]

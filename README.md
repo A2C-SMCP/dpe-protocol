@@ -17,6 +17,7 @@ website/                  # 文档站点入口（index.md + 指向 spec/ docs/ v
 vectors/                  # 一致性向量（规范的一部分，由规范产出）
 scripts/gen_vectors.py    # 向量生成器 = hash 契约的规范参考实现（仅标准库）
 conformance/              # 服务端一致性跑分器（M2 占位）
+connectors/git/           # 官方 Git connector：dpe-run 的插件，独立 uv 项目（映射规则见其 README）
 sdk/python/               # Python SDK workspace：dpe-hash（零依赖 hash 核心）+ dpe-sdk（M2）
 sdk/rust/                 # Rust SDK workspace：dpe-hash（hash 核心）+ dpe-sdk（M2）
 ```
