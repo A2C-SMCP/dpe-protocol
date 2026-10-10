@@ -5,9 +5,10 @@ use std::collections::HashSet;
 
 use dpe_hash::{
     blob_ref, children, content_hash, doc_hash, document_hashes, normalize_file_uri, object_hash,
-    page_hash, parse_blob_ref, parse_hash, parse_hash_with, DocumentFields, DocumentObject,
-    ElementObject, ErrorKind, ExpandedDocument, ExpandedPage, JsonObject, ObjectKind, PageFields,
-    PageObject, CONTRACT, DRILL_CONTRACT, KNOWN_CONTRACTS, SUPPORTED_CONTRACTS,
+    page_hash, parse_blob_ref, parse_hash, parse_hash_with, parse_ijson, DocumentFields,
+    DocumentObject, ElementObject, ErrorKind, ExpandedDocument, ExpandedPage, JsonObject,
+    ObjectKind, PageFields, PageObject, CONTRACT, DRILL_CONTRACT, KNOWN_CONTRACTS,
+    SUPPORTED_CONTRACTS,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -234,9 +235,8 @@ fn equivalences() {
         h(json!({"category": "NarrativeText", "metadata": {"n": 1.0}})),
         h(json!({"category": "NarrativeText", "metadata": {"n": 1}}))
     );
-    // 解析得到的字面量同样等价（arbitrary_precision 下按字面文本判定数值）
-    let parsed: Value =
-        serde_json::from_str(r#"{"category": "NarrativeText", "metadata": {"n": 1.0e0}}"#).unwrap();
+    // 解析得到的字面量同样等价（arbitrary_precision 下按字面文本判定数值；严格解析用 parse_ijson）
+    let parsed = parse_ijson(r#"{"category": "NarrativeText", "metadata": {"n": 1.0e0}}"#).unwrap();
     assert_eq!(
         h(parsed),
         h(json!({"category": "NarrativeText", "metadata": {"n": 1}}))
@@ -247,21 +247,17 @@ fn equivalences() {
     );
 }
 
-/// 类型化结构是封闭 schema：反序列化遇到未定义字段即拒绝，而不是静默丢弃（北极星 P2）。
+/// 类型化结构只做字段名类型化：用结构体字面量构造，经 `Serialize` 转 JSON 值后计算；
+/// 不提供 `Deserialize`（serde_json 在 `arbitrary_precision` 下的 `Value` 反序列化会把与内部
+/// 数字 token 同形的对象改写，违反 P2）——从 JSON 文本构造请用 [`parse_ijson`]（保真）。
 #[test]
-fn typed_structs_reject_unknown_fields() {
-    assert!(serde_json::from_value::<ElementObject>(
-        json!({"category": "Title", "attributes": {}})
-    )
-    .is_err());
-    assert!(serde_json::from_value::<PageFields>(json!({"elements": []})).is_err());
-    assert!(
-        serde_json::from_value::<DocumentFields>(json!({"file_type": "md", "pages": []})).is_err()
-    );
-    let element: ElementObject =
-        serde_json::from_value(json!({"category": "Title", "text": null, "metadata": {"n": 1}}))
-            .unwrap();
-    // None 字段不序列化，往返后 hash 不变
+fn typed_structs_are_constructed_as_literals() {
+    let element = ElementObject {
+        category: "Title".into(),
+        metadata: Some(object(json!({"n": 1}))),
+        ..Default::default()
+    };
+    // None 字段不序列化，与未加类型的 JSON 值 hash 一致
     assert_eq!(
         serde_json::to_value(&element).unwrap(),
         json!({"category": "Title", "metadata": {"n": 1}})
@@ -273,6 +269,29 @@ fn typed_structs_reject_unknown_fields() {
             CONTRACT
         )
         .unwrap()
+    );
+}
+
+/// 保留 token 回归：与 serde_json 内部数字 token 同形的对象是内容（P2），`parse_ijson` 保真
+/// 解析、不改写、不 panic；三层 hash 与手工构造的普通对象逐值一致。
+#[test]
+fn document_with_private_number_token_hashes_faithfully() {
+    let text = r#"{"file_type":"md","pages":[{"elements":[{"category":"Title","metadata":{"$serde_json::private::Number":"1"}}]}]}"#;
+    let value = parse_ijson(text).expect("同形对象是合法的 I-JSON");
+    assert!(value["pages"][0]["elements"][0]["metadata"].is_object());
+    let literal = json!({
+        "file_type": "md",
+        "pages": [{
+            "elements": [{
+                "category": "Title",
+                "metadata": {"$serde_json::private::Number": "1"}
+            }]
+        }]
+    });
+    assert_eq!(value, literal);
+    assert_eq!(
+        document_hashes(&value, CONTRACT).unwrap(),
+        document_hashes(&literal, CONTRACT).unwrap()
     );
 }
 
