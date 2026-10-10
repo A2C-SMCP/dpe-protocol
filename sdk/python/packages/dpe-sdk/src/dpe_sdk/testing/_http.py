@@ -479,8 +479,38 @@ def _coding(request: _Request) -> str:
     return "" if coding == "identity" else coding
 
 
+def _feed(decoder: Any, data: bytes, limit: int, out: bytearray) -> Any:
+    """把一块压缩数据喂给 ``decoder``，返回可继续加料的 decoder（跨 member 时换成新的）。
+
+    一个 member 结束后剩下的字节属于下一个 member——RFC 1952 允许拼接多个 member（``gzip``
+    命令的输出就是这样），因此换一个新的 decoder 继续解，而不是把尾随数据判成违例。
+    **总解压上限跨 member 累计**（由 ``out`` 与 ``limit`` 共同约束），换 member 不重置：
+    每轮先判产出是否已超限（``decompress`` 的 ``max_length`` 为 0 表示**不设上限**，为负会抛
+    ``ValueError``——两者都必须挡在这里），因此 ``max_length`` 恒为正。
+    """
+    while True:
+        if len(out) > limit:
+            raise PayloadTooLargeError(f"请求体解码后超过 max_payload_bytes={limit}")
+        try:
+            out.extend(decoder.decompress(data, limit + 1 - len(out)))
+        except zlib.error as exc:
+            raise ValidationError(f"gzip 请求体损坏：{exc}") from None
+        if decoder.unconsumed_tail:
+            raise PayloadTooLargeError(f"请求体解码后超过 max_payload_bytes={limit}")
+        rest = decoder.unused_data if decoder.eof else b""
+        if not rest:
+            return decoder
+        # 上一 member 已结束且还有剩余字节：作为下一个 member 继续
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        data = rest
+
+
 async def _read(receive: Receive, limit: int, decoder: Any) -> bytes:
-    """流式读取（并解压）请求体，产出超过 ``limit`` 即停止并报 413（防解压炸弹）。"""
+    """流式读取（并解压）请求体，产出超过 ``limit`` 即停止并报 413（防解压炸弹）。
+
+    压缩体按 RFC 1952 接受多个 member 拼接；原始字节的上限（压缩炸弹的另一半）同样跨 member
+    累计（``raw``）。
+    """
     out = bytearray()
     raw = 0
     more = True
@@ -493,22 +523,15 @@ async def _read(receive: Receive, limit: int, decoder: Any) -> bytes:
         raw += len(data)
         if decoder is None:
             out.extend(data)
-        else:
-            if decoder.eof and data:
-                raise ValidationError("gzip 请求体在结束标记之后还有数据")
-            try:
-                out.extend(decoder.decompress(data, limit + 1 - len(out)))
-            except zlib.error as exc:
-                raise ValidationError(f"gzip 请求体损坏：{exc}") from None
-            if decoder.unconsumed_tail:
-                raise PayloadTooLargeError(f"请求体解码后超过 max_payload_bytes={limit}")
+        elif data:
+            if decoder.eof and not decoder.unused_data:
+                # 上一 member 已完整结束、本块以新 member 开头：换 decoder（不把字节判成尾随垃圾）
+                decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            decoder = _feed(decoder, data, limit, out)
         if len(out) > limit or (decoder is not None and raw > 2 * limit + 1024):
             raise PayloadTooLargeError(f"请求体超过 max_payload_bytes={limit}")
-    if decoder is not None:
-        if not decoder.eof:
-            raise ValidationError("gzip 请求体不完整")
-        if decoder.unused_data:
-            raise ValidationError("gzip 请求体在结束标记之后还有数据")
+    if decoder is not None and not decoder.eof:
+        raise ValidationError("gzip 请求体不完整")
     return bytes(out)
 
 
