@@ -8,11 +8,18 @@ from typing import Any
 import dpe_hash
 import pytest
 from dpe_sdk import errors
-from dpe_sdk.testing import BaseHash, DedupScope, Engine, IfAbsent, UploadChunk, UploadOffsetError
+from dpe_sdk.testing import (
+    BaseHash,
+    DedupScope,
+    Engine,
+    IfAbsent,
+    PrefixAuthorizer,
+    UploadChunk,
+    UploadOffsetError,
+)
 from dpe_sdk.wire import ElementUploadMissing, PageUploadMissing
 from engine_helpers import (
     FakeClock,
-    PrefixAuthorizer,
     chunks,
     commit_body,
     id_factory,

@@ -15,9 +15,9 @@ import pytest
 from dpe_sdk import errors
 from dpe_sdk.models import Document
 from dpe_sdk.protocol import BaseHash, Force, IfAbsent
-from dpe_sdk.testing import Engine, create_app
+from dpe_sdk.testing import Engine, PrefixAuthorizer, create_app
 from dpe_sdk.wire import Capabilities
-from engine_helpers import PrefixAuthorizer, inline, make_engine, text_doc
+from engine_helpers import inline, make_engine, text_doc
 from http_helpers import REMOTE, Remote, problem, remote
 
 pytestmark = pytest.mark.anyio

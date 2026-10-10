@@ -13,8 +13,8 @@ from typing import Any
 import dpe_hash
 import pytest
 from dpe_sdk import errors
-from dpe_sdk.testing import BaseHash, DedupScope, Engine, IfAbsent, Precondition
-from engine_helpers import Inline, PrefixAuthorizer, inline, make_engine, text_doc
+from dpe_sdk.testing import BaseHash, DedupScope, Engine, IfAbsent, Precondition, PrefixAuthorizer
+from engine_helpers import Inline, inline, make_engine, text_doc
 
 URI = "test://docs/a"
 C = dpe_hash.CONTRACT
