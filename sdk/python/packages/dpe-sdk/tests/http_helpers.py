@@ -68,9 +68,16 @@ async def remote(engine: Engine | None = None, **app_options: Any) -> AsyncItera
 
 
 def problem(response: httpx.Response) -> dict[str, Any]:
-    """断言是 DPE 错误响应（problem+json，``DPE-Error-Code`` 与体中 code 一致）并返回体。"""
+    """断言是 DPE 错误响应（problem+json，``DPE-Error-Code`` 与体中 code 一致）并返回体。
+
+    顺带钉住 §5 的 ``type`` / ``title`` 规则：``code`` 去掉 ``DPE_`` 前缀转 kebab-case 即
+    ``type`` 的末段，``title`` 是它把连接线换成空格的小写短语——所有经这里断言的 code 都覆盖到。
+    """
     assert response.headers["content-type"] == "application/problem+json"
     body: dict[str, Any] = response.json()
     assert response.headers["dpe-error-code"] == body["code"]
     assert body["status"] == response.status_code
+    slug = body["code"].removeprefix("DPE_").lower().replace("_", "-")
+    assert body["type"] == f"urn:dpe:error:{slug}"
+    assert body["title"] == slug.replace("-", " ")
     return body

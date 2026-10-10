@@ -169,6 +169,9 @@ async def test_whole_blob_upload_and_gzip_hash_is_over_decoded_bytes() -> None:
         assert response.status_code == 201
         mismatch = await r.raw("PUT", f"staging/{sid}/blobs/{ref}", content=b"other")
         assert (mismatch.status_code, problem(mismatch)["code"]) == (400, "DPE_HASH_MISMATCH")
+        # 整体上传先看路径引用语法（§4.7）：路径不是合法引用时无从「按值比较」，是 VALIDATION
+        malformed = await r.raw("PUT", f"staging/{sid}/blobs/sha256:{'A' * 64}", content=blob)
+        assert (malformed.status_code, problem(malformed)["code"]) == (400, "DPE_VALIDATION")
 
 
 async def test_chunk_ladder_order_over_http() -> None:
@@ -194,6 +197,8 @@ async def test_chunk_ladder_order_over_http() -> None:
             {"Content-Range": "bytes 0-" + "9" * 5000 + "/6"},  # 超长数字不逃出应用
             {"Content-Range": f"bytes 0-0/{2**63}"},
             {"Content-Range": "bytes 0-0/6", "Content-Encoding": "gzip"},
+            # 带 Content-Range 的请求不走解码路径：不支持的编码不是 415（§7）
+            {"Content-Range": "bytes 0-0/6", "Content-Encoding": "br"},
         ):
             assert problem(await put(headers))["code"] == "DPE_VALIDATION", headers
         # identity 不是编码：分块照常进行
@@ -217,6 +222,18 @@ async def test_target_syntax_and_element_content_range() -> None:
         for target in (f"staging/{sid}/pages/sha256:{'0' * 64}", f"staging/{sid}/blobs/dpe1:x"):
             head = await r.raw("HEAD", target)
             assert (head.status_code, head.headers["dpe-error-code"]) == (400, "DPE_VALIDATION")
+        # blobs 只认 64 位小写 hex：大写 hex 与 63 位都不是声明形式（§4.7、契约 1 §2）
+        for bad_ref in (f"sha256:{'A' * 64}", f"sha256:{'a' * 63}"):
+            head = await r.raw("HEAD", f"staging/{sid}/blobs/{bad_ref}")
+            assert (head.status_code, head.headers["dpe-error-code"]) == (400, "DPE_VALIDATION")
+        # 断点查询的契约头与顺序「契约 → 路径 hash → 会话（410）」（§4.7）
+        good_ref = f"sha256:{'0' * 64}"
+        no_contract = await r.raw("HEAD", f"staging/{sid}/blobs/{good_ref}", contract=None)
+        assert no_contract.headers["dpe-error-code"] == "DPE_CONTRACT_UNSUPPORTED"
+        bad_hash_any_session = await r.raw("HEAD", f"staging/st-none/blobs/{'A' * 64}")
+        assert bad_hash_any_session.headers["dpe-error-code"] == "DPE_VALIDATION"
+        no_session = await r.raw("HEAD", f"staging/st-none/blobs/{good_ref}")
+        assert no_session.headers["dpe-error-code"] == "DPE_SESSION_EXPIRED"
         raw, h = _element({"category": "NarrativeText", "text": "x"})
         response = await r.raw(
             "PUT",
@@ -225,6 +242,14 @@ async def test_target_syntax_and_element_content_range() -> None:
             content=raw,
         )
         assert problem(response)["code"] == "DPE_VALIDATION"
+        # 带 Content-Range 的请求不走解码路径：不支持的编码同样在这个位置判 DPE_VALIDATION，不判 415
+        unsupported = await r.raw(
+            "PUT",
+            f"staging/{sid}/objects/{h}",
+            headers={"Content-Range": "bytes 0-0/1", "Content-Encoding": "br"},
+            content=raw,
+        )
+        assert problem(unsupported)["code"] == "DPE_VALIDATION"
         # 位置：413（第 0 步）→ 契约 → Content-Range，先于 I-JSON
         not_json = await r.raw(
             "PUT",

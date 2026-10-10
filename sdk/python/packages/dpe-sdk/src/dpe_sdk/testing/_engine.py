@@ -128,15 +128,29 @@ Precondition = BaseHash | IfAbsent
 
 @dataclass(frozen=True)
 class InvalidPrecondition:
-    """绑定层无法解释的前置条件（HTTP：条件头语法非法，如 ``If-Match: *``、多个 entity-tag、
-    ``If-Match`` 与 ``If-None-Match`` 并存）。
+    """绑定层无法解释的条件头（HTTP：写操作的 ``If-Match: *``、多个 entity-tag、``If-Match`` 与
+    ``If-None-Match`` 并存；GET 的 ``If-None-Match`` 既不是单独的 ``*`` 也不是合法的 entity-tag
+    列表）。
 
-    它只看请求本身，引擎在报文校验的末步（与「force 与条件头并存」同一步，core §3.3 第 1.5 步；
-    delete 在授权之前）抛 ``DPE_VALIDATION``。合法 entity-tag 中的值不在此列：``base_hash`` 按值
-    比较、不做格式校验（core §5.2），比较不上即不匹配。
+    它只看请求本身，引擎在规范规定的那一步抛 ``DPE_VALIDATION``：写操作在报文校验的末步（与
+    「force 与条件头并存」同一步，core §3.3 第 1.5 步；delete 在授权之前），GET 的条件头在
+    「契约 → uri」之后、文档状态之前（HTTP 绑定 §3.3）。合法 entity-tag 中的值不在此列：
+    ``base_hash`` 按值比较、不做格式校验（core §5.2），比较不上即不匹配。
     """
 
     reason: str
+
+
+@dataclass(frozen=True)
+class IfNoneMatch:
+    """GET 的 ``If-None-Match``（HTTP 绑定 §3.3）。
+
+    ``tags`` 是列表项的 opaque-tag 值（引号内、已去掉 ``W/`` 前缀）；空 tuple 表示 ``*``——命中
+    任何存在的文档。比较是弱比较，且只与「请求声明契约下」的当前 doc_hash 比（不像 ``If-Match``
+    那样跨契约）。
+    """
+
+    tags: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -394,9 +408,20 @@ class Engine:
                 heads=[None if s is None else Head(doc_hash=s.doc_hashes[contract]) for s in states]
             )
 
-    def get_skeleton(self, caller: str, uri: str, contract: str | None) -> Skeleton | None:
+    def get_skeleton(
+        self,
+        caller: str,
+        uri: str,
+        contract: str | None,
+        none_match: IfNoneMatch | InvalidPrecondition | None = None,
+    ) -> Skeleton | None:
+        """``GET documents?uri=``（HTTP 绑定 §4.3）。``none_match`` 是绑定层解析好的 GET 条件头
+        （§3.3）：它的语法与 uri 同属只看请求本身的校验，排在「契约 → uri」之后、文档状态之前。
+        """
         contract = self._contract(contract)
         uri = _normalize_uri(uri)
+        if isinstance(none_match, InvalidPrecondition):
+            raise ValidationError(none_match.reason)
         with self._lock:
             state = self._store.docs.get(uri)
             if state is None:

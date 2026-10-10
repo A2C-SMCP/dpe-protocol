@@ -16,6 +16,7 @@ from dpe_sdk.testing._engine import (
     Engine,
     EngineConfig,
     IfAbsent,
+    IfNoneMatch,
     InvalidPrecondition,
     Precondition,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "Engine",
     "EngineConfig",
     "IfAbsent",
+    "IfNoneMatch",
     "InvalidChunk",
     "InvalidPrecondition",
     "Precondition",
