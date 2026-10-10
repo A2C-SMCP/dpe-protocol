@@ -219,12 +219,14 @@ class Serve:
         """错误应答：整行（含 id 与行尾 LF）≤ ``max_message_bytes``，装不下就只留错误码。
 
         响应必须回显 id，而 id 由运行器给出、可能很长：消息正文是唯一可裁的部分。只带
-        ``code`` 的最小错误对象对**任何请求本身合规的输入**都装得下（请求还含 method 与
-        params，比它更长），因此任何路径都不会发出超限消息（§6.5 MUST NOT）。握手完成前
-        没有可比的上限，按原样返回。
+        ``code`` 的最小错误对象对**请求本身合规的输入**都装得下（请求还含 method 与 params，
+        比它更长；转义只会让请求更大），因此任何路径都不会发出超限消息（§6.5 MUST NOT）。
+        裁剪会一并去掉 ``message`` 与 ``data``（如 -32003 的 ``retryable``）——只发生在
+        id 逼近上限的窄窗口，信息损失可接受。上限未知时（尚未解析出 ``max_message_bytes``）
+        不校验；一旦已知，握手失败的应答同样受校验。
         """
         line = _error(id_, code, message, data)
-        if not self.initialized or len(line.encode("utf-8")) + 1 <= self.max_message_bytes:
+        if self.max_message_bytes <= 0 or len(line.encode("utf-8")) + 1 <= self.max_message_bytes:
             return line
         return _encode({"jsonrpc": "2.0", "id": id_, "error": {"code": code}})
 
@@ -240,6 +242,8 @@ class Serve:
         max_bytes = params.get("max_message_bytes")
         if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
             return self._handshake_error(id_, -32602, "max_message_bytes 必须是正整数")
+        # 尽早记录：此后（含握手失败的应答）的错误响应都按整行上限校验
+        self.max_message_bytes = max_bytes
         instance = params.get("instance")
         if not isinstance(instance, dict):
             return self._handshake_error(id_, -32602, "instance 必须是对象")
@@ -265,7 +269,6 @@ class Serve:
         self.plugin_name = PLUGIN_NAME
         self.plugin_version = __version__
         self.uri_prefix = uri_prefix
-        self.max_message_bytes = max_bytes
         self._source = parsed
         self._mapper = DocumentMapper(uri_prefix, _limits(params.get("remote_limits")))
         _log.info(
@@ -326,7 +329,7 @@ class Serve:
     def _handshake_error(self, id_: Any, code: int, message: str) -> str:
         """initialize 失败的应答：置致命标记，此后不再接受任何请求（§6.3、§7.1）。"""
         self.fatal = True
-        return _error(id_, code, message)
+        return self._sized_error(id_, code, message)
 
     # ------------------------------------------------------------------ scan
 
@@ -334,7 +337,7 @@ class Serve:
         assert self._source is not None and self._mapper is not None
         if "next" in params and params["next"] is not None:
             if "cursor" in params:
-                return _error(id_, -32602, "scan 不得同时带 cursor 与 next")
+                return self._sized_error(id_, -32602, "scan 不得同时带 cursor 与 next")
             token = params["next"]
             if not isinstance(token, str) or not _DECIMAL.fullmatch(token):
                 return self._sized_error(id_, -32602, "未知的 next")

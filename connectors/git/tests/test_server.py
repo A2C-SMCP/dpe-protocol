@@ -256,6 +256,27 @@ def test_too_small_budget_is_request_error(history: History) -> None:
     assert "单条预算" in response["error"]["message"]
 
 
+def test_handshake_error_response_is_sized_too(tmp_path: Path) -> None:
+    """握手失败的应答同样按整行校验（``max_message_bytes`` 解析出后立即生效）。
+
+    错误消息里路径出现两次（配置路径 + git stderr）：id 与路径都长时，未裁剪的应答会超过
+    上限——修复后只留错误码。
+    """
+    missing = tmp_path / ("x" * 160)  # 不存在：消息里出现两次
+    params = initialize_params({"repo": str(missing)})
+    params["max_message_bytes"] = 1200
+    request_line = json.dumps(
+        {"jsonrpc": "2.0", "id": "y" * 700, "method": "initialize", "params": params}
+    )
+    assert len(request_line.encode("utf-8")) + 1 <= 1200  # 请求本身合法
+    line = Serve().handle(request_line)
+    assert line is not None
+    assert len(line.encode("utf-8")) + 1 <= 1200  # 应答在上限内（消息正文被裁掉）
+    error = json.loads(line)["error"]
+    assert error["code"] == -32005
+    assert "message" not in error
+
+
 def test_error_response_is_trimmed_when_id_is_near_the_limit(history: History) -> None:
     """id 逼近上限的**合法**请求：错误响应按整行校验，装不下完整消息时只留错误码（§6.5）。
 
