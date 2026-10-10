@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "dpe-hash"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "ryu",
  "serde",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "dpe-sdk"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "dpe-hash",
  "regex",
