@@ -45,6 +45,44 @@ def _body(*texts: str) -> bytes:
     return inline(text_doc(list(texts or ("x",)))).body()
 
 
+async def _asgi_request(
+    app: Any,
+    *,
+    path: str,
+    chunks: list[bytes],
+    query: bytes = b"",
+    headers: list[tuple[bytes, bytes]] | None = None,
+    method: str = "PUT",
+    server: tuple[str, int] = ("dpe.test", 80),
+) -> httpx.Response:
+    """直接驱动 ASGI 应用（不经 httpx）：用来控制消息边界与 scope（缺 Host 头、IPv6 server）。"""
+    parts = list(chunks)
+
+    async def receive() -> dict[str, Any]:
+        piece = parts.pop(0) if parts else b""
+        return {"type": "http.request", "body": piece, "more_body": bool(parts)}
+
+    sent: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "method": method,
+        "path": path,
+        "query_string": query,
+        "headers": headers or [],
+        "root_path": "",
+        "server": server,
+        "scheme": "http",
+    }
+    await app(scope, receive, send)
+    start = sent[0]
+    received = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in start["headers"]}
+    return httpx.Response(start["status"], headers=received, content=sent[-1]["body"])
+
+
 # ---------------------------------------------------------------------------
 # 经真实客户端路径：快路径与读接口
 # ---------------------------------------------------------------------------
@@ -497,6 +535,111 @@ async def test_gzip_request_body() -> None:
         assert unsupported.status_code == 415
         assert unsupported.headers["accept-encoding"] == "gzip"
         assert "dpe-error-code" not in unsupported.headers
+
+
+async def test_gzip_multiple_members() -> None:
+    """RFC 1952 允许多个 member 拼接；解压上限跨 member 累计，不因换 member 重置。"""
+    gzip_headers = {"If-None-Match": "*", "Content-Encoding": "gzip"}
+    async with remote(make_engine(max_payload_bytes=4096)) as r:
+        body = _body("x" * 3000)
+        half = len(body) // 2
+        response = await r.raw(
+            "PUT",
+            TARGET,
+            headers=gzip_headers,
+            content=gzip.compress(body[:half]) + gzip.compress(body[half:]),
+        )
+        assert response.status_code == 201
+        # 每个 member 都不超限，合起来超过：仍按解码总量判 413
+        big = _body("y" * 5000)
+        half = len(big) // 2
+        split = gzip.compress(big[:half]) + gzip.compress(big[half:])
+        response = await r.raw(
+            "PUT", TARGET, headers={"If-Match": '"x"', "Content-Encoding": "gzip"}, content=split
+        )
+        assert (response.status_code, problem(response)["code"]) == (413, "DPE_PAYLOAD_TOO_LARGE")
+        # 合法 member 之后跟非 gzip 垃圾，或跟一个截断的 member：都是 DPE_VALIDATION
+        trailing = await r.raw(
+            "PUT",
+            TARGET,
+            headers={"If-Match": '"x"', "Content-Encoding": "gzip"},
+            content=gzip.compress(body) + b"oops",
+        )
+        assert problem(trailing)["code"] == "DPE_VALIDATION"
+        truncated = await r.raw(
+            "PUT",
+            TARGET,
+            headers={"If-Match": '"x"', "Content-Encoding": "gzip"},
+            content=gzip.compress(body) + gzip.compress(body)[:10],
+        )
+        assert problem(truncated)["code"] == "DPE_VALIDATION"
+
+
+async def test_gzip_member_across_message_boundaries() -> None:
+    """member 边界恰好落在两条 ASGI 消息之间、以及 member 内部跨消息：都照常按多 member 解压。
+
+    httpx 的 ASGI transport 把请求体作为一条消息投递，覆盖不到这两条分支，因此直接驱动 ASGI 应用。
+    """
+    app = create_app(make_engine(max_payload_bytes=4096), prefix="/r/1")
+    body = _body("x" * 3000)
+    half = len(body) // 2
+    first = gzip.compress(body[:half])
+    payload = first + gzip.compress(body[half:])
+    headers = [
+        (b"content-encoding", b"gzip"),
+        (b"if-none-match", b"*"),
+        (b"dpe-hash-contract", b"dpe1"),
+    ]
+    # 第一刀正好切在 member 之间，第二刀切在第二个 member 内部
+    cut = len(first)
+    response = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fa",
+        headers=headers,
+        chunks=[payload[:cut], payload[cut : cut + 5], payload[cut + 5 :]],
+    )
+    assert response.status_code == 201
+
+
+async def test_gzip_member_limit_alignment_is_payload_too_large() -> None:
+    """解压产出恰好到 limit+1 后还有成员：413，而不是 max_length 归零（不设上限）或为负（500）。"""
+    app = create_app(make_engine(max_payload_bytes=4096), prefix="/r/1")
+    payload = gzip.compress(b"a" * 4097) + gzip.compress(b"b" * 10) + gzip.compress(b"c")
+    response = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fa",
+        headers=[(b"content-encoding", b"gzip"), (b"if-none-match", b"*"),
+                 (b"dpe-hash-contract", b"dpe1")],
+        chunks=[payload],
+    )  # fmt: skip
+    assert (response.status_code, problem(response)["code"]) == (413, "DPE_PAYLOAD_TOO_LARGE")
+
+
+async def test_remote_without_host_header_brackets_ipv6_authority() -> None:
+    """缺 Host 头时按 ASGI 的 server 拼 remote：IPv6 字面量加方括号，否则 Content-Location 拼错。"""
+    app = create_app(make_engine(), prefix="/r/1")
+    contract = [(b"dpe-hash-contract", b"dpe1")]
+    created = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fa",
+        headers=[*contract, (b"if-none-match", b"*")],
+        chunks=[_body()],
+        server=("::1", 8080),
+    )
+    assert created.status_code == 201
+    payload = {"from_uri": URI, "to_uri": "feishu://doc/b", "base_hash": created.json()["doc_hash"]}
+    moved = await _asgi_request(
+        app,
+        method="POST",
+        path="/r/1/move",
+        headers=contract,
+        chunks=[json.dumps(payload).encode()],
+        server=("::1", 8080),
+    )
+    assert moved.headers["content-location"].startswith("http://[::1]:8080/r/1/documents?uri=")
 
 
 async def test_payload_too_large_is_transport_step() -> None:

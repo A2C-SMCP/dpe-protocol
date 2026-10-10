@@ -402,7 +402,8 @@ class _App:
         host = request.header("host")
         if host is None:
             server = scope.get("server") or ("localhost", None)
-            host = server[0] if server[1] is None else f"{server[0]}:{server[1]}"
+            name = f"[{server[0]}]" if ":" in server[0] else server[0]  # IPv6 字面量要加方括号
+            host = name if server[1] is None else f"{name}:{server[1]}"
         # root_path 是已解码的挂载路径：只编码 path 中不能直接出现的字符，保留 sub-delims 等
         root_path = quote(scope.get("root_path", ""), safe=_PATH_SAFE)
         return f"{scope.get('scheme', 'http')}://{host}{root_path}{self.prefix}"
