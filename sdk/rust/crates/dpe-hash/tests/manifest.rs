@@ -3,7 +3,7 @@
 mod common;
 
 use dpe_hash::{
-    content_fields, CATEGORY_CONTENT_FIELDS, CONTRACT, FILE_TYPES, SUPPORTED_CONTRACTS,
+    content_fields, CATEGORY_CONTENT_FIELDS, CONTRACT, RECOMMENDED_FILE_TYPES, SUPPORTED_CONTRACTS,
 };
 use serde_json::{json, Map, Value};
 
@@ -16,9 +16,9 @@ fn contract() {
 #[test]
 fn file_types() {
     assert_eq!(
-        json!(FILE_TYPES),
+        json!(RECOMMENDED_FILE_TYPES),
         common::read("manifest.json")["file_types"]
-    ); // 含规范顺序
+    ); // 含规范表中顺序
 }
 
 #[test]

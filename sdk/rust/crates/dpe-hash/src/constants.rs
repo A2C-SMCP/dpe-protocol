@@ -53,11 +53,12 @@ pub fn content_fields(category: &str) -> Option<&'static [&'static str]> {
         .map(|i| CATEGORY_CONTENT_FIELDS[i].1)
 }
 
-/// file_type 封闭枚举（core.md §2.5，按规范顺序）。
+/// file_type 推荐登记表（core.md §2.5，按规范表中顺序）。取值只是推荐：语法合法的未登记取值
+/// 同样被接受（[`is_valid_file_type`](crate::is_valid_file_type)），接收方 MUST NOT 因未登记而拒收。
 #[rustfmt::skip]
-pub const FILE_TYPES: &[&str] = &[
+pub const RECOMMENDED_FILE_TYPES: &[&str] = &[
     "bmp", "csv", "doc", "docx", "eml", "epub", "heic", "html", "jpg", "json", "md", "msg",
     "ndjson", "odt", "org", "pdf", "png", "ppt", "pptx", "rst", "rtf", "tiff", "tsv", "txt",
-    "wav", "xls", "xlsx", "xml", "zip", "java_repo", "python_repo", "javascript_repo",
-    "typescript_repo", "unk", "empty", "tfchat", "jira_project", "jira_issue",
+    "wav", "xls", "xlsx", "xml", "zip", "git_repo", "java_repo", "python_repo", "javascript_repo",
+    "typescript_repo", "unk", "empty", "jira_project", "jira_issue",
 ];

@@ -42,7 +42,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
 `manifest.json` 记录：
 - 契约版本；
-- 契约常量，与 SDK 导出的常量必须一致：file_type 封闭枚举 `file_types`（按 core.md §2.5 的顺序），以及 category 封闭枚举与各自允许的内容字段 `category_content_fields`（契约 1 §4.1；键按名排序，字段按表中顺序）；
+- 契约常量，与 SDK 导出的常量必须一致：file_type 推荐登记表 `file_types`（按 core.md §2.5 表中顺序），以及 category 封闭枚举与各自允许的内容字段 `category_content_fields`（契约 1 §4.1；键按名排序，字段按表中顺序）；
 - 生成器与各文件的 sha256（provenance）。
 
 ## 假想契约 `dpe2`

@@ -1,6 +1,6 @@
 //! 三层对象的类型化结构（serde）：与 Python dpe-hash 的 TypedDict 一一对应。
 //!
-//! 运行时校验（封闭 schema、各 category 允许的字段、file_type 枚举、hash 格式）仍由 hash
+//! 运行时校验（封闭 schema、各 category 允许的字段、file_type 的语法、hash 格式）仍由 hash
 //! 函数完成，与类型无关；这些结构只保证字段名不拼错，字段是公开的，用结构体字面量（配合
 //! `..Default::default()`）构造。
 //!

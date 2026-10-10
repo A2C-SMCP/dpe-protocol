@@ -12,7 +12,7 @@ from dpe_hash import (
     CategoryUnknownError,
     ContractUnsupportedError,
     DpeHashError,
-    FileTypeUnknownError,
+    FileTypeInvalidError,
     IntegerOutOfRangeError,
     InvalidUnicodeError,
     UndefinedFieldError,
@@ -125,10 +125,10 @@ def _raises(error: type[DpeHashError], code: str, path: str, fn: Any, *args: Any
         (ValidationError, "DPE_VALIDATION", "/elements/0", {"elements": ["dpe1:ABC"]}, "page"),
         (ValidationError, "DPE_VALIDATION", "/elements", {"elements": H}, "page"),
         (
-            FileTypeUnknownError,
+            FileTypeInvalidError,
             "DPE_VALIDATION",
             "/file_type",
-            {"file_type": "markdown", "pages": []},
+            {"file_type": "Markdown", "pages": []},
             "document",
         ),
         (ValidationError, "DPE_VALIDATION", "", {"file_type": "md"}, "document"),
@@ -301,11 +301,11 @@ def test_expanded_view_checks_document_fields_before_pages() -> None:
     """展开视图同样按 core §2.8：文档自身字段先于各页，页自身字段先于元素。"""
     bad_element = {"category": "Video"}
     _raises(
-        FileTypeUnknownError,
+        FileTypeInvalidError,
         "DPE_VALIDATION",
         "/file_type",
         document_hashes,
-        {"file_type": "markdown", "pages": [{"elements": [bad_element]}]},
+        {"file_type": "Markdown", "pages": [{"elements": [bad_element]}]},
     )
     _raises(
         IntegerOutOfRangeError,

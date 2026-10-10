@@ -5,8 +5,8 @@
 - 展开视图：``Document`` / ``Page``，页与元素内联给出，对应 dpe_hash 的 ``ExpandedDocument``。
 
 **校验只有一份实现，就是 dpe_hash。** 每个模型在原始输入上调用 dpe_hash，按 core §2.8 的顺序
-校验完整个对象（含子对象），pydantic 只承载类型；category 允许的字段与 file_type 枚举也都取自
-dpe_hash，SDK 不维护副本。pydantic 自身的字段校验自底向上、收集全部错误，满足不了 §2.8 的
+校验完整个对象（含子对象），pydantic 只承载类型；category 允许的字段与 file_type 的语法校验也都
+取自 dpe_hash，SDK 不维护副本。pydantic 自身的字段校验自底向上、收集全部错误，满足不了 §2.8 的
 「第一处违例、固定顺序」，所以不用它判定合法性。
 
 **错误**：构造（关键字参数）、``model_validate``、``model_validate_json`` 失败时抛 dpe_hash 的

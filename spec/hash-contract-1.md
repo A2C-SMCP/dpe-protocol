@@ -1,6 +1,6 @@
 # DPE Hash 契约 1（`dpe1`）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31、#60 修订（#60 为原位修订，见 plan §7 修订注记）
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31、#60、#95 修订（#60 为原位修订，见 plan §7 修订注记）
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何合规实现都必须逐字节算出相同的 `content_hash` / `page_hash` / `doc_hash`。doc_hash 同时是文档的版本令牌（core.md §1）。契约版本与投递协议版本是两个独立的轴；本文是契约 **1**，值前缀为 `dpe1:`。
@@ -83,7 +83,7 @@ category 进 hash（#3 S3：以什么语义角色呈现属于内容本身；`Tit
 | `Table`、`Formula` | `text`、`text_as_html` |
 | 其余（见下） | `text` |
 
-text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement`、`FigureCaption`、`NarrativeText`、`ListItem`、`Title`、`Address`、`EmailAddress`、`PageBreak`、`TableChunk`、`Header`、`Footer`、`CodeSnippet`、`PageNumber`、`FormKeysValues`、`tfchat`。其中 `tfchat` 是开放格式名，属 plan §1 命名规则的登记例外（同 core.md §2.5）。
+text-only category 全集：`UncategorizedText`、`CheckBox`、`CompositeElement`、`FigureCaption`、`NarrativeText`、`ListItem`、`Title`、`Address`、`EmailAddress`、`PageBreak`、`TableChunk`、`Header`、`Footer`、`CodeSnippet`、`PageNumber`、`FormKeysValues`、`tfchat`。其中 `tfchat` 是开放格式名，属 plan §1 命名规则的登记例外（category 侧；例外清单见 plan §1）。
 
 内容字段的值均为字符串（`blob` 为 §1 的 blob 引用）。出现其 category 未允许的字段 MUST 拒绝。
 
@@ -107,7 +107,7 @@ doc_hash  = H(document)     document = { "file_type": …, "title"?: …, "doc_m
 
 - `elements` / `pages` 是子对象 hash 完整字符串（含 `dpe1:` 前缀）的数组，**数组顺序即阅读顺序**。子对象 hash 的契约 MUST 与本对象相同：前缀缺失或为不受支持的契约时拒绝（`DPE_CONTRACT_UNSUPPORTED`，§1）；前缀为受支持、但与本对象不同的契约时（契约混用）拒绝（`DPE_VALIDATION`）。重复出现照常重复：内容完全相同的元素共用同一个元素对象，内容完全相同的页共用同一个页对象（向量 `duplicate_pages`）。
 - 页没有页号字段：页的位置就是它在 `pages` 中的下标。源文件自带的页码标签（印刷页码、PDF PageLabels，如 `iv`）是源内容，放进 `page_metadata`。由位置算出的序号 SHOULD NOT 写进 `page_metadata`——它会让插入一页后，后续每一页的页对象都变化，页层重新出现连锁重传。
-- 文档对象与页对象的 `title` 为字符串，可缺省（缺省与 null 等价，`""` 是独立的值）；`file_type` 为 core.md §2.5 封闭枚举的字符串值，未知取值 MUST 拒绝。
+- 文档对象与页对象的 `title` 为字符串，可缺省（缺省与 null 等价，`""` 是独立的值）；`file_type` 为 core.md §2.5 的字符串值（开放取值），不合 §2.5 语法 MUST 拒绝（`DPE_VALIDATION`）。
 - 空文档（0 页）与空页（0 元素）均合法：`pages` / `elements` 为 `[]`。
 
 ## 6. 契约演进

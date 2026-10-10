@@ -13,7 +13,7 @@
 //! [`from_value`](ElementObject::from_value)（已解析的值）是唯一的反序列化入口：都在原始输入
 //! 上调用 dpe-hash，按 core §2.8 的顺序校验整个对象（展开视图含全部子对象）；失败返回
 //! [`dpe_hash::Error`]，`code()` 与 `path()` 同一致性向量，`path()` 相对于被构造的对象。
-//! category 允许的字段、file_type 枚举都取自 dpe-hash，SDK 不维护副本。校验通过后直接提取
+//! category 允许的字段、file_type 的语法校验都取自 dpe-hash，SDK 不维护副本。校验通过后直接提取
 //! 字段（只做搬运与克隆），不经 serde 的 `Value` 反序列化——`arbitrary_precision` 下它会
 //! 把「首键为内部数字 token `$serde_json::private::Number` 的对象」改写为数字或直接报错，
 //! 而源数据里同形的对象是内容（P2：不设保留键、不做过滤）。因此模型只 derive `Serialize`
@@ -106,7 +106,8 @@ pub struct PageObject {
 /// 文档对象（core §2.1）：`pages` 为 page_hash 列表，数组顺序即页的阅读顺序。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct DocumentObject {
-    /// 封闭枚举；取值见 `dpe_hash::FILE_TYPES`。
+    /// 开放取值（core §2.5）：推荐表见 `dpe_hash::RECOMMENDED_FILE_TYPES`，语法校验由
+    /// `dpe_hash::validate_file_type` 承担；未登记但语法合法的取值照常接受。
     pub file_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<Option<String>>,

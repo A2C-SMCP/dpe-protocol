@@ -16,9 +16,9 @@ pub enum ErrorKind {
     /// 封闭 schema 违例：对象出现规范未定义（或其 category 未允许）的字段（core.md §2）。
     /// 码为 `DPE_VALIDATION`，对应 Python `UndefinedFieldError`。
     UndefinedField,
-    /// file_type 不在封闭枚举内（core.md §2.5）。码为 `DPE_VALIDATION`，对应 Python
-    /// `FileTypeUnknownError`。
-    FileTypeUnknown,
+    /// file_type 不合 core.md §2.5 的语法（取值不在推荐表内不算违例）。码为 `DPE_VALIDATION`，
+    /// 对应 Python `FileTypeInvalidError`。
+    FileTypeInvalid,
     /// 报文不是 I-JSON：字符串或对象键含孤立代理项（core §2.8 第 0 步）。码为
     /// `DPE_VALIDATION`，对应 Python `InvalidUnicodeError`。
     ///
@@ -42,7 +42,7 @@ impl ErrorKind {
             ErrorKind::ContractUnsupported => "DPE_CONTRACT_UNSUPPORTED",
             ErrorKind::Validation
             | ErrorKind::UndefinedField
-            | ErrorKind::FileTypeUnknown
+            | ErrorKind::FileTypeInvalid
             | ErrorKind::InvalidUnicode
             | ErrorKind::IntegerOutOfRange => "DPE_VALIDATION",
         }

@@ -32,18 +32,18 @@ from dpe_hash.constants import (
     CATEGORY_CONTENT_FIELDS,
     CONTRACT,
     DRILL_CONTRACT,
-    FILE_TYPES,
     KNOWN_CONTRACTS,
     SUPPORTED_CONTRACTS,
 )
 from dpe_hash.errors import (
     CategoryUnknownError,
     ContractUnsupportedError,
-    FileTypeUnknownError,
+    FileTypeInvalidError,
     InvalidUnicodeError,
     UndefinedFieldError,
     ValidationError,
 )
+from dpe_hash.file_type import is_valid_file_type
 from dpe_hash.jcs import canonical, has_invalid_unicode, pointer, utf16_key
 from dpe_hash.models import (
     DocumentFields,
@@ -69,7 +69,6 @@ __all__ = [
 
 #: 各契约的摘要前缀字节：dpe2 = ASCII "dpe2" ‖ 原像（vectors/README.md）
 _SALT = {"dpe1": b"", DRILL_CONTRACT: b"dpe2"}
-_FILE_TYPES = frozenset(FILE_TYPES)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _BLOB_PREFIX = "sha256:"
 
@@ -300,8 +299,8 @@ def _document_parts(document: Mapping[str, Any], at: str, *, with_children: bool
     file_type = document["file_type"]
     if not isinstance(file_type, str):
         raise ValidationError("file_type 必须是字符串", at + pointer("file_type"))
-    if file_type not in _FILE_TYPES:
-        raise FileTypeUnknownError(f"未知 file_type：{file_type!r}", at + pointer("file_type"))
+    if not is_valid_file_type(file_type):
+        raise FileTypeInvalidError(f"file_type 不合语法：{file_type!r}", at + pointer("file_type"))
     parts = {"file_type": canonical(file_type)}
     title = _string_part(document, "title", at)
     if title is not None:
