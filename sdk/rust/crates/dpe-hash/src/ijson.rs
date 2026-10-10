@@ -9,19 +9,24 @@
 //! serde_json 构造 `Number`（该路径不含用户对象，不存在上述歧义）。
 //!
 //! 与 Python dpe-sdk 的 `_ijson.loads` 行为对等：违规同为 `DPE_VALIDATION`、位置为对象自身。
-//! 已知偏差：嵌套深度上限 [`MAX_DEPTH`] 层（128 层通过、129 层拒绝；serde_json 默认在 128
-//! 层即拒，本实现宽一层）；Python 标准库的对应边界约千层。独立的解析实现仍在
+//! 解析器的防护上限见 [`PARSE_DEPTH_GUARD`]：它只防递归耗尽栈，不对应规范的嵌套深度上界
+//! （core §2.8，由 `crate::depth::check_depth` 按对象自身判定）。独立的解析实现仍在
 //! `tests/common/mod.rs`（只用于读向量夹具，不依赖本模块）。
 
 use serde_json::{Map, Number, Value};
 
+use crate::constants::MAX_NESTING_DEPTH;
 use crate::error::{Error, ErrorKind, Result};
 
-/// 容器嵌套深度上限（顶层值为 1 层）。
+/// 解析期的容器嵌套上限（顶层容器为 1 层），只防递归耗尽栈。
 ///
-/// 比 Python 标准库（约千层递归）保守；serde_json 默认在 128 层即拒，本实现宽一层
-/// （128 层通过、129 层拒绝）。防解析递归耗尽栈。
-const MAX_DEPTH: u32 = 128;
+/// 取值 = core §2.8 的对象嵌套深度上界（[`MAX_NESTING_DEPTH`]）加 4：SDK 会解析的最深合法
+/// 输入是展开文档（ExpandedDocument）——元素对象包在文档对象 → `pages` 数组 → 页对象 →
+/// `elements` 数组之后，对象根相对文本根下移 4 层——合法内容的容器最深正好到这里（与
+/// `vectors/nesting_depth.json` 的展开视图用例绑定：接受例的整值深度恰为 68）。比对象上界
+/// 更深的输入要么是越界的 DPE 对象（由校验拒绝，结论与对象级入口一致），要么只能是非法内容；
+/// 解析不因深度判决合法性，只要每个 DPE 对象都在上界内就不得拒收（core §2.8）。
+const PARSE_DEPTH_GUARD: u32 = MAX_NESTING_DEPTH + 4;
 
 /// 把 JSON 文本严格解析为值：拒绝重复键与孤立代理项（core §2.8 第 0 步）。
 ///
@@ -122,8 +127,8 @@ impl<'a> Parser<'a> {
     }
 
     fn object(&mut self, depth: u32) -> Result<Value> {
-        if depth > MAX_DEPTH {
-            return Err(self.error(&format!("嵌套深度超过上限 {MAX_DEPTH} 层")));
+        if depth > PARSE_DEPTH_GUARD {
+            return Err(self.error(&format!("嵌套深度超过解析上限 {PARSE_DEPTH_GUARD} 层")));
         }
         self.expect(b'{', "应为 `{`")?;
         let mut map = Map::new();
@@ -162,8 +167,8 @@ impl<'a> Parser<'a> {
     }
 
     fn array(&mut self, depth: u32) -> Result<Value> {
-        if depth > MAX_DEPTH {
-            return Err(self.error(&format!("嵌套深度超过上限 {MAX_DEPTH} 层")));
+        if depth > PARSE_DEPTH_GUARD {
+            return Err(self.error(&format!("嵌套深度超过解析上限 {PARSE_DEPTH_GUARD} 层")));
         }
         self.expect(b'[', "应为 `[`")?;
         let mut items = Vec::new();

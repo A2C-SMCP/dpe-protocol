@@ -38,22 +38,23 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 | `jcs(value)` | RFC 8785 规范化字符串 |
 | `normalize_file_uri(uri)` | file_uri 的语法规范化（core.md §1.1），身份的比较形式；非法输入抛 `ValidationError`（`DPE_VALIDATION`） |
 | `validate_file_type(value)` / `is_valid_file_type(value)` | file_type 的语法校验（core.md §2.5，开放取值）：前者不合语法抛 `FileTypeInvalidError`（`DPE_VALIDATION`），后者只返回布尔值 |
+| `nesting_depth(value, child_field=None)` | JSON 值的嵌套深度（core.md §2.8 第 0 步，全协议唯一定义）；清单与实例定义等载体同样用它 |
 
 逐层入口的参数是 TypedDict，便于在编译期发现字段拼错；从线上反序列化、未加类型的 JSON（`Any`）可以直接传入，已标注为 `dict[str, Any]` 的数据请用 `object_hash`（接受 `Mapping[str, Any]`），或先 `cast`。
 
-所有入口都对封闭 schema 做完整校验：未定义字段、不合语法的 file_type、不在 category 封闭枚举的值、超过 2^53−1 的整数、NaN 等一律拒绝。file_type 是开放取值（core §2.5）：语法合法的取值即使不在推荐表内也照常接受。
+所有入口都对封闭 schema 做完整校验：嵌套深度超过 `MAX_NESTING_DEPTH`（core §2.8 第 0 步）、未定义字段、不合语法的 file_type、不在 category 封闭枚举的值、超过 2^53−1 的整数、NaN 等一律拒绝。file_type 是开放取值（core §2.5）：语法合法的取值即使不在推荐表内也照常接受。
 
 **原位重算**（契约 1 §6）：各入口的 `contract` 参数决定按哪个契约计算。`DRILL_CONTRACT`（`dpe2`）是仅用于升级演练的假想契约，只在显式传入时接受，不在 `SUPPORTED_CONTRACTS` 中，`parse_hash` 默认拒绝它。
 
 ## 常量与类型
 
 - `CONTRACT`（`"dpe1"`）、`SUPPORTED_CONTRACTS`（服务端 capabilities 的 `hash_contracts`）、`DRILL_CONTRACT`、`KNOWN_CONTRACTS`（本包认识的全部契约，含演练契约）；
-- `RECOMMENDED_FILE_TYPES`：file_type 推荐登记表，按规范表中顺序（取值只是推荐，见 `validate_file_type`）；`CATEGORY_CONTENT_FIELDS`：category → 允许的内容字段（只读映射）。两者与规范 `vectors/manifest.json` 一致，消费方直接 import，不维护副本；
+- `RECOMMENDED_FILE_TYPES`：file_type 推荐登记表，按规范表中顺序（取值只是推荐，见 `validate_file_type`）；`CATEGORY_CONTENT_FIELDS`：category → 允许的内容字段（只读映射）。两者与规范 `vectors/manifest.json` 一致，消费方直接 import，不维护副本；`MAX_NESTING_DEPTH`：JSON 嵌套深度上界（core §2.8 第 0 步，64），与 `vectors/nesting_depth.json` 的 `limit` 一致；
 - TypedDict：`ElementObject`、`PageObject`、`DocumentObject`（线上原像），`PageFields`、`DocumentFields`（不含子列表），`ExpandedDocument` / `ExpandedPage`（展开视图），`DocumentHashes` / `PageHashes`（结果）。
 
 ## 异常
 
-校验按规范 [core §2.8](https://doc.turingfocus.cn/dpe/latest/spec/core/) 的顺序进行：形状 → category → 封闭 schema → 逐字段。因此同一输入的错误码与其他实现一致，并由规范的拒绝类向量 `invalid_objects` 校验。
+校验按规范 [core §2.8](https://doc.turingfocus.cn/dpe/latest/spec/core/) 的顺序进行：第 0 步（I-JSON 与嵌套深度）→ 形状 → category → 封闭 schema → 逐字段。因此同一输入的错误码与其他实现一致，并由规范的拒绝类向量 `invalid_objects` 与 `nesting_depth` 校验。
 
 全部继承 `DpeHashError`（它是 `ValueError` 的子类）。每个异常带两个属性：`.code` 是规范错误码，`.path` 是出错位置的 RFC 6901 JSON Pointer（相对于传入的对象），可用于日志或 problem 的 `detail` 文本（HTTP problem 体不携带违例位置，core §2.8）。
 

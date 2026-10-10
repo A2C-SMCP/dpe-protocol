@@ -24,7 +24,8 @@ M1 只保留占位；实现随 M2 交付（plan §14）。
 - **报文校验**：以下情况都返回 `DPE_VALIDATION`：
   - 未定义的字段；
   - 元素对象带其 category 未规定的字段（如 NarrativeText 带 `text_as_html`）；
-  - 整数字面量超过 2^53−1。
+  - 整数字面量超过 2^53−1；
+  - 对象的嵌套深度超过 64（#94，core.md §2.8 第 0 步；逐条边界向量见 `vectors/nesting_depth.json`）。
 
 ## 大文档与逐层协商（#6 F2）
 

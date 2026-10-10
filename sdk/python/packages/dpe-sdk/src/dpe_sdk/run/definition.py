@@ -23,10 +23,8 @@ from pydantic import Field, PrivateAttr, ValidationInfo, field_validator, model_
 from pydantic import ValidationError as PydanticValidationError
 
 from dpe_sdk.run._json import (
-    MAX_JSON_DEPTH,
     ClosedModel,
     has_numeric_violation,
-    json_depth,
     load_json_file,
 )
 from dpe_sdk.run.errors import InstanceFailure
@@ -125,10 +123,11 @@ class InstanceDefinition(ClosedModel):
     @model_validator(mode="before")
     @classmethod
     def _check_json_depth(cls, data: Any) -> Any:
-        # §4.4：定义文件（含 config）的 JSON 嵌套深度 ≤ 64（读取阶段判定；模型级以覆盖
-        # model_validate(data, context=…) 这一文档化路径）
-        if isinstance(data, dict) and json_depth(data) > MAX_JSON_DEPTH:
-            raise ValueError(f"实例定义的 JSON 嵌套深度超过 {MAX_JSON_DEPTH}（§4.4）")
+        # §4.4：定义文件（含 config）的 JSON 嵌套深度 ≤ MAX_NESTING_DEPTH，计数口径见
+        # core §2.8 第 0 步（读取阶段判定；模型级以覆盖 model_validate(data, context=…) 这一
+        # 文档化路径；计数复用 dpe-hash，不另写一份）
+        if isinstance(data, dict) and dpe_hash.nesting_depth(data) > dpe_hash.MAX_NESTING_DEPTH:
+            raise ValueError(f"实例定义的 JSON 嵌套深度超过 {dpe_hash.MAX_NESTING_DEPTH}（§4.4）")
         return data
 
     @field_validator("definition_version")

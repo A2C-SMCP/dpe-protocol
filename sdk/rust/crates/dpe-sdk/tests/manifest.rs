@@ -3,9 +3,7 @@
 
 use serde_json::{json, Map, Value};
 
-use dpe_sdk::run::manifest::{
-    parse_manifest, validate_config, Manifest, MANIFEST_FILENAME, MAX_JSON_DEPTH,
-};
+use dpe_sdk::run::manifest::{parse_manifest, validate_config, Manifest, MANIFEST_FILENAME};
 
 /// §4.1 的示例清单。
 fn example() -> Value {
@@ -49,7 +47,6 @@ fn code_of(data: &Value) -> &'static str {
 #[test]
 fn example_manifest_is_valid() {
     assert_eq!(MANIFEST_FILENAME, "dpe-connector.json");
-    assert_eq!(MAX_JSON_DEPTH, 64);
     let manifest = parse_manifest(&example()).unwrap();
     assert_eq!(manifest.manifest_version(), 1);
     assert_eq!(manifest.name(), "git-connector");
@@ -366,7 +363,8 @@ fn expanded_depth_bound() {
 
 #[test]
 fn manifest_json_depth_bound() {
-    // §4.1：清单文件的 JSON 嵌套深度 ≤ 64，超出（含数据位置上的深度）判 manifest_invalid
+    // §4.1：清单文件的 JSON 嵌套深度 ≤ 64（计数口径见 core §2.8 第 0 步），超出（含数据位置上
+    // 的深度）判 manifest_invalid；清单把 schema 包在 config_schema 下，深度 = 1 + schema 深度。
     fn nested_properties(levels: usize) -> Value {
         let mut node = json!({"type": "object"});
         for _ in 0..levels {
@@ -382,20 +380,20 @@ fn manifest_json_depth_bound() {
         node
     }
 
-    let manifest = manifest_with(nested_properties(30)); // 清单深度 63
+    let ok = nested_properties(31);
+    assert_eq!(1 + dpe_hash::nesting_depth(&ok, None), 64);
+    let manifest = manifest_with(ok.clone());
     validate_config(&manifest, &json!({})).unwrap();
-    assert_eq!(
-        code_of(&with_config_schema(nested_properties(31))),
-        "manifest_invalid"
-    ); // 65
+    let over = nested_properties(32);
+    assert_eq!(1 + dpe_hash::nesting_depth(&over, None), 66);
+    assert_eq!(code_of(&with_config_schema(over)), "manifest_invalid");
 
-    manifest_with(json!({"type": "object", "default": nested_array(61)})); // 深度 64
-    assert_eq!(
-        code_of(&with_config_schema(
-            json!({"type": "object", "default": nested_array(62)})
-        )),
-        "manifest_invalid" // 65
-    );
+    let ok_array = json!({"type": "object", "default": nested_array(62)});
+    assert_eq!(1 + dpe_hash::nesting_depth(&ok_array, None), 64);
+    manifest_with(ok_array);
+    let over_array = json!({"type": "object", "default": nested_array(63)});
+    assert_eq!(1 + dpe_hash::nesting_depth(&over_array, None), 65);
+    assert_eq!(code_of(&with_config_schema(over_array)), "manifest_invalid");
 }
 
 #[test]

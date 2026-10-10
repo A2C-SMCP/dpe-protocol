@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""一致性向量生成器 —— hash 契约 1（spec/hash-contract-1.md）与 file_uri 语法规范化（spec/core.md §1.1）的规范参考实现。
+"""一致性向量生成器 —— hash 契约 1（spec/hash-contract-1.md）、file_uri 语法规范化（spec/core.md §1.1）与 core §2.8 校验顺序（含对象嵌套深度上界）的规范参考实现。
 
 治理模型（docs/plan/v1-plan.md §1）：向量是规范的一部分，由本仓库产出；
 SDK 与各服务端实现只消费向量。本脚本因此：
@@ -116,6 +116,14 @@ def metadata(m: dict[str, Any] | None) -> dict[str, Any]:
     return {} if m is None else strip_nulls(m)
 
 
+def _nested_empty(levels: int, leaf: Any = None) -> Any:
+    """恰好 ``levels`` 层的容器链（nesting_depth 口径），最深一层是空容器（``leaf`` 缺省为 ``{}``）。"""
+    value: Any = {} if leaf is None else leaf
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
 # ---------------------------------------------------------------------------
 # 参考校验器（core.md §2.8）：按规范顺序校验线上原像，遇第一处违例即 Reject(code, path)。
 # hash 计算与拒绝类向量共用这一套规则。
@@ -128,6 +136,45 @@ CONTRACT_UNSUPPORTED = "DPE_CONTRACT_UNSUPPORTED"
 #: 真实契约；dpe2 只在被选为本次契约时才算受支持（契约 1 §5）
 SUPPORTED_CONTRACTS = ("dpe1",)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+
+#: JSON 嵌套深度上界（core.md §2.8 第 0 步第三项；connector 契约 §4.1 / §4.4 的清单与实例
+#: 定义引用同一处定义与同一取值）。
+NESTING_DEPTH_LIMIT = 64
+
+
+def nesting_depth(value: Any, child_field: str | None = None) -> int:
+    """JSON 值的嵌套深度（core §2.8 第 0 步，全协议唯一的定义，connector 契约 §4.1 / §4.4 的
+    清单与实例定义同样按本口径计）：标量记 0；对象或数组记 1 + 其子值的最大深度；空容器记 1
+    （`{}` 记 1、`{"a": {"b": [1]}}` 记 3）。
+
+    ``child_field`` 是子 hash 列表字段（页的 ``elements``、文档的 ``pages``）：列表自身记 1，
+    其每一项不计入（线上原像中它们本是不可再分的 hash 串）——展开视图中内联给出的子对象
+    同样不计入，与线上原像结论一致。
+    """
+    depth = 0
+    stack: list[tuple[Any, int, bool]] = [(value, 0, True)]
+    while stack:
+        item, ancestors, is_root = stack.pop()
+        if isinstance(item, list):
+            depth = max(depth, ancestors + 1)
+            stack.extend((child, ancestors + 1, False) for child in item)
+            continue
+        if isinstance(item, dict):
+            depth = max(depth, ancestors + 1)
+            for key, child in item.items():
+                if is_root and key == child_field and isinstance(child, list):
+                    depth = max(depth, ancestors + 2)  # 子 hash 列表：列表自身记 1
+                else:
+                    stack.append((child, ancestors + 1, False))
+        else:
+            depth = max(depth, ancestors)
+    return depth
+
+
+def check_depth(value: Any, child_field: str | None = None) -> None:
+    """第 0 步的嵌套深度（core §2.8），对每个被校验对象自身判定，违例位置为对象自身。"""
+    if nesting_depth(value, child_field) > NESTING_DEPTH_LIMIT:
+        raise Reject(VALIDATION, "")
 
 
 class Reject(Exception):  # noqa: N818
@@ -248,7 +295,8 @@ def check_hash_list(value: Any, contract: str, path: str) -> None:
 
 
 def check_element(el: Any, path: str = "") -> None:
-    """元素对象（core §2.3）：形状 → category → 封闭 schema → 逐字段。"""
+    """元素对象（core §2.3）：嵌套深度（第 0 步）→ 形状 → category → 封闭 schema → 逐字段。"""
+    check_depth(el)
     if (
         not isinstance(el, dict) or el.get("category") is None
     ):  # 必有字段为 null 视同缺省
@@ -271,7 +319,8 @@ def check_element(el: Any, path: str = "") -> None:
 
 
 def check_page(page: Any, contract: str, path: str = "") -> None:
-    """页对象（core §2.2）线上原像：形状 → 封闭 schema → title、page_metadata、elements。"""
+    """页对象（core §2.2）线上原像：嵌套深度（第 0 步）→ 形状 → 封闭 schema → title、page_metadata、elements。"""
+    check_depth(page, "elements")
     if not isinstance(page, dict) or page.get("elements") is None:
         raise Reject(VALIDATION, path)
     check_closed(page, ("title", "page_metadata", "elements"), path)
@@ -281,7 +330,8 @@ def check_page(page: Any, contract: str, path: str = "") -> None:
 
 
 def check_document(doc: Any, contract: str, path: str = "") -> None:
-    """文档对象（core §2.1）线上原像：形状 → 封闭 schema → file_type、title、doc_metadata、pages。"""
+    """文档对象（core §2.1）线上原像：嵌套深度（第 0 步）→ 形状 → 封闭 schema → file_type、title、doc_metadata、pages。"""
+    check_depth(doc, "pages")
     check_document_fields(doc, path)
     check_hash_list(doc["pages"], contract, ptr(path, "pages"))
 
@@ -303,12 +353,14 @@ def check_document_fields(doc: Any, path: str) -> None:
 
 def check_expanded(doc: Any, contract: str) -> None:
     """展开视图（vectors/README.md）：与线上请求同序——文档自身字段 → 各页自身字段（数组序）→
-    各页的元素（逐页、数组序）。"""
+    各页的元素（逐页、数组序）。嵌套深度按每个对象自身计（子 hash 列表不向内展开）。"""
+    check_depth(doc, "pages")
     check_document_fields(doc, "")
     if not isinstance(doc["pages"], list):
         raise Reject(VALIDATION, "/pages")
     for i, page in enumerate(doc["pages"]):
         at = ptr("/pages", i)
+        check_depth(page, "elements")
         if not isinstance(page, dict) or page.get("elements") is None:
             raise Reject(VALIDATION, at)
         check_closed(page, ("title", "page_metadata", "elements"), at)
@@ -1738,6 +1790,25 @@ INVALID_VECTORS: list[dict[str, Any]] = [
                 },
                 V,
             ),
+            # 第 0 步（嵌套深度）先于第 2、4 步：多处违例时报 DPE_VALIDATION，固定校验顺序（#94）
+            bad(
+                "element_over_depth_and_category_unknown",
+                "element",
+                {
+                    "category": "Video",
+                    "metadata": _nested_empty(NESTING_DEPTH_LIMIT),
+                },
+                V,
+            ),
+            bad(
+                "page_over_depth_and_unsupported_contract",
+                "page",
+                {
+                    "page_metadata": _nested_empty(NESTING_DEPTH_LIMIT),
+                    "elements": ["dpe9:" + "a" * 64],
+                },
+                V,
+            ),
         ],
     },
 ]
@@ -2545,28 +2616,28 @@ PATTERN_SCHEMA_CASES: list[dict[str, Any]] = [
         "config_valid": True,
     },
     {
-        "name": "清单 JSON 嵌套深度 63（properties 链 30 层，未越界）",
-        "schema": _nested_schema(30),
+        "name": "清单 JSON 嵌套深度顶格（64：properties 链 31 层，未越界）",
+        "schema": _nested_schema(31),
         "config": {},
         "manifest_valid": True,
         "config_valid": True,
     },
     {
-        "name": "清单 JSON 嵌套深度越界（65：properties 链 31 层）",
-        "schema": _nested_schema(31),
+        "name": "清单 JSON 嵌套深度越界（66：properties 链 32 层）",
+        "schema": _nested_schema(32),
         "manifest_valid": False,
     },
     {
-        "name": "清单 JSON 嵌套深度顶格（64：default 值嵌 61 层数组）",
-        "schema": {"type": "object", "default": _nested_array(61)},
+        "name": "清单 JSON 嵌套深度顶格（64：default 值嵌 62 层数组）",
+        "schema": {"type": "object", "default": _nested_array(62)},
         "manifest_valid": True,
         "config": {},
         "config_valid": True,
-        "note": "深度写在数据位置（default 的值）上同样受限",
+        "note": "深度写在数据位置（default 的值）上同样受限；计数口径见 core §2.8（标量记 0）",
     },
     {
-        "name": "清单 JSON 嵌套深度越界（65：default 值嵌 62 层数组）",
-        "schema": {"type": "object", "default": _nested_array(62)},
+        "name": "清单 JSON 嵌套深度越界（65：default 值嵌 63 层数组）",
+        "schema": {"type": "object", "default": _nested_array(63)},
         "manifest_valid": False,
     },
     {
@@ -2888,28 +2959,14 @@ def _parse_defs_ref(ref: str) -> str | None:
     return name.replace("~1", "/").replace("~0", "~")
 
 
-def _json_depth(value: Any) -> int:
-    """JSON 值的嵌套深度（对象与数组各计一层，标量计 1）。"""
-    depth = 0
-    stack: list[tuple[Any, int]] = [(value, 1)]
-    while stack:
-        item, level = stack.pop()
-        depth = max(depth, level)
-        if isinstance(item, dict):
-            stack.extend((child, level + 1) for child in item.values())
-        elif isinstance(item, list):
-            stack.extend((child, level + 1) for child in item)
-    return depth
-
-
 def _closed_schema_problems(schema: Any) -> list[str]:
     """§4.1.1：封闭关键字子集、`$defs`/`$ref` 规则与 pattern 子集的全部违例（供生成器交叉核对）。
 
     另按 §4.1 建模清单文件的 JSON 嵌套深度：向量的 schema 会被包进清单对象（+1 层），
-    超过 64 即判清单不合法。
+    超过 64 即判清单不合法。计数口径与 core §2.8 一致（同一处定义：`nesting_depth`）。
     """
     problems: list[str] = []
-    if 1 + _json_depth(schema) > 64:
+    if 1 + nesting_depth(schema) > 64:
         problems.append("清单的 JSON 嵌套深度超过 64（§4.1）")
     defs = schema.get("$defs") if isinstance(schema, dict) else None
     names = set(defs) if isinstance(defs, dict) else set()
@@ -3228,6 +3285,141 @@ def pattern_vector() -> dict[str, Any]:
     }
 
 
+def depth_vector() -> dict[str, Any]:
+    """对象嵌套深度上界（core.md §2.8 第 0 步第三项，Issue #94）的边界向量。
+
+    恰好 NESTING_DEPTH_LIMIT 层接受、加一层拒绝（再补一例远超上界）；每条同时给出值（input）
+    与文本（input_json），对象级入口与文本入口（严格解析后校验）MUST 对同一条得出同一结论。
+    边界形状取「最深一层是空容器」；生成器逐条交叉核对（参考校验器 + 深度口径），不一致即失败。
+    """
+    limit = NESTING_DEPTH_LIMIT
+
+    def element(depth: int) -> dict[str, Any]:
+        return {"category": "Title", "text": "x", "metadata": _nested_empty(depth - 1)}
+
+    def page(depth: int) -> dict[str, Any]:
+        return {"elements": [], "page_metadata": _nested_empty(depth - 1, leaf=[])}
+
+    def document(depth: int) -> dict[str, Any]:
+        return {"file_type": "md", "pages": [], "doc_metadata": _nested_empty(depth - 1)}
+
+    def case(
+        name: str,
+        kind: str,
+        value: Any,
+        depth: int,
+        *,
+        accept: bool,
+        probe: Any = None,
+        child_field: str | None = None,
+        path: str = "",
+    ) -> dict[str, Any]:
+        """组装一条用例并交叉核对：深度口径 probe 达到 depth，参考校验器接受/拒绝一致。"""
+        assert nesting_depth(value if probe is None else probe, child_field) == depth, name
+        assert depth == limit if accept else depth > limit, name
+        out: dict[str, Any] = {
+            "name": name,
+            "object_kind": kind,
+            "contract": "dpe1",
+            "input": value,
+            "input_json": json.dumps(value, ensure_ascii=False),
+        }
+        if accept:
+            out["accept"] = True
+        else:
+            out["code"] = VALIDATION
+        try:
+            CHECKERS[kind](value, "dpe1")
+        except Reject as rej:
+            if accept:
+                raise AssertionError(f"{name}: 应为接受，实得 {rej.code} at {rej.path!r}") from None
+            if rej.code != VALIDATION:
+                raise AssertionError(f"{name}: 期望 {VALIDATION}，实得 {rej.code}") from None
+            out["path"] = path
+            if rej.path != path:
+                raise AssertionError(f"{name}: 期望位置 {path!r}，实得 {rej.path!r}") from None
+        else:
+            if not accept:
+                raise AssertionError(f"{name}: 应为拒绝却通过")
+        return out
+
+    # 展开视图：元素内联在文档里，对象根在文档内的偏移（+4）不计入任何对象的深度——
+    # 文档与页自身仍在限内，只有元素自身恰好 limit 层；整值的原始嵌套深到 limit+4/limit+5，
+    # 正是「子 hash 列表不向内展开」与「按对象自身计」的差别所在。
+    expanded_ok = {"file_type": "md", "pages": [{"elements": [element(limit)]}]}
+    expanded_over = {"file_type": "md", "pages": [{"elements": [element(limit + 1)]}]}
+    assert nesting_depth(expanded_ok) == limit + 4, "展开视图接受例的整值深度"
+    assert nesting_depth(expanded_over) == limit + 5, "展开视图拒绝例的整值深度"
+
+    return {
+        "name": "nesting_depth",
+        "kind": "nesting_depth",
+        "spec": "spec/core.md",
+        "section": "§2.8",
+        "description": "core.md §2.8 第 0 步第三项：每个对象的嵌套深度 ≤ limit（标量记 0；对象或数组记 1 + 子值的最大深度；空容器记 1；计数对象是 DPE 对象本身，页的 elements 与文档的 pages 按子 hash 列表计：列表自身记 1、每一项不计入）。恰好 limit 层接受、加一层拒绝，边界的最深一层是空容器；input 与 input_json 是同一条用例的值与文本，对象级入口与文本入口 MUST 同判。expanded_document 用例的违例位置同样为对象自身（空字符串），不换算为相对报文根的路径。",
+        "limit": limit,
+        "cases": [
+            case("element_at_limit", "element", element(limit), limit, accept=True),
+            case("element_over_limit", "element", element(limit + 1), limit + 1, accept=False),
+            case(
+                "element_far_over_limit",
+                "element",
+                element(limit + 36),
+                limit + 36,
+                accept=False,
+            ),
+            case(
+                "page_at_limit",
+                "page",
+                page(limit),
+                limit,
+                accept=True,
+                child_field="elements",
+            ),
+            case(
+                "page_over_limit",
+                "page",
+                page(limit + 1),
+                limit + 1,
+                accept=False,
+                child_field="elements",
+            ),
+            case(
+                "document_at_limit",
+                "document",
+                document(limit),
+                limit,
+                accept=True,
+                child_field="pages",
+            ),
+            case(
+                "document_over_limit",
+                "document",
+                document(limit + 1),
+                limit + 1,
+                accept=False,
+                child_field="pages",
+            ),
+            case(
+                "expanded_document_element_at_limit",
+                "expanded_document",
+                expanded_ok,
+                limit,
+                accept=True,
+                probe=expanded_ok["pages"][0]["elements"][0],
+            ),
+            case(
+                "expanded_document_element_over_limit",
+                "expanded_document",
+                expanded_over,
+                limit + 1,
+                accept=False,
+                probe=expanded_over["pages"][0]["elements"][0],
+            ),
+        ],
+    }
+
+
 def build_files() -> dict[str, str]:
     """返回 {相对路径: 文件内容}，内容确定性。"""
     files: dict[str, str] = {}
@@ -3334,6 +3526,7 @@ def build_files() -> dict[str, str]:
         )
 
     files["config_schema_patterns.json"] = dump_json(pattern_vector())
+    files["nesting_depth.json"] = dump_json(depth_vector())
 
     manifest = {
         "contract": "dpe1",
@@ -3345,7 +3538,7 @@ def build_files() -> dict[str, str]:
         },
         "provenance": {
             "generator": "scripts/gen_vectors.py",
-            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1",
+            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项）",
         },
         "files": [
             {

@@ -14,6 +14,11 @@
 - ``document_hashes``：展开视图一次算出三层；
 - ``children``：对象引用的下一层（缺失清单）。
 
+每个公开入口在处理值之前先做 core §2.8 第 0 步的嵌套深度判定（≤ ``constants.MAX_NESTING_DEPTH``，
+口径见 §2.8）：同一对象无论经文本入口还是这些对象级入口，结论一致。深度计数本身公开为
+``nesting_depth``——connector 契约 §4.1 / §4.4 的清单与实例定义（经 dpe-sdk 的 run 模块）直接
+复用它，不再各写一份。
+
 ``contract`` 参数用于契约 1 §6 的原位重算；``dpe2`` 只在显式传入时接受（见 ``DRILL_CONTRACT``）。
 带子 hash 列表的入口（``page_hash`` / ``doc_hash`` / ``object_hash`` / ``children``）另有可选的
 关键字参数 ``contracts``：本次校验接受的「受支持契约」基准集合，缺省 ``SUPPORTED_CONTRACTS``。
@@ -33,6 +38,7 @@ from dpe_hash.constants import (
     CONTRACT,
     DRILL_CONTRACT,
     KNOWN_CONTRACTS,
+    MAX_NESTING_DEPTH,
     SUPPORTED_CONTRACTS,
 )
 from dpe_hash.errors import (
@@ -61,6 +67,7 @@ __all__ = [
     "content_hash",
     "doc_hash",
     "document_hashes",
+    "nesting_depth",
     "object_hash",
     "page_hash",
     "parse_blob_ref",
@@ -91,6 +98,59 @@ def _salt(contract: str) -> bytes:
 
 def _digest(preimage: str, contract: str, salt: bytes) -> str:
     return f"{contract}:{hashlib.sha256(salt + preimage.encode('utf-8')).hexdigest()}"
+
+
+#: 各层对象的子 hash 列表字段（core §2.8 第 0 步：深度计数时不向内展开）
+_CHILD_FIELD: dict[str, str | None] = {"element": None, "page": "elements", "document": "pages"}
+
+
+def _child_field(kind: str) -> str | None:
+    """``kind`` 对应的子 hash 列表字段（元素没有）；未知层级抛 ``ValueError``。
+
+    与 ``_preimage`` 同一措辞：``kind`` 由字面量类型约束，这条只是防御。
+    """
+    try:
+        return _CHILD_FIELD[kind]
+    except KeyError:
+        raise ValueError(f"未知的对象层级：{kind!r}") from None
+
+
+def nesting_depth(value: object, child_field: str | None = None) -> int:
+    """JSON 值的嵌套深度（core §2.8 第 0 步，全协议唯一的定义，connector 契约 §4.1 / §4.4 也引用
+    本口径）：标量记 0；对象或数组记 1 + 其子值的最大深度；空容器记 1（`{}` 记 1、
+    `{"a": {"b": [1]}}` 记 3）。
+
+    ``child_field``（页的 ``elements``、文档的 ``pages``）是子 hash 列表字段：列表自身记 1，
+    其每一项不计入——展开视图中内联给出的子对象同样不计入，与线上原像结论一致。清单、实例定义
+    等非 DPE 载体不传 ``child_field``。迭代遍历，不消耗解释器递归。
+    """
+    depth = 0
+    stack: list[tuple[object, int, bool]] = [(value, 0, True)]
+    while stack:
+        item, ancestors, is_root = stack.pop()
+        if isinstance(item, (list, tuple)):
+            if ancestors + 1 > depth:
+                depth = ancestors + 1
+            stack.extend((child, ancestors + 1, False) for child in item)
+        elif isinstance(item, Mapping):
+            if ancestors + 1 > depth:
+                depth = ancestors + 1
+            for key, child in item.items():
+                if is_root and key == child_field and isinstance(child, (list, tuple)):
+                    if ancestors + 2 > depth:  # 子 hash 列表：列表自身记 1
+                        depth = ancestors + 2
+                else:
+                    stack.append((child, ancestors + 1, False))
+        elif ancestors > depth:
+            depth = ancestors
+    return depth
+
+
+def _check_depth(value: object, child_field: str | None = None) -> None:
+    """core §2.8 第 0 步的嵌套深度（≤ ``MAX_NESTING_DEPTH``），超出抛 ``ValidationError``，
+    位置为对象自身。文本入口与对象级入口都要经过本判定，对同一对象结论一致。"""
+    if nesting_depth(value, child_field) > MAX_NESTING_DEPTH:
+        raise ValidationError(f"对象的嵌套深度超过上限 {MAX_NESTING_DEPTH} 层（core §2.8 第 0 步）")
 
 
 def _split_hash(value: object, accepted: frozenset[str], at: str) -> tuple[str, str]:
@@ -375,6 +435,7 @@ def _ijson_first(top: object, compute: Callable[[], _T]) -> _T:
 def content_hash(element: ElementObject, contract: str = CONTRACT) -> str:
     """元素对象的 ``content_hash``（契约 1 §4）。"""
     salt = _salt(contract)
+    _check_depth(element)
     return _digest(_ijson_first(element, lambda: _element_preimage(element, "")), contract, salt)
 
 
@@ -392,6 +453,7 @@ def page_hash(
     （见 ``_base_contracts``）：声明多契约的服务端传自己的声明集合。
     """
     salt = _salt(contract)
+    _check_depth(page, "elements")
     pre = _ijson_first(
         (page, element_hashes),
         lambda: _page_preimage(
@@ -419,6 +481,7 @@ def doc_hash(
     ``/pages/<i>``；``contracts`` 同 ``page_hash``。
     """
     salt = _salt(contract)
+    _check_depth(document, "pages")
     pre = _ijson_first(
         (document, page_hashes),
         lambda: _document_preimage(
@@ -447,6 +510,7 @@ def object_hash(
     同 ``page_hash``。
     """
     salt = _salt(contract)
+    _check_depth(obj, _child_field(kind))
     return _digest(
         _ijson_first(obj, lambda: _preimage(obj, kind, contract, contracts)), contract, salt
     )
@@ -466,6 +530,7 @@ def children(
     ``page_hash``。
     """
     _salt(contract)
+    _check_depth(obj, _child_field(kind))
     _ijson_first(obj, lambda: _preimage(obj, kind, contract, contracts))
     if kind == "element":
         blob = obj.get("blob")
@@ -487,7 +552,11 @@ def document_hashes(document: ExpandedDocument, contract: str = CONTRACT) -> Doc
 
 
 def _document_hashes(document: object, contract: str, salt: bytes) -> DocumentHashes:
-    """与线上请求同序（core §2.8）：文档自身字段 → 各页自身字段 → 各页的元素。"""
+    """与线上请求同序（core §2.8）：文档自身字段 → 各页自身字段 → 各页的元素。
+
+    嵌套深度（第 0 步）按每个对象自身判定：文档、各页、各元素都以自己为根。
+    """
+    _check_depth(document, "pages")
     doc = _mapping(document, "", "文档")
     pages = _required(doc, "pages", "", "文档")
     doc_parts = _document_parts(doc, "", with_children=True)
@@ -496,6 +565,7 @@ def _document_hashes(document: object, contract: str, salt: bytes) -> DocumentHa
     page_inputs: list[tuple[str, dict[str, str], Sequence[object]]] = []
     for i, raw_page in enumerate(pages):
         at = pointer("pages", i)
+        _check_depth(raw_page, "elements")
         page = _mapping(raw_page, at, "页")
         elements = _required(page, "elements", at, "页")
         page_parts = _page_parts(page, at, with_children=True)
@@ -505,10 +575,12 @@ def _document_hashes(document: object, contract: str, salt: bytes) -> DocumentHa
     out_pages: list[PageHashes] = []
     page_hashes: list[str] = []
     for at, page_parts, elements in page_inputs:
-        element_hashes = [
-            _digest(_element_preimage(el, at + pointer("elements", j)), contract, salt)
-            for j, el in enumerate(elements)
-        ]
+        element_hashes = []
+        for j, el in enumerate(elements):
+            _check_depth(el)
+            element_hashes.append(
+                _digest(_element_preimage(el, at + pointer("elements", j)), contract, salt)
+            )
         # 子 hash 都是本函数按本次契约算出的，基准集合只在形式上参与（契约必在并集内）
         page_parts["elements"] = _hash_list_part(
             element_hashes, contract, at + pointer("elements"), SUPPORTED_CONTRACTS

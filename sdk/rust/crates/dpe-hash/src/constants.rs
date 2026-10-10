@@ -17,6 +17,11 @@ pub const DRILL_CONTRACT: &str = "dpe2";
 /// 用它，不自行拼集合；它不是服务端应声明的契约（那是 [`SUPPORTED_CONTRACTS`]）。
 pub const KNOWN_CONTRACTS: &[&str] = &["dpe1", DRILL_CONTRACT];
 
+/// 对象的嵌套深度上界（core §2.8 第 0 步第三项）：每个被校验的对象自身 ≤ 此值，超出为
+/// `DPE_VALIDATION`。计数口径：标量记 0；对象或数组记 1 + 其子值的最大深度；空容器记 1；
+/// 页的 `elements` 与文档的 `pages` 按子 hash 列表计（列表自身记 1、每一项不计入）。
+pub const MAX_NESTING_DEPTH: u32 = 64;
+
 /// category 封闭枚举 → 允许的内容字段（契约 1 §4.1）：按 category 名排序，字段按表中顺序。
 /// 元素对象另有必有的 `category` 与可选的 `metadata`，不在此列。按名查询用 [`content_fields`]。
 pub const CATEGORY_CONTENT_FIELDS: &[(&str, &[&str])] = &[

@@ -154,14 +154,16 @@ def test_all_vector_kinds_have_consumers(vectors_dir: Path) -> None:
     """vectors/ 出现的 kind 是封闭集合，每个都必须有消费方；新增 kind 漏写消费测试时在此失败。
 
     ``pattern``（connector 契约 §4.1.1 的正则子集）的消费方在 ``dpe-sdk`` 的
-    ``tests/test_run_pattern.py``（清单与配置校验属于 dpe-run）。
+    ``tests/test_run_pattern.py``（清单与配置校验属于 dpe-run）；``nesting_depth``（core §2.8 的
+    嵌套深度上界）的消费方在本包的 ``tests/test_nesting_depth.py``（对象级入口）与 ``dpe-sdk`` 的
+    ``tests/test_nesting_depth_entry_points.py``（文本入口与参考服务端）。
     """
     kinds = {
         json.loads(f.read_text(encoding="utf-8"))["kind"]
         for f in vectors_dir.glob("*.json")
         if f.name != "manifest.json"
     }
-    assert kinds == {"document", "jcs", "uri", "invalid", "pattern"}
+    assert kinds == {"document", "jcs", "uri", "invalid", "nesting_depth", "pattern"}
 
 
 def test_jcs_numbers_ignore_decimal_context(vectors_dir: Path) -> None:

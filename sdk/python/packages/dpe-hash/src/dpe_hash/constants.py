@@ -13,6 +13,7 @@ __all__ = [
     "CONTRACT",
     "DRILL_CONTRACT",
     "KNOWN_CONTRACTS",
+    "MAX_NESTING_DEPTH",
     "RECOMMENDED_FILE_TYPES",
     "SUPPORTED_CONTRACTS",
 ]
@@ -31,6 +32,10 @@ DRILL_CONTRACT = "dpe2"
 #: 本包认识的全部契约：真实契约加演练契约。消费方判断「契约能否由 dpe_hash 计算」时用它，
 #: 不自行拼集合；它不是服务端应声明的契约（那是 ``SUPPORTED_CONTRACTS``）。
 KNOWN_CONTRACTS: frozenset[str] = frozenset({*SUPPORTED_CONTRACTS, DRILL_CONTRACT})
+
+#: 对象的嵌套深度上界（core.md §2.8 第 0 步第三项）：每个被校验的对象自身 ≤ 此值，
+#: 计数口径见 core.md §2.8（页的 ``elements`` 与文档的 ``pages`` 按子 hash 列表计、不向内展开）。
+MAX_NESTING_DEPTH = 64
 
 #: category 封闭枚举 → 允许的内容字段（契约 1 §4.1，字段按表中顺序）。
 #: 元素对象另有必有的 ``category`` 与可选的 ``metadata``，不在此列。

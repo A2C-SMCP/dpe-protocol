@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import unquote_to_bytes
 
+import dpe_hash
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import best_match
 from pydantic import Field, PrivateAttr, field_validator, model_validator
@@ -28,10 +29,8 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from dpe_sdk.run._json import (
-    MAX_JSON_DEPTH,
     ClosedModel,
     has_numeric_violation,
-    json_depth,
     load_json_file,
 )
 from dpe_sdk.run._pattern import PatternSubsetError, check_pattern, translate_pattern
@@ -120,9 +119,10 @@ class Manifest(ClosedModel):
     @model_validator(mode="before")
     @classmethod
     def _check_json_depth(cls, data: Any) -> Any:
-        # §4.1：清单文件的 JSON 嵌套深度 ≤ 64（读取阶段判定，与语义校验无关）
-        if isinstance(data, dict) and json_depth(data) > MAX_JSON_DEPTH:
-            raise ValueError(f"清单的 JSON 嵌套深度超过 {MAX_JSON_DEPTH}（§4.1）")
+        # §4.1：清单文件的 JSON 嵌套深度 ≤ MAX_NESTING_DEPTH，计数口径见 core §2.8 第 0 步
+        # （读取阶段判定，与语义校验无关；计数复用 dpe-hash，不另写一份）
+        if isinstance(data, dict) and dpe_hash.nesting_depth(data) > dpe_hash.MAX_NESTING_DEPTH:
+            raise ValueError(f"清单的 JSON 嵌套深度超过 {dpe_hash.MAX_NESTING_DEPTH}（§4.1）")
         return data
 
     @field_validator("secrets")

@@ -12,16 +12,11 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from dpe_sdk import _ijson
 
 __all__ = [
-    "MAX_JSON_DEPTH",
     "ClosedModel",
     "has_lone_surrogate",
     "has_numeric_violation",
-    "json_depth",
     "load_json_file",
 ]
-
-#: §4.1 / §4.4：清单与实例定义文件的 JSON 嵌套深度上限
-MAX_JSON_DEPTH = 64
 
 #: core §2.6：整数绝对值上限（与 JCS 一致）
 _MAX_SAFE_INTEGER = 2**53 - 1
@@ -69,24 +64,6 @@ def has_numeric_violation(value: Any) -> bool:
         elif isinstance(item, list):
             stack.extend(item)
     return False
-
-
-def json_depth(value: Any) -> int:
-    """JSON 值的嵌套深度（对象与数组各计一层，标量计 1；迭代实现，不受递归限额影响）。
-
-    §4.1 / §4.4：清单与实例定义文件的嵌套深度 MUST ≤ 64——上界使合法文件在各实现的默认 JSON
-    解析限额（如 serde_json 的递归限额 128）内也能被读取。
-    """
-    depth = 0
-    stack: list[tuple[Any, int]] = [(value, 1)]
-    while stack:
-        item, level = stack.pop()
-        depth = max(depth, level)
-        if isinstance(item, dict):
-            stack.extend((child, level + 1) for child in item.values())
-        elif isinstance(item, list):
-            stack.extend((child, level + 1) for child in item)
-    return depth
 
 
 def load_json_file(path: Path) -> Any:
