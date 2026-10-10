@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "git-connector",
   "version": "0.3.0-dev",
-  "description": "以 Git 仓库为内容源：把仓库中的文件映射为 DPE 文档，全量枚举",
+  "description": "以 Git 仓库为内容源：把仓库提交历史映射为 DPE 文档（仓库=文档、默认分支按月分页、分支各一页、提交=元素），全量枚举",
   "protocol_versions": ["dpe-connector/1"],
   "config_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -11,16 +11,31 @@
       "repo": {
         "type": "string",
         "minLength": 1,
-        "description": "Git 仓库的本地路径（本连接器以本机 git 读取，不代为访问远端）"
+        "description": "单个 Git 仓库的本地路径（与 root 二选一）"
       },
-      "ref": {
+      "root": {
         "type": "string",
         "minLength": 1,
-        "default": "HEAD",
-        "description": "要枚举的提交：HEAD、分支、标签或提交 id"
+        "description": "容纳多个 Git 仓库的目录：递归发现，每个仓库一篇文档（与 repo 二选一）"
+      },
+      "branches": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "uniqueItems": true,
+        "description": "跟踪的分支名集合；缺省只有默认分支（默认分支本身不产页，由月页表达）"
+      },
+      "default_branch": {
+        "type": "string",
+        "minLength": 1,
+        "description": "默认分支名；缺省取仓库的 refs/remotes/origin/HEAD（由远端声明）"
+      },
+      "since": {
+        "type": "string",
+        "minLength": 1,
+        "description": "历史起点提交（含起点；仅 repo 模式）：更早的历史不枚举"
       }
     },
-    "required": ["repo"],
+    "oneOf": [{ "required": ["repo"] }, { "required": ["root"] }],
     "additionalProperties": false
   },
   "secrets": []
