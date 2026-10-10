@@ -54,7 +54,7 @@ DPE 的目标是：参考 Git 的设计理念，**极简、极速地表征世界
 - 内核与 TFRS 都只是**按规范实现的一方**，在各自的 CI 里跑向量和一致性跑分器。
 - **要改 hash 规则，必须先改规范；一旦存在落库数据，或者已发布的包、已部署的服务依赖该契约的 hash 值（协议仓自身发布的 SDK 不算），任何 hash 规则变更都必须升契约版本，此前可在原契约内修订（实现与 SDK 同步升次版本）。**任何实现的现有行为都不能倒逼规范。
 - 定稿后发布到 `doc.turingfocus.cn` 下的独立 path，具体发布策略在撰写过程中制定。**规范正文中的所有标识都不带产品或品牌名**，包括 capability 名、媒体类型、错误码、属性命名空间示例之外的文字。
-  - **例外**（Issue #4 C1，维护者确认）：封闭枚举中的 `tfchat`（category 与 file_type）和 `jira_project` / `jira_issue`（file_type）视为开放标准的格式名，予以保留，不属于本条所禁止的品牌标识。例外仅限这三个值；新增枚举值仍须遵守本条。
+  - **例外**（Issue #4 C1，维护者确认；#95 修订）：封闭枚举中的 `tfchat`（category 与 file_type）和 `jira_project` / `jira_issue`（file_type）视为开放标准的格式名，予以保留，不属于本条所禁止的品牌标识。例外仅限这三个值。#95 起 `file_type` 改为开放取值 + 推荐登记表（core §2.5），其命名规则为：推荐表移出 `tfchat`（服务端私有概念，不再登记；开放取值下它仍是语法合法的取值），`jira_project` / `jira_issue` 作为已登记例外保留（已有落库数据，改名会改变 doc_hash），`*_repo` 四个取值保留、标注新文档改用 `git_repo`；**新登记**的取值 SHOULD NOT 带产品或品牌名。`category` 仍是封闭枚举，其 `tfchat` 例外不受本 Issue 影响。
 - TFRobotServer `docs/protocol/dpe/` 下现有的 `push-protocol-v1.md` 和 `hash-contract-v1.md` 草案，由本仓库的规范**取代**。TFRS 那边改为引用本仓库，只保留「TFRS 实现说明」（scope 名称、部署、Robot 映射等）。
 
 ## 2. 规范文档结构（本仓库）
@@ -281,7 +281,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 | D6 Python + Rust | 保留，两份独立实现，采用 sans-IO 结构 |
 | 第 1 条 category 分派 | 服务端 MUST 分派（K7） |
 | 第 2 条 created_at | 随 doc_metadata 移出 hash 而消失 |
-| 第 3 条 `markdown` / `md` | file_type 改为正交属性，枚举值在规范中写明 |
+| 第 3 条 `markdown` / `md` | file_type 进 doc_hash（§0.1 P2；「正交属性」已随 §6 被取代）；取值由封闭枚举改为开放取值 + 推荐登记表（#95，core §2.5） |
 | 第 4 条 keywords / page_metadata / creator_id / group_id | 按 §6 三分类处理：keywords 属于衍生字段；page_metadata 属于正交属性；creator_id / group_id 进 attributes |
 | 第 5 条删除 | 纳入 v1：按 URI 删除，带 CAS |
 | 第 6 条 file_uri scheme | 不做保留；任意绝对 URI，在 remote 内唯一 |

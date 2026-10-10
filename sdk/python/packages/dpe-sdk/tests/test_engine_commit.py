@@ -14,7 +14,7 @@ import dpe_hash
 import pytest
 from dpe_sdk import errors
 from dpe_sdk.testing import BaseHash, DedupScope, Engine, IfAbsent, Precondition, PrefixAuthorizer
-from engine_helpers import Inline, inline, make_engine, text_doc
+from engine_helpers import Inline, inline, make_engine, negotiate_body, text_doc
 
 URI = "test://docs/a"
 C = dpe_hash.CONTRACT
@@ -563,6 +563,30 @@ def test_skeleton_reads_back_latest_representation() -> None:
     assert skeleton.doc_hash == req.doc_hash
     assert skeleton.document.model_dump() == req.document
     assert [p.model_dump() for p in skeleton.pages] == req.pages
+
+
+def test_open_file_type_is_accepted_and_read_back() -> None:
+    """file_type 是开放取值（core §2.5）：未登记的合法取值照常写入、读回、进 doc_hash。"""
+    engine = make_engine()
+    req = inline(text_doc(["x"], file_type="custom_format_v2"))
+    result = engine.commit("u", URI, req.body(), C, IfAbsent())
+    assert result.status == "created"
+    skeleton = engine.get_skeleton("u", URI, C)
+    assert skeleton is not None
+    assert skeleton.doc_hash == req.doc_hash
+    assert skeleton.document.file_type == "custom_format_v2"
+
+
+def test_invalid_file_type_syntax_is_rejected() -> None:
+    """不合语法的 file_type → `DPE_VALIDATION`，位置在文档对象内；协商与提交两条入口一致。"""
+    engine = make_engine()
+    body = json.dumps({"document": {"file_type": "Markdown", "pages": []}}).encode()
+    with pytest.raises(errors.ValidationError) as info:
+        engine.commit("u", URI, body, C, IfAbsent())
+    assert info.value.path == "/document/file_type"
+    with pytest.raises(errors.ValidationError) as info:
+        engine.negotiate("u", negotiate_body(URI, {"file_type": "Markdown", "pages": []}), C)
+    assert info.value.path == "/document/file_type"
 
 
 def test_duplicate_pages_read_back_in_order() -> None:

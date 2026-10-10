@@ -21,10 +21,9 @@ use std::fmt::Display;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::constants::{
-    content_fields, DRILL_CONTRACT, FILE_TYPES, KNOWN_CONTRACTS, SUPPORTED_CONTRACTS,
-};
+use crate::constants::{content_fields, DRILL_CONTRACT, KNOWN_CONTRACTS, SUPPORTED_CONTRACTS};
 use crate::error::{Error, ErrorKind, Result};
+use crate::file_type::is_valid_file_type;
 use crate::jcs::{canonical, pointer, utf16_cmp, write_string};
 use crate::models::{DocumentHashes, ObjectKind, PageHashes, ToJson};
 
@@ -381,10 +380,10 @@ fn document_parts(
             pointer(at, &["file_type"]),
         ));
     };
-    if !FILE_TYPES.contains(&file_type.as_str()) {
+    if !is_valid_file_type(file_type) {
         return Err(Error::new(
-            ErrorKind::FileTypeUnknown,
-            format!("未知 file_type：{file_type:?}"),
+            ErrorKind::FileTypeInvalid,
+            format!("file_type 不合语法：{file_type:?}"),
             pointer(at, &["file_type"]),
         ));
     }

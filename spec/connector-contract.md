@@ -1,6 +1,6 @@
 # DPE Connector 契约
 
-> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
+> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集，经 Issue #95 同步 §6.6 的 `file_type` 语法措辞）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
 > 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §11。
 > 这是独立的中立规范，**不属于 Core**：核心投递协议完全不知道 connector 的存在（类比 git 与 remote-helper）。
 > Issue #2 已关闭：平台不引入 connector 运行环境，connector 由用户自行开发、自行部署；托管运行若将来需要，另立独立产品。v1 官方 connector 只有 Git connector（本仓 `connectors/git/`）。
@@ -466,7 +466,7 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 1. 条目封闭 schema（§6.5）；
 2. 页对象与元素对象按 core.md §2 校验，顺序同 core.md §2.8：形状 → category 封闭枚举 → 封闭 schema（含 category 允许的字段）→ 逐字段（类型、数值界限 §2.6、metadata 全量、base64 与 `size` 合法性）。其中 `blob` 按本节的字节来源对象校验，替代 core.md §2.8 对 blob 引用格式的校验；第 3 步替换为引用之后，元素才是 core.md §2.3 的元素对象；
 3. blob 解析（§6.7）：内联解码或句柄读取，取得字节、算出 `sha256:` 引用；
-4. 分段合并为完整文档后，整体再按 core.md §2 的文档层规则校验（含 `file_type` 枚举），并由运行器重算三层 hash。
+4. 分段合并为完整文档后，整体再按 core.md §2 的文档层规则校验（含 `file_type` 语法），并由运行器重算三层 hash。
 
 - 本地校验的错误码沿用 core.md §2.8 的口径（`DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN`），但这是**运行器对插件产出的本地校验**，与远端返回的 DPE 错误是两个来源，报告时 MUST 区分。
 - hash 一律由运行器用规范的 hash 契约计算；插件产出中没有、也不需要 hash。

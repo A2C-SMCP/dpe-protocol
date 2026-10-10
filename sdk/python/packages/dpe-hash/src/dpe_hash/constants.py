@@ -12,8 +12,8 @@ __all__ = [
     "CATEGORY_CONTENT_FIELDS",
     "CONTRACT",
     "DRILL_CONTRACT",
-    "FILE_TYPES",
     "KNOWN_CONTRACTS",
+    "RECOMMENDED_FILE_TYPES",
     "SUPPORTED_CONTRACTS",
 ]
 
@@ -64,10 +64,11 @@ CATEGORY_CONTENT_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-#: file_type 封闭枚举（core.md §2.5，按规范顺序）。
-FILE_TYPES: tuple[str, ...] = (
+#: file_type 推荐登记表（core.md §2.5，按规范表中顺序）。取值只是推荐：语法合法的未登记取值
+#: 同样被接受（``is_valid_file_type``），接收方 MUST NOT 因未登记而拒收。
+RECOMMENDED_FILE_TYPES: tuple[str, ...] = (
     "bmp", "csv", "doc", "docx", "eml", "epub", "heic", "html", "jpg", "json", "md", "msg",
     "ndjson", "odt", "org", "pdf", "png", "ppt", "pptx", "rst", "rtf", "tiff", "tsv", "txt",
-    "wav", "xls", "xlsx", "xml", "zip", "java_repo", "python_repo", "javascript_repo",
-    "typescript_repo", "unk", "empty", "tfchat", "jira_project", "jira_issue",
+    "wav", "xls", "xlsx", "xml", "zip", "git_repo", "java_repo", "python_repo", "javascript_repo",
+    "typescript_repo", "unk", "empty", "jira_project", "jira_issue",
 )  # fmt: skip

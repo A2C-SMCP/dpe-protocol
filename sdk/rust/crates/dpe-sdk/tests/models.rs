@@ -239,13 +239,20 @@ fn unknown_category_rejected() {
 }
 
 #[test]
-fn unknown_file_type_rejected() {
+fn invalid_file_type_rejected() {
+    // file_type 是开放取值（#95）：只有语法非法的取值被拒绝，未登记但合法的照常接受。
     let err =
-        ExpandedDocument::from_value(&json!({"file_type": "markdown", "pages": []}), CONTRACT)
+        ExpandedDocument::from_value(&json!({"file_type": "Markdown", "pages": []}), CONTRACT)
             .unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::FileTypeUnknown);
+    assert_eq!(err.kind(), ErrorKind::FileTypeInvalid);
     assert_eq!(err.code(), "DPE_VALIDATION");
     assert_eq!(err.path(), "/file_type");
+    let doc = ExpandedDocument::from_value(
+        &json!({"file_type": "custom_format_v2", "pages": []}),
+        CONTRACT,
+    )
+    .expect("未登记但语法合法的取值应被接受");
+    assert_eq!(doc.file_type, "custom_format_v2");
 }
 
 #[test]

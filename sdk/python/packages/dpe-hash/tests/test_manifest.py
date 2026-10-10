@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from dpe_hash import CATEGORY_CONTENT_FIELDS, CONTRACT, FILE_TYPES, SUPPORTED_CONTRACTS
+from dpe_hash import (
+    CATEGORY_CONTENT_FIELDS,
+    CONTRACT,
+    RECOMMENDED_FILE_TYPES,
+    SUPPORTED_CONTRACTS,
+)
 
 
 @pytest.fixture(scope="module")
@@ -22,7 +27,7 @@ def test_contract(manifest: dict[str, Any]) -> None:
 
 
 def test_file_types(manifest: dict[str, Any]) -> None:
-    assert list(FILE_TYPES) == manifest["file_types"]  # 含规范顺序
+    assert list(RECOMMENDED_FILE_TYPES) == manifest["file_types"]  # 含规范表中顺序
 
 
 def test_category_content_fields(manifest: dict[str, Any]) -> None:

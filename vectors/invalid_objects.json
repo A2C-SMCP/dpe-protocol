@@ -387,11 +387,66 @@
       "path": ""
     },
     {
-      "name": "document_file_type_unknown",
+      "name": "document_file_type_uppercase",
       "object_kind": "document",
       "contract": "dpe1",
       "input": {
-        "file_type": "markdown",
+        "file_type": "Markdown",
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/file_type"
+    },
+    {
+      "name": "document_file_type_hyphen",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "git-repo",
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/file_type"
+    },
+    {
+      "name": "document_file_type_empty",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "",
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/file_type"
+    },
+    {
+      "name": "document_file_type_leading_underscore",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "_internal",
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/file_type"
+    },
+    {
+      "name": "document_file_type_too_long",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "max_length_value_0123456789abcdef",
+        "pages": []
+      },
+      "code": "DPE_VALIDATION",
+      "path": "/file_type"
+    },
+    {
+      "name": "document_file_type_trailing_newline",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "input": {
+        "file_type": "md\n",
         "pages": []
       },
       "code": "DPE_VALIDATION",
@@ -452,7 +507,7 @@
       "object_kind": "document",
       "contract": "dpe1",
       "input": {
-        "file_type": "markdown",
+        "file_type": "Markdown",
         "pages": [
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ]
@@ -581,7 +636,7 @@
       "object_kind": "expanded_document",
       "contract": "dpe1",
       "input": {
-        "file_type": "markdown",
+        "file_type": "Markdown",
         "pages": [
           {
             "elements": [

@@ -13,7 +13,7 @@ __all__ = [
     "CategoryUnknownError",
     "ContractUnsupportedError",
     "DpeHashError",
-    "FileTypeUnknownError",
+    "FileTypeInvalidError",
     "IntegerOutOfRangeError",
     "InvalidUnicodeError",
     "UndefinedFieldError",
@@ -42,8 +42,8 @@ class UndefinedFieldError(ValidationError):
     """封闭 schema 违例：对象出现规范未定义（或其 category 未允许）的字段（core.md §2）。"""
 
 
-class FileTypeUnknownError(ValidationError):
-    """file_type 不在封闭枚举内（core.md §2.5）。"""
+class FileTypeInvalidError(ValidationError):
+    """file_type 不合 core.md §2.5 的语法（取值不在推荐表内不算违例）。"""
 
 
 class InvalidUnicodeError(ValidationError):

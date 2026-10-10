@@ -37,14 +37,15 @@
 mod constants;
 mod contract1;
 mod error;
+mod file_type;
 mod ijson;
 mod jcs;
 mod models;
 mod uri;
 
 pub use constants::{
-    content_fields, CATEGORY_CONTENT_FIELDS, CONTRACT, DRILL_CONTRACT, FILE_TYPES, KNOWN_CONTRACTS,
-    SUPPORTED_CONTRACTS,
+    content_fields, CATEGORY_CONTENT_FIELDS, CONTRACT, DRILL_CONTRACT, KNOWN_CONTRACTS,
+    RECOMMENDED_FILE_TYPES, SUPPORTED_CONTRACTS,
 };
 #[doc(hidden)]
 pub use contract1::__private;
@@ -53,6 +54,7 @@ pub use contract1::{
     page_hashes, parse_blob_ref, parse_hash, parse_hash_with,
 };
 pub use error::{Error, ErrorKind, Result};
+pub use file_type::{is_valid_file_type, validate_file_type};
 pub use ijson::parse_ijson;
 pub use jcs::jcs;
 pub use models::{

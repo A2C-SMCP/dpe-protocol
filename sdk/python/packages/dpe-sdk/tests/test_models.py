@@ -10,7 +10,7 @@ import pytest
 from dpe_hash import (
     CategoryUnknownError,
     DpeHashError,
-    FileTypeUnknownError,
+    FileTypeInvalidError,
     IntegerOutOfRangeError,
     UndefinedFieldError,
     content_hash,
@@ -157,11 +157,13 @@ def test_unknown_category_rejected() -> None:
     assert info.value.path == "/category"
 
 
-def test_unknown_file_type_rejected() -> None:
-    with pytest.raises(FileTypeUnknownError) as info:
-        Document(file_type="markdown", pages=[])
+def test_invalid_file_type_rejected() -> None:
+    """file_type 是开放取值（#95）：只有语法非法的取值被拒绝，未登记但合法的照常接受。"""
+    with pytest.raises(FileTypeInvalidError) as info:
+        Document(file_type="Markdown", pages=[])
     assert info.value.code == "DPE_VALIDATION"
     assert info.value.path == "/file_type"
+    assert Document(file_type="custom_format_v2", pages=[]).file_type == "custom_format_v2"
 
 
 @pytest.mark.parametrize("n", [2**53, -(2**53)])

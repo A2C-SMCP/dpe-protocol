@@ -1,6 +1,6 @@
 # DPE Core v1（抽象模型与操作语义）
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#39、#60、#63、#73 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md)（尤其 §0.1 北极星原则），经 Issue #3、#4、#6、#30、#31、#39、#60、#63、#73、#95 修订
 > 本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。
 
 DPE（Document / Page / Element）是把任意格式文档的**内容面**——面向 LLM 阅读的内容——**正确、增量、可靠**地投递到一个远端的标准协议。本文定义与传输无关的核心语义；v1 唯一的规范性传输绑定是 HTTP（[bindings/http.md](bindings/http.md)）；内容身份的计算见 [hash-contract-1.md](hash-contract-1.md)。
@@ -58,7 +58,7 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 
 | 字段 | 说明 |
 | --- | --- |
-| `file_type` | 必需。封闭枚举（§2.5） |
+| `file_type` | 必需。开放取值，语法见 §2.5 |
 | `title` | 字符串，可缺省。源给出的文档标题（文档标题、网页 `<title>`、issue summary 等） |
 | `doc_metadata` | JSON 对象，缺省视同 `{}` |
 | `pages` | 必需。页对象 `page_hash` 的数组；**数组顺序即页的阅读顺序**，可为空数组 |
@@ -100,11 +100,19 @@ DPE 只表达内容（plan §0.1 P1）：不承载编辑、治理（鉴权、ACL
 
 ### 2.5 file_type
 
-封闭枚举，由源提供，属于文档对象，进 doc_hash。取值：
+开放取值 + 推荐登记表（类比媒体类型的注册表），由源提供，属于文档对象，进 doc_hash。同一字符串即同一取值，没有别名等价：`md` 与 `markdown` 是两个不同取值。
 
-`bmp` `csv` `doc` `docx` `eml` `epub` `heic` `html` `jpg` `json` `md` `msg` `ndjson` `odt` `org` `pdf` `png` `ppt` `pptx` `rst` `rtf` `tiff` `tsv` `txt` `wav` `xls` `xlsx` `xml` `zip` `java_repo` `python_repo` `javascript_repo` `typescript_repo` `unk` `empty` `tfchat` `jira_project` `jira_issue`
+**语法**（唯一约束）：字符串，全串匹配 `^[a-z0-9][a-z0-9_]{0,31}$`——ASCII 小写字母、数字与下划线，首字符是字母或数字，长度不超过 32。不合语法 → `DPE_VALIDATION`（§2.8 第 4 步）。**接收方 MUST NOT 因取值未登记而拒收**：取值描述来源格式，具体含义由源与使用者约定，协议对取值的校验面只有语法。
 
-注意是 `md` 而不是 `markdown`。`tfchat`、`jira_project`、`jira_issue` 是开放格式名，属 plan §1 命名规则的登记例外；新增取值 MUST NOT 带产品或品牌名。未知取值 MUST 拒绝（`DPE_VALIDATION`）。SDK MUST 以常量导出本枚举（同 `vectors/manifest.json` 的 `file_types`）。
+**推荐登记表**（SHOULD 使用；本规范维护）：
+
+`bmp` `csv` `doc` `docx` `eml` `epub` `heic` `html` `jpg` `json` `md` `msg` `ndjson` `odt` `org` `pdf` `png` `ppt` `pptx` `rst` `rtf` `tiff` `tsv` `txt` `wav` `xls` `xlsx` `xml` `zip` `git_repo` `java_repo` `python_repo` `javascript_repo` `typescript_repo` `unk` `empty` `jira_project` `jira_issue`
+
+- 同一格式 SHOULD 使用表中取值；不在表内的取值（新格式、内部格式）照常接收与存储，登记入表经 Issue 进行，不改变协议行为。
+- 注意是 `md` 而不是 `markdown`。
+- `git_repo`：以 Git 仓库为源，与语言无关。`java_repo` / `python_repo` / `javascript_repo` / `typescript_repo` 为已登记的历史取值，**新文档 SHOULD NOT 使用**（改用 `git_repo`）。
+- 命名规则沿用 plan §1：**新登记**的取值 SHOULD NOT 带产品或品牌名；`jira_project` / `jira_issue` 是已登记的例外（已有落库数据，改名会改变 doc_hash）。
+- SDK MUST 以常量导出本表（同 `vectors/manifest.json` 的 `file_types`），并导出语法校验入口。
 
 ### 2.6 数值
 
@@ -130,7 +138,7 @@ hash 定义了"同一内容"：两份输入的 doc_hash 相等，即为同一内
 3. **封闭 schema**：出现未定义的字段 → `DPE_VALIDATION`。其 category 未允许的内容字段同样算未定义字段；字段值为 null 也同样拒绝。
 4. **逐字段**：按 §2.1–§2.3 表中的字段顺序逐个校验，一个字段完整校验后才校验下一个字段。完整校验包括：
    - 值的类型；
-   - file_type 枚举（§2.5）；
+   - file_type 的语法（§2.5）；
    - `blob` 的引用格式（契约 1 §1）；
    - metadata 中的全部值（§2.6）；
    - 子对象 hash 列表的每一项，按数组顺序。每一项依次判定：
@@ -310,7 +318,7 @@ negotiate ──▶ open ──upload*──▶ open ──commit 成功──�
 
 | code | retryable | 语义 | 恢复 |
 | --- | --- | --- | --- |
-| `DPE_VALIDATION` | 否 | 报文不合法：任一层对象出现未定义字段、元素对象多余字段、未知 file_type、整数越界、force 与其他前置条件并存、暂存分块的 Content-Range 非法、块长不符、总量与先前声明不一致、偏移不连续等 | 修正报文；暂存分块的偏移不连续时按错误响应带的 `DPE-Upload-Offset` 重新同步（HTTP 绑定 §4.7） |
+| `DPE_VALIDATION` | 否 | 报文不合法：任一层对象出现未定义字段、元素对象多余字段、file_type 不合语法、整数越界、force 与其他前置条件并存、暂存分块的 Content-Range 非法、块长不符、总量与先前声明不一致、偏移不连续等 | 修正报文；暂存分块的偏移不连续时按错误响应带的 `DPE-Upload-Offset` 重新同步（HTTP 绑定 §4.7） |
 | `DPE_CONTRACT_UNSUPPORTED` | 否 | hash 契约版本不被支持 | 按 capabilities 换契约，或失败 |
 | `DPE_CATEGORY_UNKNOWN` | 否 | category 不在契约的封闭枚举内 | 修正报文 |
 | `DPE_PRECONDITION_REQUIRED` | 否 | 写操作缺少 CAS 前置条件 | 补前置条件 |

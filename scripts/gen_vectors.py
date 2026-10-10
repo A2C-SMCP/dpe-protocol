@@ -73,13 +73,17 @@ CATEGORY_CONTENT_FIELDS: dict[str, tuple[str, ...]] = dict(
     )
 )
 
-#: file_type 封闭枚举（core.md §2.5），由源提供，进 doc_hash（契约 1 §5）。
-FILE_TYPES = (
+#: file_type 推荐登记表（core.md §2.5，按规范表中顺序），由源提供，进 doc_hash（契约 1 §5）。
+#: 取值只是推荐：语法合法的未登记取值同样被接受（见 FILE_TYPE_RE），接收方 MUST NOT 拒收。
+RECOMMENDED_FILE_TYPES = (
     "bmp", "csv", "doc", "docx", "eml", "epub", "heic", "html", "jpg", "json", "md", "msg", "ndjson",
     "odt", "org", "pdf", "png", "ppt", "pptx", "rst", "rtf", "tiff", "tsv", "txt", "wav", "xls", "xlsx",
-    "xml", "zip", "java_repo", "python_repo", "javascript_repo", "typescript_repo", "unk", "empty",
-    "tfchat", "jira_project", "jira_issue",
+    "xml", "zip", "git_repo", "java_repo", "python_repo", "javascript_repo", "typescript_repo", "unk",
+    "empty", "jira_project", "jira_issue",
 )  # fmt: skip
+
+#: file_type 的语法（core.md §2.5）：ASCII 小写字母、数字与下划线，首字符是字母或数字，长度 ≤ 32。
+FILE_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9_]{0,31}")
 
 #: dpe2 是**仅用于契约升级演练的假想契约**（vectors/README.md）：
 #: 算法与 dpe1 相同，但每次摘要额外前置一个内容为 b"dpe2" 的段。
@@ -291,7 +295,7 @@ def check_document_fields(doc: Any, path: str) -> None:
     ):
         raise Reject(VALIDATION, path)
     check_closed(doc, ("file_type", "title", "doc_metadata", "pages"), path)
-    if not isinstance(doc["file_type"], str) or doc["file_type"] not in FILE_TYPES:
+    if not isinstance(doc["file_type"], str) or not FILE_TYPE_RE.fullmatch(doc["file_type"]):
         raise Reject(VALIDATION, ptr(path, "file_type"))
     check_string(doc, "title", path)
     check_metadata(doc, "doc_metadata", path)
@@ -1043,6 +1047,36 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
         ],
     },
     {
+        "name": "file_type_open_values",
+        "description": "file_type 是开放取值（core.md §2.5）：推荐登记表之外的语法合法取值照常被接受并进 doc_hash——含旧枚举下会被拒的 `markdown`（与 `md` 是两个取值，无别名等价），以及数字开头、长度上界 32 的取值；33 字符与 `md\\n`（尾随换行，全串匹配）见拒绝类用例。",
+        "documents": {
+            "registered": doc(page(None, el("NarrativeText", "x")), file_type="md"),
+            "unregistered": doc(page(None, el("NarrativeText", "x")), file_type="custom_format_v2"),
+            "old_alias": doc(page(None, el("NarrativeText", "x")), file_type="markdown"),
+            "digit_leading": doc(page(None, el("NarrativeText", "x")), file_type="3mf"),
+            "max_length": doc(
+                page(None, el("NarrativeText", "x")),
+                file_type="max_length_value_0123456789abcde",  # 恰 32 字符，语法合法
+            ),
+        },
+        "relations": [
+            eq(
+                "registered.pages.0.page_hash",
+                "unregistered.pages.0.page_hash",
+                "old_alias.pages.0.page_hash",
+                "digit_leading.pages.0.page_hash",
+                "max_length.pages.0.page_hash",
+            ),
+            ne(
+                "registered.doc_hash",
+                "unregistered.doc_hash",
+                "old_alias.doc_hash",
+                "digit_leading.doc_hash",
+                "max_length.doc_hash",
+            ),
+        ],
+    },
+    {
         "name": "page_insert_reuse",
         "description": "在中间插入一页（plan §0.1 P3）：其余各页的 page_hash 全部不变、无需重传（页不含位置，如同 Git 的 tree 条目移动不改变子树），只有 doc_hash 变化。",
         "documents": {
@@ -1545,9 +1579,44 @@ INVALID_VECTORS: list[dict[str, Any]] = [
             bad("document_missing_file_type", "document", {"pages": []}, V, ""),
             bad("document_missing_pages", "document", {"file_type": "md"}, V, ""),
             bad(
-                "document_file_type_unknown",
+                "document_file_type_uppercase",
                 "document",
-                {"file_type": "markdown", "pages": []},
+                {"file_type": "Markdown", "pages": []},
+                V,
+                "/file_type",
+            ),
+            bad(
+                "document_file_type_hyphen",
+                "document",
+                {"file_type": "git-repo", "pages": []},
+                V,
+                "/file_type",
+            ),
+            bad(
+                "document_file_type_empty",
+                "document",
+                {"file_type": "", "pages": []},
+                V,
+                "/file_type",
+            ),
+            bad(
+                "document_file_type_leading_underscore",
+                "document",
+                {"file_type": "_internal", "pages": []},
+                V,
+                "/file_type",
+            ),
+            bad(
+                "document_file_type_too_long",
+                "document",
+                {"file_type": "max_length_value_0123456789abcdef", "pages": []},  # 33 字符
+                V,
+                "/file_type",
+            ),
+            bad(
+                "document_file_type_trailing_newline",
+                "document",
+                {"file_type": "md\n", "pages": []},  # 全串匹配：Python 的 `$` 会匹配末尾换行之前，必须 fullmatch
                 V,
                 "/file_type",
             ),
@@ -1576,7 +1645,7 @@ INVALID_VECTORS: list[dict[str, Any]] = [
             bad(
                 "document_file_type_before_children",
                 "document",
-                {"file_type": "markdown", "pages": ["a" * 64]},
+                {"file_type": "Markdown", "pages": ["a" * 64]},
                 V,
             ),
             bad(
@@ -1664,7 +1733,7 @@ INVALID_VECTORS: list[dict[str, Any]] = [
                 "expanded_document_fields_before_pages",
                 "expanded_document",
                 {
-                    "file_type": "markdown",
+                    "file_type": "Markdown",
                     "pages": [{"elements": [{"category": "Video"}]}],
                 },
                 V,
@@ -3270,7 +3339,7 @@ def build_files() -> dict[str, str]:
         "contract": "dpe1",
         "spec": "spec/hash-contract-1.md",
         "status": "draft",
-        "file_types": list(FILE_TYPES),
+        "file_types": list(RECOMMENDED_FILE_TYPES),
         "category_content_fields": {
             c: list(f) for c, f in CATEGORY_CONTENT_FIELDS.items()
         },

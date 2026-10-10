@@ -1,6 +1,6 @@
 # dpe-hash
 
-[DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），实现 file_uri 语法规范化与 I-JSON 严格解析（`parse_ijson`，core §2.8 第 0 步），并导出契约常量。
+[DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），实现 file_uri 语法规范化、file_type 语法校验（`validate_file_type` / `is_valid_file_type`，core §2.5）与 I-JSON 严格解析（`parse_ijson`，core §2.8 第 0 步），并导出契约常量与 file_type 推荐登记表（`RECOMMENDED_FILE_TYPES`）。
 
 - 不绑定异步运行时、不含 I/O，仅依赖 `sha2`、`serde`、`serde_json` 与 `ryu`；
 - 逐字节通过规范仓库的一致性向量，与 Python [`dpe-hash`](https://pypi.org/project/dpe-hash/) 行为对等；

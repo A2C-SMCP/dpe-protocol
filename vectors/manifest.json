@@ -32,13 +32,13 @@
     "xlsx",
     "xml",
     "zip",
+    "git_repo",
     "java_repo",
     "python_repo",
     "javascript_repo",
     "typescript_repo",
     "unk",
     "empty",
-    "tfchat",
     "jira_project",
     "jira_issue"
   ],
@@ -162,6 +162,10 @@
       "sha256": "37d597688ca1bf9dec5ebdb237c69dc9806a357e1a852ba08ff6294265ae4443"
     },
     {
+      "name": "file_type_open_values.json",
+      "sha256": "f3ffcfb31473e5ec4bd7a3b17cd35dafd874ae087d392528fa9723883488f01f"
+    },
+    {
       "name": "file_uri_normalization.json",
       "sha256": "66d0bd5815253604108542fd33d96ba701ca11fe9695be1ab661d765d4ec7688"
     },
@@ -175,7 +179,7 @@
     },
     {
       "name": "invalid_objects.json",
-      "sha256": "7cf94ad62547cfe9f8d3587593ddb8e677378938b791e694be78dc282939f599"
+      "sha256": "0531d280844bfdafd1fadd4e2cd6fb515038a19fa7c8ee7b00f6d8e6d7fd2a01"
     },
     {
       "name": "jcs_basic.json",

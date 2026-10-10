@@ -110,10 +110,10 @@ fn object_hash_errors() {
         (Validation, V, "/elements/0", json!({"elements": [1]}), Page),
         (Validation, V, "/elements", json!({"elements": h()}), Page),
         (
-            FileTypeUnknown,
+            FileTypeInvalid,
             V,
             "/file_type",
-            json!({"file_type": "markdown", "pages": []}),
+            json!({"file_type": "Markdown", "pages": []}),
             Document,
         ),
         (Validation, V, "", json!({"file_type": "md"}), Document),
@@ -280,10 +280,10 @@ fn expanded_view_checks_document_fields_before_pages() {
     let bad_element = json!({"category": "Video"});
     assert_err(
         document_hashes(
-            &json!({"file_type": "markdown", "pages": [{"elements": [bad_element]}]}),
+            &json!({"file_type": "Markdown", "pages": [{"elements": [bad_element]}]}),
             "dpe1",
         ),
-        ErrorKind::FileTypeUnknown,
+        ErrorKind::FileTypeInvalid,
         V,
         "/file_type",
     );
