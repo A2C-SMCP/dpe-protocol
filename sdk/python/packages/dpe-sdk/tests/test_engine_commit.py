@@ -484,7 +484,7 @@ def test_missing_truncated() -> None:
 
 
 def test_fast_path_reuses_current_document_objects() -> None:
-    """去重范围下界：本文档当前状态引用的对象不必重传。"""
+    """去重范围固定为本文档：本文档当前状态引用的对象不必重传。"""
     engine = make_engine()
     first = _create(engine, text_doc(["a", "b"], ["c"]))
     second = inline(text_doc(["a", "b"], ["c"], ["d"]))
@@ -720,6 +720,40 @@ def test_authorizer_may_call_back_into_engine() -> None:
     assert not worker.is_alive(), "授权器回调引擎时死锁"
     assert done == ["created"]
     assert auth.calls == [URI]
+
+
+@dataclass
+class _WindowAuthorizer:
+    """首次判定任一 URI 时执行一次钩子（模拟授权窗口内他人写入目标）。"""
+
+    hook: Callable[[], object] | None = None
+
+    def can_write(self, caller: str, uri: str) -> bool:
+        hook, self.hook = self.hook, None
+        if hook is not None:
+            hook()
+        return True
+
+    def can_force(self, caller: str, uri: str) -> bool:
+        return True
+
+
+def test_cas_is_decided_after_the_authorization_window() -> None:
+    """授权在锁外、CAS 在锁内裁决：窗口内他人写入目标，外层 commit 按最新状态返回 AlreadyExists。"""
+    auth = _WindowAuthorizer()
+    engine = make_engine(authorizer=auth)
+    auth.hook = lambda: engine.commit("u", URI, inline(text_doc(["rival"])).body(), C, IfAbsent())
+    with pytest.raises(errors.AlreadyExistsError):
+        engine.commit("u", URI, inline(text_doc(["mine"])).body(), C, IfAbsent())
+
+
+def test_target_reaching_same_content_in_window_is_unchanged() -> None:
+    """窗口内他人写入与本次提交相同的内容：外层 commit 得到 unchanged（core §5.2）。"""
+    auth = _WindowAuthorizer()
+    engine = make_engine(authorizer=auth)
+    same = inline(text_doc(["mine"]))
+    auth.hook = lambda: engine.commit("u", URI, same.body(), C, IfAbsent())
+    assert engine.commit("u", URI, same.body(), C, IfAbsent()).status == "unchanged"
 
 
 def test_moved_document_keeps_serving_its_objects() -> None:

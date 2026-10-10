@@ -76,7 +76,7 @@ def test_negotiate_missing_layers_and_scope() -> None:
     _, ch = _page([yh])
     document = {"file_type": "md", "pages": [ah, bh, ch]}
     result = engine.negotiate("u", negotiate_body(URI, document, pages=[b]), C)
-    # A 在本文档当前状态（去重范围下界）中；B 已附带；C 缺失
+    # A 在本文档当前状态（去重范围）中；B 已附带；C 缺失
     assert result.missing_pages == [ch]
     # 附带页 B 的 x 在范围内、y 缺失；未附带页 C 的元素不在 negotiate 列出
     assert result.missing_content_hashes == [yh]

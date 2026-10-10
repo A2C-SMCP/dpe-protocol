@@ -916,12 +916,13 @@ class Engine:
         contract: str | None = None,
         precondition: Precondition | InvalidPrecondition | None = None,
     ) -> CommitResult:
-        """服务端自身写入（core §2.4 同级写入）：整个过程与 ``commit`` 同一求值顺序，差别只有两处。
+        """服务端自身写入（core §2.4 同级写入）：整个过程与 ``commit`` 同一求值顺序，差别只有一处。
 
         - **不做对外授权**：写的是服务端自己的内容（如它作为某个 URI 的来源），不是外部调用者的
           请求，因此不询问 ``authorizer``；CAS 与全部报文校验照旧（不绕过 commit、不绕过前置条件）。
-        - **去重范围与 ``commit`` 相同**：固定为本文档的当前状态（core §3.3）——服务端的存储层物理
-          去重不扩大范围，引用他人文档的内容同样要内联。
+
+        去重范围与 ``commit`` 相同（固定为本文档的当前状态，core §3.3）：服务端的存储层物理去重
+        不扩大范围，引用他人文档的内容同样要内联。
 
         ``contract`` 缺省为主契约；``body`` 是与 ``commit`` 同形的请求体，但**不含
         ``staging_session``**（会话绑定「调用者 + file_uri」，服务端没有会话身份），出现即
