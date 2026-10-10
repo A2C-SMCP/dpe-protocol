@@ -32,7 +32,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
   消费方 MUST 拒绝每条输入，且错误码一致。用例带 `path` 时（只有一处违例的输入），违例位置也 MUST 一致。不带 `path` 的用例含多处违例，只断言错误码，以此检验校验顺序。生成器在生成时用参考校验器断言每条用例。
 
-  「受支持的契约」按 manifest 的 `contract` 加上用例的 `contract` 计算，不按消费方自己支持的契约集合计算。例如，同时支持 dpe1 与 dpe2 的过渡期服务端仍应按此口径运行用例。
+  「受支持的契约」按 manifest 的 `contract` 加上用例的 `contract` 计算，不按消费方自己支持的契约集合计算。例如，同时支持 dpe1 与 dpe2 的过渡期服务端仍应按此口径运行用例。（运行时校验按服务端声明的契约集合判定，core.md §3.1；此处口径只用于运行向量。）
 
 - **`pattern`**（`config_schema_patterns.json`，规范依据 [connector 契约](../spec/connector-contract.md) §4.1.1，与 hash 契约无关）：
   - `valid_patterns[]`：MUST 被接受且可转译（子集外的 pattern 使清单整体 `manifest_invalid`）；匹配语义由 `match_cases` 逐条钉住；含结构上界边界与最坏情况形状；
