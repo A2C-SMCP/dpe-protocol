@@ -122,6 +122,27 @@ def test_rejects_lazy_import_of_undeclared_module(tmp_path: Path) -> None:
     _assert_fails(errors, "import 了未声明的模块 'tfrobot'")
 
 
+def test_allows_type_checking_import_of_extra_only_dependency(tmp_path: Path) -> None:
+    """``if TYPE_CHECKING:`` 的体运行期不执行，不是模块顶层 import（可选依赖的常见写法）。"""
+    requires = ("dpe-hash==0.1.4-dev", 'rich; extra == "cli"')
+    for header in ("from typing import TYPE_CHECKING", "import typing"):
+        guard = "TYPE_CHECKING" if "from typing" in header else "typing.TYPE_CHECKING"
+        source = f"{header}\n\nif {guard}:\n    from rich import console\n"
+        assert check(_dist(tmp_path, sdk_requires=requires, sdk_source=source), None) == []
+
+
+def test_rejects_runtime_import_in_type_checking_else_branch(tmp_path: Path) -> None:
+    """同名守护的 ``else`` 分支照常运行期执行，仍按模块顶层 import 判。"""
+    requires = ("dpe-hash==0.1.4-dev", 'rich; extra == "cli"')
+    source = (
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n    from rich.console import Console as Console\n"
+        "else:\n    from rich import console\n"
+    )
+    errors = check(_dist(tmp_path, sdk_requires=requires, sdk_source=source), None)
+    _assert_fails(errors, "在模块顶层 import 了可选依赖 'rich'")
+
+
 def test_rejects_version_mismatch(tmp_path: Path) -> None:
     errors = check(_dist(tmp_path, sdk_version="0.1.5-dev"), None)
     _assert_fails(errors, "两包版本不一致")
