@@ -150,6 +150,40 @@ async def test_skeleton_if_none_match_304() -> None:
             assert response.headers["vary"] == "DPE-Hash-Contract"
         miss = await r.raw("GET", TARGET, headers={"If-None-Match": '"dpe1:' + "0" * 64 + '"'})
         assert miss.status_code == 200
+        # 引号内的逗号是 tag 值的一部分（etagc 含逗号），不是分隔符：合法的单项列表，不命中
+        for value in ('"a,b"', 'W/"a,b"', '"a,b", "c"'):
+            response = await r.raw("GET", TARGET, headers={"If-None-Match": value})
+            assert response.status_code == 200, value
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['*, "x"', "* ,", "", "x", '"unterminated', '"a", ', '"a" "b"', "W/", '"a",,'],
+)
+async def test_skeleton_if_none_match_syntax_is_validation(value: str) -> None:
+    """GET 的 If-None-Match 只接受单独的 `*` 或 entity-tag 列表；其余 → DPE_VALIDATION（§3.3）。
+
+    非法输入 MUST NOT 被静默当作「不匹配」——那会让调用者拿到看似合法的 200。列表**不含空项**
+    （空值、尾随逗号、连续逗号都非法）：这是 DPE 有意比 RFC 9110 §5.6.1.2 的接收宽容更严的
+    地方，与 §3.2 对写操作条件头的严格语法一致。
+    """
+    async with remote() as r:
+        await _create(r)
+        response = await r.raw("GET", TARGET, headers={"If-None-Match": value})
+        assert (response.status_code, problem(response)["code"]) == (400, "DPE_VALIDATION"), value
+
+
+async def test_skeleton_condition_syntax_precedes_document_state() -> None:
+    """条件头语法与 §3.1 其余只看请求本身的校验同层：契约 → uri → 条件头（§3.3）。"""
+    async with remote() as r:
+        # 文档不存在不掩盖语法错误（否则非法输入得到看似合法的 404）
+        missing = await r.raw(
+            "GET", "documents?uri=feishu%3A%2F%2Fdoc%2Fnope", headers={"If-None-Match": '*, "x"'}
+        )
+        assert (missing.status_code, problem(missing)["code"]) == (400, "DPE_VALIDATION")
+        # 契约声明先于它
+        no_contract = await r.raw("GET", TARGET, contract=None, headers={"If-None-Match": '*, "x"'})
+        assert problem(no_contract)["code"] == "DPE_CONTRACT_UNSUPPORTED"
 
 
 async def test_if_none_match_compares_only_with_the_declared_contract() -> None:

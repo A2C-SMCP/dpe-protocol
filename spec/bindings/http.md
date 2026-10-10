@@ -43,7 +43,13 @@
 
 ### 3.1 契约声明与版本令牌
 
-- **传输层**（与文档状态无关。core.md §3.3 把认证、限流、不可用归在这里，说它们「可在任何时刻发生，不在求值顺序之内」——那是指 core 的六步求值不约束它们；本节固定下面四步在绑定层内彼此的先后，让各实现与 conformance 有一致的结果。限流与不可用（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，§5）**不**被本节固定：它们仍可在任何时刻发生）：路由（未知路径 → `404`，方法不符 → `405` + `Allow`（列出该路径允许的方法），都不是 DPE 错误，§5）→ 认证（未认证 → `401` + `WWW-Authenticate`，无 problem 体，§6）→ 查询参数的形态（§1）→ 请求体（core.md §3.3 第 0 步：超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`，按解码后计算；不支持的 `Content-Encoding` → `415` + `Accept-Encoding`，非 DPE 错误，带 `Content-Range` 的请求不走这条（§7）；gzip 数据损坏或不完整 → `DPE_VALIDATION`，§7）。前三步都不读请求体，因此都排在第 0 步之前——查询参数的形态在请求行里，无需读取请求体即可判定。下文的校验顺序都假定传输层已通过。
+- **传输层**：与文档状态无关的判定。core.md §3.3 把认证、限流、不可用归在这里，说它们「可在任何时刻发生，不在求值顺序之内」——那是指 core 的六步求值不约束它们；本节固定下面四步在绑定层内彼此的先后，让各实现与 conformance 有一致的结果。第 1–3 步都不读请求体，因此都排在 core.md §3.3 第 0 步之前。
+  1. 路由：未知路径 → `404`；方法不符 → `405` + `Allow`（列出该路径允许的方法）。都不是 DPE 错误（§5）。
+  2. 认证：未认证 → `401` + `WWW-Authenticate`，无 problem 体，也没有 `DPE-Error-Code`（§6）。
+  3. 查询参数的形态（§1）：查询串在请求行里，无需读取请求体即可判定。
+  4. 请求体（core.md §3.3 第 0 步）：超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`，按解码后计算；不支持的 `Content-Encoding` → `415` + `Accept-Encoding`，非 DPE 错误，带 `Content-Range` 的请求不走这条（§7）；gzip 数据损坏或不完整 → `DPE_VALIDATION`（§7）。
+
+  限流与不可用（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，§5）**不**被本节固定：它们仍可在任何时刻发生。下文的校验顺序都假定传输层已通过。
 - **带 JSON 请求体的端点的校验顺序**（batch_head、negotiate、页对象与元素对象的**非分块** upload、commit、move；blob 上传与分块的页对象上传的请求体是原始字节，校验在字节到齐后进行（§4.6、§4.7），不适用本节顺序）：
   1. 整个请求体是 I-JSON（core.md §2.8 第 0 步），否则 `DPE_VALIDATION`；
   2. 契约声明（`DPE-Hash-Contract` 头），否则 `DPE_CONTRACT_UNSUPPORTED`；
@@ -81,7 +87,7 @@
 ### 3.3 响应头
 
 - `head` 用 `HEAD documents?uri=`：`200` 带 `DPE-Doc-Hash` 与 `ETag`；不存在返回 `404` + `DPE-Error-Code: DPE_NOT_FOUND`（HEAD 不带体，§5）。
-- `get_skeleton` 的 `200` 响应带同样的头。请求 MAY 带 `If-None-Match`：按 RFC 9110 §13.1.2 接受 entity-tag 列表或 `*`，只与**请求声明契约下**的当前 doc_hash 做弱比较（`W/` 前缀不影响，不像 `If-Match` 那样跨契约匹配，§3.1）。命中时返回 `304`，带 `DPE-Doc-Hash`、`ETag` 与 `Vary`，没有响应体。
+- `get_skeleton` 的 `200` 响应带同样的头。请求 MAY 带 `If-None-Match`：取值 MUST 是 `*`，或 RFC 9110 §8.8.3 的 entity-tag 列表；其他取值 → `DPE_VALIDATION`，判定与 §3.1 其余只看请求本身的校验同层、在契约 → uri 之后——非法输入 MUST NOT 被静默当作「不匹配」。列表按该节的 `etagc` 解析：引号内的逗号是 tag 值的一部分，不是分隔符；**列表不含空项**（不得以逗号结尾、不得有连续逗号），空值不是列表——这比 RFC 9110 §5.6.1.2 对空列表元素的接收宽容更严，换取封闭的输入面（与 §3.2 对写操作条件头的严格语法一致）。`*` 命中任何存在的文档；列表项按 RFC 9110 §13.1.2 只与**请求声明契约下**的当前 doc_hash 做弱比较（`W/` 前缀不影响，不像 `If-Match` 那样跨契约匹配，§3.1）。命中时返回 `304`，带 `DPE-Doc-Hash`、`ETag` 与 `Vary`，没有响应体。
 - commit 的成功响应带文档当前的 `DPE-Doc-Hash` 与 `ETag`；move 的成功响应带目标文档的 `DPE-Doc-Hash` 与指向目标文档的 `Content-Location`，不带 `ETag`（`/move` 不是文档资源）；delete 的 `204` 不带二者。
 
 ## 4. 各端点报文
@@ -256,7 +262,7 @@
 
   按 core.md §5.2 的求值顺序：源不存在且目标 doc_hash 等于 `base_hash` → 视为已完成，返回成功；源不存在的其他情况 → `404` + `DPE_NOT_FOUND`；源 doc_hash 不符 → `409` + `DPE_PRECONDITION_FAILED`；目标已存在 → `409` + `DPE_ALREADY_EXISTS`。成功 `200`，体为 `{ "doc_hash": "dpe1:…" }`，头带 `DPE-Doc-Hash` 与 `Content-Location`（§3.3）。
 
-  `Content-Location` 是**绝对 URL**：remote 的 base URL + `/documents?uri=` + 规范化 `to_uri` 的百分号编码，编码只保留 unreserved（RFC 3986 §2.3）字符。部署在反向代理之后时，实现 MUST 能显式配置对外可见的 base URL，MUST NOT 依赖 `X-Forwarded-*` 之类的头猜。
+  `Content-Location` MUST 是**调用者可见**的绝对 URL：`<remote 的对外 base URL>/documents?uri=` + 规范化 `to_uri` 的百分号编码，编码只保留 unreserved（RFC 3986 §2.3）字符。部署在反向代理之后时，实现 SHOULD 支持显式配置对外的 base URL。（说明，非规范性）base URL 从哪里得到属于实现机制；但不经可信代理校验就采信 `Host` 或 `X-Forwarded-*` 有 host 头注入风险。
 
 写操作不需要幂等键：幂等由内容保证（core.md §5.2）。
 

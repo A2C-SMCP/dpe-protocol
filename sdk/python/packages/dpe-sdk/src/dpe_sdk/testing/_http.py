@@ -9,9 +9,10 @@
 ``DPE_VALIDATION``）。
 
 条件头与 ``Content-Range`` 的语法错误不在本层拒绝：分别以 ``InvalidPrecondition`` /
-``InvalidChunk`` 交给引擎，在规范规定的那一步判定（commit 报文校验末步；分块阶梯第 4 步，
-「本会话内已完成 → 200」先于它）。合法 entity-tag 中的值原样交给引擎按值比较（core §5.2）：
-``W/"…"`` 永不匹配，格式不对的值同样比较不上。
+``InvalidChunk`` 交给引擎，在规范规定的那一步判定（commit 报文校验末步；GET 的
+``If-None-Match`` 在「契约 → uri」之后、文档状态之前；分块阶梯第 4 步，「本会话内已完成 →
+200」先于它）。合法 entity-tag 中的值原样交给引擎按值比较（core §5.2）：``W/"…"`` 永不匹配，
+格式不对的值同样比较不上。
 
 引擎持线程锁、授权器可插拔（可能慢，也可能经 HTTP 回调本应用），引擎调用一律放到工作线程。
 """
@@ -50,6 +51,7 @@ from dpe_sdk.testing._engine import (
     BaseHash,
     Engine,
     IfAbsent,
+    IfNoneMatch,
     InvalidPrecondition,
     Precondition,
 )
@@ -352,11 +354,13 @@ class _App:
         if mixed:
             raise ValidationError(f"查询参数 uri 不得与 {mixed[0]} 并用")
         if request.method == "GET":
-            skeleton = await self._run(engine.get_skeleton, caller, uri, contract)
+            condition = _if_none_match(request.header("if-none-match"))
+            skeleton = await self._run(engine.get_skeleton, caller, uri, contract, condition)
             if skeleton is None:
                 raise NotFoundError(f"{uri} 不存在")
             tags = _doc_hash_headers(skeleton.doc_hash)
-            if _none_match(request.header("if-none-match"), skeleton.doc_hash):
+            # InvalidPrecondition 已在引擎的「契约 → uri」之后抛出，这里只剩 IfNoneMatch / None
+            if isinstance(condition, IfNoneMatch) and _matched_weakly(condition, skeleton.doc_hash):
                 return _Response(304, tags)
             response = _json(200, skeleton)
             response.headers.extend(tags)
@@ -580,19 +584,50 @@ def _write_precondition(
     return BaseHash(match.group(2))
 
 
-def _none_match(value: str | None, doc_hash: str) -> bool:
-    """GET 的 ``If-None-Match``（RFC 9110 §13.1.2，弱比较）：只与声明契约下的 doc_hash 比较。"""
+def _if_none_match(value: str | None) -> IfNoneMatch | InvalidPrecondition | None:
+    """GET 的 ``If-None-Match``（HTTP 绑定 §3.3）：``*``，或逗号分隔的 entity-tag 列表。
+
+    语法非法（既不是单独的 ``*``、也不是合法的 tag 列表，如 ``*, "x"``、空值与尾随逗号）时返回
+    ``InvalidPrecondition``，由引擎在「契约 → uri」之后抛 ``DPE_VALIDATION``——与写操作的条件头
+    同样只看请求本身，非法输入 MUST NOT 被静默当作「不匹配」。
+    """
     if value is None:
-        return False
-    if value == "*":
-        return True
-    for item in value.split(","):
-        tag = item.strip()
-        if tag.startswith("W/"):
-            tag = tag[2:]
-        if tag == f'"{doc_hash}"':
-            return True
-    return False
+        return None
+    if value.strip() == "*":
+        return IfNoneMatch(())
+    tags: list[str] = []
+    for item in _split_entity_tags(value):
+        match = _ENTITY_TAG.fullmatch(item.strip())
+        if match is None:  # 含空项（§3.3：列表不含空项）
+            return InvalidPrecondition(f"If-None-Match 必须是 * 或 entity-tag 列表：{value!r}")
+        tags.append(match.group(2))  # 弱比较：W/ 前缀不影响取值
+    return IfNoneMatch(tuple(tags))
+
+
+def _split_entity_tags(value: str) -> list[str]:
+    """按逗号切分 entity-tag 列表，**引号内的逗号不是分隔符**（``etagc`` 含逗号，RFC 9110 §8.8.3）。
+
+    写侧的 ``If-Match`` 是整串 ``fullmatch``，因此 ``"a,b"`` 在那条路径上已被视为单个 tag；这里
+    必须同样把它当成一项，否则读写两条路径对同一输入给出互斥的结论。
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    quoted = False
+    for char in value:
+        if char == '"':  # etagc 不含 "，无需处理转义
+            quoted = not quoted
+        if char == "," and not quoted:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return parts
+
+
+def _matched_weakly(condition: IfNoneMatch, doc_hash: str) -> bool:
+    """弱比较（RFC 9110 §13.1.2）：``*`` 命中任何存在的文档，否则逐项与 doc_hash 比。"""
+    return not condition.tags or doc_hash in condition.tags
 
 
 def _chunk(value: str) -> UploadChunk | InvalidChunk:

@@ -13,6 +13,7 @@ from dpe_sdk.testing import (
     BaseHash,
     Engine,
     IfAbsent,
+    IfNoneMatch,
     InvalidChunk,
     InvalidPrecondition,
     UploadChunk,
@@ -138,6 +139,21 @@ def test_invalid_precondition_before_authorization() -> None:
         engine.delete("u", "test://a", C, bad)
     with pytest.raises(errors.ForbiddenError):
         engine.delete("u", "test://a", C, None)
+
+
+def test_skeleton_condition_syntax_after_uri() -> None:
+    """GET 条件头的语法与 uri 同层：契约 → uri → 条件头，先于文档状态（HTTP 绑定 §3.3）。"""
+    engine = make_engine()
+    req = inline(text_doc(["x"]))
+    engine.commit("u", "test://a", req.body(), C, IfAbsent())
+    bad = InvalidPrecondition("If-None-Match 语法非法")
+    with pytest.raises(errors.ContractUnsupportedError):
+        engine.get_skeleton("u", "test://a", None, bad)
+    with pytest.raises(errors.ValidationError, match="语法非法"):
+        engine.get_skeleton("u", "test://a", C, bad)
+    # 合法形态照常返回；`*` 表示空 tuple，不参与取值比较（比较在绑定层按弱比较做）
+    skeleton = engine.get_skeleton("u", "test://a", C, IfNoneMatch(()))
+    assert skeleton is not None and skeleton.doc_hash == req.doc_hash
 
 
 def test_unparseable_base_hash_is_a_mismatch() -> None:
