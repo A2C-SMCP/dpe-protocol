@@ -10,7 +10,13 @@ from typing import Any
 import pytest
 from helpers import FixtureRepo, git_env, requires_git, run_git
 
-from dpe_git_connector.gitrepo import GitError, GitRepo, discover_repos, looks_like_repo
+from dpe_git_connector.gitrepo import (
+    GitContentError,
+    GitError,
+    GitRepo,
+    discover_repos,
+    looks_like_repo,
+)
 
 pytestmark = requires_git
 
@@ -40,18 +46,44 @@ def test_discovery_is_recursive_and_skips_repo_interiors(tmp_path: Path) -> None
     plain.mkdir()
     (plain / "file.txt").write_text("x", encoding="utf-8")
 
-    found = discover_repos(str(root))
+    found, unreadable = discover_repos(str(root))
     assert [item.identifier for item in found] == [b"alpha", b"nested/beta"]
     assert [item.path for item in found] == [str(alpha.root), str(nested.root)]
+    assert unreadable == []
 
 
 def test_discovery_finds_bare_repo(tmp_path: Path) -> None:
     work = simple_repo(tmp_path / "work")
     bare = tmp_path / "bare.git"
     run_git(work.root, "clone", "-q", "--bare", str(work.root), str(bare))
-    found = discover_repos(str(tmp_path))
+    found, _ = discover_repos(str(tmp_path))
     # 裸仓库（HEAD + objects + refs）也在发现范围内
     assert [item.identifier for item in found] == [b"bare.git", b"work"]
+
+
+def test_discovery_records_unreadable_subtree(tmp_path: Path) -> None:
+    """子孙目录读不了：记录到第二个返回值（出条目级 error），不废掉整轮；root 自身读不了才抛错。"""
+    root = tmp_path / "root"
+    repo = simple_repo(root / "alpha")
+    hidden = root / "hidden"
+    hidden.mkdir()
+    (hidden / "inner").mkdir()
+    os.chmod(hidden, 0)
+    try:
+        found, unreadable = discover_repos(str(root))
+        assert [item.identifier for item in found] == [b"alpha"]
+        assert [item.identifier for item in unreadable] == [b"hidden"]
+        assert unreadable[0].path == str(hidden)
+    finally:
+        os.chmod(hidden, 0o755)  # 让 pytest 能清理 tmp_path
+    # root 自身不可读：没有可枚举的范围，整轮失败（GitError）
+    os.chmod(root, 0)
+    try:
+        with pytest.raises(GitError, match="root"):
+            discover_repos(str(root))
+    finally:
+        os.chmod(root, 0o755)
+    assert repo.root.exists()
 
 
 def test_looks_like_repo_heuristic(tmp_path: Path) -> None:
@@ -203,6 +235,9 @@ def test_log_parses_metadata_and_preserves_message(tmp_path: Path) -> None:
 def test_log_rejects_non_utf8_message(tmp_path: Path) -> None:
     """说明不是合法 UTF-8 时如实报错（进不了 JSON 字符串），不做替换或猜测编码。
 
+    抛 ``GitContentError``（内容类失败）而不是普通 ``GitError``：条目级归属是
+    ``content_invalid``、不可重试（§6.5 的封闭枚举按定义区分）。
+
     ``commit-tree`` 会把不是 UTF-8 的说明转码成 UTF-8（实测），因此这里用 ``hash-object``
     直接写入对象——模拟历史里真实存在的非 UTF-8 提交（无 ``encoding`` 头）。
     """
@@ -224,7 +259,7 @@ def test_log_rejects_non_utf8_message(tmp_path: Path) -> None:
     assert completed.returncode == 0
     sha = completed.stdout.decode().strip()
     run_git(repo.root, "update-ref", "refs/heads/bad", sha)
-    with pytest.raises(GitError, match="UTF-8"):
+    with pytest.raises(GitContentError, match="UTF-8"):
         GitRepo(str(repo.root)).log("bad")
 
 

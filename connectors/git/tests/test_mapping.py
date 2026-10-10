@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,7 +14,7 @@ from dpe_hash import (
     is_valid_file_type,
     normalize_file_uri,
 )
-from helpers import FixtureRepo, requires_git
+from helpers import FixtureRepo, git_env, requires_git, run_git
 
 from dpe_git_connector.extractors import ELEMENT_BUDGET_BYTES, element_bytes
 from dpe_git_connector.gitrepo import CommitRecord, GitError, GitRepo, RepoDir
@@ -311,6 +312,56 @@ def test_document_explicit_default_branch(tmp_path: Path) -> None:
         RepoSpec(default_branch="main", since="does-not-exist"),
     )
     assert item_error.kind == "error" and item_error.fields["code"] == "source_unavailable"
+
+
+def test_document_non_utf8_content_is_not_retryable(tmp_path: Path) -> None:
+    """非 UTF-8 的提交说明是**内容**类失败：content_invalid 且不可重试（§6.5 定义）。
+
+    与「源端不可达」分开：同样的扫描重跑不会成功，报成可重试的源端失败会让运行器误报并
+    持续重试（旧文件映射时代的分类在新映射里必须保留）。
+    """
+    repo = FixtureRepo(tmp_path / "repo")
+    repo.commit("正常提交", date="2026-06-01T00:00:00+00:00", files={"a.txt": "a\n"})
+    tree = run_git(repo.root, "rev-parse", "HEAD^{tree}").strip()
+    raw = (
+        f"tree {tree}\n"
+        "author T <t@example.invalid> 1767225600 +0000\n"
+        "committer T <t@example.invalid> 1767225600 +0000\n"
+        "\n"
+    ).encode() + b"\xff\xfe not utf8\n"
+    completed = subprocess.run(
+        ["git", "-C", str(repo.root), "hash-object", "-w", "-t", "commit", "--stdin"],
+        capture_output=True,
+        check=False,
+        env=git_env(),
+        input=raw,
+    )
+    assert completed.returncode == 0
+    run_git(repo.root, "update-ref", "refs/heads/main", completed.stdout.decode().strip())
+    mapper = DocumentMapper(PREFIX)
+    item = mapper.document(
+        GitRepo(str(repo.root)),
+        RepoDir(path=str(repo.root), identifier=b"repo"),
+        RepoSpec(default_branch="main"),
+    )
+    assert item.kind == "error"
+    assert item.fields["code"] == "content_invalid"
+    assert item.fields["retryable"] is False
+    assert "UTF-8" in item.fields["message"]
+
+
+def test_since_does_not_filter_branch_pages(history: Any) -> None:
+    """since 是默认分支的概念：分支页只放 ``<default>..<branch>`` 的独有提交，不受 since 过滤。
+
+    （分支独有提交没有「引入提交」可言，钉住该语义避免后续实现分叉。）
+    """
+    item = document_for(history.path, spec=RepoSpec(branches=("dev",), since=history.sha("m2")))
+    pages = item["pages"]
+    assert [page["page_metadata"] for page in pages] == [
+        {"ref": "main", "period": "2026-03"},
+        {"ref": "dev"},
+    ]
+    assert page_shas(pages[1]) == [history.sha("d1"), history.sha("d2")]
 
 
 def test_document_empty_repository_is_zero_pages(tmp_path: Path) -> None:

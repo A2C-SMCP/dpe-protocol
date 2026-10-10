@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -209,6 +210,110 @@ def test_scan_root_mode_discovers_and_reports_item_errors(repos_root: ReposRoot)
         {"ref": "main", "period": "2026-01"},
         {"ref": "main", "period": "2026-02"},
     ]
+
+
+def test_unreadable_subtree_is_item_error(tmp_path: Path) -> None:
+    """发现层读不了的子树：条目级 source_unavailable，其余仓库照常（不废掉整轮，§6.5）。"""
+    root = tmp_path / "root"
+    root.mkdir()
+    repo = FixtureRepo(root / "alpha")
+    repo.commit("提交", date="2026-01-06T10:00:00+00:00", files={"a.txt": "a\n"})
+    repo.set_origin_head("main")
+    hidden = root / "hidden"
+    hidden.mkdir()
+    os.chmod(hidden, 0)
+    try:
+        serve = initialized_serve({"root": str(root)})
+        items = scan(serve)["items"]
+        assert [(item["kind"], item["file_uri"]) for item in items] == [
+            ("document", "git://s/alpha"),
+            ("error", "git://s/hidden"),
+        ]
+        assert items[1]["code"] == "source_unavailable"
+        assert items[1]["retryable"] is True
+    finally:
+        os.chmod(hidden, 0o755)  # 让 pytest 能清理 tmp_path
+
+
+def test_too_small_budget_is_request_error(history: History) -> None:
+    """单条预算连最小条目都装不下（上限过小 / id 过长）：-32602 应答，不发超限消息（§6.5）。"""
+    serve = Serve()
+    params = initialize_params({"repo": str(history.path)})
+    params["max_message_bytes"] = 1200
+    assert "result" in handle(serve, request(1, "initialize", params))
+    long_id = "x" * 150  # 预算 = 1200 − 信封预留 1024 − id 152 < 0：连 error 条目也装不下
+    line = serve.handle(
+        json.dumps({"jsonrpc": "2.0", "id": long_id, "method": "scan", "params": {"cursor": None}})
+    )
+    assert line is not None
+    assert len(line.encode("utf-8")) + 1 <= serve.max_message_bytes  # 错误响应本身装得下
+    response = json.loads(line)
+    assert response["error"]["code"] == -32602
+    assert "单条预算" in response["error"]["message"]
+
+
+def test_continuation_budget_shrink_degrades_to_item_error(tmp_path: Path) -> None:
+    """续批的预算随 id 变长而缩水：批首装不下下一页时该文档整篇失败（条目级 error），
+    不得断言崩溃（回归：旧实现此处 assert items，会以 -32603 收场且不收敛）。"""
+    from dpe_git_connector.server import _encoded_size
+
+    repo = FixtureRepo(tmp_path / "repo")
+    for month in (1, 2, 3):
+        repo.commit(
+            f"{month} 月提交（等长说明）",
+            date=f"2026-0{month}-10T00:00:00+00:00",
+            files={f"f{month}.txt": "x\n"},
+        )
+    config = {"repo": str(repo.root), "default_branch": "main"}
+    document = scan(initialized_serve(config))["items"][0]
+    pages = document["pages"]
+    assert len(pages) == 3
+    first_base = _encoded_size(
+        {
+            "kind": "document",
+            "file_uri": document["file_uri"],
+            "document": document["document"],
+            "pages": [],
+            "continued": True,
+        }
+    )
+    cont_base = _encoded_size(
+        {"kind": "document", "file_uri": document["file_uri"], "pages": [], "continued": True}
+    )
+    sizes = [_encoded_size(page) for page in pages]
+    # 首批（id "2"，1 字节）的预算刚好装下首页：分段成立（其余页留到续批）
+    limit = 1024 + 1 + first_base + sizes[0]
+    assert cont_base + max(sizes) <= limit - 1024 - 1  # 每一页当时都装得进续段信封
+
+    serve = Serve()
+    params = initialize_params(config)
+    params["max_message_bytes"] = limit
+    assert "result" in handle(serve, request(1, "initialize", params))
+    first = scan(serve, 2)
+    assert first["items"][0]["continued"] is True
+
+    # 续批换用长 id：预算缩到「比装下第二页少 1 字节」，批首装不下任何一页
+    need_room = cont_base + sizes[1] - 1
+    id_length = limit - 1024 - need_room
+    assert id_length > 0
+    line = serve.handle(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "x" * id_length,
+                "method": "scan",
+                "params": {"next": first["next"]},
+            }
+        )
+    )
+    assert line is not None
+    assert len(line.encode("utf-8")) + 1 <= limit
+    result = json.loads(line)["result"]
+    assert [item["kind"] for item in result["items"]] == ["error"]
+    assert result["items"][0]["code"] == "content_invalid"
+    assert "分段" in result["items"][0]["message"]
+    # 该文档失败不扣住本轮：同一响应即结束轮（§6.8）
+    assert result["cursor"] is None and result["incremental"] is False
 
 
 def test_scan_batches_by_max_items(repos_root: ReposRoot) -> None:
@@ -418,8 +523,8 @@ def test_cancel_does_not_poison_reused_ids(history: History) -> None:
     # id 5 已被应答并清除：再发同 id 的合法请求必须正常处理（不因历史 cancel 而被误判）
     response = handle(serve, request(5, "scan", {"cursor": None}))
     assert "result" in response
-    # 但最近一次被取消的 id（6）在轮首清空后同样不再误伤
-    assert serve._cancel_last is None
+    # 但最近一次被取消的 id（6）在轮首清空后同样不再误伤（行为断言，不读私有状态）
+    assert "result" in handle(serve, request(6, "scan", {"cursor": None}))
 
 
 def test_shutdown_sets_flag_and_responds(history: History) -> None:

@@ -33,6 +33,7 @@ from pathlib import Path
 
 __all__ = [
     "CommitRecord",
+    "GitContentError",
     "GitError",
     "GitRepo",
     "RepoDir",
@@ -55,6 +56,14 @@ class GitError(Exception):
     """git 命令失败、输出不合法，或仓库状态无法支撑本次枚举（``source_unavailable`` 候选）。"""
 
 
+class GitContentError(GitError):
+    """源内容无法映射为合法 DPE 内容（非 UTF-8 的说明 / 作者，非法时间戳）。
+
+    与「读取失败」分开：这类失败的条目级归属是 ``content_invalid``、**不可重试**——同样的
+    扫描重跑不会成功（§6.5 的封闭枚举按定义区分）。
+    """
+
+
 @dataclass(frozen=True)
 class CommitRecord:
     """一次提交（元素级映射的源）：元数据 + 提交说明全文；不读树、不读 diff。"""
@@ -72,10 +81,14 @@ class CommitRecord:
 
 @dataclass(frozen=True)
 class RepoDir:
-    """``root`` 下发现（或单仓库模式指定）的一个仓库：绝对路径 + 身份字节。"""
+    """``root`` 下发现（或单仓库模式指定）的一个目录：绝对路径 + 身份字节。
+
+    正常是仓库；发现层读不了它时出现在 ``discover_repos`` 的第二个返回值里（出条目级
+    error，而不是废掉整轮），``identifier`` 是相对 ``root`` 的原始路径字节——单仓库模式
+    的仓库标识是目录名。
+    """
 
     path: str
-    #: 相对 ``root`` 的原始路径字节（单仓库模式是目录名）——``file_uri`` 的仓库标识
     identifier: bytes
 
 
@@ -83,34 +96,46 @@ def looks_like_repo(directory: Path) -> bool:
     """目录是否是仓库候选：有 ``.git``（目录，或 worktree/子模块的 ``.git`` 文件）或形似裸仓库。
 
     只是发现用的启发式（省去对每个目录跑一次 git）：最终是否可用由 ``GitRepo.open`` 判定，
-    不可用的候选在扫描时如实产出条目级错误。
+    不可用的候选在扫描时如实产出条目级错误。读不了目录（权限等）时返回 ``False``——不当作
+    仓库候选；发现层下探时会把该子树记为「无法读取」，同样如实上报（不静默跳过）。
     """
-    if (directory / ".git").exists():
-        return True
-    return (
-        (directory / "HEAD").is_file()
-        and (directory / "objects").is_dir()
-        and (directory / "refs").is_dir()
-    )
+    try:
+        if (directory / ".git").exists():
+            return True
+        return (
+            (directory / "HEAD").is_file()
+            and (directory / "objects").is_dir()
+            and (directory / "refs").is_dir()
+        )
+    except OSError:
+        return False
 
 
-def discover_repos(root: str) -> list[RepoDir]:
-    """递归发现 ``root`` 下的仓库，按身份字节序升序返回。
+def discover_repos(root: str) -> tuple[list[RepoDir], list[RepoDir]]:
+    """递归发现 ``root`` 下的仓库：返回（仓库, 无法读取的子树），各按身份字节序升序。
 
     规则（README「映射规则」）：
 
     - 每发现一个仓库即停止下探：仓库工作树内的目录（含子模块）不是独立仓库；
     - 符号链接目录不跟随（可能成环）；``.git`` 目录不进入；
-    - ``root`` 自身不当作仓库（它是容器；这个误配在 ``initialize`` 被显式拒绝）。
+    - ``root`` 自身不当作仓库（它是容器；这个误配在 ``initialize`` 被显式拒绝）；
+    - **子孙目录读不了**（权限等）只记录到第二个返回值：调用方出条目级 error 并继续其余
+      仓库——与「单个仓库不可用不影响其他仓库」一致（§6.5 条目不静默跳过）。``root``
+      自身读不了则没有可枚举的范围，抛 ``GitError``（整轮失败，运行器退避重试）。
     """
     base = Path(root)
     found: list[RepoDir] = []
+    unreadable: list[RepoDir] = []
 
     def walk(directory: Path) -> None:
         try:
             children = sorted(os.scandir(directory), key=lambda entry: os.fsencode(entry.name))
         except OSError as exc:
-            raise GitError(f"读取目录失败：{directory}（{exc}）") from None
+            if directory == base:
+                raise GitError(f"读取 root 目录失败：{directory}（{exc}）") from None
+            relative = os.path.relpath(directory, base)
+            unreadable.append(RepoDir(path=str(directory), identifier=os.fsencode(relative)))
+            return
         for entry in children:
             if entry.name == ".git" or not entry.is_dir(follow_symlinks=False):
                 continue
@@ -123,17 +148,21 @@ def discover_repos(root: str) -> list[RepoDir]:
 
     walk(base)
     found.sort(key=lambda item: item.identifier)
-    return found
+    unreadable.sort(key=lambda item: item.identifier)
+    return found, unreadable
 
 
 def _utc_timestamp(value: str) -> str:
-    """``%aI``/``%cI``（ISO 8601，带偏移）→ RFC 3339 UTC（秒精度，``Z`` 结尾）。"""
+    """``%aI``/``%cI``（ISO 8601，带偏移）→ RFC 3339 UTC（秒精度，``Z`` 结尾）。
+
+    时间戳不合规是**内容**问题（该字段映射不出合法 DPE 值），归 ``GitContentError``。
+    """
     try:
         moment = datetime.fromisoformat(value)
     except ValueError:
-        raise GitError(f"git 返回的时间不是 ISO 8601：{value!r}") from None
+        raise GitContentError(f"git 返回的时间不是 ISO 8601：{value!r}") from None
     if moment.tzinfo is None:
-        raise GitError(f"git 返回的时间缺少时区：{value!r}")
+        raise GitContentError(f"git 返回的时间缺少时区：{value!r}")
     return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -269,13 +298,15 @@ class GitRepo:
         for offset in range(0, len(fields), _LOG_FIELDS):
             chunk = fields[offset : offset + _LOG_FIELDS]
             # 说明与作者 ident 都按严格 UTF-8 解码：不是 UTF-8 的内容进不了 JSON 字符串，
-            # 如实报错（条目级），不做替换或猜测编码
+            # 如实报错（内容类失败，条目级 content_invalid），不做替换或猜测编码
             try:
                 author = f"{chunk[2].decode('utf-8')} <{chunk[3].decode('utf-8')}>"
                 message = chunk[6].decode("utf-8")
             except UnicodeDecodeError as exc:
                 sha = chunk[0].decode("ascii", "replace")
-                raise GitError(f"提交 {sha} 的说明或作者不是合法 UTF-8（{exc.reason}）") from None
+                raise GitContentError(
+                    f"提交 {sha} 的说明或作者不是合法 UTF-8（{exc.reason}）"
+                ) from None
             records.append(
                 CommitRecord(
                     sha=chunk[0].decode("ascii", "replace").lower(),

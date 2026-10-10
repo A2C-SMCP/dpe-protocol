@@ -34,7 +34,7 @@ from typing import Any
 from dpe_hash import ContractUnsupportedError, ElementObject, ValidationError, normalize_file_uri
 
 from dpe_git_connector.extractors import commit_elements, element_bytes
-from dpe_git_connector.gitrepo import CommitRecord, GitError, GitRepo, RepoDir
+from dpe_git_connector.gitrepo import CommitRecord, GitContentError, GitError, GitRepo, RepoDir
 
 __all__ = [
     "DocumentMapper",
@@ -179,6 +179,10 @@ class DocumentMapper:
             return self.error_item(file_uri, "internal", "file_uri 越出实例前缀", retryable=False)
         try:
             pages = self._pages(repo, spec)
+        except GitContentError as exc:
+            # 内容类失败（非 UTF-8 的说明 / 作者、非法时间戳）：映射不出合法 DPE 内容，
+            # 同样扫描重跑也不会成功——content_invalid、不可重试（§6.5 定义）
+            return self.error_item(file_uri, "content_invalid", str(exc), retryable=False)
         except GitError as exc:
             return self.error_item(file_uri, "source_unavailable", str(exc), retryable=True)
         except Exception as exc:
@@ -217,6 +221,20 @@ class DocumentMapper:
                 "message": message,
                 "retryable": retryable,
             },
+        )
+
+    def unreadable_directory(self, entry: RepoDir) -> Item:
+        """发现层读不了的子树 → 条目级 ``source_unavailable``（§6.5：不静默跳过）。
+
+        子树里是否藏着仓库无从得知，因此不假装知道：如实上报该路径（身份 = 前缀 + 相对路径），
+        其余仓库照常枚举。权限修好后重跑即可成功，故 ``retryable: true``。
+        """
+        try:
+            file_uri = build_file_uri(self.prefix, entry.identifier)
+        except (ValueError, ValidationError, ContractUnsupportedError) as exc:
+            return self.error_item(None, "content_invalid", f"file_uri 不合法：{exc}", False)
+        return self.error_item(
+            file_uri, "source_unavailable", f"目录无法读取：{entry.path}", retryable=True
         )
 
     def _pages(self, repo: GitRepo, spec: RepoSpec) -> list[dict[str, Any]]:
@@ -272,14 +290,3 @@ class DocumentMapper:
                 if self.limits.too_large(size):
                     return size
         return None
-
-    def _error(self, file_uri: str | None, code: str, message: str, retryable: bool) -> Item:
-        return Item(
-            kind="error",
-            fields={
-                "file_uri": file_uri,
-                "code": code,
-                "message": message,
-                "retryable": retryable,
-            },
-        )

@@ -12,7 +12,9 @@ I/O 在 ``cli`` 里。协议要点：
   运行器中止本轮并以原 cursor 重开（恢复路径是稳定重跑整轮，§6.8）；
 - **产出**：``scan`` 的 ``items`` 是 §6.5 的产出项；单条响应不超过 ``max_message_bytes``，
   一篇装不下的文档在**页边界**分段（同 ``file_uri`` 的各段连续出现：首段带 ``document``、
-  续段只带 ``file_uri`` 与页，非末段 ``continued: true``）；
+  续段只带 ``file_uri`` 与页，非末段 ``continued: true``）。单条预算连最小条目（error）都
+  装不下（``max_message_bytes`` 过小或请求 id 过长）时以 ``-32602`` 应答（本轮失败，不发
+  超限消息——§6.5 MUST NOT）；
 - **通知**：``cancel`` 是通知（无响应），本连接器在批次处理结束后应答 ``-32001``；v1 只有运行器
   发起请求，插件不主动发消息（§6.1）。
 """
@@ -23,7 +25,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +68,14 @@ def _greedy_fit(sizes: list[int], room: int) -> int:
         total += size + (1 if count else 0)
         count += 1
     return count
+
+
+def _budget_message(max_message_bytes: int, budget: int) -> str:
+    """单条预算过小的错误消息：报实测口径（上限 − 信封预留 − id 长度 = 可用字节）。"""
+    return (
+        f"单条预算过小（消息上限 {max_message_bytes} − 信封预留 − id 长度 = {budget} 字节）："
+        "连最小的错误条目都装不下，无法产出"
+    )
 
 
 #: 服务端日志（stderr，见 cli）：stdout 只走协议
@@ -111,7 +121,9 @@ class _Round:
     """一轮的枚举状态：仓库列表（按身份字节序）与批次位置。"""
 
     entries: list[RepoDir]
-    #: 下一个待枚举的条目下标
+    #: 发现层读不了的子树（在仓库条目之后逐个产出条目级 error，§6.5 不静默跳过）
+    unreadable: list[RepoDir] = field(default_factory=list)
+    #: 下一个待枚举的条目下标（`0..len(entries)` 枚举仓库，其后是 unreadable）
     position: int = 0
     #: 未发完的分段文档（同一时刻至多一个，§6.5）
     pending: _Pending | None = None
@@ -119,12 +131,23 @@ class _Round:
     #: 只有最近回出的那个值合法（收到它意味着上一批也已收到），其余一律过期。
     issued: int = 0
 
+    def total_sources(self) -> int:
+        return len(self.entries) + len(self.unreadable)
+
     def next_token(self) -> str:
         self.issued += 1
         return str(self.issued)
 
     def exhausted(self) -> bool:
-        return self.pending is None and self.position >= len(self.entries)
+        return self.pending is None and self.position >= self.total_sources()
+
+
+class _BudgetTooSmall(Exception):
+    """单条预算连最小条目（error）都装不下：本轮无法产出，不发超限消息（§6.5 MUST NOT）。
+
+    触发条件是 ``max_message_bytes`` 过小或请求 ``id`` 过长（响应必须回显 id，预算被它吃掉），
+    属运行器配置问题：``scan`` 以 JSON-RPC error 应答，运行器中止本轮、退避重试（§6.4）。
+    """
 
 
 class Serve:
@@ -318,7 +341,11 @@ class Serve:
                 return _error(id_, -32003, str(exc), {"retryable": True})
             self._cancel_last = None  # 跨轮残留的 cancel id 只会误伤未来的请求
         max_items = _optional_positive_int(params.get("max_items")) or _BATCH_MAX_ITEMS
-        items = self._next_batch(max_items, id_)
+        try:
+            items = self._next_batch(max_items, id_)
+        except _BudgetTooSmall as exc:
+            # 单条预算连最小条目都装不下：本轮失败，如实应答（§6.4：运行器中止本轮、退避重试）
+            return _error(id_, -32602, str(exc))
         result: dict[str, Any] = {"items": items}
         assert self._round is not None
         if not self._round.exhausted():
@@ -340,10 +367,10 @@ class Serve:
         if self._source.repo_path is not None:
             name = os.path.basename(os.path.normpath(self._source.repo_path))
             entries = [RepoDir(path=self._source.repo_path, identifier=os.fsencode(name))]
-        else:
-            assert self._source.root_path is not None
-            entries = discover_repos(self._source.root_path)
-        return _Round(entries)
+            return _Round(entries)
+        assert self._source.root_path is not None
+        entries, unreadable = discover_repos(self._source.root_path)
+        return _Round(entries, unreadable)
 
     def _next_batch(self, max_items: int, id_: Any) -> list[dict[str, Any]]:
         """取下一批产出项：条目数与**累计紧凑编码字节（含条目间逗号）**都不超预算（至少一条）。
@@ -366,18 +393,24 @@ class Serve:
             if round_.pending is not None:
                 payload = self._pending_segment(budget - total - (1 if items else 0))
                 if payload is None:
-                    # 装不下下一页：本批到此为止（pending 保留，下批继续）。批首预算足够时
-                    # 不可能发生——分段前已校验每一页都能装进续段信封，故 items 必非空。
-                    assert items
-                    break
+                    if items:
+                        break  # 本批装不下下一页：留到下批（pending 保留）
+                    # 批首仍装不下：续批的预算比创建分段时缩水了（id 变长等，§6.4 只保证 id
+                    # 会回显）。该文档整篇失败（已发出的分段未闭合），如实上报并放弃，批次推进。
+                    payload = self._unfinishable_pending(budget - total)
+                    size = _encoded_size(payload)
+                    if size > budget:
+                        raise _BudgetTooSmall(_budget_message(self.max_message_bytes, budget))
+                    items.append(payload)
+                    total += size
+                    continue
                 size = _encoded_size(payload) + (1 if items else 0)
                 items.append(payload)
                 total += size
                 continue
-            if round_.position >= len(round_.entries):
+            if round_.position >= round_.total_sources():
                 break
-            entry = round_.entries[round_.position]
-            item = self._mapper.document(GitRepo(entry.path), entry, self._source.spec)
+            item = self._source_item(round_)
             payload = self._fit_item(item, budget - total - (1 if items else 0), at_head=not items)
             if payload is None:
                 assert items  # 批首必能推进一条（见 _fit_item），否则会空批死循环
@@ -387,6 +420,15 @@ class Serve:
             total += size
             round_.position += 1
         return items
+
+    def _source_item(self, round_: _Round) -> Item:
+        """当前条目位置的产出项：仓库 → 文档条目；发现层读不了的子树 → 条目级 error。"""
+        assert self._source is not None and self._mapper is not None
+        if round_.position < len(round_.entries):
+            entry = round_.entries[round_.position]
+            return self._mapper.document(GitRepo(entry.path), entry, self._source.spec)
+        index = round_.position - len(round_.entries)
+        return self._mapper.unreadable_directory(round_.unreadable[index])
 
     def _fit_item(self, item: Item, room: int, at_head: bool) -> dict[str, Any] | None:
         """把一条条目装进本批剩余空间：返回要发出的载荷，或 ``None``（本批不消费该条目）。
@@ -406,7 +448,11 @@ class Serve:
                 return first
             if not at_head:
                 return None
-            return self._oversize_document(fields["file_uri"], fields["pages"], room)
+            fallback = self._oversize_document(fields["file_uri"], fields["pages"], room)
+            if _encoded_size(fallback) > room:
+                # 连最小的 error 条目都装不下：不发超限消息（§6.5 MUST NOT）
+                raise _BudgetTooSmall(_budget_message(self.max_message_bytes, room))
+            return fallback
         payload = item.payload()
         if _encoded_size(payload) <= room:
             return payload
@@ -414,7 +460,29 @@ class Serve:
             return None
         # 批首仍装不下（error 条目的字段由本插件构造，正常极小）：以「条目超限」如实上报，
         # 保证推进；message 里报告实际数字，便于诊断
-        return self._oversize_entry(item, room)
+        fallback = self._oversize_entry(item, room)
+        if _encoded_size(fallback) > room:
+            raise _BudgetTooSmall(_budget_message(self.max_message_bytes, room))
+        return fallback
+
+    def _unfinishable_pending(self, room: int) -> dict[str, Any]:
+        """在途分段文档的下一页在批首也装不下（分批 token 的 id 变长使预算缩水）。
+
+        该文档整篇失败（已发出的分段未闭合，§6.5），如实产出条目级 ``error`` 并放弃剩余页；
+        批次继续推进（后续条目不因此被扣住）。
+        """
+        assert self._round is not None and self._round.pending is not None
+        assert self._mapper is not None
+        pending = self._round.pending
+        message = (
+            f"分段无法在单条预算内继续（剩余 {len(pending.pages) - pending.position} 页，"
+            f"可用 {room} 字节）：该文档整篇失败（已发出的分段未闭合）"
+        )
+        _log.warning("文档 %s：%s", pending.file_uri, message)
+        self._round.pending = None
+        return self._mapper.error_item(
+            pending.file_uri, "content_invalid", message, retryable=False
+        ).payload()
 
     def _first_segment(
         self, item: Item, room: int
