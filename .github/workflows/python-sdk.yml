@@ -40,6 +40,26 @@ jobs:
           python-version: "3.12"
       - run: make check-vectors
 
+  # 消费者锁文件守卫（#106）：以 path 引用 SDK 成员包的独立 uv 项目，其 uv.lock 钉着 SDK 版本，
+  # SDK 升版后必须同步刷新（bump 的 pre_commit_hooks 会连带刷新并提交）。这里枚举仓库内全部已
+  # 提交的 uv.lock 逐个校验：新增消费者零维护即被覆盖，漏刷在 SDK 侧 PR / 发版门禁即被拦住，
+  # 而不是事后在 main 的 connector-git 上才炸。
+  locks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+      # 显式 shell: bash 才带 -o pipefail：否则 git ls-files 失败时退出码会被循环覆盖，job 仍为绿色
+      - shell: bash
+        run: |
+          git ls-files -z '*uv.lock' | while IFS= read -r -d '' lock; do
+            echo "::group::$lock"
+            uv lock --check --directory "$(dirname "$lock")"
+            echo "::endgroup::"
+          done
+
   test:
     needs: vectors
     runs-on: ubuntu-latest

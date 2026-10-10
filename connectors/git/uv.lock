@@ -148,12 +148,12 @@ dev = [
 
 [[package]]
 name = "dpe-hash"
-version = "0.3.0.dev0"
+version = "0.3.1.dev0"
 source = { editable = "../../sdk/python/packages/dpe-hash" }
 
 [[package]]
 name = "dpe-sdk"
-version = "0.3.0.dev0"
+version = "0.3.1.dev0"
 source = { editable = "../../sdk/python/packages/dpe-sdk" }
 dependencies = [
     { name = "anyio" },
