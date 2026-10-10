@@ -398,8 +398,6 @@ def test_commit_bare_412_head_equal_is_success() -> None:
         (BaseHash(H1), head_missing(), errors.NotFoundError),
         (BaseHash(H1), head_found(H2), errors.PreconditionFailedError),
         (IfAbsent(), head_found(H2), errors.AlreadyExistsError),
-        # 按 HTTP 绑定 §3.2 字面；If-None-Match 下这是中间层误判，规范待补正（#81）
-        (IfAbsent(), head_missing(), errors.NotFoundError),
     ],
 )
 def test_commit_bare_412_is_judged_by_head(
@@ -409,6 +407,43 @@ def test_commit_bare_412_is_judged_by_head(
     with pytest.raises(error):
         drive(core().commit(URI, DOC, precondition), server)
     assert methods(server.requests) == ["PUT", "HEAD"]
+
+
+def test_commit_if_absent_bare_412_head_equal_is_success() -> None:
+    """``If-None-Match: *`` 且 doc_hash 等于提交内容：unchanged 先于条件求值（§3.2），直接成功。"""
+    server = Script(bare_412(), head_found(DOC_HASH))
+    assert drive(core().commit(URI, DOC, IfAbsent()), server) == unchanged()
+    assert methods(server.requests) == ["PUT", "HEAD"]
+
+
+def test_commit_if_absent_bare_412_head_missing_resends_once() -> None:
+    """``If-None-Match: *`` 且文档不存在：前置条件实际成立，412 是中间层误判，原样重发一次
+    （HTTP 绑定 §3.2，与 DELETE 对称）——报 ``NotFoundError`` 语义不通。"""
+    server = Script(bare_412(), head_missing(), committed("created", 2, 0, 0))
+    result = drive(core().commit(URI, DOC, IfAbsent()), server)
+    assert result.status == "created"
+    put, head, again = server.requests
+    assert (head.method, again) == ("HEAD", put)
+
+
+def test_commit_if_absent_bare_412_twice_head_still_missing_is_reported() -> None:
+    """重发后仍是无错误码的 412 且文档仍不存在：按非协议错误上报，MUST NOT 报 ``DPE_NOT_FOUND``。"""
+    server = Script(bare_412(), head_missing(), bare_412(), head_missing())
+    with pytest.raises(errors.UnexpectedResponseError, match="412") as info:
+        drive(core().commit(URI, DOC, IfAbsent()), server)
+    assert info.value.status == 412
+    assert "if_absent" in str(info.value)  # 是中间层误判的上报，不是别的非合规响应
+    assert methods(server.requests) == ["PUT", "HEAD", "PUT", "HEAD"]
+
+
+def test_commit_if_absent_bare_412_twice_is_judged_by_head_again() -> None:
+    """重发前他人创建了文档：第二次 412 再经 head 判定，不误报为不合规响应。"""
+    server = Script(bare_412(), head_missing(), bare_412(), head_found(H2))
+    with pytest.raises(errors.AlreadyExistsError):
+        drive(core().commit(URI, DOC, IfAbsent()), server)
+    server = Script(bare_412(), head_missing(), bare_412(), head_found(DOC_HASH))
+    assert drive(core().commit(URI, DOC, IfAbsent()), server) == unchanged()
+    assert methods(server.requests) == ["PUT", "HEAD", "PUT", "HEAD"]
 
 
 def test_commit_lost_then_bare_412_is_judged_by_head() -> None:

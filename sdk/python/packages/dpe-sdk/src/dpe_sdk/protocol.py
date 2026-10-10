@@ -1008,9 +1008,12 @@ class ProtocolCore:
         - 非 force 的响应丢失时原样重发；首次已生效则得到 ``unchanged``（首次的 delta 不可得）；
         - force 的响应丢失（含无 DPE 错误码的 502 / 504）时不重放：先 ``head``，等于提交内容即
           成功，否则抛 ``ForceNotConfirmedError``；
-        - 无 DPE 错误码的 412 先 ``head`` 判定：等于提交内容即成功，不存在抛 ``NotFoundError``，
-          否则抛 ``PreconditionFailedError``（``IfAbsent`` 时为 ``AlreadyExistsError``）。
-          （``IfAbsent`` 且文档不存在时按规范字面抛 ``NotFoundError``，规范待补正：#81。）
+        - 无 DPE 错误码的 412 先 ``head`` 判定（只对带条件头的提交；``Force`` 不带条件头，412
+          无从谈起，直接按非协议错误上报）：等于提交内容即成功；``IfAbsent`` 时文档存在即抛
+          ``AlreadyExistsError``，不存在则前置条件实际成立（中间层误判），原样重发一次，重发后
+          仍是这样的 412 时再 ``head`` 判定一次、文档仍不存在才抛 ``UnexpectedResponseError``
+          （按非协议错误上报，绝不误报 ``NotFoundError``）；``BaseHash`` 时不存在抛
+          ``NotFoundError``，否则抛 ``PreconditionFailedError``。
 
         经 ``head`` 确认的成功返回 ``unchanged``，与原样重发得到的结果相同。
         ``DPE_PRECONDITION_FAILED`` 等错误如实抛出，绝不自动改用 force。
@@ -1052,17 +1055,30 @@ class ProtocolCore:
             return self._commit_result(response, expected, total)
         response, _ = yield from self._send(request)
         if _bare_412(response):
-            current = yield from self._confirm_head(uri)
-            if current == expected:
-                return _recovered(expected, total)
-            if current is None:
-                raise NotFoundError(f"{uri} 不存在（412 无 DPE 错误码，经 head 判定）")
             if isinstance(precondition, IfAbsent):
-                raise AlreadyExistsError(f"{uri} 已存在（412 无 DPE 错误码，经 head 判定）")
-            raise PreconditionFailedError(
-                f"expected {precondition.value}, current {current}"
-                "（412 无 DPE 错误码，经 head 判定）"
-            )
+                # 文档不存在时 if_absent 的前置条件实际成立：412 只能出自中间层误判，
+                # 原样重发一次；重发后仍如此则按非协议错误上报，绝不报 DPE_NOT_FOUND
+                response, current, _ = yield from self._retry_misjudged_412(
+                    request,
+                    uri,
+                    response,
+                    holds=lambda head: head is None,
+                    held="文档仍不存在（if_absent 的前置条件成立）",
+                )
+                if _bare_412(response):
+                    if current == expected:
+                        return _recovered(expected, total)
+                    raise AlreadyExistsError(f"{uri} 已存在（412 无 DPE 错误码，经 head 判定）")
+            else:
+                current = yield from self._confirm_head(uri)
+                if current == expected:
+                    return _recovered(expected, total)
+                if current is None:
+                    raise NotFoundError(f"{uri} 不存在（412 无 DPE 错误码，经 head 判定）")
+                raise PreconditionFailedError(
+                    f"expected {precondition.value}, current {current}"
+                    "（412 无 DPE 错误码，经 head 判定）"
+                )
         return self._commit_result(response, expected, total)
 
     def deliver(
@@ -1329,21 +1345,20 @@ class ProtocolCore:
             "DELETE", "documents?" + _query(uri=uri), headers={"If-Match": f'"{base_hash}"'}
         )
         response, resent = yield from self._send(request)
-        retried = False
-        while _bare_412(response):
-            current = yield from self._confirm_head(uri)
+        response, current, retried = yield from self._retry_misjudged_412(
+            request,
+            uri,
+            response,
+            holds=lambda head: head == base_hash,
+            held="doc_hash 等于 If-Match",
+        )
+        resent = resent or retried
+        if _bare_412(response):
             if current is None:
                 return None
-            if current != base_hash:
-                raise PreconditionFailedError(
-                    f"expected {base_hash}, current {current}（412 无 DPE 错误码，经 head 判定）"
-                )
-            if retried:
-                raise UnexpectedResponseError(
-                    "doc_hash 等于 If-Match，重发后仍是无 DPE 错误码的 412", status=412
-                )
-            retried = resent = True
-            response, _ = yield from self._send(request)
+            raise PreconditionFailedError(
+                f"expected {base_hash}, current {current}（412 无 DPE 错误码，经 head 判定）"
+            )
         try:
             _expect(response, 204)
         except NotFoundError:
@@ -1416,6 +1431,37 @@ class ProtocolCore:
             current=current,
             checked=True,
         ) from lost
+
+    def _retry_misjudged_412(
+        self,
+        request: Request,
+        uri: str,
+        response: Response,
+        *,
+        holds: Callable[[str | None], bool],
+        held: str,
+    ) -> Generator[Request, Response, tuple[Response, str | None, bool]]:
+        """裸 412 的中间层误判重试（HTTP 绑定 §3.2）：``head`` 判定后前置条件实际成立
+        （``holds`` 为真）而目标状态未达成时，原样重发一次；重发后仍是裸 412 时再 ``head`` 判定
+        一次，条件仍成立才按非协议错误上报——MUST NOT 猜成任何 DPE code。
+
+        返回 ``(response, current, retried)``：``response`` 仍是裸 412 时 ``current`` 是最后一次
+        ``head`` 的读数（文档不存在为 ``None``），条件不成立的情形交调用方按各自的 code 判定；
+        ``response`` 已不是裸 412（重发成功或得到带码错误）时 ``current`` 无意义。``retried``
+        只计本循环的重发，``_send`` 因响应丢失的重发由调用方自行合并。
+        """
+        retried = False
+        while _bare_412(response):
+            current = yield from self._confirm_head(uri)
+            if not holds(current):
+                return response, current, retried
+            if retried:
+                raise UnexpectedResponseError(
+                    f"{uri}：{held}，重发后仍是无 DPE 错误码的 412", status=412
+                )
+            retried = True
+            response, _ = yield from self._send(request)
+        return response, None, retried
 
     def _check_base_hash(self, value: str) -> None:
         """``base_hash`` 必须是本次声明契约的 hash：不接受裸 hash，也不接受别的契约的值。"""
