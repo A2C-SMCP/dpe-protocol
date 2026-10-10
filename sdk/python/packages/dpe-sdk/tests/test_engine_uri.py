@@ -17,7 +17,7 @@ from dpe_sdk.testing import (
     InvalidPrecondition,
     UploadChunk,
 )
-from engine_helpers import inline, make_engine, negotiate_body, text_doc
+from engine_helpers import PrefixAuthorizer, inline, make_engine, negotiate_body, text_doc
 
 C = dpe_hash.CONTRACT
 RAW = "FEISHU://Doc.Example/%61%2f"
@@ -78,6 +78,8 @@ def test_invalid_uri_position_in_order() -> None:
     with pytest.raises(errors.ContractUnsupportedError):
         engine.head("u", "bad", None)
     with pytest.raises(errors.ContractUnsupportedError):
+        engine.get_skeleton("u", "bad", None)
+    with pytest.raises(errors.ContractUnsupportedError):
         engine.delete("u", "bad", None, None)
     with pytest.raises(errors.ValidationError) as info:
         engine.batch_head("u", json.dumps({"uris": ["test://ok", "bad"]}).encode(), C)
@@ -120,6 +122,22 @@ def test_invalid_precondition_position() -> None:
         engine.delete("u", "test://a", None, bad)
     with pytest.raises(errors.ValidationError, match="不得为"):
         engine.delete("u", "test://a", C, bad)
+
+
+def test_invalid_precondition_before_authorization() -> None:
+    """形式判定先于授权（HTTP 绑定 §3.2）：无权 + 条件头形式非法时得到形式错误，不是 403。"""
+    engine = make_engine(authorizer=PrefixAuthorizer({}))
+    bad = InvalidPrecondition("If-Match 不得为 *")
+    req = inline(text_doc(["x"]))
+    with pytest.raises(errors.ValidationError, match="不得为"):
+        engine.commit("u", "test://a", req.body(), C, bad)
+    # 形式合法时才轮到授权（缺前置条件的 428 也在授权之后）
+    with pytest.raises(errors.ForbiddenError):
+        engine.commit("u", "test://a", req.body(), C, None)
+    with pytest.raises(errors.ValidationError, match="不得为"):
+        engine.delete("u", "test://a", C, bad)
+    with pytest.raises(errors.ForbiddenError):
+        engine.delete("u", "test://a", C, None)
 
 
 def test_unparseable_base_hash_is_a_mismatch() -> None:

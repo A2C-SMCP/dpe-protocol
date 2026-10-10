@@ -15,7 +15,8 @@ import pytest
 from dpe_sdk import errors
 from dpe_sdk.models import Document
 from dpe_sdk.protocol import BaseHash, Force, IfAbsent
-from dpe_sdk.testing import create_app
+from dpe_sdk.testing import Engine, create_app
+from dpe_sdk.wire import Capabilities
 from engine_helpers import PrefixAuthorizer, inline, make_engine, text_doc
 from http_helpers import REMOTE, Remote, problem, remote
 
@@ -106,14 +107,36 @@ async def test_document_resource_headers() -> None:
         head = await r.raw("HEAD", TARGET)
         assert (head.status_code, head.content) == (200, b"")
         assert head.headers["dpe-doc-hash"] == doc_hash and head.headers["etag"] == f'"{doc_hash}"'
+        assert head.headers["vary"] == "DPE-Hash-Contract"
         put = await r.raw("PUT", TARGET, headers={"If-Match": f'"{doc_hash}"'}, content=_body("y"))
         assert put.status_code == 200 and put.json()["status"] == "updated"
         assert put.headers["dpe-doc-hash"] == put.json()["doc_hash"]
         assert put.headers["vary"] == "DPE-Hash-Contract"
         listed = await r.raw("GET", "documents?prefix=")
         assert listed.headers["vary"] == "DPE-Hash-Contract"
+        # documents 路径下的错误响应同样带（§3.1：全部响应，含 404 与 DPE_VALIDATION）
+        missing = await r.raw("GET", "documents?uri=feishu%3A%2F%2Fdoc%2Fnope")
+        assert (missing.status_code, problem(missing)["code"]) == (404, "DPE_NOT_FOUND")
+        assert missing.headers["vary"] == "DPE-Hash-Contract"
+        malformed = await r.raw("GET", "documents?uri=a&uri=b")
+        assert malformed.status_code == 400 and malformed.headers["vary"] == "DPE-Hash-Contract"
         capabilities = await r.raw("GET", "capabilities", contract=None)
         assert capabilities.status_code == 200 and "vary" not in capabilities.headers
+
+
+async def test_vary_is_only_on_the_documents_path() -> None:
+    """``Vary: DPE-Hash-Contract`` 只覆盖 documents 路径，其余端点（含其错误）不带（§3.1）。"""
+    async with remote() as r:
+        heads = await r.raw("POST", "heads", content=json.dumps({"uris": [URI]}).encode())
+        assert heads.status_code == 200 and "vary" not in heads.headers
+        moved = await r.raw("POST", "move", content=b'{"from_uri": "test://a"}')
+        assert problem(moved)["code"] == "DPE_VALIDATION" and "vary" not in moved.headers
+        staging = await r.raw("HEAD", "staging/st-none/blobs/sha256:" + "0" * 64)
+        assert (staging.status_code, staging.headers["dpe-error-code"]) == (
+            410,
+            "DPE_SESSION_EXPIRED",
+        )
+        assert "vary" not in staging.headers
 
 
 async def test_skeleton_if_none_match_304() -> None:
@@ -127,6 +150,23 @@ async def test_skeleton_if_none_match_304() -> None:
             assert response.headers["vary"] == "DPE-Hash-Contract"
         miss = await r.raw("GET", TARGET, headers={"If-None-Match": '"dpe1:' + "0" * 64 + '"'})
         assert miss.status_code == 200
+
+
+async def test_if_none_match_compares_only_with_the_declared_contract() -> None:
+    """GET 的 If-None-Match 只与**声明契约下**的 doc_hash 弱比较（§3.3），不像 If-Match 跨契约。"""
+    async with remote(make_engine(contracts=("dpe1", dpe_hash.DRILL_CONTRACT))) as r:
+        dpe1_hash = await _create(r)
+        dpe2_hash = inline(text_doc(["x"]), dpe_hash.DRILL_CONTRACT).doc_hash
+        assert dpe2_hash != dpe1_hash
+        # 声明 dpe2 时只认 dpe2 下的值：dpe1 的值不命中（否则会错误地 304）
+        stale, live = f'"{dpe1_hash}"', f'"{dpe2_hash}"'
+        other = await r.raw("GET", TARGET, contract="dpe2", headers={"If-None-Match": stale})
+        assert other.status_code == 200
+        same = await r.raw("GET", TARGET, contract="dpe2", headers={"If-None-Match": live})
+        assert same.status_code == 304
+        # 对照：If-Match 跨契约匹配（core §5.1 的契约升级期），与 If-None-Match 相反
+        put = await r.raw("PUT", TARGET, headers={"If-Match": f'"{dpe2_hash}"'}, content=_body("y"))
+        assert put.status_code == 200
 
 
 async def test_head_errors_carry_only_the_code_header() -> None:
@@ -300,6 +340,41 @@ async def test_forbidden_and_problem_shape() -> None:
         assert allowed.status_code == 201
 
 
+class _Limited(Engine):
+    """把 capabilities 变成限流响应：参考服务端自身不产生 429 / 503，用它驱动该分支。"""
+
+    def capabilities(self) -> Capabilities:
+        raise errors.RateLimitedError("稍后再试")
+
+
+class _Down(Engine):
+    """把 capabilities 变成不可用响应，并给出一个提示值（取整方式不在规范内，不作断言）。"""
+
+    def capabilities(self) -> Capabilities:
+        raise errors.UnavailableError("维护中", retry_after=5.5)
+
+
+@pytest.mark.parametrize(
+    ("engine", "status", "retry_after"),
+    [(_Limited(), 429, "1"), (_Down(), 503, None)],
+)
+async def test_retry_after_is_never_omitted(
+    engine: Engine, status: int, retry_after: str | None
+) -> None:
+    """429 / 503 MUST 带 ``Retry-After``，不可缺省；实现无提示值时给 1（§5）。
+
+    有提示值时规范只要求它是个可用的秒数，取整方式未定义，故只断言形态。
+    """
+    async with remote(engine) as r:
+        response = await r.raw("GET", "capabilities", contract=None)
+        assert response.status_code == status
+        header = response.headers["retry-after"]
+        assert header.isdigit(), header
+        if retry_after is not None:
+            assert header == retry_after
+        assert problem(response)["retryable"] is True
+
+
 # ---------------------------------------------------------------------------
 # 传输层：认证、路由、请求体编码、查询参数
 # ---------------------------------------------------------------------------
@@ -319,6 +394,18 @@ async def test_authenticator_401_comes_first() -> None:
         assert "dpe-error-code" not in response.headers  # 不是 DPE 错误
         ok = await r.raw("GET", "capabilities", headers={"Authorization": "Bearer alice"})
         assert ok.status_code == 200
+
+
+async def test_route_and_method_precede_authentication() -> None:
+    """401 在路由之后（§3.1 的传输层顺序、§6）：未知路径先 404，方法不符先 405。"""
+    async with remote(authenticate=lambda _: None) as r:
+        for target in ("nope", "staging/s/pages"):
+            assert (await r.raw("GET", target)).status_code == 404
+        response = await r.raw("POST", "documents")
+        assert (response.status_code, response.headers["allow"]) == (405, "GET, HEAD, PUT, DELETE")
+        assert "dpe-error-code" not in response.headers
+        # 路由与方法都对了才轮到认证
+        assert (await r.raw("GET", "documents?prefix=")).status_code == 401
 
 
 async def test_routes_and_methods_are_not_dpe_errors() -> None:
@@ -364,6 +451,14 @@ async def test_gzip_request_body() -> None:
             content=gzip.compress(body)[:-8],
         )
         assert problem(truncated)["code"] == "DPE_VALIDATION"
+        # 结束标记之后还有数据同样是不完整/损坏（§7）
+        trailing = await r.raw(
+            "PUT",
+            TARGET,
+            headers={"If-Match": '"x"', "Content-Encoding": "gzip"},
+            content=gzip.compress(body) + b"junk",
+        )
+        assert problem(trailing)["code"] == "DPE_VALIDATION"
         unsupported = await r.raw("PUT", TARGET, headers={"Content-Encoding": "br"}, content=body)
         assert unsupported.status_code == 415
         assert unsupported.headers["accept-encoding"] == "gzip"

@@ -3,9 +3,10 @@
 本层只做映射：请求 → 引擎调用，结果与 ``DpeError`` → 响应。**求值顺序在引擎里**（core §3.3、
 §3.4、§5.2）；本层先于引擎完成的只有与文档状态无关的传输层判定，依次为：路由（未知路径
 ``404``、方法不符 ``405`` + ``Allow``，均非 DPE 错误）→ 认证（``401`` + ``WWW-Authenticate``，
-非 DPE 错误）→ 请求体（超过 ``max_payload_bytes`` → ``413``，按解码后计算；不支持的
-``Content-Encoding`` → ``415`` + ``Accept-Encoding``，非 DPE 错误；gzip 损坏 →
-``DPE_VALIDATION``）→ 查询参数的形态（重复、混用、缺 ``uri`` → ``DPE_VALIDATION``）。
+非 DPE 错误）→ 查询参数的形态（重复、混用、缺 ``uri`` → ``DPE_VALIDATION``；查询串在请求行里，
+不读请求体即可拒绝，故先于请求体）→ 请求体（超过 ``max_payload_bytes`` → ``413``，按解码后
+计算；不支持的 ``Content-Encoding`` → ``415`` + ``Accept-Encoding``，非 DPE 错误；gzip 损坏 →
+``DPE_VALIDATION``）。
 
 条件头与 ``Content-Range`` 的语法错误不在本层拒绝：分别以 ``InvalidPrecondition`` /
 ``InvalidChunk`` 交给引擎，在规范规定的那一步判定（commit 报文校验末步；分块阶梯第 4 步，
