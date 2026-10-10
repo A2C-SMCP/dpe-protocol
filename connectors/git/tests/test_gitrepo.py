@@ -63,6 +63,8 @@ def test_discovery_finds_bare_repo(tmp_path: Path) -> None:
 
 def test_discovery_records_unreadable_subtree(tmp_path: Path) -> None:
     """子孙目录读不了：记录到第二个返回值（出条目级 error），不废掉整轮；root 自身读不了才抛错。"""
+    if os.geteuid() == 0:
+        pytest.skip("root 无视权限位，chmod 0 造不出不可读目录")
     root = tmp_path / "root"
     repo = simple_repo(root / "alpha")
     hidden = root / "hidden"

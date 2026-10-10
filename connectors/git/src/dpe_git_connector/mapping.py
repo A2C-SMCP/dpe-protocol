@@ -14,11 +14,13 @@
 提交排在其合并提交之前。不写易变字段、不写由位置算出的序号（core §2.4）；``file_uri`` 是身份
 （实例前缀 + 仓库标识），身份不进 hash。
 
-失败如实产出 ``error`` 条目（§6.5 的封闭枚举），不静默跳过：
+失败如实产出 ``error`` 条目（§6.5 的封闭枚举），不静默跳过——**读取类与内容类分开**：
 
-- ``source_unavailable``：仓库不可读或默认分支无法确定（``retryable: true``——源可能恢复）；
-- ``content_invalid``：``file_uri`` 不合法，或按固定预算切分后仍超过远端 ``max_payload_bytes``
-  （部署配置问题，不静默按远端值重新切分）。
+- ``source_unavailable``（``retryable: true``——源可能恢复）：仓库不可读、默认分支无法确定、
+  发现层读不了的子树；
+- ``content_invalid``（不可重试）：``file_uri`` 不合法、提交说明 / 作者不是合法 UTF-8、
+  时间戳不合规（``GitContentError``——同样扫描重跑不会成功），或按固定预算切分后仍超过远端
+  ``max_payload_bytes``（部署配置问题，不静默按远端值重新切分）。
 
 本模块只做全量枚举：增量游标与删除 / 移动意图归后续拆分（#66）。仓库集合与单仓库映射在这里
 已经分开（``RepoDir`` 进、条目出）：仓库消失 / 改名由发现层（``gitrepo.discover_repos`` 的结果
@@ -234,7 +236,7 @@ class DocumentMapper:
         except (ValueError, ValidationError, ContractUnsupportedError) as exc:
             return self.error_item(None, "content_invalid", f"file_uri 不合法：{exc}", False)
         return self.error_item(
-            file_uri, "source_unavailable", f"目录无法读取：{entry.path}", retryable=True
+            file_uri, "source_unavailable", f"无法读取（发现层）：{entry.path}", retryable=True
         )
 
     def _pages(self, repo: GitRepo, spec: RepoSpec) -> list[dict[str, Any]]:

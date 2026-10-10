@@ -114,8 +114,9 @@ uv run dpe-git-connector        # 不直接交互使用：由 dpe-run 以 stdio 
   回显 id）：在途分段文档的下一页在批首也装不下时，该文档整篇失败（条目级 `content_invalid`，
   已发出的分段未闭合），本轮其余条目照常推进。
 - `max_message_bytes` 过小或请求 `id` 过长，使单条预算连最小的 `error` 条目都装不下时：
-  `scan` 以 JSON-RPC error（`-32602`）应答，本轮失败（运行器按 §6.4 中止本轮、退避重试）——
-  任何路径都不发超限消息。
+  `scan` 以 JSON-RPC error（`-32602`）应答，本轮失败（运行器按 §6.4 中止本轮、退避重试）。
+  错误响应的整行也按上限校验：装不下消息正文时只保留错误码（`id` 必须回显）——任何路径
+  都不发超限消息。
 - 单个提交的说明超过固定预算（`ELEMENT_BUDGET_BYTES`，1 MiB，按元素对象 JCS 字节计）时按行
   边界切成多个连续元素（类别与 metadata 复制到每个片段）；预算**不读** `remote_limits`——
   同一份源在任何远端都得到相同的 hash。`remote_limits.max_payload_bytes` 只作**守卫**：

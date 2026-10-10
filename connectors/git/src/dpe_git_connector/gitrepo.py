@@ -137,7 +137,16 @@ def discover_repos(root: str) -> tuple[list[RepoDir], list[RepoDir]]:
             unreadable.append(RepoDir(path=str(directory), identifier=os.fsencode(relative)))
             return
         for entry in children:
-            if entry.name == ".git" or not entry.is_dir(follow_symlinks=False):
+            if entry.name == ".git":
+                continue
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                # 连 stat 都失败的条目：归入「无法读取」如实上报（不静默跳过）
+                relative = os.path.relpath(entry.path, base)
+                unreadable.append(RepoDir(path=entry.path, identifier=os.fsencode(relative)))
+                continue
+            if not is_dir:
                 continue
             child = Path(entry.path)
             if looks_like_repo(child):

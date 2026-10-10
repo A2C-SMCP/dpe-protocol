@@ -186,7 +186,7 @@ class Serve:
         if not isinstance(message, dict):
             return _error(None, -32600, "请求必须是 JSON 对象")
         if message.get("jsonrpc") != "2.0":
-            return _error(message.get("id"), -32600, '请求缺少 "jsonrpc": "2.0"')
+            return self._sized_error(message.get("id"), -32600, '请求缺少 "jsonrpc": "2.0"')
         method = message.get("method")
         id_ = message.get("id")
         params = message.get("params", {})
@@ -197,21 +197,36 @@ class Serve:
                 self._cancel_last = params["id"]
             return None
         if not isinstance(method, str) or not isinstance(params, dict):
-            return _error(id_, -32600, "非法请求")
+            return self._sized_error(id_, -32600, "非法请求")
         if method == "shutdown" and self.initialized:
             self.shutdown_requested = True
             return _result(id_, {})
         if not self.initialized:
             if method != "initialize":
                 # 握手先行（§6.3）：initialize 成功前不发任何内容
-                return _error(id_, -32600, "握手完成前不接受其他请求")
+                return self._sized_error(id_, -32600, "握手完成前不接受其他请求")
             return self._initialize(id_, params)
         if self._cancel_last is not None and id_ == self._cancel_last:
             self._cancel_last = None
-            return _error(id_, -32001, "请求已被取消")
+            return self._sized_error(id_, -32001, "请求已被取消")
         if method == "scan":
             return self._scan(id_, params)
-        return _error(id_, -32601, f"未知方法：{method[:_METHOD_ECHO_LIMIT]}")
+        return self._sized_error(id_, -32601, f"未知方法：{method[:_METHOD_ECHO_LIMIT]}")
+
+    def _sized_error(
+        self, id_: Any, code: int, message: str, data: dict[str, Any] | None = None
+    ) -> str:
+        """错误应答：整行（含 id 与行尾 LF）≤ ``max_message_bytes``，装不下就只留错误码。
+
+        响应必须回显 id，而 id 由运行器给出、可能很长：消息正文是唯一可裁的部分。只带
+        ``code`` 的最小错误对象对**任何请求本身合规的输入**都装得下（请求还含 method 与
+        params，比它更长），因此任何路径都不会发出超限消息（§6.5 MUST NOT）。握手完成前
+        没有可比的上限，按原样返回。
+        """
+        line = _error(id_, code, message, data)
+        if not self.initialized or len(line.encode("utf-8")) + 1 <= self.max_message_bytes:
+            return line
+        return _encode({"jsonrpc": "2.0", "id": id_, "error": {"code": code}})
 
     # ------------------------------------------------------------------ initialize
 
@@ -322,30 +337,31 @@ class Serve:
                 return _error(id_, -32602, "scan 不得同时带 cursor 与 next")
             token = params["next"]
             if not isinstance(token, str) or not _DECIMAL.fullmatch(token):
-                return _error(id_, -32602, "未知的 next")
+                return self._sized_error(id_, -32602, "未知的 next")
             # 只有最近回出的 token 合法（§6.4）：收到 token 即意味着上一批也已收到，直接续批
             # （含在途的分段文档）；其余值（回退、重复、陌生）一律过期拒绝，运行器中止本轮并
             # 以原 cursor 重开——恢复路径是稳定重跑整轮（§6.8），不回退重放。
             if self._round is None or int(token) != self._round.issued:
-                return _error(id_, -32602, "未知或已过期的 next")
+                return self._sized_error(id_, -32602, "未知或已过期的 next")
         else:
             cursor = params.get("cursor")
             if cursor is not None and not isinstance(cursor, str):
-                return _error(id_, -32602, "cursor 必须是字符串或 null")
+                return self._sized_error(id_, -32602, "cursor 必须是字符串或 null")
             if cursor is not None:
                 # 本插件不支持游标（capabilities.supports_cursor = false）：如实回退为全量轮
                 _log.warning("收到游标 %r 但本插件不支持游标，按全量枚举处理", cursor)
             try:
                 self._round = self._open_round()
             except GitError as exc:
-                return _error(id_, -32003, str(exc), {"retryable": True})
+                return self._sized_error(id_, -32003, str(exc), {"retryable": True})
             self._cancel_last = None  # 跨轮残留的 cancel id 只会误伤未来的请求
         max_items = _optional_positive_int(params.get("max_items")) or _BATCH_MAX_ITEMS
         try:
             items = self._next_batch(max_items, id_)
         except _BudgetTooSmall as exc:
-            # 单条预算连最小条目都装不下：本轮失败，如实应答（§6.4：运行器中止本轮、退避重试）
-            return _error(id_, -32602, str(exc))
+            # 单条预算连最小条目都装不下：本轮失败，如实应答（§6.4：运行器中止本轮、退避重试）。
+            # 轮状态保持原样：运行器若以同一 token 重试本批，结果确定不变（无半程副作用）。
+            return self._sized_error(id_, -32602, str(exc))
         result: dict[str, Any] = {"items": items}
         assert self._round is not None
         if not self._round.exhausted():
@@ -400,7 +416,10 @@ class Serve:
                     payload = self._unfinishable_pending(budget - total)
                     size = _encoded_size(payload)
                     if size > budget:
+                        # 载荷本身装不下：不放弃 pending（重试同 token 时状态确定不变），
+                        # 也不发超限消息——本轮以 -32602 失败（§6.5 MUST NOT）
                         raise _BudgetTooSmall(_budget_message(self.max_message_bytes, budget))
+                    self._round.pending = None  # 已决定放弃，剩余页不再产出
                     items.append(payload)
                     total += size
                     continue
@@ -468,8 +487,9 @@ class Serve:
     def _unfinishable_pending(self, room: int) -> dict[str, Any]:
         """在途分段文档的下一页在批首也装不下（分批 token 的 id 变长使预算缩水）。
 
-        该文档整篇失败（已发出的分段未闭合，§6.5），如实产出条目级 ``error`` 并放弃剩余页；
-        批次继续推进（后续条目不因此被扣住）。
+        该文档整篇失败（已发出的分段未闭合，§6.5），如实产出条目级 ``error``；由调用方在
+        确认装得下之后才放弃剩余页（``pending`` 的清空不放这里——载荷装不下要整轮失败，
+        重试同 token 时状态必须不变）。批次继续推进（后续条目不因此被扣住）。
         """
         assert self._round is not None and self._round.pending is not None
         assert self._mapper is not None
@@ -479,7 +499,6 @@ class Serve:
             f"可用 {room} 字节）：该文档整篇失败（已发出的分段未闭合）"
         )
         _log.warning("文档 %s：%s", pending.file_uri, message)
-        self._round.pending = None
         return self._mapper.error_item(
             pending.file_uri, "content_invalid", message, retryable=False
         ).payload()

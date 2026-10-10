@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
 from conftest import History, ReposRoot
 from helpers import FixtureRepo, requires_git
 
@@ -214,6 +215,8 @@ def test_scan_root_mode_discovers_and_reports_item_errors(repos_root: ReposRoot)
 
 def test_unreadable_subtree_is_item_error(tmp_path: Path) -> None:
     """发现层读不了的子树：条目级 source_unavailable，其余仓库照常（不废掉整轮，§6.5）。"""
+    if os.geteuid() == 0:
+        pytest.skip("root 无视权限位，chmod 0 造不出不可读目录")
     root = tmp_path / "root"
     root.mkdir()
     repo = FixtureRepo(root / "alpha")
@@ -241,7 +244,8 @@ def test_too_small_budget_is_request_error(history: History) -> None:
     params = initialize_params({"repo": str(history.path)})
     params["max_message_bytes"] = 1200
     assert "result" in handle(serve, request(1, "initialize", params))
-    long_id = "x" * 150  # 预算 = 1200 − 信封预留 1024 − id 152 < 0：连 error 条目也装不下
+    # 预算 = 1200 − 信封预留 1024 − id 152 = 24 字节：远小于最小 error 条目，_BudgetTooSmall 必触发
+    long_id = "x" * 150
     line = serve.handle(
         json.dumps({"jsonrpc": "2.0", "id": long_id, "method": "scan", "params": {"cursor": None}})
     )
@@ -250,6 +254,28 @@ def test_too_small_budget_is_request_error(history: History) -> None:
     response = json.loads(line)
     assert response["error"]["code"] == -32602
     assert "单条预算" in response["error"]["message"]
+
+
+def test_error_response_is_trimmed_when_id_is_near_the_limit(history: History) -> None:
+    """id 逼近上限的**合法**请求：错误响应按整行校验，装不下完整消息时只留错误码（§6.5）。
+
+    （回归：替代响应只校验了消息正文，id 落在约 140 字节的窄窗口时响应仍会超 max_message_bytes。）
+    """
+    serve = Serve()
+    params = initialize_params({"repo": str(history.path)})
+    params["max_message_bytes"] = 1200
+    assert "result" in handle(serve, request(1, "initialize", params))
+    long_id = "x" * 1000  # 请求本身 ≈1063 字节，合法；预算为负 → _BudgetTooSmall
+    request_line = json.dumps(
+        {"jsonrpc": "2.0", "id": long_id, "method": "scan", "params": {"cursor": None}}
+    )
+    assert len(request_line.encode("utf-8")) + 1 <= serve.max_message_bytes
+    line = serve.handle(request_line)
+    assert line is not None
+    assert len(line.encode("utf-8")) + 1 <= serve.max_message_bytes  # 整行仍在上限内
+    error = json.loads(line)["error"]
+    assert error["code"] == -32602
+    assert "message" not in error  # 消息正文被裁掉，保留 id 与错误码
 
 
 def test_continuation_budget_shrink_degrades_to_item_error(tmp_path: Path) -> None:
