@@ -437,7 +437,9 @@ fn invalid_vectors() {
             if kind == "expanded_document" {
                 if let Some(path) = case.get("path") {
                     // 单页展开入口：单独校验页时错误路径相对于页自身；未声明 path 的用例
-                    // 校验顺序跨页（如页 1 的字段先于页 0 的元素），单页语义下不适用
+                    // 校验顺序跨页（如页 1 的字段先于页 0 的元素），单页语义下不适用。
+                    // 假设带 path 的用例都发生在页 0（当前向量如此）；将来若有 /pages/1/...
+                    // 的用例，这里需按 path 的页下标取页
                     let err = page_hashes(&obj["pages"][0], contract)
                         .map(|_| ())
                         .expect_err(&label);

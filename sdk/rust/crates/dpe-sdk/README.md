@@ -9,8 +9,7 @@
 - 规范与源码：<https://github.com/A2C-SMCP/dpe-protocol>。
 
 ```rust
-use dpe_hash::CONTRACT;
-use dpe_sdk::{ElementObject, ExpandedDocument};
+use dpe_sdk::{ElementObject, ExpandedDocument, CONTRACT};
 use serde_json::json;
 
 let element =

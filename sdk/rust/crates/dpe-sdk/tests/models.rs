@@ -5,8 +5,11 @@
 
 mod common;
 
-use dpe_hash::{content_hash, ErrorKind, JsonObject, CONTRACT, DRILL_CONTRACT};
-use dpe_sdk::{DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, PageObject};
+use dpe_hash::{content_hash, ErrorKind, JsonObject};
+use dpe_sdk::{
+    DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, PageObject, CONTRACT,
+    DRILL_CONTRACT,
+};
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
@@ -187,6 +190,8 @@ fn invalid_vectors_page_standalone() {
             let Some(path) = case.get("path").and_then(Value::as_str) else {
                 continue; // 未声明 path 的用例校验顺序跨页，单页语义下不适用
             };
+            // 假设带 path 的用例都发生在页 0（当前向量如此，与 Python 侧同款）；将来若有
+            // /pages/1/... 的用例，这里需按 path 的页下标取页
             let label = case["name"].as_str().unwrap();
             let contract = case["contract"].as_str().unwrap();
             let err = ExpandedPage::from_value(&case["input"]["pages"][0], contract)
@@ -435,4 +440,73 @@ fn wire_contract_from_argument() {
     assert_eq!(err.kind(), ErrorKind::ContractUnsupported);
     let page = PageObject::from_value(&json!({"elements": [child]}), DRILL_CONTRACT).unwrap();
     assert!(page.page_hash(DRILL_CONTRACT).unwrap().starts_with("dpe2:"));
+}
+
+// ---------------------------------------------------------------------------
+// serde 结构层与其余入口（模块文档承诺的行为）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn serde_rejects_unknown_fields() {
+    // 结构层解析（deny_unknown_fields）：五个类型都拒绝未知字段；不做 §2.8 校验
+    assert!(serde_json::from_str::<ElementObject>(r#"{"category": "Title", "nope": 1}"#).is_err());
+    assert!(serde_json::from_str::<PageObject>(r#"{"elements": [], "number": 1}"#).is_err());
+    assert!(
+        serde_json::from_str::<DocumentObject>(r#"{"file_type": "md", "pages": [], "x": 1}"#)
+            .is_err()
+    );
+    assert!(serde_json::from_str::<ExpandedPage>(r#"{"elements": [], "x": 1}"#).is_err());
+    assert!(serde_json::from_str::<ExpandedDocument>(
+        r#"{"file_type": "md", "pages": [], "x": 1}"#
+    )
+    .is_err());
+    // 结构合法但违反规范的值可以通过反序列化，规范校验在 hash 方法处兜底
+    let element: ElementObject = serde_json::from_str(r#"{"category": "Video"}"#).unwrap();
+    let err = element.content_hash(CONTRACT).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::CategoryUnknown);
+}
+
+#[test]
+fn parse_entry_covers_all_models() {
+    // 其余三个模型的 JSON 文本入口与值入口等价
+    assert_eq!(
+        PageObject::parse(r#"{"title": "p", "elements": []}"#, CONTRACT).unwrap(),
+        PageObject::from_value(&json!({"title": "p", "elements": []}), CONTRACT).unwrap()
+    );
+    assert_eq!(
+        DocumentObject::parse(r#"{"file_type": "md", "pages": []}"#, CONTRACT).unwrap(),
+        DocumentObject::from_value(&json!({"file_type": "md", "pages": []}), CONTRACT).unwrap()
+    );
+    let text = r#"{"title": "p", "elements": [{"category": "Title", "text": "t"}]}"#;
+    assert_eq!(
+        ExpandedPage::parse(text, CONTRACT).unwrap(),
+        ExpandedPage::from_value(
+            &json!({"title": "p", "elements": [{"category": "Title", "text": "t"}]}),
+            CONTRACT
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn literal_assembly_validated_in_spec_order() {
+    // 字面量装配的实例随整树重新校验：错误位置相对于文档（对等 Python 的
+    // test_mixed_instances_validated_in_spec_order）
+    let doc = ExpandedDocument {
+        file_type: "txt".into(),
+        pages: vec![
+            ExpandedPage::default(),
+            ExpandedPage {
+                elements: vec![ElementObject {
+                    category: "Video".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let err = doc.hashes(CONTRACT).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::CategoryUnknown);
+    assert_eq!(err.path(), "/pages/1/elements/0/category");
 }

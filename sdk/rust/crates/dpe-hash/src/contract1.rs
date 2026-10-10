@@ -545,7 +545,9 @@ pub fn children(
         .collect())
 }
 
-/// 一个展开页的字段与形状校验（core §2.8 阶段 1）：`elements` 存在且为数组 → 页自身字段。
+/// 一个展开页的字段与形状校验（core §2.8 阶段 1，次序与 §2.2 的字段顺序一致）：
+/// 页是对象 → `elements` 存在且非 null（必有字段）→ 页自身字段（封闭 schema、title、
+/// page_metadata）→ `elements` 是数组（第 4 步的字段类型检查）。
 /// 返回页字段片段与 `elements` 数组；`at` 为页的错误路径前缀。
 fn page_input<'a>(raw: &'a Value, at: &str) -> Result<(Vec<Part>, &'a [Value])> {
     let page = mapping(raw, at, "页")?;

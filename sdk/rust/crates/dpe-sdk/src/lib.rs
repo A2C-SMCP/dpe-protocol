@@ -18,5 +18,8 @@ pub use models::{DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, 
 
 pub mod run;
 
+// 契约常量随模型一起导出：模型的每个入口都要显式传 contract，用户无需为此再依赖 dpe-hash
+pub use dpe_hash::{CONTRACT, DRILL_CONTRACT};
+
 /// 本 crate 的版本，与 `dpe-hash` 同版本（两个 crate 由 workspace 统一管理）。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

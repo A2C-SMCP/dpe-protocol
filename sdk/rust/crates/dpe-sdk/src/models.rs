@@ -28,12 +28,11 @@
 //!
 //! # contract
 //!
-//! 子 hash 列表按显式传入的 `contract` 校验（通常为 `dpe_hash::CONTRACT`；`dpe2` 只在显式
-//! 传入时接受，用于契约升级演练）。
+//! 子 hash 列表按显式传入的 `contract` 校验（通常为 [`CONTRACT`](crate::CONTRACT)；`dpe2`
+//! 只在显式传入时接受，用于契约升级演练）。
 //!
 //! ```
-//! use dpe_hash::CONTRACT;
-//! use dpe_sdk::{DocumentObject, ElementObject, ExpandedDocument, PageObject};
+//! use dpe_sdk::{DocumentObject, ElementObject, ExpandedDocument, PageObject, CONTRACT};
 //! use serde_json::json;
 //!
 //! // 逐层上溯：元素 → 页 → 文档
