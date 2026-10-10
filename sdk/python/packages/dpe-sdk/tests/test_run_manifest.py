@@ -168,11 +168,12 @@ def test_schema_must_be_self_contained(schema: dict[str, Any]) -> None:
     assert info.value.code == "manifest_invalid"
 
 
-def test_embedded_resources_resolve() -> None:
+def test_defs_refs_resolve() -> None:
+    # §4.1.1：$ref 只有 "#/$defs/<名字>" 一种形式（不设嵌入资源与锚点）
     schema = {
         "type": "object",
-        "$defs": {"name": {"$id": "urn:example:name", "type": "string", "minLength": 2}},
-        "properties": {"a": {"$ref": "urn:example:name"}, "b": {"$ref": "#/$defs/name"}},
+        "$defs": {"name": {"type": "string", "minLength": 2}},
+        "properties": {"a": {"$ref": "#/$defs/name"}, "b": {"$ref": "#/$defs/name"}},
     }
     manifest = parse_manifest(with_("config_schema", schema))
     validate_config(manifest, {"a": "ok", "b": "ok"})
@@ -203,11 +204,10 @@ def test_deeply_nested_schema_and_config_are_classified() -> None:
         parse_manifest(with_("config_schema", deep))
     assert info.value.code == "manifest_invalid"
 
-    nested: dict[str, Any] = {"type": "object", "properties": {"a": {"$ref": "#"}}}
-    manifest = parse_manifest(with_("config_schema", nested))
+    # 封闭模型下不存在递归引用（$defs 引用必须无环），求值深度由 schema 的静态深度决定：
+    # 宽松 schema 配极深配置直接通过，不会递归崩溃
+    manifest = parse_manifest(with_("config_schema", {"type": "object"}))
     config: dict[str, Any] = {}
     for _ in range(3000):
         config = {"a": config}
-    with pytest.raises(InstanceFailure) as info:
-        validate_config(manifest, config)
-    assert info.value.code == "config_schema_violation"
+    validate_config(manifest, config)

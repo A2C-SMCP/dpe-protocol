@@ -214,7 +214,7 @@ sdk/python/  sdk/rust/  # 两份独立实现
 
 ## 11. Connector 契约（独立中立规范，不属于 Core）
 
-> **修订注记**：按 Issue #2 关闭结论调整——平台不引入 connector 运行环境（不托管在 TFRS/TFRSUC），connector 由用户自行开发、自行部署；将来确有需要，托管运行作为独立产品另立。v1 只交付**官方 Git connector**（本仓 `connectors/git/`），TFRS 现有的飞书、COS 同步保持不变、不重构为 connector。下文原有的「宿主」表述保留为契约角色，不代表本平台提供宿主。运行边界（进程边界与语言无关线协议）已随 Issue #34 定稿，见 [spec/connector-contract.md](../../spec/connector-contract.md) §6；下文末条「随 `dpe-run`（M2）定稿」不再适用。其余章节（术语、产出模型、前缀绑定、配置与凭证、生命周期、错误与可观测、一致性）随 Issue #41 定稿：配置以插件随附的静态清单 `dpe-connector.json` 声明；下文「数据源凭证由宿主的密钥存储注入」落实为「清单声明凭证名，运行器解析来源引用后以环境变量注入插件，插件环境为最小白名单」（契约 §4.3）；调度不属于契约，独立运行器每次调用至多一轮（契约 §5.2）。
+> **修订注记**：按 Issue #2 关闭结论调整——平台不引入 connector 运行环境（不托管在 TFRS/TFRSUC），connector 由用户自行开发、自行部署；将来确有需要，托管运行作为独立产品另立。v1 只交付**官方 Git connector**（本仓 `connectors/git/`），TFRS 现有的飞书、COS 同步保持不变、不重构为 connector。下文原有的「宿主」表述保留为契约角色，不代表本平台提供宿主。运行边界（进程边界与语言无关线协议）已随 Issue #34 定稿，见 [spec/connector-contract.md](../../spec/connector-contract.md) §6；下文末条「随 `dpe-run`（M2）定稿」不再适用。其余章节（术语、产出模型、前缀绑定、配置与凭证、生命周期、错误与可观测、一致性）随 Issue #41 定稿：配置以插件随附的静态清单 `dpe-connector.json` 声明；下文「数据源凭证由宿主的密钥存储注入」落实为「清单声明凭证名，运行器解析来源引用后以环境变量注入插件，插件环境为最小白名单」（契约 §4.3）；调度不属于契约，独立运行器每次调用至多一轮（契约 §5.2）。`config_schema` 的正则子集经 Issue #80 补齐（契约 §4.1.1）：`pattern` / `patternProperties` 以 RFC 9485（I-Regexp）为底稿钉死可移植子集与结构上界，越界即 `manifest_invalid`，配 `config_schema_patterns` 一致性向量；被否决的备选：本地方言 + SHOULD（等于承认同一配置的校验结论可因实现而异）、仅要求 ECMA-262 与 RE2 双引擎可编译（可编译 ≠ 同结论：`^\w+$` 对 Unicode 输入、`a$` 对末尾换行两引擎结论即不同）。该修订同时收紧已发布 SDK 的接受集与匹配语义，按不兼容变更口径文档与两个 SDK 同步升次版本（0.3.0）。
 
 - 类比 git remote-helper：核心投递协议完全不知道 connector 的存在。同一个 connector 既可以由用户自己部署（SDK 自带独立运行器 `dpe-run`），也可以托管在某个宿主里运行，**宿主只是这份契约的另一个运行器**。
 - **运行器负责推送，插件只负责产出**：

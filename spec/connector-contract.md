@@ -1,6 +1,6 @@
 # DPE Connector 契约
 
-> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点），§1–§5、§7–§8 由 Issue #41 定稿；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
+> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
 > 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §11。
 > 这是独立的中立规范，**不属于 Core**：核心投递协议完全不知道 connector 的存在（类比 git 与 remote-helper）。
 > Issue #2 已关闭：平台不引入 connector 运行环境，connector 由用户自行开发、自行部署；托管运行若将来需要，另立独立产品。v1 官方 connector 只有 Git connector（本仓 `connectors/git/`）。
@@ -75,13 +75,97 @@
 | `config_schema` | 是 | JSON Schema（draft 2020-12）对象，根 MUST 为 `"type": "object"`；插件无配置时为 `{"type": "object", "additionalProperties": false}` |
 | `secrets` | 否 | 数据源凭证声明数组，缺省为 `[]`；每项为 `{name, description?, required?}`，见下 |
 
+- 清单文件的 JSON 嵌套深度（根计 1，每层对象/数组再 +1，最深的标量叶子计其所在层——如 `{}` 为 1、`{"a": 1}` 为 2）MUST ≤ 64；超出即拒绝（`manifest_invalid`，§7.4），在读取阶段判定、不进入任何语义校验。上界使合法文件在各实现的默认 JSON 解析限额（如 serde_json 的递归限额 128）内也能被读取。
 - 清单是封闭 schema：出现未定义的成员（含 `secrets` 项内）或成员类型不符时，运行器 MUST 拒绝该清单（`manifest_invalid`，§7.4）。
-- `config_schema` MUST 自包含：`$ref` 只能引用本文档内的位置，运行器 MUST NOT 解析外部引用（不得因校验配置而访问网络或文件）；`format` 只作注解，运行器 MUST NOT 据此判定校验失败——使不同实现对同一配置得出相同的校验结论。插件 SHOULD 在根上设 `"additionalProperties": false`。它 MUST NOT 声明凭证字段：实例配置经线协议原样交给插件（§6.3），不是凭证通道；凭证一律经 `secrets` 声明、按 §4.3 注入。
+- `config_schema` MUST 自包含：`$ref` 只能引用本文档内的位置，运行器 MUST NOT 解析外部引用（不得因校验配置而访问网络或文件）；`format` 只作注解，运行器 MUST NOT 据此判定校验失败——使不同实现对同一配置得出相同的校验结论。插件 SHOULD 在根上设 `"additionalProperties": false`。它 MUST NOT 声明凭证字段：实例配置经线协议原样交给插件（§6.3），不是凭证通道；凭证一律经 `secrets` 声明、按 §4.3 注入。**`config_schema` 是封闭 schema**（与 DPE 的三层对象同理）：只允许 §4.1.1 列出的关键字，`$ref` 只允许 §4.1.1 规定的唯一形式；`pattern` 的值与 `patternProperties` 的每个键 MUST 属于 §4.1.1 的正则子集。content 词（`contentEncoding`、`contentMediaType`）与 `format` 一样只作注解：运行器 MUST NOT 据此判定校验失败；`contentSchema` 不允许出现（见 §4.1.1）。
 - `secrets` 每项：
   - `name`（必填）：注入插件进程的环境变量名，MUST 匹配 `^[A-Z][A-Z0-9_]*$`，在清单内唯一；MUST NOT 以 `DPE_` 开头（该前缀保留给运行器）；MUST NOT 与 §4.3 基础环境中的变量同名。
   - `description`（可选）：字符串，供宿主渲染表单。
   - `required`（可选）：布尔，缺省 true。
 - **身份核对**：initialize 成功后，运行器 MUST 核对 `plugin.name` / `plugin.version` 与清单相同、选定的 `protocol_version` 在清单的 `protocol_versions` 中；不符即终止实例（`plugin_mismatch`）。清单与实际可执行文件漂移时，依据清单完成的配置校验与凭证注入都不再可信。
+
+#### 4.1.1 `config_schema` 的正则子集
+
+`pattern` 的值与 `patternProperties` 的每个键 MUST 属于下述**可移植子集**——判定只依据本节的文法与结构上界，与本地正则引擎能否编译无关；不属于（含语法错误、超出上界）时运行器 MUST 拒绝该清单（`manifest_invalid`，§7.4）。子集以 [RFC 9485](https://www.rfc-editor.org/rfc/rfc9485)（I-Regexp，为跨引擎互操作定义的正则子集，JSONPath（RFC 9535）即采用它）为底稿，与 §4.1 其余部分同理，目的是使不同实现对同一配置得出相同的校验结论。
+
+与 RFC 9485 的差异：
+
+| 项 | RFC 9485 | 本子集 |
+| --- | --- | --- |
+| 锚点 | 无（`^`、`$` 是普通字符） | `^` 只允许在顶层每个分支的开头、`$` 只允许在顶层每个分支的结尾；其他位置 MUST 用 `\^`、`\$` 转义 |
+| 多字符转义 | 无 | 支持 `\d \D \w \W \s \S`（ASCII 语义，见语义表） |
+| `\xHH` | 无 | 支持；H 为十六进制（大小写均可），值为 U+0000–U+00FF |
+| `(?:…)` | 不属于文法 | 允许，与 `(…)` 同义 |
+| `\p{…}`、`\P{…}` | 支持 | MUST NOT 使用：各实现内嵌的 Unicode 版本不同步，展开为码点集合也会随版本漂移 |
+| 类内集合序列 | `[&&]`、`[--]`、`[~~]` 等均为合法类 | MUST NOT 出现未被转义的 `&&`、`--`、`~~`：部分引擎把它们当类集合运算，需保证同一文本在任何实现下同义 |
+| 匹配语义 | 整串匹配（XSD 语义） | 未锚定（search）：串中存在一处匹配即通过；`^`、`$` 是作者获得整串约束的手段 |
+| `.` 的语义 | 由 §5.3 映射为 `[^\n\r]` | `[^\n\r]`（与该映射一致） |
+
+文法（ABNF；其中的「字符」是 Unicode 标量值）：
+
+```abnf
+pattern    = top-branch *("|" top-branch)
+top-branch = ["^"] *piece ["$"]        ; 锚点只允许出现在顶层分支的首/尾
+branch     = *piece                    ; 分组内
+piece      = atom [quantifier]
+atom       = "." / literal / escape / shorthand / class / "(" branch *("|" branch) ")"
+           / "(?:" branch *("|" branch) ")"
+quantifier = "*" / "+" / "?" / "{" 1*DIGIT ["," [1*DIGIT]] "}"
+shorthand  = "\" ( "d" / "D" / "w" / "W" / "s" / "S" )
+escape     = "\" ( "(" / ")" / "*" / "+" / "-" / "." / "?" / "[" / "\" / "]" / "^"
+                  / "{" / "|" / "}" / "$" / "n" / "r" / "t" ) / "\x" HEXDIG HEXDIG
+class      = "[" ["^"] ("-" / class-item) *class-item ["-"] "]"
+class-item = class-char ["-" class-char] / shorthand
+class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 -、[、\、] 外的标量值，或转义
+```
+
+其中 `literal`（用于原子位置）是除元字符（`\`、`.`、`^`、`$`、`|`、`?`、`*`、`+`、`(`、`)`、`[`、`]`、`{`、`}`）外的任意 Unicode 标量值；`class-char`（用于类内）是除 `[`、`]`、`-`、`\` 外的任意 Unicode 标量值——类内元字符（`.`、`^`、`$`、`|`、`?`、`*`、`+`、`(`、`)`、`{`、`}`）没有特殊含义，照字面书写即可（`[.]`、`[a*b]`、`[^a$]` 都合法）。两者都不可以是孤立代理项 U+D800–U+DFFF（不是标量值，出现即越界——清单文件经 I-JSON 本已不允许，此处对在内存中构造的清单同样成立）；类内另加：
+
+- 字面 `[`、`]` MUST 转义（`\[`、`\]`），`\` MUST 转义（`\\`）；
+- MUST NOT 出现**相邻**的 `&&`、`--`、`~~` 三组字符（按字面文本判定：紧邻的两个同字符一律违例，无论前一个是否被转义——`[a\--b]` 也违例）；写出相邻字符时用 `\xHH`（如 `[a\x26\x26b]`、`[\x2D\x2D]` 合法；`&`、`~` 不在转义白名单里，不能写 `\&`）；`-` 只能是类首/类尾的字面字符（或 `\-`、`\x2D`）或区间分隔符；
+- 区间的两个端点 MUST 是单字符（字面或转义，含 `\xHH`），MUST NOT 是简写类；端点 MUST 满足 c1 ≤ c2（按码点序）；
+- `^` 仅在类内首位表示否定，其他位置是字面字符。
+
+**封闭关键字子集**：`config_schema`（含 `$defs` 中的子 schema 与所有嵌套位置）MUST 只使用下表列出的关键字；出现未列出的关键字（`$id`、`$anchor`、`$dynamicAnchor`、`$dynamicRef`、`definitions`、`dependencies`、`additionalItems`、`prefixItems`、`contains`、`minContains`、`maxContains`、`dependentSchemas`、`unevaluatedItems`、`unevaluatedProperties`、`contentSchema`、`multipleOf` 等，无论出现在哪个位置）一律拒绝该清单（`manifest_invalid`，§7.4）。与 DPE 的三层对象一样，`config_schema` 是封闭 schema：只用表达力够用的一小组关键字，未定义的关键字不猜语义——这正是「不同实现对同一配置得出相同结论」的前提。允许 schema 的位置一律允许布尔 schema（`true` / `false`，如 `"additionalProperties": false`）。
+
+| 组 | 允许的关键字 |
+| --- | --- |
+| 结构与组合 | `type`、`properties`、`patternProperties`、`additionalProperties`、`required`、`propertyNames`、`items`（仅单个 schema，数组形式拒绝）、`allOf`、`anyOf`、`oneOf`、`not`、`if`、`then`、`else`、`$defs`（仅根，见下） |
+| 引用 | `$ref`（唯一形式见下） |
+| 方言 | `$schema`（仅根；MUST 缺省或为 draft 2020-12，`…/2020-12/schema` 与带空片段 `…/2020-12/schema#` 等价） |
+| 通用 | `enum`、`const` |
+| 字符串 | `pattern`（属于本节的正则子集）、`minLength`、`maxLength` |
+| 数值 | `minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum` |
+| 数组 | `minItems`、`maxItems`、`uniqueItems` |
+| 对象 | `minProperties`、`maxProperties`、`dependentRequired` |
+| 注解 | `title`、`description`、`default`、`examples`、`deprecated`、`readOnly`、`writeOnly`、`format`、`contentEncoding`、`contentMediaType`、`$comment` |
+
+- `$defs` MUST 只出现在根上；其值 MUST 是 schema，其中的关键字同样只允许本表。
+- `$ref` MUST 恰为 `"#/$defs/<名字>"` 一层：前缀 MUST 是字面的 `#/`（不得写成 `%2F` 等编码形式），其后按 RFC 6901 §6 处理（先百分号解码、再按 `/` 拆分、最后处理 `~1`、`~0`，顺序不可换）；含非法百分号序列（`%` 后不是两位十六进制）或 `~` 后不是 `0`/`1` 的片段 MUST 拒绝；解码后的指针 MUST 恰为 `$defs` 与 `<名字>` 两段（名字非空）；`#`、锚点（`#名字`）、深于一层（`#/$defs/a/b`）、其他位置（`#/properties/x`）与外部 URI 一律拒绝；名字 MUST 在根的 `$defs` 中存在。`$defs` 各条之间的引用关系 MUST 构成有向无环图（对 `$defs` 做一次拓扑检查即可）——环会在求值时无限递归，行为随实现而异；这同时排除了递归 schema（含经 `properties` 等位置回到自身的写法），这是有意的取舍：配置 schema 不需要递归。**展开深度** MUST ≤ 64：根计 1，每进入一个 schema 位置再 +1，每经过一次 `$ref` 跳转再 +1 并沿引用进入目标继续计，取所有路径的最大值（`$defs` 已是 DAG，记忆化后线性可算）。未被引用的 `$defs` 条目不参与展开深度（它们从不被求值），深度一律从根计起。上界保证合法清单在任何实现的默认递归限额下都能完成求值：同时守住 JSON 深度与展开深度的最紧形状（61 层 `additionalProperties` 内联链）在解析期的元模式校验约需 500–525 帧（Python 默认限额 1000，留约两倍余量；求值阶段本身约 250–300 帧）。
+- `multipleOf` 与 `contentSchema` MUST NOT 使用：前者的整除判定在浮点与大整数上跨实现不一致（实测 `0.3` 对 `multipleOf: 0.1` 被判非整数倍、大整数受浮点舍入误判），后者在 JSON Schema 里是 schema 位置、各库会按 schema crawl，留作字段即是分歧面；需要倍率表达时用 `enum` / `const` 或上下界。
+- 注解词只作注解：运行器 MUST NOT 据此判定校验失败；`default`、`examples`、`enum`、`const` 等处的同名键是数据，MUST NOT 按关键字解析。
+
+文法之外另有约束：
+
+- 量词 MUST 紧跟一个原子，且每个原子至多一个量词；`*a`、`a**`、`a{2}{3}`、`{,3}` 都不合法（`{`、`}` 作字面 MUST 转义）；`{m,n}` 形式 MUST 满足 m ≤ n。
+- `^`、`$` 只允许出现在**顶层**分支的首/尾；`a^b`、`(^a)`、`(a$)`、`(?:^a)` 都不合法，其他位置作字面 MUST 转义。
+- schema 自身 MUST 通过 draft 2020-12 元模式校验（本表之外的元层违例——如 `type` 取值不认识、`properties` 不是对象——同样拒绝该清单）；
+- 结构上界：pattern 的长度 MUST ≤ 1024 个 Unicode 标量值；**分组嵌套深度** MUST ≤ 64；**展开规模** MUST ≤ 4096。分组嵌套深度按括号层数计：最外层分组计 1，不含分组的 pattern 计 0（量词与字符类不计入；但下述上界对它们另有约束）。展开规模按书写形式逐项、递归地计数（不去重、不做集合归并——归并结果取决于各实现的集合算法，会在边界上分歧）：字面按码点计 1（`é` 计 1，不论其 UTF-8 字节数）；转义、`.`、简写各计 1；字符类的取反 `^` 不计，其余按写出的每一项计 1（`[aaaa]` 计 4、`[a-cb]` 计 2，类内简写各计 1）；锚点计 0、不参与量词；**分组至少计 1**（空组计 1——否则「零尺寸原子 × 大计数」会绕过本上界）；分组为组内之和与 1 的较大者；连接、选择为各子项之和；量词为「因子 × 被量化原子的展开规模」，因子为：`{m}` 记 m、`{m,n}` 记 n、`{m,}` 记 m、`*`、`+`、`?` 记 1；嵌套时外层因子乘内层规模，如 `(a{2}){3}` 为 6。深度取 64 是因为各引擎的解析器嵌套限额（如 RE2 系的 250）除分组外还计入量词与字符类：最坏形状（每层分组带量词）的解析嵌套约为分组层数的两倍、实测在 125 层即触及默认限额，64 层取其约一半。
+
+语义：
+
+| 构造 | 语义 |
+| --- | --- |
+| `.` | 除 U+000A、U+000D 外的任意单个 Unicode 标量值 |
+| `\d` / `\D` | `[0-9]` / 其补（在全体 Unicode 标量值上取补，下同） |
+| `\w` / `\W` | `[0-9A-Za-z_]` / 其补 |
+| `\s` / `\S` | `[\t\n\v\f\r ]`（U+0009–U+000D 与 U+0020）/ 其补 |
+| `^` / `$` | 文本的开头 / 结尾；无多行语义，`$` MUST NOT 匹配末尾换行之前 |
+| `\xHH` | 值为 U+00HH 的单字符 |
+
+匹配方式：未锚定（search）——在串的任意位置找到一处匹配即通过；`patternProperties` 的键以同一方式匹配属性名。区分大小写、按码点（不是字节或 UTF-16 码元）、不使用任何标志；匹配的字符宇宙是 Unicode 标量值（类区间跨越代理区时不含代理码位）。
+
+结构上界使编译规模有确定上界：**子集内的任何 pattern MUST 被接受并正确匹配**，实现 MUST NOT 以本地引擎的资源上限为由拒绝（实现方式不限，例如先转译为显式字符类/码点区间再交给本地引擎）。这是可用性约束，不是安全边界——清单来自插件，而插件本来就能执行任意代码；配置来自使用者。
 
 ### 4.2 实例配置
 
@@ -117,7 +201,7 @@
 
 ### 4.4 实例定义（独立运行器规范档）
 
-独立运行器 MUST 接受以下格式的实例定义：一个 UTF-8 JSON 文件（I-JSON），描述一个实例。宿主 MAY 以自己的存储表达同样的信息，但 MUST 满足 §3–§4.3 的要求。
+独立运行器 MUST 接受以下格式的实例定义：一个 UTF-8 JSON 文件（I-JSON），描述一个实例。定义文件（含 `config`）的 JSON 嵌套深度（根计 1，每层对象/数组再 +1，最深的标量叶子计其所在层）MUST ≤ 64；超出时按 `definition_invalid` 拒绝（§7.4），在读取阶段判定。宿主 MAY 以自己的存储表达同样的信息，但 MUST 满足 §3–§4.3 的要求。
 
 ```json
 { "definition_version": 1,
@@ -695,7 +779,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `no_cursor` | `supports_cursor: false` | 不缓存游标，下一轮不带游标 |
 | `env_probe` | 声明一个必填凭证；把自身环境变量的**名字**（不含值）作为文档内容产出 | 环境恰为 §4.3 的三部分；凭证缺失时 `secret_missing`，退出码 3 |
 
-另有不依赖插件行为的运行器用例：同一实例并发运行两次，其一以 `instance_busy`（退出码 4）结束；清单或实例定义违例得到 `manifest_invalid` / `definition_invalid`，配置未通过 schema 得到 `config_schema_violation`；同一状态目录中前缀重叠的第二个实例被拒绝（`definition_invalid`）；沿用同一 `id` 修改 `config` 后，下一轮不带游标（全量轮）；remote 上他人改写某文档、源端随后也修改该文档（使插件再次产出它）后，commit 冲突按 `source_wins` 重新提交、`report` 下判条目失败（`retryable: false`，`cursor_held_since` 非 `null`）；同步状态与意图日志：写入生效后、确认前终止运行器进程，重跑不得报告冲突（含 delete 后源端重建同一 URI、move 后向原 URI 写入）；move 目标被占用时为 `partial`，`cursor_held_since` 保持为首次失败轮的开始时刻。
+另有不依赖插件行为的运行器用例：同一实例并发运行两次，其一以 `instance_busy`（退出码 4）结束；清单或实例定义违例得到 `manifest_invalid` / `definition_invalid`，配置未通过 schema 得到 `config_schema_violation`；清单的 `pattern` / `patternProperties` 键超出 §4.1.1 的子集或结构上界（如 lookaround、反向引用、`\p{…}`、超展开规模）得到 `manifest_invalid`；同一状态目录中前缀重叠的第二个实例被拒绝（`definition_invalid`）；沿用同一 `id` 修改 `config` 后，下一轮不带游标（全量轮）；remote 上他人改写某文档、源端随后也修改该文档（使插件再次产出它）后，commit 冲突按 `source_wins` 重新提交、`report` 下判条目失败（`retryable: false`，`cursor_held_since` 非 `null`）；同步状态与意图日志：写入生效后、确认前终止运行器进程，重跑不得报告冲突（含 delete 后源端重建同一 URI、move 后向原 URI 写入）；move 目标被占用时为 `partial`，`cursor_held_since` 保持为首次失败轮的开始时刻。
 
 **插件测试驱动**（验证插件）：驱动插件进程并检查 §8.1——分帧与握手、条目的封闭 schema、句柄的快照一致性（同一句柄在不同偏移重复读取）、`shutdown` / stdin EOF 后按时退出、`cancel` 的响应，以及确定性（判据 1）。
 

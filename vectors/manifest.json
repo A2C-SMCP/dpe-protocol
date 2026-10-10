@@ -110,7 +110,7 @@
   },
   "provenance": {
     "generator": "scripts/gen_vectors.py",
-    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1"
+    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1"
   },
   "files": [
     {
@@ -120,6 +120,10 @@
     {
       "name": "blob_ref.json",
       "sha256": "5273e9c930942cc703f5659d3b2a4193b2c18a26cab2278937256a0da951edbf"
+    },
+    {
+      "name": "config_schema_patterns.json",
+      "sha256": "d0658ce79096ef5812570c6c9465f88c812f3a1748637ce37fee714622fb2f53"
     },
     {
       "name": "cross_page_move.json",

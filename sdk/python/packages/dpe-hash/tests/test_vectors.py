@@ -145,13 +145,17 @@ def test_all_jcs_vectors_listed(vectors_dir: Path) -> None:
 
 
 def test_all_vector_kinds_have_consumers(vectors_dir: Path) -> None:
-    """vectors/ 出现的 kind 是封闭集合，每个都必须有消费方；新增 kind 漏写消费测试时在此失败。"""
+    """vectors/ 出现的 kind 是封闭集合，每个都必须有消费方；新增 kind 漏写消费测试时在此失败。
+
+    ``pattern``（connector 契约 §4.1.1 的正则子集）的消费方在 ``dpe-sdk`` 的
+    ``tests/test_run_pattern.py``（清单与配置校验属于 dpe-run）。
+    """
     kinds = {
         json.loads(f.read_text(encoding="utf-8"))["kind"]
         for f in vectors_dir.glob("*.json")
         if f.name != "manifest.json"
     }
-    assert kinds == {"document", "jcs", "uri", "invalid"}
+    assert kinds == {"document", "jcs", "uri", "invalid", "pattern"}
 
 
 def test_jcs_numbers_ignore_decimal_context(vectors_dir: Path) -> None:

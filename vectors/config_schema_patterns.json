@@ -1,0 +1,3947 @@
+{
+  "name": "config_schema_patterns",
+  "kind": "pattern",
+  "spec": "spec/connector-contract.md",
+  "section": "§4.1.1",
+  "description": "connector 契约 §4.1.1：config_schema 的 pattern / patternProperties 可移植子集——合法/越界 pattern、手写的语义匹配期望、schema 遍历用例",
+  "valid_patterns": [
+    {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "note": "典型标识符"
+    },
+    {
+      "pattern": "^(?:ab|cd)+$",
+      "note": "(?…) 分组、非捕获同义"
+    },
+    {
+      "pattern": "^[\\d\\w\\s-]+$",
+      "note": "类内简写与类尾字面 -"
+    },
+    {
+      "pattern": "[-a]",
+      "note": "类首字面 -"
+    },
+    {
+      "pattern": "[a-]",
+      "note": "类尾字面 -"
+    },
+    {
+      "pattern": "[\\-]",
+      "note": "转义 -"
+    },
+    {
+      "pattern": "[\\x00-\\x1f]",
+      "note": "\\xHH 作区间端点"
+    },
+    {
+      "pattern": "\\xE9",
+      "note": "\\xHH 十六进制大小写均可"
+    },
+    {
+      "pattern": "[^\\]a]",
+      "note": "类内转义 ]"
+    },
+    {
+      "pattern": "(a|)",
+      "note": "空分支"
+    },
+    {
+      "pattern": "()",
+      "note": "空组至少计 1（分组至少计 1）"
+    },
+    {
+      "pattern": "\\S+",
+      "note": "补集简写"
+    },
+    {
+      "pattern": "[\\D]",
+      "note": "类内补集简写"
+    },
+    {
+      "pattern": "[^\\D]",
+      "note": "取反类内的补集简写"
+    },
+    {
+      "pattern": "a{0}.*",
+      "note": "0 次量词"
+    },
+    {
+      "pattern": "\\W{255}",
+      "note": "结构上界内的常见形状"
+    },
+    {
+      "pattern": "[aaaa]{1024}",
+      "note": "计数不去重：恰 4096（边界，合法）"
+    },
+    {
+      "pattern": "(?:a|bc){1365}",
+      "note": "选择与嵌套：恰 4095"
+    },
+    {
+      "pattern": "a{4096}",
+      "note": "恰 4096"
+    },
+    {
+      "pattern": "a{4096,}",
+      "note": "{m,} 因子记 m：恰 4096"
+    },
+    {
+      "pattern": "a{1,4096}",
+      "note": "恰 4096"
+    },
+    {
+      "pattern": "\\d{4}-\\d{2}-\\d{2}",
+      "note": "日期"
+    },
+    {
+      "pattern": "[.]",
+      "note": "类内元字符照字面（RFC 9485 / XSD 的类内语义）"
+    },
+    {
+      "pattern": "[a*b]",
+      "note": "类内元字符照字面"
+    },
+    {
+      "pattern": "[^a$]",
+      "note": "取反类内的元字符照字面"
+    },
+    {
+      "pattern": "[&]",
+      "note": "单个 & 是类内字面（只要不构成未转义序列）"
+    },
+    {
+      "pattern": "[a\\x26\\x26b]",
+      "note": "以 \\xHH 转义写出相邻的 &，不构成未转义序列"
+    },
+    {
+      "pattern": "[a\\x7E\\x7Eb]",
+      "note": "以 \\xHH 转义写出相邻的 ~"
+    },
+    {
+      "pattern": "[\\x2D\\x2D]",
+      "note": "以 \\xHH 转义写出相邻的 -"
+    },
+    {
+      "pattern": "(?:){4096}",
+      "note": "零尺寸原子的大计数：分组至少计 1，恰 4096"
+    },
+    {
+      "pattern": "",
+      "note": "空 pattern：匹配任意串"
+    },
+    {
+      "pattern": "................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................",
+      "note": "长度顶格（1024 个 .，展开规模 1024）"
+    },
+    {
+      "pattern": "[ĀȐ̠аՀِݠࡰঀઐ஠ರව໐࿠ჰ]{255}",
+      "note": "最坏情况：16 个跨字节宽度的互不相邻码点的手写类 ×255（展开规模 4080；与探针 pattern_budget 同款，各实现 MUST 能编译并匹配）"
+    },
+    {
+      "pattern": "((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((a))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
+      "note": "嵌套深度顶格（64 层，展开规模 1）"
+    },
+    {
+      "pattern": "((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((a{4096}))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
+      "note": "嵌套深度与展开规模同时顶格"
+    },
+    {
+      "pattern": "(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:[a]*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*)*",
+      "note": "最坏嵌套形状：64 层分组且每层带量词（引擎的解析嵌套还计入量词与字符类，各实现 MUST 能编译并匹配）"
+    }
+  ],
+  "invalid_patterns": [
+    {
+      "pattern": "(?=a)b",
+      "reason": "lookaround",
+      "note": "正向先行断言"
+    },
+    {
+      "pattern": "(?!a)b",
+      "reason": "lookaround",
+      "note": "负向先行断言"
+    },
+    {
+      "pattern": "(?<=a)b",
+      "reason": "lookaround",
+      "note": "正向后行断言"
+    },
+    {
+      "pattern": "(?<!a)b",
+      "reason": "lookaround",
+      "note": "负向后行断言"
+    },
+    {
+      "pattern": "\\p{L}",
+      "reason": "unicode_property_escape",
+      "note": "Unicode 属性转义"
+    },
+    {
+      "pattern": "\\P{L}",
+      "reason": "unicode_property_escape",
+      "note": "Unicode 属性转义（补）"
+    },
+    {
+      "pattern": "(a)\\1",
+      "reason": "backreference",
+      "note": "反向引用"
+    },
+    {
+      "pattern": "\\1",
+      "reason": "backreference",
+      "note": "反向引用（无组）"
+    },
+    {
+      "pattern": "(?i)a",
+      "reason": "inline_flag",
+      "note": "内联标志"
+    },
+    {
+      "pattern": "(?<n>a)",
+      "reason": "named_group",
+      "note": "命名组"
+    },
+    {
+      "pattern": "(?P<n>a)",
+      "reason": "named_group",
+      "note": "命名组（Python 语法）"
+    },
+    {
+      "pattern": "(?#c)",
+      "reason": "comment_group",
+      "note": "注释组"
+    },
+    {
+      "pattern": "a*?",
+      "reason": "lazy_quantifier",
+      "note": "惰性量词"
+    },
+    {
+      "pattern": "a??",
+      "reason": "lazy_quantifier",
+      "note": "惰性量词"
+    },
+    {
+      "pattern": "a{2}?",
+      "reason": "lazy_quantifier",
+      "note": "惰性量词（括号形）"
+    },
+    {
+      "pattern": "a*+",
+      "reason": "possessive_quantifier",
+      "note": "占有量词"
+    },
+    {
+      "pattern": "a{2}+",
+      "reason": "possessive_quantifier",
+      "note": "占有量词（括号形）"
+    },
+    {
+      "pattern": "a{2}{3}",
+      "reason": "stacked_quantifier",
+      "note": "叠加量词"
+    },
+    {
+      "pattern": "a**",
+      "reason": "stacked_quantifier",
+      "note": "叠加量词"
+    },
+    {
+      "pattern": "{,3}",
+      "reason": "invalid_repetition",
+      "note": "{,n} 形式"
+    },
+    {
+      "pattern": "a{",
+      "reason": "invalid_repetition",
+      "note": "未转义的字面 {"
+    },
+    {
+      "pattern": "a}",
+      "reason": "invalid_repetition",
+      "note": "未转义的字面 }"
+    },
+    {
+      "pattern": "a{2,1}",
+      "reason": "invalid_repetition",
+      "note": "下界大于上界"
+    },
+    {
+      "pattern": "[z-a]",
+      "reason": "class_range_order",
+      "note": "反向区间"
+    },
+    {
+      "pattern": "[\\d-z]",
+      "reason": "class_range_endpoint",
+      "note": "简写作区间端点"
+    },
+    {
+      "pattern": "[]",
+      "reason": "empty_class",
+      "note": "空类"
+    },
+    {
+      "pattern": "[^]",
+      "reason": "empty_class",
+      "note": "空类（取反）"
+    },
+    {
+      "pattern": "[a&&b]",
+      "reason": "class_set_operation",
+      "note": "类集合运算"
+    },
+    {
+      "pattern": "[a~~b]",
+      "reason": "class_set_operation",
+      "note": "类集合运算"
+    },
+    {
+      "pattern": "[--]",
+      "reason": "class_set_operation",
+      "note": "字面 -- 序列"
+    },
+    {
+      "pattern": "[a\\--b]",
+      "reason": "class_set_operation",
+      "note": "相邻 -- 无论前一个是否转义都违例"
+    },
+    {
+      "pattern": "a^b",
+      "reason": "anchor_position",
+      "note": "锚点不在分支首尾"
+    },
+    {
+      "pattern": "(a$)",
+      "reason": "anchor_position",
+      "note": "锚点只允许在顶层分支首尾"
+    },
+    {
+      "pattern": "(?:^a)",
+      "reason": "anchor_position",
+      "note": "锚点只允许在顶层分支首尾"
+    },
+    {
+      "pattern": "(^a)",
+      "reason": "anchor_position",
+      "note": "锚点不在顶层分支"
+    },
+    {
+      "pattern": "a$b",
+      "reason": "anchor_position",
+      "note": "$ 不在分支尾"
+    },
+    {
+      "pattern": "\\q",
+      "reason": "unknown_escape",
+      "note": "未知字母转义"
+    },
+    {
+      "pattern": "\\/",
+      "reason": "unknown_escape",
+      "note": "/ 不在转义白名单"
+    },
+    {
+      "pattern": "\\u0041",
+      "reason": "unknown_escape",
+      "note": "\\uHHHH 不在白名单（用字面字符）"
+    },
+    {
+      "pattern": "\\b",
+      "reason": "unknown_escape",
+      "note": "词边界不支持"
+    },
+    {
+      "pattern": "[a-b-c]",
+      "reason": "class_dash_position",
+      "note": "类中间的 -"
+    },
+    {
+      "pattern": "*a",
+      "reason": "syntax",
+      "note": "量词没有作用对象"
+    },
+    {
+      "pattern": "[aaaa]{1025}",
+      "reason": "expansion",
+      "note": "展开规模 4100（越界）"
+    },
+    {
+      "pattern": "(?:a|bcd){1365}",
+      "reason": "expansion",
+      "note": "展开规模 5460（越界）"
+    },
+    {
+      "pattern": "a{4097}",
+      "reason": "expansion",
+      "note": "展开规模 4097"
+    },
+    {
+      "pattern": "a{4097,}",
+      "reason": "expansion",
+      "note": "因子记 m：4097"
+    },
+    {
+      "pattern": "a{1,4097}",
+      "reason": "expansion",
+      "note": "展开规模 4097"
+    },
+    {
+      "pattern": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reason": "length",
+      "note": "长度 1025（越界）"
+    },
+    {
+      "pattern": "(?:){4097}",
+      "reason": "expansion",
+      "note": "零尺寸原子按至少计 1：4097"
+    },
+    {
+      "pattern": "(){4294967296}",
+      "reason": "expansion",
+      "note": "空组 × 极大计数"
+    },
+    {
+      "pattern": "(?:(?:){4096}){4096}",
+      "reason": "expansion",
+      "note": "零尺寸嵌套相乘后越界"
+    },
+    {
+      "pattern": "(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))",
+      "reason": "nesting_depth",
+      "note": "嵌套深度 65（越界）"
+    },
+    {
+      "pattern_json": "\"\\ud800\"",
+      "reason": "not_scalar_value",
+      "note": "孤立代理项不是 Unicode 标量值；manifest 经 I-JSON 已禁，此处同样判越界"
+    }
+  ],
+  "match_cases": [
+    {
+      "pattern": "^\\w+$",
+      "value": "héllo",
+      "match": false,
+      "note": "\\w 为 ASCII"
+    },
+    {
+      "pattern": "^\\w+$",
+      "value": "abc_9",
+      "match": true
+    },
+    {
+      "pattern": "^\\d$",
+      "value": "٣",
+      "match": false,
+      "note": "\\d 为 ASCII"
+    },
+    {
+      "pattern": "^\\d$",
+      "value": "5",
+      "match": true
+    },
+    {
+      "pattern": "^\\s$",
+      "value": "\u000b",
+      "match": true,
+      "note": "\\s 含 \\v"
+    },
+    {
+      "pattern": "^\\s$",
+      "value": " ",
+      "match": false,
+      "note": "\\s 不含 Unicode 空白"
+    },
+    {
+      "pattern": "a$",
+      "value": "a\n",
+      "match": false,
+      "note": "$ 不匹配末尾换行之前"
+    },
+    {
+      "pattern": "a$",
+      "value": "a",
+      "match": true
+    },
+    {
+      "pattern": "^a",
+      "value": "ba",
+      "match": false
+    },
+    {
+      "pattern": "a",
+      "value": "ba",
+      "match": true,
+      "note": "未锚定（search）"
+    },
+    {
+      "pattern": "^.$",
+      "value": "\r",
+      "match": false,
+      "note": ". 排除 \\n 与 \\r"
+    },
+    {
+      "pattern": "^.$",
+      "value": "\n",
+      "match": false
+    },
+    {
+      "pattern": "^.$",
+      "value": "a",
+      "match": true
+    },
+    {
+      "pattern": "^.$",
+      "value": "😀",
+      "match": true,
+      "note": "按码点，非 BMP 单字符"
+    },
+    {
+      "pattern": "^\\xE9$",
+      "value": "é",
+      "match": true
+    },
+    {
+      "pattern": "^[^\\D]$",
+      "value": "5",
+      "match": true
+    },
+    {
+      "pattern": "^[^\\D]$",
+      "value": "x",
+      "match": false
+    },
+    {
+      "pattern": "^[\\W\\d]$",
+      "value": "x",
+      "match": false,
+      "note": "\\W 并 \\d 不含字母与下划线"
+    },
+    {
+      "pattern": "^[\\W\\d]$",
+      "value": "é",
+      "match": true
+    },
+    {
+      "pattern": "^[\\W\\d]$",
+      "value": "5",
+      "match": true
+    },
+    {
+      "pattern": "^[^a]$",
+      "value": "\n",
+      "match": true,
+      "note": "取反类含换行"
+    },
+    {
+      "pattern": "^\\S+$",
+      "value": " ",
+      "match": false
+    },
+    {
+      "pattern": "^(a{2}){3}$",
+      "value": "aaaaaa",
+      "match": true
+    },
+    {
+      "pattern": "^[a-cb]$",
+      "value": "b",
+      "match": true,
+      "note": "计数不去重不影响语义"
+    },
+    {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "value": "2026-10-09",
+      "match": true
+    },
+    {
+      "pattern": "^[a-]$",
+      "value": "-",
+      "match": true
+    },
+    {
+      "pattern": "^-?\\d+$",
+      "value": "-12",
+      "match": true
+    },
+    {
+      "pattern": "^\\|$",
+      "value": "|",
+      "match": true,
+      "note": "转义元字符"
+    },
+    {
+      "pattern": "^\\x41$",
+      "value": "A",
+      "match": true
+    },
+    {
+      "pattern": "^\\n$",
+      "value": "\n",
+      "match": true
+    },
+    {
+      "pattern": "^é$",
+      "value": "é",
+      "match": true,
+      "note": "字面非 ASCII 按码点"
+    },
+    {
+      "pattern": "^a{0}$",
+      "value": "",
+      "match": true
+    },
+    {
+      "pattern": "",
+      "value": "任意文本",
+      "match": true,
+      "note": "空 pattern 匹配任意串"
+    },
+    {
+      "pattern": "^.$",
+      "value_json": "\"\\ud800\"",
+      "match": false,
+      "note": "匹配宇宙是 Unicode 标量值：孤立代理项不参与匹配（value 用原始 JSON 文本表达）"
+    },
+    {
+      "pattern": "^[.]$",
+      "value": ".",
+      "match": true,
+      "note": "类内元字符照字面"
+    },
+    {
+      "pattern": "^[a*b]+$",
+      "value": "*ab",
+      "match": true
+    },
+    {
+      "pattern": "^[^a$]$",
+      "value": "$",
+      "match": false,
+      "note": "取反类里的 $ 是字面，被排除"
+    },
+    {
+      "pattern": "^[^a$]$",
+      "value": "b",
+      "match": true
+    }
+  ],
+  "schema_cases": [
+    {
+      "name": "const 内的 pattern 键是数据",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "const": {
+              "pattern": "(?=x)"
+            }
+          }
+        }
+      },
+      "config": {
+        "x": {
+          "pattern": "(?=x)"
+        }
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "default 内的 pattern 键是数据",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "object",
+            "default": {
+              "pattern": "("
+            }
+          }
+        }
+      },
+      "config": {},
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "examples 内的 pattern 键是数据",
+      "schema": {
+        "type": "object",
+        "examples": [
+          {
+            "pattern": "[z-a]"
+          }
+        ],
+        "properties": {}
+      },
+      "config": {},
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "名为 pattern 的属性（值通过）",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "pattern": "^\\d+$"
+          }
+        }
+      },
+      "config": {
+        "pattern": "123"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "名为 pattern 的属性（值不通过）",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "pattern": "^\\d+$"
+          }
+        }
+      },
+      "config": {
+        "pattern": "abc"
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "patternProperties 键匹配属性名（通过）",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "^x_[a-z]+$": {
+            "type": "integer"
+          }
+        }
+      },
+      "config": {
+        "x_ab": 1
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "patternProperties 键匹配属性名（不通过）",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "^x_[a-z]+$": {
+            "type": "integer"
+          }
+        }
+      },
+      "config": {
+        "x_ab": "s"
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "additionalProperties 经 patternProperties 键判定（ASCII 边界）",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "^\\w+$": {}
+        },
+        "additionalProperties": false
+      },
+      "config": {
+        "é": 1
+      },
+      "manifest_valid": true,
+      "config_valid": false,
+      "note": "\\w 为 ASCII：é 不被模式覆盖，additionalProperties 生效；实现不得只覆写 pattern 关键字而漏掉内部拼接路径"
+    },
+    {
+      "name": "additionalProperties 经 patternProperties 键判定（$ 语义）",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "^\\w+$": {}
+        },
+        "additionalProperties": false
+      },
+      "config": {
+        "a\n": 1
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "patternProperties 空键匹配任意属性名",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
+      },
+      "config": {
+        "x": 1
+      },
+      "manifest_valid": true,
+      "config_valid": true,
+      "note": "空 pattern 语义为匹配任意串；实现侧转译不得产出会被「|」拼接吞掉的空串"
+    },
+    {
+      "name": "patternProperties 键转译碰撞：子 schema 并存（不通过）",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "\\d": {
+            "type": "string"
+          },
+          "[0-9]": {
+            "maxLength": 1
+          }
+        }
+      },
+      "config": {
+        "1": "ab"
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "patternProperties 键转译碰撞：子 schema 并存（通过）",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "\\d": {
+            "type": "string"
+          },
+          "[0-9]": {
+            "maxLength": 1
+          }
+        }
+      },
+      "config": {
+        "1": "a"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "关键字 pattern 越界即清单不合法",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "(?=x)"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "patternProperties 键越界即清单不合法",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "^(?=a)": {}
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 指向 $defs（通过）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "name": {
+            "type": "string",
+            "pattern": "^\\w+$"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      },
+      "config": {
+        "x": "abc_9"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "$ref 目标处的 pattern 仍按子集语义匹配",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "name": {
+            "type": "string",
+            "pattern": "^\\w+$"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      },
+      "config": {
+        "x": "héllo"
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "$ref 名字按 RFC 6901 §6 解码（键含空格）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a b": {
+            "type": "string",
+            "pattern": "^a$"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a%20b"
+          }
+        }
+      },
+      "config": {
+        "x": "a"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "$ref 名字按 RFC 6901 §6 解码（键含非 ASCII）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "é": {
+            "type": "string",
+            "pattern": "^a$"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/%C3%A9"
+          }
+        }
+      },
+      "config": {
+        "x": "a"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "$ref 名字按 RFC 6901 §6 解码（键含斜杠）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a/b": {
+            "type": "string",
+            "pattern": "^a$"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a%7E1b"
+          }
+        }
+      },
+      "config": {
+        "x": "a"
+      },
+      "manifest_valid": true,
+      "config_valid": true,
+      "note": "先百分号解码（%7E1 → ~1）再转义（~1 → /），顺序不可换"
+    },
+    {
+      "name": "$ref 指向不存在的 $defs 条目",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a": {}
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/nope"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 形式：根引用不合法",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "$ref": "#"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 形式：锚点不合法",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "$ref": "#name"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 形式：深于一层不合法",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a": {
+            "properties": {
+              "y": {}
+            }
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a/properties/y"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 形式：其他位置不合法",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "$ref": "#/properties/x"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 形式：空名字不合法",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "": {}
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 形式：%2F 解码成额外分隔符不合法",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a": true
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a%2Fb"
+          }
+        }
+      },
+      "manifest_valid": false,
+      "note": "先百分号解码再按 / 拆分：%2F 成为分隔符，指针深于一层"
+    },
+    {
+      "name": "$ref 形式：外部 URI 不合法",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "$ref": "other.json#/$defs/x"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$defs 自引用成环",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a": {
+            "$ref": "#/$defs/a"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$defs 互引成环",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a": {
+            "$ref": "#/$defs/b"
+          },
+          "b": {
+            "$ref": "#/$defs/a"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$defs 只允许在根",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "$defs": {
+              "d": {}
+            }
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "引用布尔 schema 有效",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "f": true
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/f"
+          }
+        }
+      },
+      "config": {
+        "x": 1
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "布尔 schema 作为 additionalProperties",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "x": {}
+        }
+      },
+      "config": {
+        "x": 1
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "if/then/else 在允许集内",
+      "schema": {
+        "type": "object",
+        "if": {
+          "required": [
+            "a"
+          ]
+        },
+        "then": {
+          "required": [
+            "b"
+          ]
+        }
+      },
+      "config": {
+        "a": 1
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "propertyNames 在允许集内（其中 pattern 受子集约束）",
+      "schema": {
+        "type": "object",
+        "propertyNames": {
+          "pattern": "^[a-z]+$"
+        }
+      },
+      "config": {
+        "ab": 1
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "propertyNames 的 pattern 越界判不合法",
+      "schema": {
+        "type": "object",
+        "propertyNames": {
+          "pattern": "(?=a)"
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "items 单 schema 有效",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^a$"
+            }
+          }
+        }
+      },
+      "config": {
+        "x": [
+          "a"
+        ]
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "items 数组形式不合法",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "array",
+            "items": [
+              {
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$comment 在允许集内",
+      "schema": {
+        "type": "object",
+        "$comment": "说明",
+        "properties": {}
+      },
+      "config": {},
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "contentEncoding / contentMediaType 只作注解",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "contentMediaType": "image/png"
+          }
+        }
+      },
+      "config": {
+        "x": "这不是 base64"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "contentSchema 不在允许集内",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "contentSchema": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "multipleOf 不在允许集内",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "multipleOf": 2
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$schema 仅根且必须 2020-12（带 # 等价）",
+      "schema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema#",
+        "properties": {
+          "x": {
+            "type": "string",
+            "pattern": "^a$"
+          }
+        }
+      },
+      "config": {
+        "x": "a"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "嵌套 $schema 不合法",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "d": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$schema 非 2020-12 不合法",
+      "schema": {
+        "type": "object",
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "禁止的关键字：$id",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "$id": "https://self/x"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "禁止的关键字：$anchor / $dynamicAnchor / $dynamicRef",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a": {
+            "$anchor": "n",
+            "$dynamicAnchor": "m"
+          }
+        },
+        "properties": {
+          "x": {
+            "$dynamicRef": "#m"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "禁止的关键字：definitions / dependencies / unevaluatedProperties",
+      "schema": {
+        "type": "object",
+        "definitions": {
+          "d": {}
+        },
+        "dependencies": {
+          "a": [
+            "b"
+          ]
+        },
+        "unevaluatedProperties": false
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "禁止的关键字：prefixItems / contains",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "prefixItems": [
+              {
+                "type": "string"
+              }
+            ],
+            "contains": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "未定义的关键字",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "customKeyword": 1
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "enum：1 与 1.0 相等",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "enum": [
+              1
+            ]
+          }
+        }
+      },
+      "config": {
+        "x": 1.0
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "const：1 与 true 不等",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "const": 1
+          }
+        }
+      },
+      "config": {
+        "x": true
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "enum：0 与 false 不等",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "enum": [
+              0
+            ]
+          }
+        }
+      },
+      "config": {
+        "x": false
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "uniqueItems：1 与 1.0 视为相同",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "array",
+            "uniqueItems": true
+          }
+        }
+      },
+      "config": {
+        "x": [
+          1,
+          1.0
+        ]
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "uniqueItems：0 与 false 视为不同",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "array",
+            "uniqueItems": true
+          }
+        }
+      },
+      "config": {
+        "x": [
+          0,
+          false
+        ]
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "清单 JSON 嵌套深度 63（properties 链 30 层，未越界）",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "object",
+                    "properties": {
+                      "a": {
+                        "type": "object",
+                        "properties": {
+                          "a": {
+                            "type": "object",
+                            "properties": {
+                              "a": {
+                                "type": "object",
+                                "properties": {
+                                  "a": {
+                                    "type": "object",
+                                    "properties": {
+                                      "a": {
+                                        "type": "object",
+                                        "properties": {
+                                          "a": {
+                                            "type": "object",
+                                            "properties": {
+                                              "a": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "a": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "a": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                          "a": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                              "a": {
+                                                                "type": "object",
+                                                                "properties": {
+                                                                  "a": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                      "a": {
+                                                                        "type": "object",
+                                                                        "properties": {
+                                                                          "a": {
+                                                                            "type": "object",
+                                                                            "properties": {
+                                                                              "a": {
+                                                                                "type": "object",
+                                                                                "properties": {
+                                                                                  "a": {
+                                                                                    "type": "object",
+                                                                                    "properties": {
+                                                                                      "a": {
+                                                                                        "type": "object",
+                                                                                        "properties": {
+                                                                                          "a": {
+                                                                                            "type": "object",
+                                                                                            "properties": {
+                                                                                              "a": {
+                                                                                                "type": "object",
+                                                                                                "properties": {
+                                                                                                  "a": {
+                                                                                                    "type": "object",
+                                                                                                    "properties": {
+                                                                                                      "a": {
+                                                                                                        "type": "object",
+                                                                                                        "properties": {
+                                                                                                          "a": {
+                                                                                                            "type": "object",
+                                                                                                            "properties": {
+                                                                                                              "a": {
+                                                                                                                "type": "object",
+                                                                                                                "properties": {
+                                                                                                                  "a": {
+                                                                                                                    "type": "object",
+                                                                                                                    "properties": {
+                                                                                                                      "a": {
+                                                                                                                        "type": "object",
+                                                                                                                        "properties": {
+                                                                                                                          "a": {
+                                                                                                                            "type": "object",
+                                                                                                                            "properties": {
+                                                                                                                              "a": {
+                                                                                                                                "type": "object"
+                                                                                                                              }
+                                                                                                                            }
+                                                                                                                          }
+                                                                                                                        }
+                                                                                                                      }
+                                                                                                                    }
+                                                                                                                  }
+                                                                                                                }
+                                                                                                              }
+                                                                                                            }
+                                                                                                          }
+                                                                                                        }
+                                                                                                      }
+                                                                                                    }
+                                                                                                  }
+                                                                                                }
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "config": {},
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "清单 JSON 嵌套深度越界（65：properties 链 31 层）",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "object",
+                    "properties": {
+                      "a": {
+                        "type": "object",
+                        "properties": {
+                          "a": {
+                            "type": "object",
+                            "properties": {
+                              "a": {
+                                "type": "object",
+                                "properties": {
+                                  "a": {
+                                    "type": "object",
+                                    "properties": {
+                                      "a": {
+                                        "type": "object",
+                                        "properties": {
+                                          "a": {
+                                            "type": "object",
+                                            "properties": {
+                                              "a": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "a": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "a": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                          "a": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                              "a": {
+                                                                "type": "object",
+                                                                "properties": {
+                                                                  "a": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                      "a": {
+                                                                        "type": "object",
+                                                                        "properties": {
+                                                                          "a": {
+                                                                            "type": "object",
+                                                                            "properties": {
+                                                                              "a": {
+                                                                                "type": "object",
+                                                                                "properties": {
+                                                                                  "a": {
+                                                                                    "type": "object",
+                                                                                    "properties": {
+                                                                                      "a": {
+                                                                                        "type": "object",
+                                                                                        "properties": {
+                                                                                          "a": {
+                                                                                            "type": "object",
+                                                                                            "properties": {
+                                                                                              "a": {
+                                                                                                "type": "object",
+                                                                                                "properties": {
+                                                                                                  "a": {
+                                                                                                    "type": "object",
+                                                                                                    "properties": {
+                                                                                                      "a": {
+                                                                                                        "type": "object",
+                                                                                                        "properties": {
+                                                                                                          "a": {
+                                                                                                            "type": "object",
+                                                                                                            "properties": {
+                                                                                                              "a": {
+                                                                                                                "type": "object",
+                                                                                                                "properties": {
+                                                                                                                  "a": {
+                                                                                                                    "type": "object",
+                                                                                                                    "properties": {
+                                                                                                                      "a": {
+                                                                                                                        "type": "object",
+                                                                                                                        "properties": {
+                                                                                                                          "a": {
+                                                                                                                            "type": "object",
+                                                                                                                            "properties": {
+                                                                                                                              "a": {
+                                                                                                                                "type": "object",
+                                                                                                                                "properties": {
+                                                                                                                                  "a": {
+                                                                                                                                    "type": "object"
+                                                                                                                                  }
+                                                                                                                                }
+                                                                                                                              }
+                                                                                                                            }
+                                                                                                                          }
+                                                                                                                        }
+                                                                                                                      }
+                                                                                                                    }
+                                                                                                                  }
+                                                                                                                }
+                                                                                                              }
+                                                                                                            }
+                                                                                                          }
+                                                                                                        }
+                                                                                                      }
+                                                                                                    }
+                                                                                                  }
+                                                                                                }
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "清单 JSON 嵌套深度顶格（64：default 值嵌 61 层数组）",
+      "schema": {
+        "type": "object",
+        "default": [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      [
+                        [
+                          [
+                            [
+                              [
+                                [
+                                  [
+                                    [
+                                      [
+                                        [
+                                          [
+                                            [
+                                              [
+                                                [
+                                                  [
+                                                    [
+                                                      [
+                                                        [
+                                                          [
+                                                            [
+                                                              [
+                                                                [
+                                                                  [
+                                                                    [
+                                                                      [
+                                                                        [
+                                                                          [
+                                                                            [
+                                                                              [
+                                                                                [
+                                                                                  [
+                                                                                    [
+                                                                                      [
+                                                                                        [
+                                                                                          [
+                                                                                            [
+                                                                                              [
+                                                                                                [
+                                                                                                  [
+                                                                                                    [
+                                                                                                      [
+                                                                                                        [
+                                                                                                          [
+                                                                                                            [
+                                                                                                              [
+                                                                                                                [
+                                                                                                                  [
+                                                                                                                    [
+                                                                                                                      [
+                                                                                                                        [
+                                                                                                                          [
+                                                                                                                            [
+                                                                                                                              [
+                                                                                                                                [
+                                                                                                                                  "x"
+                                                                                                                                ]
+                                                                                                                              ]
+                                                                                                                            ]
+                                                                                                                          ]
+                                                                                                                        ]
+                                                                                                                      ]
+                                                                                                                    ]
+                                                                                                                  ]
+                                                                                                                ]
+                                                                                                              ]
+                                                                                                            ]
+                                                                                                          ]
+                                                                                                        ]
+                                                                                                      ]
+                                                                                                    ]
+                                                                                                  ]
+                                                                                                ]
+                                                                                              ]
+                                                                                            ]
+                                                                                          ]
+                                                                                        ]
+                                                                                      ]
+                                                                                    ]
+                                                                                  ]
+                                                                                ]
+                                                                              ]
+                                                                            ]
+                                                                          ]
+                                                                        ]
+                                                                      ]
+                                                                    ]
+                                                                  ]
+                                                                ]
+                                                              ]
+                                                            ]
+                                                          ]
+                                                        ]
+                                                      ]
+                                                    ]
+                                                  ]
+                                                ]
+                                              ]
+                                            ]
+                                          ]
+                                        ]
+                                      ]
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      },
+      "manifest_valid": true,
+      "config": {},
+      "config_valid": true,
+      "note": "深度写在数据位置（default 的值）上同样受限"
+    },
+    {
+      "name": "清单 JSON 嵌套深度越界（65：default 值嵌 62 层数组）",
+      "schema": {
+        "type": "object",
+        "default": [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      [
+                        [
+                          [
+                            [
+                              [
+                                [
+                                  [
+                                    [
+                                      [
+                                        [
+                                          [
+                                            [
+                                              [
+                                                [
+                                                  [
+                                                    [
+                                                      [
+                                                        [
+                                                          [
+                                                            [
+                                                              [
+                                                                [
+                                                                  [
+                                                                    [
+                                                                      [
+                                                                        [
+                                                                          [
+                                                                            [
+                                                                              [
+                                                                                [
+                                                                                  [
+                                                                                    [
+                                                                                      [
+                                                                                        [
+                                                                                          [
+                                                                                            [
+                                                                                              [
+                                                                                                [
+                                                                                                  [
+                                                                                                    [
+                                                                                                      [
+                                                                                                        [
+                                                                                                          [
+                                                                                                            [
+                                                                                                              [
+                                                                                                                [
+                                                                                                                  [
+                                                                                                                    [
+                                                                                                                      [
+                                                                                                                        [
+                                                                                                                          [
+                                                                                                                            [
+                                                                                                                              [
+                                                                                                                                [
+                                                                                                                                  [
+                                                                                                                                    "x"
+                                                                                                                                  ]
+                                                                                                                                ]
+                                                                                                                              ]
+                                                                                                                            ]
+                                                                                                                          ]
+                                                                                                                        ]
+                                                                                                                      ]
+                                                                                                                    ]
+                                                                                                                  ]
+                                                                                                                ]
+                                                                                                              ]
+                                                                                                            ]
+                                                                                                          ]
+                                                                                                        ]
+                                                                                                      ]
+                                                                                                    ]
+                                                                                                  ]
+                                                                                                ]
+                                                                                              ]
+                                                                                            ]
+                                                                                          ]
+                                                                                        ]
+                                                                                      ]
+                                                                                    ]
+                                                                                  ]
+                                                                                ]
+                                                                              ]
+                                                                            ]
+                                                                          ]
+                                                                        ]
+                                                                      ]
+                                                                    ]
+                                                                  ]
+                                                                ]
+                                                              ]
+                                                            ]
+                                                          ]
+                                                        ]
+                                                      ]
+                                                    ]
+                                                  ]
+                                                ]
+                                              ]
+                                            ]
+                                          ]
+                                        ]
+                                      ]
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "展开深度顶格（64：纯引用链 62 跳，可求值）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "d0": {
+            "$ref": "#/$defs/d1"
+          },
+          "d1": {
+            "$ref": "#/$defs/d2"
+          },
+          "d2": {
+            "$ref": "#/$defs/d3"
+          },
+          "d3": {
+            "$ref": "#/$defs/d4"
+          },
+          "d4": {
+            "$ref": "#/$defs/d5"
+          },
+          "d5": {
+            "$ref": "#/$defs/d6"
+          },
+          "d6": {
+            "$ref": "#/$defs/d7"
+          },
+          "d7": {
+            "$ref": "#/$defs/d8"
+          },
+          "d8": {
+            "$ref": "#/$defs/d9"
+          },
+          "d9": {
+            "$ref": "#/$defs/d10"
+          },
+          "d10": {
+            "$ref": "#/$defs/d11"
+          },
+          "d11": {
+            "$ref": "#/$defs/d12"
+          },
+          "d12": {
+            "$ref": "#/$defs/d13"
+          },
+          "d13": {
+            "$ref": "#/$defs/d14"
+          },
+          "d14": {
+            "$ref": "#/$defs/d15"
+          },
+          "d15": {
+            "$ref": "#/$defs/d16"
+          },
+          "d16": {
+            "$ref": "#/$defs/d17"
+          },
+          "d17": {
+            "$ref": "#/$defs/d18"
+          },
+          "d18": {
+            "$ref": "#/$defs/d19"
+          },
+          "d19": {
+            "$ref": "#/$defs/d20"
+          },
+          "d20": {
+            "$ref": "#/$defs/d21"
+          },
+          "d21": {
+            "$ref": "#/$defs/d22"
+          },
+          "d22": {
+            "$ref": "#/$defs/d23"
+          },
+          "d23": {
+            "$ref": "#/$defs/d24"
+          },
+          "d24": {
+            "$ref": "#/$defs/d25"
+          },
+          "d25": {
+            "$ref": "#/$defs/d26"
+          },
+          "d26": {
+            "$ref": "#/$defs/d27"
+          },
+          "d27": {
+            "$ref": "#/$defs/d28"
+          },
+          "d28": {
+            "$ref": "#/$defs/d29"
+          },
+          "d29": {
+            "$ref": "#/$defs/d30"
+          },
+          "d30": {
+            "$ref": "#/$defs/d31"
+          },
+          "d31": {
+            "$ref": "#/$defs/d32"
+          },
+          "d32": {
+            "$ref": "#/$defs/d33"
+          },
+          "d33": {
+            "$ref": "#/$defs/d34"
+          },
+          "d34": {
+            "$ref": "#/$defs/d35"
+          },
+          "d35": {
+            "$ref": "#/$defs/d36"
+          },
+          "d36": {
+            "$ref": "#/$defs/d37"
+          },
+          "d37": {
+            "$ref": "#/$defs/d38"
+          },
+          "d38": {
+            "$ref": "#/$defs/d39"
+          },
+          "d39": {
+            "$ref": "#/$defs/d40"
+          },
+          "d40": {
+            "$ref": "#/$defs/d41"
+          },
+          "d41": {
+            "$ref": "#/$defs/d42"
+          },
+          "d42": {
+            "$ref": "#/$defs/d43"
+          },
+          "d43": {
+            "$ref": "#/$defs/d44"
+          },
+          "d44": {
+            "$ref": "#/$defs/d45"
+          },
+          "d45": {
+            "$ref": "#/$defs/d46"
+          },
+          "d46": {
+            "$ref": "#/$defs/d47"
+          },
+          "d47": {
+            "$ref": "#/$defs/d48"
+          },
+          "d48": {
+            "$ref": "#/$defs/d49"
+          },
+          "d49": {
+            "$ref": "#/$defs/d50"
+          },
+          "d50": {
+            "$ref": "#/$defs/d51"
+          },
+          "d51": {
+            "$ref": "#/$defs/d52"
+          },
+          "d52": {
+            "$ref": "#/$defs/d53"
+          },
+          "d53": {
+            "$ref": "#/$defs/d54"
+          },
+          "d54": {
+            "$ref": "#/$defs/d55"
+          },
+          "d55": {
+            "$ref": "#/$defs/d56"
+          },
+          "d56": {
+            "$ref": "#/$defs/d57"
+          },
+          "d57": {
+            "$ref": "#/$defs/d58"
+          },
+          "d58": {
+            "$ref": "#/$defs/d59"
+          },
+          "d59": {
+            "$ref": "#/$defs/d60"
+          },
+          "d60": {
+            "$ref": "#/$defs/d61"
+          },
+          "d61": {
+            "type": "string",
+            "pattern": "^a$"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/d0"
+          }
+        }
+      },
+      "config": {
+        "x": "a"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "展开深度越界（65：纯引用链 63 跳）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "d0": {
+            "$ref": "#/$defs/d1"
+          },
+          "d1": {
+            "$ref": "#/$defs/d2"
+          },
+          "d2": {
+            "$ref": "#/$defs/d3"
+          },
+          "d3": {
+            "$ref": "#/$defs/d4"
+          },
+          "d4": {
+            "$ref": "#/$defs/d5"
+          },
+          "d5": {
+            "$ref": "#/$defs/d6"
+          },
+          "d6": {
+            "$ref": "#/$defs/d7"
+          },
+          "d7": {
+            "$ref": "#/$defs/d8"
+          },
+          "d8": {
+            "$ref": "#/$defs/d9"
+          },
+          "d9": {
+            "$ref": "#/$defs/d10"
+          },
+          "d10": {
+            "$ref": "#/$defs/d11"
+          },
+          "d11": {
+            "$ref": "#/$defs/d12"
+          },
+          "d12": {
+            "$ref": "#/$defs/d13"
+          },
+          "d13": {
+            "$ref": "#/$defs/d14"
+          },
+          "d14": {
+            "$ref": "#/$defs/d15"
+          },
+          "d15": {
+            "$ref": "#/$defs/d16"
+          },
+          "d16": {
+            "$ref": "#/$defs/d17"
+          },
+          "d17": {
+            "$ref": "#/$defs/d18"
+          },
+          "d18": {
+            "$ref": "#/$defs/d19"
+          },
+          "d19": {
+            "$ref": "#/$defs/d20"
+          },
+          "d20": {
+            "$ref": "#/$defs/d21"
+          },
+          "d21": {
+            "$ref": "#/$defs/d22"
+          },
+          "d22": {
+            "$ref": "#/$defs/d23"
+          },
+          "d23": {
+            "$ref": "#/$defs/d24"
+          },
+          "d24": {
+            "$ref": "#/$defs/d25"
+          },
+          "d25": {
+            "$ref": "#/$defs/d26"
+          },
+          "d26": {
+            "$ref": "#/$defs/d27"
+          },
+          "d27": {
+            "$ref": "#/$defs/d28"
+          },
+          "d28": {
+            "$ref": "#/$defs/d29"
+          },
+          "d29": {
+            "$ref": "#/$defs/d30"
+          },
+          "d30": {
+            "$ref": "#/$defs/d31"
+          },
+          "d31": {
+            "$ref": "#/$defs/d32"
+          },
+          "d32": {
+            "$ref": "#/$defs/d33"
+          },
+          "d33": {
+            "$ref": "#/$defs/d34"
+          },
+          "d34": {
+            "$ref": "#/$defs/d35"
+          },
+          "d35": {
+            "$ref": "#/$defs/d36"
+          },
+          "d36": {
+            "$ref": "#/$defs/d37"
+          },
+          "d37": {
+            "$ref": "#/$defs/d38"
+          },
+          "d38": {
+            "$ref": "#/$defs/d39"
+          },
+          "d39": {
+            "$ref": "#/$defs/d40"
+          },
+          "d40": {
+            "$ref": "#/$defs/d41"
+          },
+          "d41": {
+            "$ref": "#/$defs/d42"
+          },
+          "d42": {
+            "$ref": "#/$defs/d43"
+          },
+          "d43": {
+            "$ref": "#/$defs/d44"
+          },
+          "d44": {
+            "$ref": "#/$defs/d45"
+          },
+          "d45": {
+            "$ref": "#/$defs/d46"
+          },
+          "d46": {
+            "$ref": "#/$defs/d47"
+          },
+          "d47": {
+            "$ref": "#/$defs/d48"
+          },
+          "d48": {
+            "$ref": "#/$defs/d49"
+          },
+          "d49": {
+            "$ref": "#/$defs/d50"
+          },
+          "d50": {
+            "$ref": "#/$defs/d51"
+          },
+          "d51": {
+            "$ref": "#/$defs/d52"
+          },
+          "d52": {
+            "$ref": "#/$defs/d53"
+          },
+          "d53": {
+            "$ref": "#/$defs/d54"
+          },
+          "d54": {
+            "$ref": "#/$defs/d55"
+          },
+          "d55": {
+            "$ref": "#/$defs/d56"
+          },
+          "d56": {
+            "$ref": "#/$defs/d57"
+          },
+          "d57": {
+            "$ref": "#/$defs/d58"
+          },
+          "d58": {
+            "$ref": "#/$defs/d59"
+          },
+          "d59": {
+            "$ref": "#/$defs/d60"
+          },
+          "d60": {
+            "$ref": "#/$defs/d61"
+          },
+          "d61": {
+            "$ref": "#/$defs/d62"
+          },
+          "d62": {
+            "type": "string",
+            "pattern": "^a$"
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/d0"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "链 × 原地嵌套（31 跳 × 1 层 allOf，未越界）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "d0": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d1"
+              }
+            ]
+          },
+          "d1": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d2"
+              }
+            ]
+          },
+          "d2": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d3"
+              }
+            ]
+          },
+          "d3": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d4"
+              }
+            ]
+          },
+          "d4": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d5"
+              }
+            ]
+          },
+          "d5": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d6"
+              }
+            ]
+          },
+          "d6": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d7"
+              }
+            ]
+          },
+          "d7": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d8"
+              }
+            ]
+          },
+          "d8": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d9"
+              }
+            ]
+          },
+          "d9": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d10"
+              }
+            ]
+          },
+          "d10": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d11"
+              }
+            ]
+          },
+          "d11": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d12"
+              }
+            ]
+          },
+          "d12": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d13"
+              }
+            ]
+          },
+          "d13": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d14"
+              }
+            ]
+          },
+          "d14": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d15"
+              }
+            ]
+          },
+          "d15": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d16"
+              }
+            ]
+          },
+          "d16": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d17"
+              }
+            ]
+          },
+          "d17": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d18"
+              }
+            ]
+          },
+          "d18": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d19"
+              }
+            ]
+          },
+          "d19": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d20"
+              }
+            ]
+          },
+          "d20": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d21"
+              }
+            ]
+          },
+          "d21": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d22"
+              }
+            ]
+          },
+          "d22": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d23"
+              }
+            ]
+          },
+          "d23": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d24"
+              }
+            ]
+          },
+          "d24": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d25"
+              }
+            ]
+          },
+          "d25": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d26"
+              }
+            ]
+          },
+          "d26": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d27"
+              }
+            ]
+          },
+          "d27": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d28"
+              }
+            ]
+          },
+          "d28": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d29"
+              }
+            ]
+          },
+          "d29": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d30"
+              }
+            ]
+          },
+          "d30": {
+            "allOf": [
+              {
+                "type": "string",
+                "pattern": "^a$"
+              }
+            ]
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/d0"
+          }
+        }
+      },
+      "config": {
+        "x": "a"
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "未被引用的深 $defs 链不计入展开深度",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "d0": {
+            "$ref": "#/$defs/d1"
+          },
+          "d1": {
+            "$ref": "#/$defs/d2"
+          },
+          "d2": {
+            "$ref": "#/$defs/d3"
+          },
+          "d3": {
+            "$ref": "#/$defs/d4"
+          },
+          "d4": {
+            "$ref": "#/$defs/d5"
+          },
+          "d5": {
+            "$ref": "#/$defs/d6"
+          },
+          "d6": {
+            "$ref": "#/$defs/d7"
+          },
+          "d7": {
+            "$ref": "#/$defs/d8"
+          },
+          "d8": {
+            "$ref": "#/$defs/d9"
+          },
+          "d9": {
+            "$ref": "#/$defs/d10"
+          },
+          "d10": {
+            "$ref": "#/$defs/d11"
+          },
+          "d11": {
+            "$ref": "#/$defs/d12"
+          },
+          "d12": {
+            "$ref": "#/$defs/d13"
+          },
+          "d13": {
+            "$ref": "#/$defs/d14"
+          },
+          "d14": {
+            "$ref": "#/$defs/d15"
+          },
+          "d15": {
+            "$ref": "#/$defs/d16"
+          },
+          "d16": {
+            "$ref": "#/$defs/d17"
+          },
+          "d17": {
+            "$ref": "#/$defs/d18"
+          },
+          "d18": {
+            "$ref": "#/$defs/d19"
+          },
+          "d19": {
+            "$ref": "#/$defs/d20"
+          },
+          "d20": {
+            "$ref": "#/$defs/d21"
+          },
+          "d21": {
+            "$ref": "#/$defs/d22"
+          },
+          "d22": {
+            "$ref": "#/$defs/d23"
+          },
+          "d23": {
+            "$ref": "#/$defs/d24"
+          },
+          "d24": {
+            "$ref": "#/$defs/d25"
+          },
+          "d25": {
+            "$ref": "#/$defs/d26"
+          },
+          "d26": {
+            "$ref": "#/$defs/d27"
+          },
+          "d27": {
+            "$ref": "#/$defs/d28"
+          },
+          "d28": {
+            "$ref": "#/$defs/d29"
+          },
+          "d29": {
+            "$ref": "#/$defs/d30"
+          },
+          "d30": {
+            "$ref": "#/$defs/d31"
+          },
+          "d31": {
+            "$ref": "#/$defs/d32"
+          },
+          "d32": {
+            "$ref": "#/$defs/d33"
+          },
+          "d33": {
+            "$ref": "#/$defs/d34"
+          },
+          "d34": {
+            "$ref": "#/$defs/d35"
+          },
+          "d35": {
+            "$ref": "#/$defs/d36"
+          },
+          "d36": {
+            "$ref": "#/$defs/d37"
+          },
+          "d37": {
+            "$ref": "#/$defs/d38"
+          },
+          "d38": {
+            "$ref": "#/$defs/d39"
+          },
+          "d39": {
+            "$ref": "#/$defs/d40"
+          },
+          "d40": {
+            "$ref": "#/$defs/d41"
+          },
+          "d41": {
+            "$ref": "#/$defs/d42"
+          },
+          "d42": {
+            "$ref": "#/$defs/d43"
+          },
+          "d43": {
+            "$ref": "#/$defs/d44"
+          },
+          "d44": {
+            "$ref": "#/$defs/d45"
+          },
+          "d45": {
+            "$ref": "#/$defs/d46"
+          },
+          "d46": {
+            "$ref": "#/$defs/d47"
+          },
+          "d47": {
+            "$ref": "#/$defs/d48"
+          },
+          "d48": {
+            "$ref": "#/$defs/d49"
+          },
+          "d49": {
+            "$ref": "#/$defs/d50"
+          },
+          "d50": {
+            "$ref": "#/$defs/d51"
+          },
+          "d51": {
+            "$ref": "#/$defs/d52"
+          },
+          "d52": {
+            "$ref": "#/$defs/d53"
+          },
+          "d53": {
+            "$ref": "#/$defs/d54"
+          },
+          "d54": {
+            "$ref": "#/$defs/d55"
+          },
+          "d55": {
+            "$ref": "#/$defs/d56"
+          },
+          "d56": {
+            "$ref": "#/$defs/d57"
+          },
+          "d57": {
+            "$ref": "#/$defs/d58"
+          },
+          "d58": {
+            "$ref": "#/$defs/d59"
+          },
+          "d59": {
+            "$ref": "#/$defs/d60"
+          },
+          "d60": {
+            "$ref": "#/$defs/d61"
+          },
+          "d61": {
+            "$ref": "#/$defs/d62"
+          },
+          "d62": {
+            "$ref": "#/$defs/d63"
+          },
+          "d63": {
+            "$ref": "#/$defs/d64"
+          },
+          "d64": {
+            "$ref": "#/$defs/d65"
+          },
+          "d65": {
+            "$ref": "#/$defs/d66"
+          },
+          "d66": {
+            "$ref": "#/$defs/d67"
+          },
+          "d67": {
+            "$ref": "#/$defs/d68"
+          },
+          "d68": {
+            "$ref": "#/$defs/d69"
+          },
+          "d69": {
+            "$ref": "#/$defs/d70"
+          },
+          "d70": {
+            "$ref": "#/$defs/d71"
+          },
+          "d71": {
+            "$ref": "#/$defs/d72"
+          },
+          "d72": {
+            "$ref": "#/$defs/d73"
+          },
+          "d73": {
+            "$ref": "#/$defs/d74"
+          },
+          "d74": {
+            "$ref": "#/$defs/d75"
+          },
+          "d75": {
+            "$ref": "#/$defs/d76"
+          },
+          "d76": {
+            "$ref": "#/$defs/d77"
+          },
+          "d77": {
+            "$ref": "#/$defs/d78"
+          },
+          "d78": {
+            "$ref": "#/$defs/d79"
+          },
+          "d79": {
+            "$ref": "#/$defs/d80"
+          },
+          "d80": {
+            "$ref": "#/$defs/d81"
+          },
+          "d81": {
+            "$ref": "#/$defs/d82"
+          },
+          "d82": {
+            "$ref": "#/$defs/d83"
+          },
+          "d83": {
+            "$ref": "#/$defs/d84"
+          },
+          "d84": {
+            "$ref": "#/$defs/d85"
+          },
+          "d85": {
+            "$ref": "#/$defs/d86"
+          },
+          "d86": {
+            "$ref": "#/$defs/d87"
+          },
+          "d87": {
+            "$ref": "#/$defs/d88"
+          },
+          "d88": {
+            "$ref": "#/$defs/d89"
+          },
+          "d89": {
+            "$ref": "#/$defs/d90"
+          },
+          "d90": {
+            "$ref": "#/$defs/d91"
+          },
+          "d91": {
+            "$ref": "#/$defs/d92"
+          },
+          "d92": {
+            "$ref": "#/$defs/d93"
+          },
+          "d93": {
+            "$ref": "#/$defs/d94"
+          },
+          "d94": {
+            "$ref": "#/$defs/d95"
+          },
+          "d95": {
+            "$ref": "#/$defs/d96"
+          },
+          "d96": {
+            "$ref": "#/$defs/d97"
+          },
+          "d97": {
+            "$ref": "#/$defs/d98"
+          },
+          "d98": {
+            "$ref": "#/$defs/d99"
+          },
+          "d99": {
+            "$ref": "#/$defs/d100"
+          },
+          "d100": {
+            "$ref": "#/$defs/d101"
+          },
+          "d101": {
+            "$ref": "#/$defs/d102"
+          },
+          "d102": {
+            "$ref": "#/$defs/d103"
+          },
+          "d103": {
+            "$ref": "#/$defs/d104"
+          },
+          "d104": {
+            "$ref": "#/$defs/d105"
+          },
+          "d105": {
+            "$ref": "#/$defs/d106"
+          },
+          "d106": {
+            "$ref": "#/$defs/d107"
+          },
+          "d107": {
+            "$ref": "#/$defs/d108"
+          },
+          "d108": {
+            "$ref": "#/$defs/d109"
+          },
+          "d109": {
+            "$ref": "#/$defs/d110"
+          },
+          "d110": {
+            "$ref": "#/$defs/d111"
+          },
+          "d111": {
+            "$ref": "#/$defs/d112"
+          },
+          "d112": {
+            "$ref": "#/$defs/d113"
+          },
+          "d113": {
+            "$ref": "#/$defs/d114"
+          },
+          "d114": {
+            "$ref": "#/$defs/d115"
+          },
+          "d115": {
+            "$ref": "#/$defs/d116"
+          },
+          "d116": {
+            "$ref": "#/$defs/d117"
+          },
+          "d117": {
+            "$ref": "#/$defs/d118"
+          },
+          "d118": {
+            "$ref": "#/$defs/d119"
+          },
+          "d119": {
+            "$ref": "#/$defs/d120"
+          },
+          "d120": {
+            "$ref": "#/$defs/d121"
+          },
+          "d121": {
+            "$ref": "#/$defs/d122"
+          },
+          "d122": {
+            "$ref": "#/$defs/d123"
+          },
+          "d123": {
+            "$ref": "#/$defs/d124"
+          },
+          "d124": {
+            "$ref": "#/$defs/d125"
+          },
+          "d125": {
+            "$ref": "#/$defs/d126"
+          },
+          "d126": {
+            "$ref": "#/$defs/d127"
+          },
+          "d127": {
+            "$ref": "#/$defs/d128"
+          },
+          "d128": {
+            "$ref": "#/$defs/d129"
+          },
+          "d129": {
+            "$ref": "#/$defs/d130"
+          },
+          "d130": {
+            "$ref": "#/$defs/d131"
+          },
+          "d131": {
+            "$ref": "#/$defs/d132"
+          },
+          "d132": {
+            "$ref": "#/$defs/d133"
+          },
+          "d133": {
+            "$ref": "#/$defs/d134"
+          },
+          "d134": {
+            "$ref": "#/$defs/d135"
+          },
+          "d135": {
+            "$ref": "#/$defs/d136"
+          },
+          "d136": {
+            "$ref": "#/$defs/d137"
+          },
+          "d137": {
+            "$ref": "#/$defs/d138"
+          },
+          "d138": {
+            "$ref": "#/$defs/d139"
+          },
+          "d139": {
+            "$ref": "#/$defs/d140"
+          },
+          "d140": {
+            "$ref": "#/$defs/d141"
+          },
+          "d141": {
+            "$ref": "#/$defs/d142"
+          },
+          "d142": {
+            "$ref": "#/$defs/d143"
+          },
+          "d143": {
+            "$ref": "#/$defs/d144"
+          },
+          "d144": {
+            "$ref": "#/$defs/d145"
+          },
+          "d145": {
+            "$ref": "#/$defs/d146"
+          },
+          "d146": {
+            "$ref": "#/$defs/d147"
+          },
+          "d147": {
+            "$ref": "#/$defs/d148"
+          },
+          "d148": {
+            "$ref": "#/$defs/d149"
+          },
+          "d149": {
+            "$ref": "#/$defs/d150"
+          },
+          "d150": {
+            "$ref": "#/$defs/d151"
+          },
+          "d151": {
+            "$ref": "#/$defs/d152"
+          },
+          "d152": {
+            "$ref": "#/$defs/d153"
+          },
+          "d153": {
+            "$ref": "#/$defs/d154"
+          },
+          "d154": {
+            "$ref": "#/$defs/d155"
+          },
+          "d155": {
+            "$ref": "#/$defs/d156"
+          },
+          "d156": {
+            "$ref": "#/$defs/d157"
+          },
+          "d157": {
+            "$ref": "#/$defs/d158"
+          },
+          "d158": {
+            "$ref": "#/$defs/d159"
+          },
+          "d159": {
+            "$ref": "#/$defs/d160"
+          },
+          "d160": {
+            "$ref": "#/$defs/d161"
+          },
+          "d161": {
+            "$ref": "#/$defs/d162"
+          },
+          "d162": {
+            "$ref": "#/$defs/d163"
+          },
+          "d163": {
+            "$ref": "#/$defs/d164"
+          },
+          "d164": {
+            "$ref": "#/$defs/d165"
+          },
+          "d165": {
+            "$ref": "#/$defs/d166"
+          },
+          "d166": {
+            "$ref": "#/$defs/d167"
+          },
+          "d167": {
+            "$ref": "#/$defs/d168"
+          },
+          "d168": {
+            "$ref": "#/$defs/d169"
+          },
+          "d169": {
+            "$ref": "#/$defs/d170"
+          },
+          "d170": {
+            "$ref": "#/$defs/d171"
+          },
+          "d171": {
+            "$ref": "#/$defs/d172"
+          },
+          "d172": {
+            "$ref": "#/$defs/d173"
+          },
+          "d173": {
+            "$ref": "#/$defs/d174"
+          },
+          "d174": {
+            "$ref": "#/$defs/d175"
+          },
+          "d175": {
+            "$ref": "#/$defs/d176"
+          },
+          "d176": {
+            "$ref": "#/$defs/d177"
+          },
+          "d177": {
+            "$ref": "#/$defs/d178"
+          },
+          "d178": {
+            "$ref": "#/$defs/d179"
+          },
+          "d179": {
+            "$ref": "#/$defs/d180"
+          },
+          "d180": {
+            "$ref": "#/$defs/d181"
+          },
+          "d181": {
+            "$ref": "#/$defs/d182"
+          },
+          "d182": {
+            "$ref": "#/$defs/d183"
+          },
+          "d183": {
+            "$ref": "#/$defs/d184"
+          },
+          "d184": {
+            "$ref": "#/$defs/d185"
+          },
+          "d185": {
+            "$ref": "#/$defs/d186"
+          },
+          "d186": {
+            "$ref": "#/$defs/d187"
+          },
+          "d187": {
+            "$ref": "#/$defs/d188"
+          },
+          "d188": {
+            "$ref": "#/$defs/d189"
+          },
+          "d189": {
+            "$ref": "#/$defs/d190"
+          },
+          "d190": {
+            "$ref": "#/$defs/d191"
+          },
+          "d191": {
+            "$ref": "#/$defs/d192"
+          },
+          "d192": {
+            "$ref": "#/$defs/d193"
+          },
+          "d193": {
+            "$ref": "#/$defs/d194"
+          },
+          "d194": {
+            "$ref": "#/$defs/d195"
+          },
+          "d195": {
+            "$ref": "#/$defs/d196"
+          },
+          "d196": {
+            "$ref": "#/$defs/d197"
+          },
+          "d197": {
+            "$ref": "#/$defs/d198"
+          },
+          "d198": {
+            "$ref": "#/$defs/d199"
+          },
+          "d199": {
+            "type": "string",
+            "pattern": "^a$"
+          }
+        },
+        "properties": {
+          "x": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {
+        "x": "s"
+      },
+      "manifest_valid": true,
+      "config_valid": true,
+      "note": "深度从根计起；从未被求值的条目不受上界约束"
+    },
+    {
+      "name": "deprecated 必须是布尔值",
+      "schema": {
+        "type": "object",
+        "deprecated": 1
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "链 × 原地嵌套（32 跳 × 1 层 allOf，越界）",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "d0": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d1"
+              }
+            ]
+          },
+          "d1": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d2"
+              }
+            ]
+          },
+          "d2": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d3"
+              }
+            ]
+          },
+          "d3": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d4"
+              }
+            ]
+          },
+          "d4": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d5"
+              }
+            ]
+          },
+          "d5": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d6"
+              }
+            ]
+          },
+          "d6": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d7"
+              }
+            ]
+          },
+          "d7": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d8"
+              }
+            ]
+          },
+          "d8": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d9"
+              }
+            ]
+          },
+          "d9": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d10"
+              }
+            ]
+          },
+          "d10": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d11"
+              }
+            ]
+          },
+          "d11": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d12"
+              }
+            ]
+          },
+          "d12": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d13"
+              }
+            ]
+          },
+          "d13": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d14"
+              }
+            ]
+          },
+          "d14": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d15"
+              }
+            ]
+          },
+          "d15": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d16"
+              }
+            ]
+          },
+          "d16": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d17"
+              }
+            ]
+          },
+          "d17": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d18"
+              }
+            ]
+          },
+          "d18": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d19"
+              }
+            ]
+          },
+          "d19": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d20"
+              }
+            ]
+          },
+          "d20": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d21"
+              }
+            ]
+          },
+          "d21": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d22"
+              }
+            ]
+          },
+          "d22": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d23"
+              }
+            ]
+          },
+          "d23": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d24"
+              }
+            ]
+          },
+          "d24": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d25"
+              }
+            ]
+          },
+          "d25": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d26"
+              }
+            ]
+          },
+          "d26": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d27"
+              }
+            ]
+          },
+          "d27": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d28"
+              }
+            ]
+          },
+          "d28": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d29"
+              }
+            ]
+          },
+          "d29": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d30"
+              }
+            ]
+          },
+          "d30": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/d31"
+              }
+            ]
+          },
+          "d31": {
+            "allOf": [
+              {
+                "type": "string",
+                "pattern": "^a$"
+              }
+            ]
+          }
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/d0"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "required 含非字符串成员",
+      "schema": {
+        "type": "object",
+        "required": [
+          1
+        ]
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "required 成员重复",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a",
+          "a"
+        ]
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "dependentRequired 的值不是字符串数组",
+      "schema": {
+        "type": "object",
+        "dependentRequired": {
+          "a": "b"
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "maxLength 为负",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "maxLength": -1
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "pattern 不是字符串",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "pattern": 5
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "anyOf 为空数组",
+      "schema": {
+        "type": "object",
+        "anyOf": []
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "type 数组成员重复",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": [
+              "string",
+              "string"
+            ]
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "整数值的浮点边界合法（maxProperties 1.0）",
+      "schema": {
+        "type": "object",
+        "maxProperties": 1.0
+      },
+      "config": {
+        "a": 1
+      },
+      "manifest_valid": true,
+      "config_valid": true,
+      "note": "2020-12 元模式接受整数值的浮点"
+    },
+    {
+      "name": "properties 不是对象",
+      "schema": {
+        "type": "object",
+        "properties": []
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "type 取值不认识",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "strin"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "allOf 不是数组",
+      "schema": {
+        "type": "object",
+        "allOf": {}
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "enum 为空（合法但任何值都不通过）",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "enum": []
+          }
+        }
+      },
+      "config": {
+        "x": 1
+      },
+      "manifest_valid": true,
+      "config_valid": false,
+      "note": "2020-12 元模式不要求 enum 非空"
+    },
+    {
+      "name": "$ref 前缀不得编码",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "name": true
+        },
+        "properties": {
+          "x": {
+            "$ref": "#%2F$defs%2Fname"
+          }
+        }
+      },
+      "manifest_valid": false,
+      "note": "前缀 MUST 是字面 #/"
+    },
+    {
+      "name": "$ref 名字含非法 ~ 转义",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a~2b": true
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a~2b"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 名字含非法百分号序列",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a%ZZb": true
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a%ZZb"
+          }
+        }
+      },
+      "manifest_valid": false
+    },
+    {
+      "name": "$ref 名字的百分号序列不是合法 UTF-8",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "a": true
+        },
+        "properties": {
+          "x": {
+            "$ref": "#/$defs/a%FFb"
+          }
+        }
+      },
+      "manifest_valid": false,
+      "note": "%FF 解码后不是合法 UTF-8，拒绝（unquote 的宽松 U+FFFD 替换不可用）"
+    },
+    {
+      "name": "dependentRequired（不满足）",
+      "schema": {
+        "type": "object",
+        "dependentRequired": {
+          "a": [
+            "b"
+          ]
+        }
+      },
+      "config": {
+        "a": 1
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "dependentRequired（满足）",
+      "schema": {
+        "type": "object",
+        "dependentRequired": {
+          "a": [
+            "b"
+          ]
+        }
+      },
+      "config": {
+        "a": 1,
+        "b": 2
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "allOf 求值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "allOf": [
+              {
+                "minimum": 1
+              },
+              {
+                "maximum": 5
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "x": 3
+      },
+      "manifest_valid": true,
+      "config_valid": true
+    },
+    {
+      "name": "oneOf 恰一分支",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "maximum": 2
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "x": 1
+      },
+      "manifest_valid": true,
+      "config_valid": false,
+      "note": "两个分支同时命中，oneOf 失败"
+    },
+    {
+      "name": "minItems / maxItems",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2
+          }
+        }
+      },
+      "config": {
+        "x": []
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "minProperties / maxProperties",
+      "schema": {
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 2
+      },
+      "config": {},
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "exclusiveMinimum / exclusiveMaximum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 10
+          }
+        }
+      },
+      "config": {
+        "x": 0
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    },
+    {
+      "name": "type 不匹配",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {
+        "x": 1
+      },
+      "manifest_valid": true,
+      "config_valid": false
+    }
+  ]
+}

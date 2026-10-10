@@ -9,6 +9,7 @@ on:
       - "sdk/python/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
+      - "scripts/pattern_subset.py"
       - "Makefile"
       - ".github/workflows/python-sdk.yml"
   pull_request:
@@ -16,6 +17,7 @@ on:
       - "sdk/python/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
+      - "scripts/pattern_subset.py"
       - "Makefile"
       - ".github/workflows/python-sdk.yml"
   workflow_call:
