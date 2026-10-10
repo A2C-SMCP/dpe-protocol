@@ -756,6 +756,29 @@ def test_target_reaching_same_content_in_window_is_unchanged() -> None:
     assert engine.commit("u", URI, same.body(), C, IfAbsent()).status == "unchanged"
 
 
+def test_missing_content_is_decided_after_the_authorization_window() -> None:
+    """授权在锁外、可得性在锁内按最新状态裁决：窗口内目标被改写后，本次提交依赖的页不再可得。"""
+    auth = _WindowAuthorizer()
+    engine = make_engine(authorizer=auth)
+    first = _create(engine, text_doc(["keep"], ["drop"]))
+    wanted = inline(text_doc(["keep"], ["new"]))
+    assert wanted.page_hashes[0] == first.page_hashes[0]  # "keep" 页只在目标文档的当前状态里
+    rewrite = inline(text_doc(["rewritten"]))
+    auth.hook = lambda: engine.commit("u", URI, rewrite.body(), C, BaseHash(first.doc_hash))
+    # force 跳过前置条件：可得性须按锁内最新状态判定，"keep" 页已随改写不可得
+    body = json.dumps(
+        {
+            "document": wanted.document,
+            "pages": [wanted.pages[1]],
+            "objects": [wanted.objects[1]],
+            "force": True,
+        }
+    ).encode()
+    with pytest.raises(errors.MissingContentError) as info:
+        engine.commit("u", URI, body, C, None)
+    assert info.value.missing.pages == [wanted.page_hashes[0]]
+
+
 def test_moved_document_keeps_serving_its_objects() -> None:
     """move 后目标 URI 的当前状态照常作为去重范围。"""
     engine = make_engine()
