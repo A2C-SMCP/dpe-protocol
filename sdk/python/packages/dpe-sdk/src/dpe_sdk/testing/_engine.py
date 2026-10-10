@@ -19,7 +19,6 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from functools import partial
 from typing import Any, Literal, Protocol, TypeVar
 
@@ -83,7 +82,6 @@ __all__ = [
     "AllowAll",
     "Authorizer",
     "BaseHash",
-    "DedupScope",
     "Engine",
     "EngineConfig",
     "IfAbsent",
@@ -131,15 +129,6 @@ class PrefixAuthorizer:
 
     def can_force(self, caller: str, uri: str) -> bool:
         return caller in self.force
-
-
-class DedupScope(Enum):
-    """去重范围（core §3.3）：缺失清单与 commit 可得性判定使用同一范围。"""
-
-    #: 下界：只含该文档当前状态引用的对象
-    DOCUMENT = "document"
-    #: 上界：调用者有写授权的全部文档引用的对象
-    WRITABLE = "writable"
 
 
 #: 条件头承载的前置条件（force 是请求体成员，不在此列）。``base_hash`` 按值比较，不做格式校验
@@ -205,7 +194,6 @@ class EngineConfig:
     clock: Callable[[], datetime] = default_clock
     #: 可注入的会话 id 生成器；须避免与在用会话重复
     session_id_factory: Callable[[], str] = default_session_id
-    dedup_scope: DedupScope = DedupScope.DOCUMENT
     authorizer: Authorizer = field(default_factory=AllowAll)
 
     def __post_init__(self) -> None:
@@ -340,32 +328,14 @@ class _Commit:
 
 
 class _Gap(Exception):
-    """可得性检查发现缺失（引擎内部）：完整的缺失清单与每个缺失对象的持有文档。"""
+    """可得性检查发现缺失（引擎内部）：完整的缺失清单。"""
 
-    def __init__(self, missing: dict[str, list[str]], holders: list[frozenset[str]]) -> None:
+    def __init__(self, missing: dict[str, list[str]]) -> None:
         super().__init__("missing content")
         self.missing = missing
-        self.holders = holders
 
     def error(self, limit: int) -> MissingContentError:
         return _missing_error(self.missing, limit)
-
-
-@dataclass(frozen=True)
-class _Manifest:
-    """negotiate / 上传响应的缺失清单与每个缺失对象的持有文档（去重后，按出现顺序）。
-
-    持有文档用于去重范围上界的两阶段授权（core §3.3、§8）：只对实际缺失的对象询问授权器。
-    """
-
-    pages: list[str]
-    content_hashes: list[str]
-    blobs: list[str]
-    holders: list[frozenset[str]]
-
-    @property
-    def empty(self) -> bool:
-        return not (self.pages or self.content_hashes or self.blobs)
 
 
 class Engine:
@@ -532,15 +502,12 @@ class Engine:
             session = self._sessions.open(uri, caller)
             for h, page in attached.items():
                 session.pages[h] = StagedPage(dict(page), contract, len(jcs(page).encode("utf-8")))
-            manifest = self._negotiate_missing(session, uri, contract, document, frozenset())
-        if not manifest.empty and self.config.dedup_scope is DedupScope.WRITABLE:
-            writable = self._authorize_holders(caller, manifest.holders)
-            if writable:
-                with self._lock:
-                    manifest = self._negotiate_missing(session, uri, contract, document, writable)
+            missing_pages, missing_content = self._negotiate_missing(
+                session, uri, contract, document
+            )
         return NegotiateResult(
-            missing_pages=manifest.pages,
-            missing_content_hashes=manifest.content_hashes,
+            missing_pages=missing_pages,
+            missing_content_hashes=missing_content,
             staging_session=StagingSession(
                 id=session.id, expires_at=rfc3339_utc(session.expires_at)
             ),
@@ -586,10 +553,7 @@ class Engine:
             self._sessions.renew(session)
             elements = session.pages[page_hash].body["elements"]
             uri = session.uri
-        missing = self._manifest(
-            caller,
-            lambda writable: self._content_missing(session, uri, contract, elements, writable),
-        )
+            missing = self._content_missing(session, uri, contract, elements)
         return UploadResult(
             outcome=outcome,
             expires_at=rfc3339_utc(session.expires_at),
@@ -645,10 +609,7 @@ class Engine:
             self._sessions.renew(session)
             elements = session.pages[page_hash].body["elements"]
             uri = session.uri
-        missing = self._manifest(
-            caller,
-            lambda writable: self._content_missing(session, uri, contract, elements, writable),
-        )
+            missing = self._content_missing(session, uri, contract, elements)
         return UploadResult(
             outcome=outcome,
             expires_at=rfc3339_utc(session.expires_at),
@@ -698,12 +659,8 @@ class Engine:
             self._sessions.renew(session)
             element_body = session.elements[content_hash].body
             uri = session.uri
-        blob = element_body.get("blob")
-        missing: list[str] = []
-        if blob is not None:
-            missing = self._manifest(
-                caller, lambda writable: self._blobs_missing(session, uri, blob, writable)
-            )
+            blob = element_body.get("blob")
+            missing = [] if blob is None else self._blobs_missing(session, uri, contract, blob)
         return UploadResult(
             outcome=outcome,
             expires_at=rfc3339_utc(session.expires_at),
@@ -862,27 +819,30 @@ class Engine:
         del session.partials[target]
         return chunk.total, complete
 
-    def _object_holders(self, contract: str, value: str) -> frozenset[str]:
-        """某契约下的页 / 元素 hash 的持有文档；不在对象表返回空集。须在锁内调用。"""
-        primary = self._store.to_primary(contract, value)
-        return frozenset() if primary is None else frozenset(self._store.referrers_of(primary))
+    def _in_scope(
+        self, uri: str, contract: str, kind: Literal["page", "element", "blob"], value: str
+    ) -> bool:
+        """去重范围判定（core §3.3、§8）：该对象是否由本文档的当前状态引用。须在锁内调用。
 
-    def _in_scope(self, uri: str, holders: frozenset[str], writable: frozenset[str]) -> bool:
-        """去重范围判定（core §3.3、§8）：本文档或调用者可写的文档持有该对象。"""
-        return uri in holders or not holders.isdisjoint(writable)
+        ``value`` 是页 / 元素对象在 ``contract`` 下的 hash，或 blob 引用（blob 引用与契约无关，
+        不经别名换算）。其他文档持有的对象一律不在范围内，本文档之外不做任何比较。
+        """
+        current = self._store.docs.get(uri)
+        if current is None:
+            return False
+        if kind == "blob":
+            return value in current.blobs
+        primary = self._store.to_primary(contract, value)
+        if primary is None:
+            return False
+        return primary in (current.pages if kind == "page" else current.contents)
 
     def _negotiate_missing(
-        self,
-        session: Session,
-        uri: str,
-        contract: str,
-        document: Mapping[str, Any],
-        writable: frozenset[str],
-    ) -> _Manifest:
+        self, session: Session, uri: str, contract: str, document: Mapping[str, Any]
+    ) -> tuple[list[str], list[str]]:
         """negotiate 的缺失清单（HTTP 绑定 §4.5）：页面层与附带页的元素层。须在锁内调用。"""
         pages: list[str] = []
         content: list[str] = []
-        holders: list[frozenset[str]] = []
         seen_pages: set[str] = set()
         for ph in document["pages"]:
             if ph in seen_pages:
@@ -890,35 +850,25 @@ class Engine:
             seen_pages.add(ph)
             if ph in session.pages:  # 已附带（存入会话）
                 continue
-            hs = self._object_holders(contract, ph)
-            if self._in_scope(uri, hs, writable):
+            if self._in_scope(uri, contract, "page", ph):
                 continue
             pages.append(ph)
-            holders.append(hs - {uri})
         seen_content: set[str] = set()
         for staged in session.pages.values():  # 附带页引用的元素（negotiate 时会话中只有页）
             for eh in staged.body["elements"]:
                 if eh in seen_content:
                     continue
                 seen_content.add(eh)
-                hs = self._object_holders(staged.contract, eh)
-                if self._in_scope(uri, hs, writable):
+                if self._in_scope(uri, staged.contract, "element", eh):
                     continue
                 content.append(eh)
-                holders.append(hs - {uri})
-        return _Manifest(pages, content, [], holders)
+        return pages, content
 
     def _content_missing(
-        self,
-        session: Session,
-        uri: str,
-        contract: str,
-        elements: Sequence[str],
-        writable: frozenset[str],
-    ) -> tuple[list[str], list[frozenset[str]]]:
-        """页对象引用的缺失元素清单（去重范围 ∪ 本会话）。须在锁内调用。"""
+        self, session: Session, uri: str, contract: str, elements: Sequence[str]
+    ) -> list[str]:
+        """页对象引用的缺失元素清单（去重范围，core §3.3）。须在锁内调用。"""
         missing: list[str] = []
-        holders: list[frozenset[str]] = []
         seen: set[str] = set()
         for eh in elements:
             if eh in seen:
@@ -926,43 +876,16 @@ class Engine:
             seen.add(eh)
             if eh in session.elements:  # 本会话已收到（字节到齐前不可校验，只判在不在）
                 continue
-            hs = self._object_holders(contract, eh)
-            if self._in_scope(uri, hs, writable):
+            if self._in_scope(uri, contract, "element", eh):
                 continue
             missing.append(eh)
-            holders.append(hs - {uri})
-        return missing, holders
-
-    def _blobs_missing(
-        self, session: Session, uri: str, blob: str, writable: frozenset[str]
-    ) -> tuple[list[str], list[frozenset[str]]]:
-        """元素对象引用的缺失 blob 清单（去重范围 ∪ 本会话）。须在锁内调用。"""
-        if blob in session.blobs:
-            return [], []
-        hs = self._store.referrers_of(blob)
-        if self._in_scope(uri, frozenset(hs), writable):
-            return [], []
-        return [blob], [frozenset(hs) - {uri}]
-
-    def _manifest(
-        self,
-        caller: str,
-        compute: Callable[[frozenset[str]], tuple[list[_T], list[frozenset[str]]]],
-    ) -> list[_T]:
-        """上传响应清单的两阶段计算（与 commit §3.3 同一去重范围、同一授权口径）。
-
-        锁内乐观计算（writable=∅）→ 有缺失且范围为 WRITABLE 时在锁外为持有文档调用授权器
-        （授权器可插拔、可能慢或回调引擎，从不在锁内调用）→ 锁内带可写集合重算；第二次
-        出现的缺失对象保守处理——范围只会变小，不会超出写授权。
-        """
-        with self._lock:
-            missing, holders = compute(frozenset())
-        if missing and self.config.dedup_scope is DedupScope.WRITABLE:
-            writable = self._authorize_holders(caller, holders)
-            if writable:
-                with self._lock:
-                    missing, _ = compute(writable)
         return missing
+
+    def _blobs_missing(self, session: Session, uri: str, contract: str, blob: str) -> list[str]:
+        """元素对象引用的缺失 blob 清单（去重范围，core §3.3）。须在锁内调用。"""
+        if blob in session.blobs or self._in_scope(uri, contract, "blob", blob):
+            return []
+        return [blob]
 
     # ------------------------------------------------------------------
     # commit（core §3.3）
@@ -997,8 +920,8 @@ class Engine:
 
         - **不做对外授权**：写的是服务端自己的内容（如它作为某个 URI 的来源），不是外部调用者的
           请求，因此不询问 ``authorizer``；CAS 与全部报文校验照旧（不绕过 commit、不绕过前置条件）。
-        - **去重范围上界取全部持有文档**：服务端对自己的存储有完全的视野（core §3.3），不受调用者
-          写授权限制。
+        - **去重范围与 ``commit`` 相同**：固定为本文档的当前状态（core §3.3）——服务端的存储层物理
+          去重不扩大范围，引用他人文档的内容同样要内联。
 
         ``contract`` 缺省为主契约；``body`` 是与 ``commit`` 同形的请求体，但**不含
         ``staging_session``**（会话绑定「调用者 + file_uri」，服务端没有会话身份），出现即
@@ -1011,7 +934,7 @@ class Engine:
             precondition,
             _SERVER_WRITE_MEMBERS,
         )
-        return self._commit_tail(None, uri, contract, req, precondition, all_holders=True)
+        return self._commit_tail(None, uri, contract, req, precondition)
 
     def _parse_write(
         self,
@@ -1042,34 +965,17 @@ class Engine:
         contract: str,
         req: _Commit,
         precondition: Precondition | None,
-        *,
-        all_holders: bool = False,
     ) -> CommitResult:
-        """第 3–6 步与去重范围的两遍求值（core §3.3）：``commit`` 与 ``server_write`` 共用。
+        """第 3–6 步的求值（core §3.3）：``commit`` 与 ``server_write`` 共用。
 
-        乐观求值：先只用去重范围下界（本文档当前状态）在锁内完成第 4–6 步；只有缺对象、
-        且范围是写授权级时，才在锁外为持有这些对象的文档调用授权器，再进锁重做第 4–6 步。
-        授权器可插拔，可能很慢，也可能回调本引擎，因此从不在锁内调用。``all_holders`` 为真时
-        上界是全部持有文档（``server_write``），不再询问授权器。
+        去重范围固定为本文档（§3.3），可得性检查单遍完成；缺对象即 ``DPE_MISSING_CONTENT``
+        与缺失清单。``caller`` 为空只出现在 ``server_write``（服务端自身写入，无会话身份）。
         """
         # 第 3 步：前置条件存在性
         if precondition is None and not req.force:
             raise PreconditionRequiredError("写操作必须带 base_hash、if_absent 或 force")
         try:
-            return self._apply_commit(caller, uri, contract, req, precondition, frozenset())
-        except _Gap as gap:
-            if all_holders:
-                # 服务端自身写入：全部持有文档都在它的去重范围里
-                writable = frozenset(holder for holders in gap.holders for holder in holders)
-            elif self.config.dedup_scope is not DedupScope.WRITABLE:
-                raise gap.error(self.config.missing_max) from None
-            else:
-                assert caller is not None, "只有 server_write 允许不传调用者"
-                writable = self._authorize_holders(caller, gap.holders)
-            if not writable:
-                raise gap.error(self.config.missing_max) from None
-        try:
-            return self._apply_commit(caller, uri, contract, req, precondition, writable)
+            return self._apply_commit(caller, uri, contract, req, precondition)
         except _Gap as gap:
             raise gap.error(self.config.missing_max) from None
 
@@ -1080,7 +986,6 @@ class Engine:
         contract: str,
         req: _Commit,
         precondition: Precondition | None,
-        writable: frozenset[str],
     ) -> CommitResult:
         """在一把锁内完成第 4–6 步与原子切换（CAS 只在这里裁决）。缺对象时抛 ``_Gap``。"""
         with self._lock:
@@ -1108,7 +1013,7 @@ class Engine:
             if req.staging_session is not None:
                 assert caller is not None, "server_write 的请求信封不允许 staging_session"
                 session = self._resolve_session(caller, uri, req.staging_session)
-            state = self._materialize(uri, contract, req, writable, session)
+            state = self._materialize(uri, contract, req, session)
             self._store.replace(uri, state)
             if session is not None:
                 self._sessions.consume(session)  # created / updated 成功后消费；失败不消费
@@ -1117,27 +1022,6 @@ class Engine:
             doc_hash=state.doc_hashes[contract],
             delta=_delta(current, state),
         )
-
-    def _authorize_holders(self, caller: str, holders: Sequence[frozenset[str]]) -> frozenset[str]:
-        """为每个缺失对象找一个调用者可写的持有文档（去重范围上界，core §3.3）。锁外调用。
-
-        每个对象找到第一个可写的持有者即停；同一 URI 只判定一次。授权在锁外判定、锁内使用，
-        与第 2 步的授权一样存在判定与使用之间的窗口：之后才出现的持有者按范围外处理，
-        范围只会变小，不会超出写授权，也不低于下界。
-        """
-        can_write = self.config.authorizer.can_write
-        decided: dict[str, bool] = {}
-        writable: set[str] = set()
-        for candidates in holders:
-            if not candidates.isdisjoint(writable):
-                continue  # 已有已知可写的持有者，本对象可得
-            for holder in sorted(candidates):
-                if holder not in decided:
-                    decided[holder] = can_write(caller, holder)
-                if decided[holder]:
-                    writable.add(holder)
-                    break
-        return frozenset(writable)
 
     def _parse_commit(self, data: Any, contract: str, members: frozenset[str]) -> _Commit:
         env = _envelope(data, members)
@@ -1172,29 +1056,16 @@ class Engine:
         return self._sessions.get(caller, session_id, uri=uri)
 
     def _materialize(
-        self,
-        uri: str,
-        contract: str,
-        req: _Commit,
-        writable: frozenset[str],
-        session: Session | None,
+        self, uri: str, contract: str, req: _Commit, session: Session | None
     ) -> DocState:
         """可得性检查（core §3.3 第 6 步），通过后登记内容（内联与会话中的）并构造新状态。
 
-        可得 = 去重范围（本文档当前状态 ∪ ``writable`` 中文档的当前状态）内已存内容 ∪ 暂存
-        会话 ∪ 本次内联（core §3.3、§8）。**范围内已存的页走闭包捷径**（其整棵子树必在范围
-        内）；**会话中页的子树不保证闭合**（逐层上传），必须逐层遍历到 blob。
+        可得 = 去重范围（本文档当前状态 ∪ 暂存会话，固定为本文档）∪ 本次内联（core §3.3、
+        §8）。**已存于本文档当前状态的页走闭包捷径**（其整棵子树必在范围内）；**会话中页的
+        子树不保证闭合**（逐层上传），必须逐层遍历到 blob。
         hash 一律由服务端算出（Rule 0）。缺失时抛 ``_Gap``，本次 commit 无任何效果。须在锁内调用。
         """
         store = self._store
-        gap_holders: list[frozenset[str]] = []
-
-        def holders_of_object(value: str) -> frozenset[str]:
-            """页 / 元素对象（请求声明契约下的 hash）的持有文档。"""
-            return self._object_holders(contract, value)
-
-        def in_scope(holders: frozenset[str]) -> bool:
-            return uri in holders or not holders.isdisjoint(writable)
 
         inline_pages = req.pages
         inline_elements = req.objects
@@ -1202,11 +1073,10 @@ class Engine:
         missing: dict[str, list[str]] = {"pages": [], "content_hashes": [], "blobs": []}
         seen: set[str] = set()
 
-        def report(layer: str, value: str, holders: frozenset[str]) -> None:
+        def report(layer: str, value: str) -> None:
             if value not in seen:
                 seen.add(value)
                 missing[layer].append(value)
-                gap_holders.append(holders - {uri})
 
         # 页以内联版本优先：即使范围内已有同 hash 的页，本次写入的原样表示也要生效（core §2.7）；
         # 元素没有读接口，范围内已有即可复用。会话中的内容到齐后随本次写入提升进对象表。
@@ -1218,23 +1088,19 @@ class Engine:
         seen_elements: set[str] = set()
 
         def check_blob(blob: str) -> None:
-            if blob in staged_blobs:
-                return
-            holders = frozenset(store.referrers_of(blob))
-            if in_scope(holders):
+            if blob in staged_blobs or self._in_scope(uri, contract, "blob", blob):
                 return
             if session is not None and blob in session.blobs:
                 staged_blobs[blob] = session.blobs[blob]
                 return
-            report("blobs", blob, holders)
+            report("blobs", blob)
 
         def check_element(eh: str) -> None:
             """元素层：范围 ∪ 会话 ∪ 内联；范围命中的整棵子树（含 blob）必在范围内。"""
             if eh in seen_elements:
                 return
             seen_elements.add(eh)
-            holders = holders_of_object(eh)
-            if in_scope(holders):
+            if self._in_scope(uri, contract, "element", eh):
                 return
             if session is not None and eh in session.elements:
                 staged = session.elements[eh]
@@ -1245,7 +1111,7 @@ class Engine:
                 return
             element = inline_elements.get(eh)
             if element is None:
-                report("content_hashes", eh, holders)
+                report("content_hashes", eh)
                 return
             used_elements[eh] = element
             blob = element.get("blob")
@@ -1269,12 +1135,11 @@ class Engine:
                 for eh in staged.body["elements"]:
                     check_element(eh)
                 continue
-            holders = holders_of_object(ph)
-            if in_scope(holders):
-                continue  # 范围内已存页：闭包保证整棵子树可得
-            report("pages", ph, holders)
+            if self._in_scope(uri, contract, "page", ph):
+                continue  # 本文档当前状态已存页：闭包保证整棵子树可得
+            report("pages", ph)
         if any(missing.values()):
-            raise _Gap(missing, gap_holders)
+            raise _Gap(missing)
 
         # 登记内容（自底向上）：会话元素 → 内联元素 → 内联页 → 会话页 → 会话 blob，
         # 子 hash 换成主契约
@@ -1316,8 +1181,8 @@ class Engine:
         doc_hashes = store.tree_hashes("document", document, page_seq, {contract: req.doc_hash})
 
         # 每页的原样表示归属本文档（不写进共享的对象记录，避免一次写入改变别的文档的读回）：
-        # 本次内联或会话上传 → 本文档当前状态中的表示 → 范围内某篇持有它的文档中的表示（与之
-        # 内容等价，core §2.7 允许返回等价类中的任一表示；只取范围内的文档，不带出范围外文档的写法）
+        # 本次内联或会话上传 → 本文档当前状态中的表示（去重范围固定为本文档，core §3.3；可得而
+        # 未内联的页必来自本文档的当前状态，core §2.7 允许读回等价类中的任一表示）
         current = store.docs.get(uri)
         previous: dict[str, dict[str, Any]] = {}
         if current is not None:
@@ -1326,15 +1191,10 @@ class Engine:
         def representation(ph: str) -> dict[str, Any]:
             if ph in written:
                 return written[ph]
-            if ph in previous:
-                return previous[ph]
-            # 走到这里的页既未内联、也不在本文档当前状态中，它之所以可得，只能是因为 writable 中
-            # 有持有者（_materialize 的可得性判定），因此候选非空
-            holder = min((u for u in store.referrers_of(ph) if u in writable), default=None)
-            assert holder is not None, "范围内的页必有 writable 中的持有者"
-            state = store.docs[holder]
-            position: int = state.document["pages"].index(ph)
-            return state.page_bodies[position]
+            page = previous.get(ph)
+            # 走到这里的页既未内联、也不在会话中，它之所以可得，只能在本文档当前状态中
+            assert page is not None, "可得而未内联的页必在本文档当前状态中（去重范围）"
+            return page
 
         page_bodies = tuple(representation(ph) for ph in page_seq)
 

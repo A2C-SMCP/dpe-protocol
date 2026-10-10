@@ -10,7 +10,6 @@ import pytest
 from dpe_sdk import errors
 from dpe_sdk.testing import (
     BaseHash,
-    DedupScope,
     Engine,
     IfAbsent,
     PrefixAuthorizer,
@@ -452,48 +451,35 @@ def test_upload_offset_bad_session() -> None:
 
 
 # ---------------------------------------------------------------------------
-# WRITABLE 去重范围的清单（core §3.3、§8）
+# 去重范围固定为本文档：缺失清单不受其他文档持有的对象影响（core §3.3、§8）
 # ---------------------------------------------------------------------------
 
 
-def test_staging_manifest_writable_scope() -> None:
+def test_staging_manifest_ignores_objects_held_by_other_documents() -> None:
+    """另一篇文档已经存有同一对象时，本文档的缺失清单仍列出它——页层、元素层与上传响应各一条。"""
     x, xh = _element("shared")
-    holder = make_engine(dedup_scope=DedupScope.WRITABLE)
-    _commit_fast(holder, {"file_type": "md", "pages": [{"elements": [x]}]}, uri=OTHER_URI)
+    engine = make_engine()
+    _commit_fast(engine, {"file_type": "md", "pages": [{"elements": [x]}]}, uri=OTHER_URI)
     b, bh = _page([xh])
     document = {"file_type": "md", "pages": [bh]}
-    # WRITABLE：持有者文档可写 → 不列为缺失
-    r1 = holder.negotiate("u", negotiate_body(URI, document, pages=[b]), C)
-    assert r1.missing_pages == []
-    assert r1.missing_content_hashes == []
-    # DOCUMENT（默认）：范围只有目标文档当前状态（空）→ 附带页的元素缺失
-    base = make_engine()
-    r2 = base.negotiate("u", negotiate_body(URI, document, pages=[b]), C)
+    # negotiate：页对象未附带 → 另一篇文档持有它，仍列为缺失
+    r1 = engine.negotiate("u", negotiate_body(URI, document), C)
+    assert r1.missing_pages == [bh]
+    # negotiate：页附带进会话 → 元素由另一篇文档持有，仍列为缺失
+    r2 = engine.negotiate("u", negotiate_body(URI, document, pages=[b]), C)
     assert r2.missing_pages == []
     assert r2.missing_content_hashes == [xh]
+    # 页对象的上传响应同样只看本文档：在一篇不持有该元素的新文档上上传同一页
+    sid = engine.negotiate(
+        "u", negotiate_body("test://docs/c", {"file_type": "md", "pages": []}), C
+    ).staging_session.id
+    upload = engine.upload_page("u", sid, bh, json.dumps(b).encode(), C)
+    assert isinstance(upload.missing, PageUploadMissing)
+    assert upload.missing.missing_content_hashes == [xh]
 
 
-def test_writable_scope_unwritable_holder_is_missing() -> None:
-    """调用者无写授权的文档中的对象一律视为缺失（core §8 防探测）。"""
-    x, xh = _element("private")
-    engine = make_engine(
-        dedup_scope=DedupScope.WRITABLE,
-        authorizer=PrefixAuthorizer({"u": ("test://docs/",), "v": ("test://private/",)}),
-        session_id_factory=id_factory(),
-    )
-    _commit_fast(
-        engine,
-        {"file_type": "md", "pages": [{"elements": [x]}]},
-        uri="test://private/p",
-        caller="v",
-    )
-    b, bh = _page([xh])
-    r = engine.negotiate("u", negotiate_body(URI, {"file_type": "md", "pages": [bh]}, pages=[b]), C)
-    assert r.missing_content_hashes == [xh]
-
-
-def test_writable_scope_authorizer_callback_into_engine() -> None:
-    """授权器可回调引擎（在锁外调用，不得死锁）。"""
+def test_authorizer_callback_into_engine_at_negotiate() -> None:
+    """negotiate 的授权在锁外调用（core §3.4）：授权器回调引擎时不得死锁。"""
 
     class ReentrantAuthorizer:
         engine: Engine | None = None
@@ -512,10 +498,11 @@ def test_writable_scope_authorizer_callback_into_engine() -> None:
 
     x, xh = _element("shared")
     authorizer = ReentrantAuthorizer()
-    engine = make_engine(dedup_scope=DedupScope.WRITABLE, authorizer=authorizer)
+    engine = make_engine(authorizer=authorizer)
     authorizer.engine = engine
     _commit_fast(engine, {"file_type": "md", "pages": [{"elements": [x]}]}, uri=OTHER_URI)
     b, bh = _page([xh])
+    authorizer.calls.clear()
     r = engine.negotiate("u", negotiate_body(URI, {"file_type": "md", "pages": [bh]}, pages=[b]), C)
-    assert r.missing_content_hashes == []
-    assert OTHER_URI in authorizer.calls
+    assert r.missing_content_hashes == [xh]  # 另一篇文档持有的元素仍缺失
+    assert authorizer.calls == [URI]  # 只为目标文档授权（不再为持有者逐篇授权）

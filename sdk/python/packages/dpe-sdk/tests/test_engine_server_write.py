@@ -1,7 +1,8 @@
 """服务端自身写入 ``Engine.server_write``（core §2.4 同级写入）与强制过期钩子（#45）。
 
 同名写入与 ``commit`` 共用同一条求值顺序：报文校验 → （commit 才做授权）→ 前置条件存在性 →
-CAS → 会话与可得性 → 原子切换。差别只有两处：不询问对外授权器；去重范围上界取全部持有文档。
+CAS → 会话与可得性 → 原子切换。差别只有一处：不询问对外授权器；去重范围与 ``commit`` 相同，
+固定为本文档的当前状态（core §3.3）。
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from typing import Any
 import dpe_hash
 import pytest
 from dpe_sdk import errors
-from dpe_sdk.testing import BaseHash, DedupScope, Engine, IfAbsent, PrefixAuthorizer
+from dpe_sdk.testing import BaseHash, Engine, IfAbsent, PrefixAuthorizer
 from engine_helpers import commit_body, id_factory, inline, make_engine, negotiate_body, text_doc
 
 C = dpe_hash.CONTRACT
@@ -85,18 +86,20 @@ def test_server_write_body_validation_precedes_cas() -> None:
     assert "staging_session" in str(info.value)
 
 
-def test_server_write_sees_every_document_in_the_dedup_scope() -> None:
-    """去重范围上界 = 全部持有文档（core §3.3）：他人排他持有的内容，服务端自身写入可得。"""
+def test_server_write_sees_only_the_target_document_objects() -> None:
+    """去重范围固定为本文档（core §3.3）：他人排他持有的内容，服务端自身写入同样不可得。"""
     auth = PrefixAuthorizer({"u": ("test://mine/",), "other": ("test://other/",)})
-    engine = make_engine(authorizer=auth, dedup_scope=DedupScope.WRITABLE)
+    engine = make_engine(authorizer=auth)
     shared = inline(text_doc(["shared"]))
     _put(engine, "test://other/a", "shared", caller="other")
-    # 只交文档对象（页与元素在他人文档的闭包里）；普通调用者按去重范围上界判缺失
+    # 只交文档对象（页与元素在他人文档的闭包里）：普通调用者与服务端自身写入都判缺失
     body = commit_body(shared.document)
     with pytest.raises(errors.MissingContentError):
         engine.commit("u", "test://mine/b", body, C, IfAbsent())
-    result = engine.server_write("test://mine/b", body, C, IfAbsent())
-    assert result.status == "created"
+    with pytest.raises(errors.MissingContentError):
+        engine.server_write("test://mine/b", body, C, IfAbsent())
+    # 内联本轮提交的内容即可成功
+    assert engine.server_write("test://mine/b", shared.body(), C, IfAbsent()).status == "created"
 
 
 def test_same_level_write_then_source_overwrites_with_new_base_hash() -> None:

@@ -3,11 +3,10 @@
 - 对象按**主契约**（配置的第一个契约）的 hash 存储；每个受支持契约一张别名索引，把该契约下的
   hash 映射到主契约 hash。页对象与文档对象的 body 以主契约的子 hash 保存，其它契约的 hash 由
   子对象在该契约下的 hash 逐层算出（契约 1 §6 原位重算），按位置一一对应。
-- 文档状态记录它引用的全部页、元素与 blob。去重范围只由文档状态决定（core §3.3、§8）：
-  对象表里存着某个对象，不代表它对某个调用者可得。
+- 文档状态记录它引用的全部页、元素与 blob。去重范围固定为本文档（core §3.3、§8）：对象表里
+  存着某个对象，不代表它对别的文档可得——物理去重（同内容只存一份）只是存储细节，不改变缺失
+  清单与可得性判定的任何可观察结果。
 - 对象按引用计数回收：一个对象被多少篇文档的当前状态引用，计数就是多少。
-- 反向索引 ``referrers`` 记录每个页、元素与 blob 被哪些文档的当前状态引用：去重范围的判定只看
-  本次提交实际引用的对象，不必展开范围内全部文档。
 - ``uris`` 是按码点序维护的文档 URI 列表，list 按 cursor 二分切片。
 - blob 的字节经暂存会话进入对象表（#43）：``blobs`` 按引用计数回收，页 / 元素 / blob 的
   引用计数一起由 ``replace`` 维护。两类键不会冲突：blob 引用固定为 ``sha256:``。
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import bisect
 from collections.abc import Iterable, Mapping, Sequence
-from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -26,8 +24,6 @@ import dpe_hash
 __all__ = ["BlobRecord", "DocState", "ObjectRecord", "Store", "TreeObjectKind"]
 
 TreeObjectKind = Literal["page", "element"]
-
-_EMPTY: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -58,11 +54,6 @@ class DocState:
     contents: frozenset[str]
     blobs: frozenset[str]
 
-    @property
-    def referenced(self) -> frozenset[str]:
-        """本状态引用的全部页、元素（主契约 hash）与 blob。"""
-        return self.pages | self.contents | self.blobs
-
     def matches(self, base_hash: str) -> bool:
         """``base_hash`` 是否等于当前内容在任一受支持契约下的 doc_hash（core §5.1，按值比较）。"""
         return base_hash in self.doc_hashes.values()
@@ -84,9 +75,6 @@ class Store:
     blobs: dict[str, BlobRecord] = field(default_factory=dict)
     alias: dict[str, dict[str, str]] = field(default_factory=dict)
     docs: dict[str, DocState] = field(default_factory=dict)
-    #: 页 / 元素的主契约 hash 与 blob 引用 → 当前状态引用它的文档 URI。两类键不会冲突：
-    #: blob 引用固定为 ``sha256:``，页 / 元素 hash 带契约前缀（契约 1 §1）
-    referrers: dict[str, set[str]] = field(default_factory=dict)
     #: 全部文档 URI，按码点序（Python 的 str 比较）
     uris: list[str] = field(default_factory=list)
 
@@ -133,10 +121,6 @@ class Store:
             if contract not in out:
                 out[contract] = dpe_hash.object_hash(body, "element", contract)
         return out
-
-    def referrers_of(self, value: str) -> AbstractSet[str]:
-        """当前状态引用该对象（主契约 hash 或 blob 引用）的文档 URI。返回内部集合的只读视图。"""
-        return self.referrers.get(value, _EMPTY)
 
     def in_contract(
         self, body: Mapping[str, Any], kind: Literal["page", "document"], contract: str
@@ -192,17 +176,6 @@ class Store:
                 for contract, value in record.hashes.items():
                     self.alias[contract].pop(value, None)
 
-    def _unlink(self, uri: str, state: DocState) -> None:
-        for h in state.referenced:
-            holders = self.referrers[h]
-            holders.discard(uri)
-            if not holders:
-                del self.referrers[h]
-
-    def _link(self, uri: str, state: DocState) -> None:
-        for h in state.referenced:
-            self.referrers.setdefault(h, set()).add(uri)
-
     def _add_uri(self, uri: str) -> None:
         bisect.insort(self.uris, uri)
 
@@ -215,11 +188,8 @@ class Store:
         # 先计入新状态的引用（唯一可能失败的一步：对象缺失时整体不改计数），再改任何索引
         if state is not None:
             self.retain(state.pages | state.contents | state.blobs)
-        if old is not None:
-            self._unlink(uri, old)
         if state is not None:
             self.docs[uri] = state
-            self._link(uri, state)
             if old is None:
                 self._add_uri(uri)
         elif old is not None:
@@ -230,12 +200,10 @@ class Store:
         return old
 
     def rename(self, from_uri: str, to_uri: str) -> DocState:
-        """整篇文档改名（move）：状态与引用计数原样保留，只更新 URI 相关的索引。"""
+        """整篇文档改名（move）：状态与引用计数原样保留，只更新 URI 列表。"""
         state = self.docs.pop(from_uri)
-        self._unlink(from_uri, state)
         self._remove_uri(from_uri)
         self.docs[to_uri] = state
-        self._link(to_uri, state)
         self._add_uri(to_uri)
         return state
 

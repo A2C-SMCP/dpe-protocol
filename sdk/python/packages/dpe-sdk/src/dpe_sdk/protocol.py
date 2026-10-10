@@ -764,7 +764,8 @@ class ProtocolCore:
 
     def upload_page(self, session: Session, page: PageObject) -> Operation[list[str]]:
         """``PUT staging/{sid}/pages/{page_hash}``（HTTP 绑定 §4.6）：上传一个页对象（对象本身
-        即请求体），返回它引用、而在去重范围与会话中都不存在的元素 content_hash。
+        即请求体），返回它引用、而在去重范围内不可得的元素 content_hash（去重范围含本会话，
+        core §3.3）。
 
         整段超过 ``max_payload_bytes`` 时按 §4.7 分块（块上限 ``blob_chunk_bytes``，总量上限
         ``page_max_bytes``，超限本地即拒；上游应把文档拆成更多页）。重复上传幂等（200）。
@@ -994,8 +995,8 @@ class ProtocolCore:
 
         - 不给 ``session``：内联文档对象、全部页对象与元素对象，一次往返完成（页与元素按
           hash 去重后各发一份）；
-        - 给 ``session``：请求体只含文档对象与 ``staging_session``——页与元素由暂存会话或
-          服务端的去重范围提供（大文档的暂存路径：``negotiate`` → ``upload_*`` → 这里）。
+        - 给 ``session``：请求体只含文档对象与 ``staging_session``——页与元素由去重范围提供
+          （本文档当前状态与暂存会话，core §3.3；大文档的暂存路径：``negotiate`` → ``upload_*``）。
 
         前置条件三选一（``CommitPrecondition``），
         ``BaseHash`` 的值必须是本次声明契约的 hash；``uri`` 或 ``base_hash`` 不合法时本地即抛
