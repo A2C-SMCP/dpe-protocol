@@ -350,6 +350,41 @@ def test_document_non_utf8_content_is_not_retryable(tmp_path: Path) -> None:
     assert "UTF-8" in item.fields["message"]
 
 
+def test_document_order_pins_tie_break_for_multi_parent_merge(tmp_path: Path) -> None:
+    """同一合并下多种合法拓扑序：页内序由自有排序（父记录顺序）决定，不依赖 git 的输出次序。"""
+    repo = FixtureRepo(tmp_path / "repo")
+    c1 = repo.commit("根", date="2026-05-01T00:00:00+00:00", files={"a.txt": "1\n"})
+    repo.branch("side-a", at=c1)
+    a1 = repo.commit("A 侧", date="2026-05-02T00:00:00+00:00", files={"a.txt": "2\n"})
+    repo.checkout("main")
+    repo.branch("side-b", at=c1)
+    b1 = repo.commit("B 侧", date="2026-05-03T00:00:00+00:00", files={"b.txt": "1\n"})
+    repo.checkout("main")
+    run_git(
+        repo.root,
+        "-c",
+        "commit.gpgsign=false",
+        "merge",
+        "--no-ff",
+        "-q",
+        "-m",
+        "章鱼合并",
+        "side-a",
+        "side-b",
+        env={
+            "GIT_AUTHOR_DATE": "2026-05-04T00:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-05-04T00:00:00+00:00",
+        },
+    )
+    merge = repo.sha("HEAD")
+    item = document_for(repo.root, spec=RepoSpec(default_branch="main"))
+    assert [page["page_metadata"] for page in item["pages"]] == [
+        {"ref": "main", "period": "2026-05"}
+    ]
+    # 父记录顺序（c1 → A 侧 → B 侧）决定平局：两支持续到各自完成，合并提交最后
+    assert page_shas(item["pages"][0]) == [c1, a1, b1, merge]
+
+
 def test_since_does_not_filter_branch_pages(history: Any) -> None:
     """since 是默认分支的概念：分支页只放 ``<default>..<branch>`` 的独有提交，不受 since 过滤。
 

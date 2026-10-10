@@ -7,8 +7,8 @@
 - ``git symbolic-ref``：默认分支取自 ``refs/remotes/origin/HEAD`` 的符号目标（由远端声明）；
   **不看本地 ``HEAD``**——工作区 checkout 会改动它，那是运行环境状态而非源内容，会让整篇
   文档的默认分支随运行环境漂移、制造伪变更（显式配置的 ``default_branch`` 优先）；
-- ``git rev-list --first-parent --reverse``：默认分支的 first-parent 链（旧在前）——按月分页的骨架；
-- ``git log --topo-order --reverse -z --format=…``：提交元数据与说明，旧在前的拓扑序；
+- ``git log -z --format=…``：提交**集合**与元数据——git 的输出次序不进内容，页内元素序由本
+  模块的 ``order_commits`` 按自有规则给出（只依赖提交图；跨 git 版本稳定）；
 - ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）。
 
 ``-z`` 与 ``%x00`` 分隔是必需的：提交说明原样进 DPE，NUL 不能出现在提交消息与 ident 里，用它
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +39,9 @@ __all__ = [
     "GitRepo",
     "RepoDir",
     "discover_repos",
+    "first_parent_chain",
     "looks_like_repo",
+    "order_commits",
 ]
 
 #: git 命令的超时（秒）：枚举必须是有界的，插件不因数据源卡死而挂住整轮
@@ -175,6 +178,68 @@ def _utc_timestamp(value: str) -> str:
     return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def order_commits(records: Sequence[CommitRecord], order_from: str) -> list[CommitRecord]:
+    """自有拓扑序（旧在前）：从 ``order_from`` 出发做后序 DFS，父提交按记录顺序。
+
+    规则（README「确定性」；只依赖提交图与元数据，**不依赖 git 的输出次序**）：
+
+    - 访问一个提交时先依「父提交记录顺序」递归访问每个父提交（记录顺序是源内容），最后
+      输出自己——父提交因此总是先于子提交（旧在前），被合并带入的提交排在其合并提交之前；
+    - 不在 ``records`` 里的父提交是范围边界（如 ``<default>..<branch>`` 被排除的一侧）：
+      跳过且不下探（被排除提交的祖先也必被排除）；
+    - 每个提交只输出一次；没有任何按时间或 SHA 的隐含序，平局由此完全确定。
+
+    ``records`` 是集合：次序无关，任意输入顺序产出相同结果（测试用打乱输入钉住）。空集合
+    产出空列表；集合非空而起点不在其中、或有提交从起点不可达——都是提交集不完整，如实报错，
+    不静默丢内容。
+    """
+    by_sha = {record.sha: record for record in records}
+    if not by_sha:
+        return []
+    if order_from not in by_sha:
+        raise GitError(f"排序起点 {order_from} 不在提交集中：提交集不完整")
+    ordered: list[CommitRecord] = []
+    pushed: set[str] = {order_from}
+    done: set[str] = set()
+    stack: list[tuple[str, int]] = [(order_from, 0)]
+    while stack:
+        sha, index = stack[-1]
+        parents = by_sha[sha].parents
+        if index < len(parents):
+            stack[-1] = (sha, index + 1)
+            parent = parents[index]
+            if parent in by_sha and parent not in pushed:
+                pushed.add(parent)
+                stack.append((parent, 0))
+            continue
+        stack.pop()
+        done.add(sha)
+        ordered.append(by_sha[sha])
+    if len(ordered) != len(by_sha):
+        missing = next(sha for sha in by_sha if sha not in done)
+        raise GitError(f"提交 {missing} 不可从 {order_from} 到达：提交集不完整")
+    return ordered
+
+
+def first_parent_chain(records: Sequence[CommitRecord], tip: str) -> list[str]:
+    """``tip`` 的 first-parent 链（旧在前，根端在首个）——按月分页的骨架。
+
+    纯粹的图函数：从 ``tip`` 反复走第一个父提交（父提交的记录顺序是源内容），与 git 的
+    输出次序无关。``records`` 必须覆盖整条链（``GitRepo.log(tip)`` 的结果即可）。
+    """
+    by_sha = {record.sha: record for record in records}
+    chain: list[str] = []
+    sha: str | None = tip
+    while sha is not None:
+        record = by_sha.get(sha)
+        if record is None:
+            raise GitError(f"提交 {sha} 不在读取到的提交集中：提交图不完整")
+        chain.append(sha)
+        sha = record.parents[0] if record.parents else None
+    chain.reverse()
+    return chain
+
+
 class GitRepo:
     """一个本地仓库的只读提交图视图。"""
 
@@ -279,20 +344,15 @@ class GitRepo:
 
     # ------------------------------------------------------------------ 提交图读取
 
-    def first_parent_chain(self, tip: str) -> list[str]:
-        """``tip`` 的 first-parent 链，旧在前（根提交在首个）——按月分页的骨架。"""
-        return self._run("rev-list", "--first-parent", "--reverse", "--end-of-options", tip).split()
-
     def log(self, *revisions: str) -> list[CommitRecord]:
-        """按拓扑序（旧在前）读取提交元数据与说明；``revisions`` 是 rev-list 的选取范围。
+        """读取提交集合与元数据（**次序不定**）；``revisions`` 是 rev-list 的选取范围。
 
-        ``--topo-order`` 保证父提交先于子提交（配合 ``--reverse`` 即旧在前），页内元素序因此
-        稳定：被合并带入的提交排在其合并提交之前。空范围产出空列表。
+        只取集合与图：git 的输出次序（默认按时间）不进内容——页内元素序由本连接器自己的
+        ``order_commits`` 规定（README「确定性」），不依赖 git 的 ``--topo-order`` 等排序
+        （跨 git 版本不保证一致，会制造伪变更）。空范围产出空列表。
         """
         raw = self._run_bytes(
             "log",
-            "--topo-order",
-            "--reverse",
             "-z",
             f"--format={_LOG_FORMAT}",
             "--end-of-options",

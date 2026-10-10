@@ -11,11 +11,14 @@ import pytest
 from helpers import FixtureRepo, git_env, requires_git, run_git
 
 from dpe_git_connector.gitrepo import (
+    CommitRecord,
     GitContentError,
     GitError,
     GitRepo,
     discover_repos,
+    first_parent_chain,
     looks_like_repo,
+    order_commits,
 )
 
 pytestmark = requires_git
@@ -123,7 +126,8 @@ def test_bare_repository_is_supported(tmp_path: Path) -> None:
     repo = GitRepo(str(bare))
     repo.open()
     assert repo.resolve_branch("main") == work.sha("main")
-    assert [record.message for record in repo.log(work.sha("main"))] == [
+    records = order_commits(repo.log(work.sha("main")), work.sha("main"))
+    assert [record.message for record in records] == [
         "第一次提交\n",
         "第二次提交\n",
     ]
@@ -197,8 +201,19 @@ def test_resolve_ref_and_is_ancestor(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- 提交图
 
 
-def test_first_parent_chain_and_log_order(tmp_path: Path) -> None:
-    """first-parent 链旧在前；log 是拓扑序（旧在前），被合并的提交排在其合并提交之前。"""
+def assert_topological(records: list[CommitRecord]) -> None:
+    """顺序本身的自洽性：每个父提交都在其子提交之前出现（旧在前）。"""
+    seen: set[str] = set()
+    for record in records:
+        for parent in record.parents:
+            assert parent in seen, f"{parent} 应排在 {record.sha} 之前"
+        seen.add(record.sha)
+
+
+def test_order_commits_is_graph_function_not_git_order(tmp_path: Path) -> None:
+    """自有排序：后序 DFS（父提交按记录顺序），只依赖提交图——打乱输入集合结果不变。"""
+    import random
+
     repo = FixtureRepo(tmp_path / "repo")
     c1 = repo.commit("一", date="2026-01-06T10:00:00+00:00", files={"a.txt": "1\n"})
     repo.branch("side", at=c1)
@@ -208,12 +223,75 @@ def test_first_parent_chain_and_log_order(tmp_path: Path) -> None:
     merge = repo.merge("side", "合并 side", date="2026-01-09T10:00:00+00:00")
 
     git = GitRepo(str(repo.root))
-    assert git.first_parent_chain(merge) == [c1, c2, merge]
-    # 拓扑序（旧在前）：主线提交在前，被合并的侧枝排在其合并提交之前。git 的 --topo-order
-    # 对独立分支的次序是确定的（实测主线优先），页内元素序因此稳定。
-    assert [record.sha for record in git.log(merge)] == [c1, c2, s1, merge]
+    records = git.log(merge)  # 集合：次序不定
+    ordered = order_commits(records, merge)
+    assert [record.sha for record in ordered] == [c1, c2, s1, merge]
+    assert_topological(ordered)
+    # 与输入顺序无关：打乱集合后重新排序，结果必须相同（排序只是图的函数）
+    shuffled = list(records)
+    random.Random(20261010).shuffle(shuffled)
+    assert order_commits(shuffled, merge) == ordered
+    # first-parent 链同样是纯粹的图函数（走 parents[0]），旧在前
+    assert first_parent_chain(records, merge) == [c1, c2, merge]
     # 空范围：空列表（分支已并入默认分支时没有独有提交）
     assert git.log(f"{merge}..{s1}") == []
+
+
+def test_order_commits_multi_parent_merge_pins_tie_break(tmp_path: Path) -> None:
+    """「同一合并下多种合法拓扑序」的夹具（三父章鱼合并）：平局由父提交记录顺序打破。"""
+    import random
+
+    repo = FixtureRepo(tmp_path / "repo")
+    c1 = repo.commit("一", date="2026-01-06T10:00:00+00:00", files={"a.txt": "1\n"})
+    repo.branch("side-a", at=c1)
+    a1 = repo.commit("侧枝 A", date="2026-01-07T10:00:00+00:00", files={"a.txt": "2\n"})
+    repo.checkout("main")
+    repo.branch("side-b", at=c1)
+    b1 = repo.commit("侧枝 B", date="2026-01-08T10:00:00+00:00", files={"b.txt": "b\n"})
+    repo.checkout("main")
+    # 章鱼合并（三个头，互不冲突）：父列表记录顺序是 c1 → side-a → side-b
+    run_git(
+        repo.root,
+        "-c",
+        "commit.gpgsign=false",
+        "merge",
+        "--no-ff",
+        "-q",
+        "-m",
+        "章鱼合并",
+        "side-a",
+        "side-b",
+        env={
+            "GIT_AUTHOR_DATE": "2026-01-09T10:00:00+00:00",
+            "GIT_COMMITTER_DATE": "2026-01-09T10:00:00+00:00",
+        },
+    )
+    octopus = repo.sha("HEAD")
+    parents = run_git(repo.root, "rev-list", "--parents", "-n", "1", octopus).split()[1:]
+    assert len(parents) == 3  # 前提：确有多种合法拓扑序（多个独立侧枝）
+
+    git = GitRepo(str(repo.root))
+    records = git.log(octopus)
+    ordered = order_commits(records, octopus)
+    assert_topological(ordered)
+    # 平局按父提交记录顺序打破：c1，然后 A 侧、B 侧依次（各自完成为止），最后是合并提交
+    assert [record.sha for record in ordered] == [c1, a1, b1, octopus]
+    shuffled = list(records)
+    random.Random(7).shuffle(shuffled)
+    assert order_commits(shuffled, octopus) == ordered
+
+
+def test_order_commits_rejects_unreachable_records(tmp_path: Path) -> None:
+    """集合里混入不可从起点到达的提交：如实报错，不退化为静默丢失。"""
+    repo = FixtureRepo(tmp_path / "repo")
+    base = repo.commit("基线", date="2026-01-06T10:00:00+00:00", files={"a.txt": "1\n"})
+    repo.branch("other", at=base)
+    other_tip = repo.commit("另一支", date="2026-01-07T10:00:00+00:00", files={"b.txt": "1\n"})
+    repo.checkout("main")
+    main_tip = repo.commit("主线", date="2026-01-08T10:00:00+00:00", files={"a.txt": "2\n"})
+    records = GitRepo(str(repo.root)).log(main_tip, other_tip)  # 两支的并集
+    with pytest.raises(GitError, match="提交集不完整"):
+        order_commits(records, main_tip)  # 另一支的提交不可达
 
 
 def test_log_parses_metadata_and_preserves_message(tmp_path: Path) -> None:
@@ -225,7 +303,9 @@ def test_log_parses_metadata_and_preserves_message(tmp_path: Path) -> None:
         email="bob@example.invalid",
         files={"b.txt": "x\n"},
     )
-    record = GitRepo(str(repo.root)).log("HEAD")[-1]
+    # log 只取集合（次序不定）：按 SHA 选中要断言的提交
+    head = repo.sha("HEAD")
+    record = next(r for r in GitRepo(str(repo.root)).log("HEAD") if r.sha == head)
     assert record.author == "Bob <bob@example.invalid>"
     # 带偏移的时间归一为 RFC 3339 UTC
     assert record.authored_at == "2026-02-02T20:05:06Z"

@@ -10,9 +10,11 @@
   ``page_metadata`` 为 ``{ref: <分支名>}``；
 - **元素 = 一次提交**（见 ``extractors``）。
 
-页序：月页按月份升序在前，分支页按分支名（字节序）在后；页内旧在前（拓扑序），合并带入的
-提交排在其合并提交之前。不写易变字段、不写由位置算出的序号（core §2.4）；``file_uri`` 是身份
-（实例前缀 + 仓库标识），身份不进 hash。
+页序：月页按月份升序在前，分支页按分支名（字节序）在后；页内旧在前——**自有拓扑序**（从
+起始提交出发按父提交记录顺序做后序 DFS，见 ``gitrepo.order_commits`` 与 README「确定性」；
+只依赖提交图，不依赖 git 的输出次序，跨 git 版本稳定），合并带入的提交排在其合并提交之前。
+不写易变字段、不写由位置算出的序号（core §2.4）；``file_uri`` 是身份（实例前缀 + 仓库标识），
+身份不进 hash。
 
 失败如实产出 ``error`` 条目（§6.5 的封闭枚举），不静默跳过——**读取类与内容类分开**：
 
@@ -36,7 +38,15 @@ from typing import Any
 from dpe_hash import ContractUnsupportedError, ElementObject, ValidationError, normalize_file_uri
 
 from dpe_git_connector.extractors import commit_elements, element_bytes
-from dpe_git_connector.gitrepo import CommitRecord, GitContentError, GitError, GitRepo, RepoDir
+from dpe_git_connector.gitrepo import (
+    CommitRecord,
+    GitContentError,
+    GitError,
+    GitRepo,
+    RepoDir,
+    first_parent_chain,
+    order_commits,
+)
 
 __all__ = [
     "DocumentMapper",
@@ -249,8 +259,9 @@ class DocumentMapper:
         default_tip = repo.resolve_branch(default_name)
         if default_tip is None:
             raise GitError(f"默认分支 {default_name!r} 无法解析为提交")
-        records = repo.log(default_tip)
-        chain = repo.first_parent_chain(default_tip)
+        records = repo.log(default_tip)  # 只取集合；次序由 order_commits 自己规定
+        ordered = order_commits(records, default_tip)
+        chain = first_parent_chain(records, default_tip)
         since_sha: str | None = None
         if spec.since is not None:
             since_sha = repo.resolve_ref(spec.since)
@@ -260,7 +271,7 @@ class DocumentMapper:
                 raise GitError(f"since 不是默认分支 {default_name!r} 的祖先：{spec.since}")
 
         pages: list[dict[str, Any]] = []
-        for month, month_records in sorted(month_partition(chain, records, since_sha).items()):
+        for month, month_records in sorted(month_partition(chain, ordered, since_sha).items()):
             pages.append(
                 {
                     "page_metadata": {"ref": default_name, "period": month},
@@ -279,7 +290,8 @@ class DocumentMapper:
             pages.append(
                 {
                     "page_metadata": {"ref": name},
-                    "elements": _elements(repo.log(f"{default_tip}..{tip}")),
+                    # 独有提交集合同样用自有排序（从分支 tip 出发做后序 DFS）
+                    "elements": _elements(order_commits(repo.log(f"{default_tip}..{tip}"), tip)),
                 }
             )
         return pages
