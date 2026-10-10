@@ -38,7 +38,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
   - `limit`：对象的嵌套深度上界（MUST ≤ `limit`，超出为 `DPE_VALIDATION`）；实现导出的常量 MUST 与之相等；
   - `cases[]` 每条包含 `object_kind`、`contract`、`input`（被校验的 JSON 值）与 `input_json`（同一输入的 JSON 文本）。`accept: true` 的用例 MUST 被接受；其余给出 `code`（单处违例的用例还给出 `path`）MUST 被拒绝且错误码一致。消费方 MUST 对每条用例走两条路径并得到同一结论：对象级入口（直接校验 `input`）与文本入口（严格解析 `input_json` 后校验）。边界用例的最深一层是空容器（`{}` 或 `[]`）；
   - 深度按**每个对象自身**计：标量记 0，对象或数组记 1 + 其子值的最大深度，空容器记 1（`{}` 记 1、`{"a": {"b": [1]}}` 记 3）；页的 `elements` 与文档的 `pages` 按子 hash 列表计（列表自身记 1、每一项不计入），深度与对象在报文中的位置无关（绑定信封的层数不计入）；
-  - `expanded_document` 用例只断言错误码：内联对象的违例位置约定不由本向量固定。
+  - `expanded_document` 用例的违例位置同样为对象自身（`""`），不换算为相对报文根的路径（core §2.8 违例位置）。
 - **`pattern`**（`config_schema_patterns.json`，规范依据 [connector 契约](../spec/connector-contract.md) §4.1.1，与 hash 契约无关）：
   - `valid_patterns[]`：MUST 被接受且可转译（子集外的 pattern 使清单整体 `manifest_invalid`）；匹配语义由 `match_cases` 逐条钉住；含结构上界边界与最坏情况形状；
   - `invalid_patterns[]`：MUST 被拒绝；`reason` 是参考实现给出的原因标记，供人阅读，不作跨实现的断言。无法以普通字符串表达的输入（孤立代理项等，同 hash 向量的 `input_json` 约定）以 `pattern_json` 给出原始 JSON 文本，消费方用严格解析器读取；

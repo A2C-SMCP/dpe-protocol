@@ -211,7 +211,7 @@
     },
     {
       "name": "nesting_depth.json",
-      "sha256": "ce937047958a3f3a8452e34f41905c27f1537b33dd8d1bcd49c3596fcb1654e7"
+      "sha256": "027876a6fe67103c3480823c00ad9d20b4f8b9fb4e2192d6329d6b71c0e2743d"
     },
     {
       "name": "null_vs_empty_distinct.json",

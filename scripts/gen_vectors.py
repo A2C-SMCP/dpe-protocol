@@ -3312,7 +3312,7 @@ def depth_vector() -> dict[str, Any]:
         accept: bool,
         probe: Any = None,
         child_field: str | None = None,
-        path: str | None = "",
+        path: str = "",
     ) -> dict[str, Any]:
         """组装一条用例并交叉核对：深度口径 probe 达到 depth，参考校验器接受/拒绝一致。"""
         assert nesting_depth(value if probe is None else probe, child_field) == depth, name
@@ -3335,10 +3335,9 @@ def depth_vector() -> dict[str, Any]:
                 raise AssertionError(f"{name}: 应为接受，实得 {rej.code} at {rej.path!r}") from None
             if rej.code != VALIDATION:
                 raise AssertionError(f"{name}: 期望 {VALIDATION}，实得 {rej.code}") from None
-            if path is not None:
-                out["path"] = path
-                if rej.path != path:
-                    raise AssertionError(f"{name}: 期望位置 {path!r}，实得 {rej.path!r}") from None
+            out["path"] = path
+            if rej.path != path:
+                raise AssertionError(f"{name}: 期望位置 {path!r}，实得 {rej.path!r}") from None
         else:
             if not accept:
                 raise AssertionError(f"{name}: 应为拒绝却通过")
@@ -3357,7 +3356,7 @@ def depth_vector() -> dict[str, Any]:
         "kind": "nesting_depth",
         "spec": "spec/core.md",
         "section": "§2.8",
-        "description": "core.md §2.8 第 0 步第三项：每个对象的嵌套深度 ≤ limit（标量记 0；对象或数组记 1 + 子值的最大深度；空容器记 1；计数对象是 DPE 对象本身，页的 elements 与文档的 pages 按子 hash 列表计：列表自身记 1、每一项不计入）。恰好 limit 层接受、加一层拒绝，边界的最深一层是空容器；input 与 input_json 是同一条用例的值与文本，对象级入口与文本入口 MUST 同判。expanded_document 用例只断言错误码：内联对象的违例位置约定本向量不钉。",
+        "description": "core.md §2.8 第 0 步第三项：每个对象的嵌套深度 ≤ limit（标量记 0；对象或数组记 1 + 子值的最大深度；空容器记 1；计数对象是 DPE 对象本身，页的 elements 与文档的 pages 按子 hash 列表计：列表自身记 1、每一项不计入）。恰好 limit 层接受、加一层拒绝，边界的最深一层是空容器；input 与 input_json 是同一条用例的值与文本，对象级入口与文本入口 MUST 同判。expanded_document 用例的违例位置同样为对象自身（空字符串），不换算为相对报文根的路径。",
         "limit": limit,
         "cases": [
             case("element_at_limit", "element", element(limit), limit, accept=True),
@@ -3416,7 +3415,6 @@ def depth_vector() -> dict[str, Any]:
                 limit + 1,
                 accept=False,
                 probe=expanded_over["pages"][0]["elements"][0],
-                path=None,
             ),
         ],
     }
