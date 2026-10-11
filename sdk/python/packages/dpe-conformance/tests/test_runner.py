@@ -66,7 +66,15 @@ def _run(sections: list[str], counts_path: Path) -> tuple[int, dict[str, Any] | 
 
 
 def test_sections_discovery() -> None:
-    assert list_sections() == ("capabilities", "commit", "read", "smoke", "validation")
+    assert list_sections() == (
+        "capabilities",
+        "commit",
+        "http_binding",
+        "read",
+        "smoke",
+        "validation",
+        "write_ops",
+    )
 
 
 def test_section_paths_unknown_section() -> None:

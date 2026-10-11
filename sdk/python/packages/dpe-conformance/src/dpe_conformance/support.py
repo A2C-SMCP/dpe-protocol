@@ -210,6 +210,45 @@ def commit(
     )
 
 
+def delete(
+    target: Target,
+    uri: str,
+    *,
+    identity: Identity,
+    if_match: str | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> httpx.Response:
+    """发一次 delete（HTTP §4.9）：CAS 走 ``If-Match``（HTTP §3.2）。
+
+    ``headers`` 原样附加以外的条件头（如构造语法违例），不与 ``if_match`` 并用。
+    """
+    assert if_match is None or headers is None or "If-Match" not in headers
+    merged: dict[str, str] = dict(headers or {})
+    if if_match is not None:
+        merged["If-Match"] = f'"{if_match}"'
+    return target.send(
+        "DELETE", "documents", identity=identity, params={"uri": uri}, headers=merged
+    )
+
+
+def move(
+    target: Target,
+    from_uri: str,
+    to_uri: str,
+    *,
+    identity: Identity,
+    base_hash: str | None = None,
+    extra_body: Mapping[str, Any] | None = None,
+) -> httpx.Response:
+    """发一次 move（HTTP §4.9）：前置条件在请求体中（HTTP §3.2）。"""
+    body: dict[str, Any] = {"from_uri": from_uri, "to_uri": to_uri}
+    if base_hash is not None:
+        body["base_hash"] = base_hash
+    if extra_body:
+        body.update(extra_body)
+    return target.send("POST", "move", identity=identity, json=body)
+
+
 __all__ = [
     "WireDocument",
     "assert_commit_success",
@@ -218,7 +257,9 @@ __all__ = [
     "assert_problem",
     "build_document",
     "commit",
+    "delete",
     "has_dpe_vary",
+    "move",
     "optional_identity",
     "text_element",
 ]

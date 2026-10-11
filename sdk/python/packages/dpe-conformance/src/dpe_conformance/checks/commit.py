@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+import dpe_hash
 import pytest
 
 from dpe_conformance.config import Identity
@@ -238,3 +239,86 @@ def test_commit_force_with_condition_header(
         json={**_document().commit_body(), "force": True},
     )
     assert_problem(response, status=400, code="DPE_VALIDATION")
+
+
+# ---------------------------------------------------------------------- CAS 全矩阵：force（#55）
+
+
+def test_commit_force_creates_absent_document(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """CORE §5.1：``force: true`` 是不带条件头的强制覆盖——文档不存在时按新建立即写入。"""
+    uri = conformance_target.uri("commit/force-create")
+    document = _document()
+    response = commit(conformance_target, uri, document, identity=full_identity, force=True)
+    body = assert_commit_success(
+        response, status=201, status_text="created", doc_hash=document.doc_hash
+    )
+    assert body["delta"] == {"added": 2, "removed": 0, "retained": 0}
+
+
+def test_commit_force_overwrites_current_content(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """CORE §5.1 + §5.2：force 不看现状直接覆盖；读回内容是提交值（互证，非只看状态码）。"""
+    uri = conformance_target.uri("commit/force-overwrite")
+    before = _document()
+    first = commit(conformance_target, uri, before, identity=full_identity, if_none_match_star=True)
+    assert first.status_code == 201, f"铺垫失败：{first.status_code}"
+
+    after = build_document([[text_element("forced")]], title="force 覆盖")
+    response = commit(conformance_target, uri, after, identity=full_identity, force=True)
+    assert_commit_success(response, status=200, status_text="updated", doc_hash=after.doc_hash)
+    readback = conformance_target.send(
+        "GET", "documents", identity=full_identity, params={"uri": uri}
+    )
+    assert readback.status_code == 200
+    skeleton = readback.json()
+    assert dpe_hash.object_hash(skeleton["document"], "document") == after.doc_hash, (
+        "force 覆盖后读回的文档对象按契约 1 重算必须等于提交内容的 doc_hash"
+    )
+
+
+def test_commit_force_with_unchanged_content_is_unchanged(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """CORE §3.3 + §5.2：内容幂等先于一切——force 提交与当前内容相同时仍是 unchanged。"""
+    uri = conformance_target.uri("commit/force-unchanged")
+    document = _document()
+    first = commit(
+        conformance_target, uri, document, identity=full_identity, if_none_match_star=True
+    )
+    assert first.status_code == 201, f"铺垫失败：{first.status_code}"
+    response = commit(conformance_target, uri, document, identity=full_identity, force=True)
+    body = assert_commit_success(
+        response, status=200, status_text="unchanged", doc_hash=document.doc_hash
+    )
+    assert body["delta"] == {"added": 0, "removed": 0, "retained": 2}
+
+
+def test_commit_force_without_permission_is_forbidden(
+    conformance_target: Target, no_force_identity: Identity
+) -> None:
+    """CORE §3.3 第 2 步 + §5.1：无 force 权限者提交 force → 403，即使内容未变。
+
+    用 ``no-force`` 身份（该角色的文档语义就是「无 force 权限」）。要断言 403 出自 force
+    权限，必须先证明同一身份对目标 URI 有写权限——以铺垫提交为证；铺垫被拒（如该身份只有
+    前缀写权、测试命名空间不在其内）时无法构造对照，显式 skip 并计入计数（合规服务端不得
+    被判失败）。求值顺序上 force 授权（第 2 步）先于 unchanged（第 4 步），「内容未变」不能
+    把它降级成 200。
+    """
+    uri = conformance_target.uri("commit/force-forbidden")
+    document = _document()
+    seeded = commit(
+        conformance_target, uri, document, identity=no_force_identity, if_none_match_star=True
+    )
+    if seeded.status_code == 403:
+        pytest.skip("no-force 身份对测试命名空间无写权，无法构造「有写权、无 force 权」的对照")
+    assert seeded.status_code == 201, f"铺垫失败：{seeded.status_code} {seeded.text[:200]}"
+
+    response = commit(conformance_target, uri, document, identity=no_force_identity, force=True)
+    assert_problem(response, status=403, code="DPE_FORBIDDEN")
+
+    changed = build_document([[text_element("changed")]])
+    overwrite = commit(conformance_target, uri, changed, identity=no_force_identity, force=True)
+    assert_problem(overwrite, status=403, code="DPE_FORBIDDEN")

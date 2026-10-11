@@ -10,7 +10,8 @@ import pytest
 from dpe_conformance.cli import _print_summary
 from helpers import reference_server, run_cli
 
-#: 参考服务端的钩子与多身份（#45）：full 有 force，scoped 仅前缀可写（无 force）
+#: 参考服务端的钩子与多身份（#45）：full 有 force；scoped 仅前缀可写（无 force）；
+#: no-force 可写全命名空间但没有 force——「有写权、无 force 权」的对照（force 的 403 检查）
 _SERVER_ARGS = (
     "--hooks",
     "/__hooks__",
@@ -22,6 +23,9 @@ _SERVER_ARGS = (
     "--grant",
     "Bearer scoped-auth",
     "dpe://conf/scoped/",
+    "--grant",
+    "Bearer no-force-auth",
+    "*",
 )
 
 
@@ -37,7 +41,7 @@ authorization = "Bearer scoped-auth"
 prefix = "dpe://conf/scoped/"
 
 [identities.no-force]
-authorization = "Bearer scoped-auth"
+authorization = "Bearer no-force-auth"
 """
     if hooks is not None:
         text += f'\n[hooks.self-write]\nhttp = "{hooks}/self-write"\n'
@@ -54,7 +58,7 @@ def _testsuite(path: Path) -> ET.Element:
 
 
 def test_full_run_against_reference_server(tmp_path: Path) -> None:
-    """有配置：全部章节 46 条检查执行；JUnit XML 与计数 JSON 一致。"""
+    """有配置：全部章节 89 条检查执行、2 条无构造手段显式 skip；JUnit XML 与计数 JSON 一致。"""
     with reference_server(*_SERVER_ARGS) as server:
         config = _write_config(tmp_path, server.hooks)
         junit = tmp_path / "junit.xml"
@@ -72,17 +76,25 @@ def test_full_run_against_reference_server(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     data = json.loads(counts.read_text(encoding="utf-8"))
     totals = data["totals"]
-    assert (totals["executed"], totals["passed"], totals["skipped"]) == (46, 46, 0)
+    assert (totals["executed"], totals["passed"], totals["skipped"]) == (89, 89, 2)
     assert data["sections"]["smoke"]["executed"] == 3
+    assert data["sections"]["write_ops"]["executed"] == 20
+    assert data["sections"]["http_binding"] == {
+        "executed": 19,
+        "passed": 19,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 2,
+    }
     suite = _testsuite(junit)
-    assert suite.get("tests") == "46"
-    assert int(suite.get("skipped", "0")) == 0
+    assert suite.get("tests") == "91"
+    assert int(suite.get("skipped", "0")) == 2
     assert int(suite.get("failures", "0")) == 0
-    assert "执行 46" in completed.stdout
+    assert "执行 89" in completed.stdout
 
 
 def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
-    """无配置：不依赖身份/钩子的检查执行（7 条）；其余显式 skip（39 条），JUnit 与计数都有 skip。"""
+    """无配置：不依赖身份/钩子的检查执行（7 条）；其余显式 skip（84 条），JUnit 与计数都有 skip。"""
     with reference_server() as server:
         junit = tmp_path / "junit.xml"
         counts = tmp_path / "counts.json"
@@ -96,14 +108,15 @@ def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
         )
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (7, 39)
+    assert (totals["executed"], totals["skipped"]) == (7, 84)
     suite = _testsuite(junit)
-    assert suite.get("tests") == "46"
-    assert int(suite.get("skipped", "0")) == 39
+    assert suite.get("tests") == "91"
+    assert int(suite.get("skipped", "0")) == 84
 
 
 def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
-    """CWD 下的 dpe-conformance.toml 自动生效：给出身份后 skip 数从 39 变 1（仅余钩子检查）。"""
+    """CWD 下的 dpe-conformance.toml 自动生效：给出 full 身份后 skip 数从 84 变 7
+    （仅余钩子、scoped 与两个无构造手段的检查）。"""
     with reference_server() as server:
         (tmp_path / "dpe-conformance.toml").write_text(
             'schema = 1\n[identities.full]\nauthorization = "Bearer full-auth"\n',
@@ -113,7 +126,7 @@ def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
         completed = run_cli(server.url, "--counts-json", str(counts), cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (45, 1)
+    assert (totals["executed"], totals["skipped"]) == (84, 7)
 
 
 def test_section_filter_selects_smoke(tmp_path: Path) -> None:
@@ -130,7 +143,7 @@ def test_remote_with_path_prefix(tmp_path: Path) -> None:
         completed = run_cli(server.url, "--counts-json", str(counts), cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (7, 39)
+    assert (totals["executed"], totals["skipped"]) == (7, 84)
 
 
 def test_unknown_section_is_rejected(tmp_path: Path) -> None:

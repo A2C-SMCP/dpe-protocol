@@ -13,8 +13,8 @@
     [identities.scoped]              # 仅前缀可写（服务端按该前缀授予写权）
     authorization = "Bearer scoped"
     prefix = "dpe://acme/scoped/"
-    [identities.no-force]            # 无 force 权限
-    env = "DPE_CONF_NO_FORCE_AUTH"
+    [identities.no-force]            # 无 force 权限（force 的 403 检查；须对测试命名空间可写，
+    env = "DPE_CONF_NO_FORCE_AUTH"   # 否则该检查显式 skip 并计数）
 
     [hooks.self-write]               # 服务端自身写入（core §2.4）
     http = "http://127.0.0.1:8000/__hooks__/self-write"
