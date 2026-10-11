@@ -7,11 +7,14 @@
 //!
 //! 已落地：[`models`]（三层对象的数据模型，core §2）、[`protocol`]（sans-IO 协议核心全部：
 //! 只读操作、写操作（commit / delete / move）与暂存路径（negotiate / upload / deliver）、
-//! CAS 前置条件与重试规则）、[`errors`]、[`wire`] 与 [`run`]（connector 契约的清单、实例
-//! 配置与实例定义校验，§4.1–§4.4）；传输适配见 #22。
+//! CAS 前置条件与重试规则）、[`errors`]、[`wire`]、[`run`]（connector 契约的清单、实例
+//! 配置与实例定义校验，§4.1–§4.4）与 [`http`]（reqwest / tokio 传输适配：异步客户端
+//! [`http::DpeClient`]、[`credentials::CredentialProvider`]）。
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "http")]
+pub mod credentials;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod models;
@@ -24,7 +27,8 @@ pub mod wire;
 
 pub use errors::{Error, ErrorKind};
 pub use protocol::{
-    drive, fetch_capabilities, Operation, ProtocolCore, Request, Response, Step, TransportError,
+    drive, error_from_response, fetch_capabilities, not_sent, Operation, ProtocolCore, Request,
+    Response, Step, TransportError,
 };
 
 pub mod run;

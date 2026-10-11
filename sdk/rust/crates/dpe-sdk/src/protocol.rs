@@ -3931,7 +3931,11 @@ fn is_gateway_lost(response: &Response) -> bool {
 }
 /// 错误响应对应的错误（HTTP 绑定 §3.2、§5）：problem 体的 `code` 优先，其次
 /// `DPE-Error-Code` 头，都没有则不是 DPE 错误。
-fn error_from_response(response: &Response) -> Error {
+///
+/// 传输适配层用它判定「传输层可自行重试的响应」：`code` 属于 core §6、且
+/// [`is_retryable`](Error::is_retryable) 为真时按 [`retry_after`](Error::retry_after) 等待后原样重发
+/// ——按 `code` 判定，不按状态码分派（HTTP 绑定 §3.2）。
+pub fn error_from_response(response: &Response) -> Error {
     let retry_after = response.header("retry-after").and_then(retry_after_seconds);
     if let Some(problem) = problem_body(response) {
         if let Some(error) = Error::from_problem(&problem, retry_after) {
