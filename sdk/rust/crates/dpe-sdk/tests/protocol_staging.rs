@@ -80,6 +80,47 @@ fn blob_source_from_bytes_and_seekable() {
     assert_eq!(stream.read(5, 1).unwrap(), b"f");
 }
 
+/// 第一次 `read` 返回 `Interrupted`、之后正常给出数据的桩流（标准 `Read` 约定下应被重试）。
+struct InterruptedOnce {
+    inner: std::io::Cursor<Vec<u8>>,
+    interrupted: bool,
+}
+
+impl std::io::Read for InterruptedOnce {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if !self.interrupted {
+            self.interrupted = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "被信号打断",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl std::io::Seek for InterruptedOnce {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
+
+/// `Interrupted` 按标准 `Read` 约定重试，不把整次读取判失败。
+#[test]
+fn seekable_source_retries_on_interrupted_reads() {
+    let blob_ref = format!("sha256:{}", "0".repeat(64));
+    let source = BlobSource::from_seekable(
+        InterruptedOnce {
+            inner: std::io::Cursor::new(b"abcdef".to_vec()),
+            interrupted: false,
+        },
+        blob_ref.clone(),
+        6,
+    );
+    assert_eq!(source.read(0, 6).unwrap(), b"abcdef");
+    assert_eq!(source.read(2, 3).unwrap(), b"cde");
+}
+
 #[test]
 fn request_body_bytes_resolves_blob_ranges() {
     let request = dpe_sdk::Request {

@@ -368,7 +368,12 @@ impl<R: std::io::Read + std::io::Seek + Send> BlobReader for SeekableReader<R> {
         let mut remaining = length;
         while remaining > 0 {
             let mut piece = vec![0u8; usize::try_from(remaining.min(1 << 16)).unwrap_or(0)];
-            let read = stream.read(&mut piece)?;
+            let read = match stream.read(&mut piece) {
+                Ok(read) => read,
+                // 标准 `Read` 约定（同 `read_exact`）：被信号打断就重试
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
             if read == 0 {
                 break;
             }
