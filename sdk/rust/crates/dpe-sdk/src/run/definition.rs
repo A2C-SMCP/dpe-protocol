@@ -589,140 +589,58 @@ fn conflict_action(
     }
 }
 
-/// `remote.url` 的检查（§4.4、http.md §1）：http(s) 绝对 URL、含 host、不含 userinfo。
+/// `remote.url` 的检查（§4.4、http.md §1）：http(s) 绝对 URL、authority 存在且 host 非空、
+/// 不含 userinfo。
 ///
-/// 与 Python SDK 对 `urlsplit` 的用法同口径（CPython 3.11 的行为为基准）：先去掉 URL 内全部
-/// `\t` `\r` `\n`、再去掉前导的 C0 控制字符与空格；scheme 大小写不敏感；netloc 只在 `//` 后
-/// 存在、到第一个 `/` `?` `#` 为止；`[` `]` 必须成对，括号前不得有数据、括号后只允许
-/// `:port`，括号内是 IPv6（可带 `%zone` 作用域）或 IPvFuture；host 是 `[` `]` 之间的内容或
-/// 第一个 `:` 之前的全部；非 ASCII netloc 另做 NFKC 引入分隔符的检查（[`netloc_introduces_delimiter`]）。
+/// 只做这四条语义级判定：规范对 `remote.url` 目前只写了「base URL、不含 userinfo」，没有可判定
+/// 文法，收紧由 Issue #112 收口（gen_vectors 出向量，两个 SDK 一起收紧）。**不复刻 CPython
+/// `urlsplit` 的实现细节**——括号字面量的格式、IPvFuture、`%zone`、NFKC 同形检查，以及控制
+/// 字符与前导空白的清除，都是 CPython 的加固行为、不是规范；在 Rust 里逐条复制等于用实现倒逼
+/// 规范（CLAUDE.md：两份实现出现分歧时修规范，不互相对齐），且会随 CPython 补丁版本漂移。
+/// 因此在这些边缘输入上，两侧在 #112 落地前可能结果不同（Rust 侧更严格）。
 ///
 /// 消息不回显 URL（可能含 userinfo 密码，形式恰是「凭证误写在 URL 里」，§4.3「不外泄」）。
 fn check_remote_url(url: &str) -> Result<(), InstanceFailure> {
-    let cleaned: String = url
-        .chars()
-        .filter(|character| !matches!(character, '\t' | '\r' | '\n'))
-        .collect();
-    let cleaned = cleaned.trim_start_matches(|character: char| character <= '\u{20}');
-    let Some((scheme, rest)) = split_scheme(cleaned) else {
+    let Some((scheme, rest)) = split_scheme(url) else {
         return Err(invalid("remote.url 须为 http(s) 绝对 URL"));
     };
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
         return Err(invalid("remote.url 的方案必须是 http 或 https"));
     }
-    let netloc = match rest.strip_prefix("//") {
-        Some(after) => {
-            let end = after.find(['/', '?', '#']).unwrap_or(after.len());
-            &after[..end]
-        }
-        None => "",
+    let Some(authority) = rest.strip_prefix("//") else {
+        return Err(invalid("remote.url 须为绝对 URL（缺 authority）"));
+    };
+    let netloc = match authority.find(['/', '?', '#']) {
+        Some(end) => &authority[..end],
+        None => authority,
     };
     if netloc.contains('@') {
         return Err(invalid(
             "remote.url 不得含 userinfo（凭证经 remote.credential 引用）",
         ));
     }
-    let bracketed = netloc.contains('[') || netloc.contains(']');
-    let host = if bracketed {
-        if netloc.contains('[') != netloc.contains(']') {
-            return Err(invalid("remote.url 的 IPv6 字面量括号不成对"));
-        }
-        // 与 `urlsplit._check_bracketed_netloc` 同口径：`[` 前不得有数据，`]` 后只允许 `:port`
-        let (before, after_open) = netloc.split_once('[').expect("已判含 '['");
-        if !before.is_empty() {
-            return Err(invalid("remote.url 的 `[` 前不得有数据"));
-        }
-        let (host, after_close) = after_open.split_once(']').expect("已判含 ']'");
-        if !after_close.is_empty() && !after_close.starts_with(':') {
-            return Err(invalid("remote.url 的 `]` 后只允许 `:port`"));
-        }
-        check_bracketed_host(host)?;
-        host
-    } else {
-        match netloc.find(':') {
-            Some(colon) => &netloc[..colon],
-            None => netloc,
-        }
-    };
-    if netloc_introduces_delimiter(netloc) {
-        return Err(invalid(
-            "remote.url 的 netloc 在 NFKC 归一化后会引入分隔符字符",
-        ));
-    }
-    if host.is_empty() {
+    if host_of(netloc).is_empty() {
         return Err(invalid("remote.url 缺少 host"));
     }
     Ok(())
 }
 
-/// 括号内的 host 校验（与 `urlsplit._check_bracketed_host` 同口径）：`v` 开头按 IPvFuture
-/// （RFC 3986 §3.2.2：`v` + 1 个以上十六进制数字 + `.` + 1 个以上非换行字符），否则必须是
-/// IPv6 地址（可带一个非空、不含第二个 `%` 的 `%zone` 作用域）；IPv4 文本不在允许之列
-/// （IPv4 串不是合法 IPv6，统一按解析失败处理）。
-fn check_bracketed_host(host: &str) -> Result<(), InstanceFailure> {
-    if let Some(rest) = host.strip_prefix('v') {
-        let Some((hex, tail)) = rest.split_once('.') else {
-            return Err(invalid("remote.url 的 IPvFuture 地址非法"));
+/// 取 netloc 中的 host：RFC 3986 §3.2 的结构切分——`[...]` 字面量取括号内，否则取第一个 `:`
+/// （port 分界）之前；不做字面量格式校验（文法见 #112）。
+fn host_of(netloc: &str) -> &str {
+    if let Some(bracketed) = netloc.strip_prefix('[') {
+        return match bracketed.find(']') {
+            Some(close) => &bracketed[..close],
+            None => bracketed,
         };
-        let well_formed = !hex.is_empty()
-            && hex.chars().all(|c| c.is_ascii_hexdigit())
-            && !tail.is_empty()
-            && !tail.contains('\n');
-        if !well_formed {
-            return Err(invalid("remote.url 的 IPvFuture 地址非法"));
-        }
-        return Ok(());
     }
-    let address = match host.split_once('%') {
-        None => host,
-        Some((address, scope)) if !scope.is_empty() && !scope.contains('%') => address,
-        Some(_) => return Err(invalid("remote.url 的 IPv6 作用域标识非法")),
-    };
-    if address.parse::<std::net::Ipv6Addr>().is_err() {
-        return Err(invalid("remote.url 的括号内必须是 IPv6 或 IPvFuture 地址"));
+    match netloc.find(':') {
+        Some(colon) => &netloc[..colon],
+        None => netloc,
     }
-    Ok(())
 }
 
-/// netloc 是否在 NFKC 归一化后引入 `/` `?` `#` `@` `:`（与 `urlsplit._checknetloc` 同口径）。
-///
-/// IDNA 按 NFKC 等价处理主机名，某些字符（如 `℀` → `a/c`）归一化后会凭空产生分隔符，是
-/// 同形混淆的通道。CPython 的做法是去掉已允许出现的 `@ : # ?` 后对整串做 NFKC，再查
-/// `/ ? # @ :`——分隔符只可能由某个字符的展开引入（ASCII 标点不参与规范组合），因此这里
-/// 等价地逐字符查表：表中是全部「NFKC 展开含分隔符」的码点（19 个）。表按 CPython 3.11 的
-/// `unicodedata`（Unicode 14）扫描生成：
-///
-/// `python3 -c "import unicodedata as u; print([hex(c) for c in range(0x110000) if
-/// (lambda n: n != chr(c) and any(d in n for d in '/?#@:'))(u.normalize('NFKC', chr(c)))])"`
-fn netloc_introduces_delimiter(netloc: &str) -> bool {
-    netloc.chars().any(|character| {
-        !matches!(character, '@' | ':' | '#' | '?')
-            && matches!(
-                character,
-                '\u{2047}' // ⁇ → '??'
-                | '\u{2048}' // ⁈ → '?!'
-                | '\u{2049}' // ⁉ → '!?'
-                | '\u{2100}' // ℀ → 'a/c'
-                | '\u{2101}' // ℁ → 'a/s'
-                | '\u{2105}' // ℅ → 'c/o'
-                | '\u{2106}' // ℆ → 'c/u'
-                | '\u{2a74}' // ⩴ → '::='
-                | '\u{fe13}' // ︓ → ':'
-                | '\u{fe16}' // ︖ → '?'
-                | '\u{fe55}' // ﹕ → ':'
-                | '\u{fe56}' // ﹖ → '?'
-                | '\u{fe5f}' // ﹟ → '#'
-                | '\u{fe6b}' // ﹫ → '@'
-                | '\u{ff03}' // ＃ → '#'
-                | '\u{ff0f}' // ／ → '/'
-                | '\u{ff1a}' // ： → ':'
-                | '\u{ff1f}' // ？ → '?'
-                | '\u{ff20}' // ＠ → '@'
-            )
-    })
-}
-
-/// RFC 3986 §3.1 的 scheme 切分（与 `urlsplit` 同口径）：首个 `:` 之前是
+/// RFC 3986 §3.1 的 scheme 切分：首个 `:` 之前是
 /// `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` 才算 scheme，返回（scheme, `:` 后的部分）。
 fn split_scheme(url: &str) -> Option<(&str, &str)> {
     let colon = url.find(':')?;

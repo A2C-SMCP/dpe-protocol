@@ -3,6 +3,8 @@
 //! 与 Python SDK 的 `test_run_definition.py` 同口径：逐项映射其用例，同一输入两侧的接受/拒绝
 //! 结果与错误类别一致。文件末尾的 `remote_url_rules` / `uri_prefix_rules` / 深度边界等用例是
 //! Rust 侧的额外钉子，期望值逐条对照 Python SDK 的实际行为核对过（不是从规范文本推的）。
+//! `remote_url_rules` 只钉 §4.4 语义级的四条规则——CPython `urlsplit` 的加固细节（括号字面量
+//! 格式、NFKC 等）不复刻，`remote.url` 的可判定文法与相应向量见 Issue #112。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -780,29 +782,14 @@ fn secret_file_in_symlink_loop_is_definition_invalid() {
 fn remote_url_rules() {
     let tmp = TempDir::new("url");
     let accepted = [
-        "HTTP://dpe.example.com/r",       // 方案大小写不敏感
-        "https://dpe.example.com:8080/r", // 端口不参与判定
-        "https://[::1]:8080/r",           // IPv6 字面量
+        "https://dpe.example.com/remotes/acme",
+        "HTTP://dpe.example.com/r", // 方案大小写不敏感（RFC 3986 §3.1）
+        "https://dpe.example.com:8080/r", // 带端口
         "http://h",
         "http://h/x?q=1",
         "http://h/x#frag",
-        "http://h:badport/x", // 端口合法性不在本判定内
-        "  http://h/x",       // urlsplit 去掉前导空白
-        "http://ho st/r",     // urlsplit 不校验 host 字符集
-        "http://例子.com/x",
-        "http://x/y@z",              // `@` 在路径而非 netloc
-        "http://[::1]/x",            // IPv6 字面量
-        "http://[::1]:8080/x",       // IPv6 + 端口
-        "http://[FE80::1]/x",        // 十六进制大小写
-        "http://[::ffff:1.2.3.4]/x", // IPv4-mapped
-        "http://[fe80::1%25eth0]/x", // `%zone` 作用域
-        "http://[::1]:badport/x",    // 端口合法性不在本判定内
-        "http://[::1]:/x",           // 空端口
-        "http://[v1.a]/x",           // IPvFuture
-        "http://[v12.3 4]/x",        // IPvFuture 的 `.` 之后不校验字符集
-        "http://h。com/x",           // NFKC 不变的表意句号
-        "http://ｅxample.com/x",     // 全角字母归一化后无分隔符
-        "http://∕x/x",               // U+2215 的 NFKC 是自身
+        "http://[::1]:8080/x", // RFC 3986 的 IP-literal 只做结构切分，不校验字面量（#112）
+        "http://x/y@z",        // `@` 在路径而非 netloc
     ];
     for url in accepted {
         assert!(
@@ -816,37 +803,19 @@ fn remote_url_rules() {
             "{url}"
         );
     }
+    // 语义级拒绝（§4.4 的四条规则；文法收紧见 #112）
     let rejected = [
-        "https://",              // 无 host
-        "https:///path",         // 无 host
-        "https://:8080/r",       // host 为空
-        "//h/x",                 // 无 scheme
-        "mailto:x@y",            // 方案非 http(s)
-        "",                      // 空串
-        "http://@h/x",           // userinfo
-        "http://u:p@h/x",        // userinfo
-        "http:h/x",              // 无 "//"，host 解析为空
-        "file:///x",             // 方案非 http(s)
-        "http://h@/x",           // userinfo
-        "http://[::1",           // 括号不成对
-        "http://]x/x",           // 括号不成对
-        "http://[]/x",           // 括号内为空
-        "http://x[::1]/x",       // `[` 前有数据
-        "http://[::1]x/x",       // `]` 后有数据且不是端口
-        "http://[::1] :80/x",    // `]` 后是空格
-        "http://[abc]/x",        // 括号内不是 IPv6
-        "http://[1.2.3.4]/x",    // IPv4 不在括号内
-        "http://[fe80::1%]/x",   // 作用域为空
-        "http://[fe80::1%a%]/x", // 第二个 `%`
-        "http://[%::1]/x",       // 缺少地址部分
-        "http://[vzz]/x",        // IPvFuture 非法
-        "http://[v1.]/x",        // IPvFuture 缺少点后内容
-        "http://[v.a]/x",        // IPvFuture 缺少十六进制部分
-        "http://[V1.a]/x",       // IPvFuture 的 `v` 大小写敏感
-        "http://[vG.a]/x",       // IPvFuture 非十六进制
-        "http://℀.com/x",        // NFKC 展开含 `/`
-        "http://x℅y.com/x",      // NFKC 展开含 `/`
-        "http://x。﹕y/x",       // NFKC 展开含 `:`
+        "https://",                // authority 为空
+        "https:///path",           // authority 为空
+        "https://:8080/r",         // host 为空
+        "//h/x",                   // 相对 URL（无 scheme）
+        "dpe.example.com/r",       // 相对 URL（无 scheme）
+        "mailto:x@y",              // 非 http(s)，且无 authority
+        "ftp://dpe.example.com/r", // 方案非 http(s)
+        "",                        // 空串
+        "http://@h/x",             // userinfo
+        "http://u:p@h/x",          // userinfo
+        "http:h/x",                // 无 "//"，缺 authority
     ];
     for url in rejected {
         assert_eq!(
