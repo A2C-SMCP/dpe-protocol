@@ -2,7 +2,7 @@
 
 黑盒 HTTP 跑分器：对着任意实现了 [core.md](../spec/core.md) + [HTTP 绑定](../spec/bindings/http.md) 的 remote 跑一遍协议语义（CAS、暂存原子切换、delta 如实回报、错误格式等），供各服务端在自己的 CI 中执行。
 
-**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。其余子集与全量（#56–#59）随 M2 推进；发布与 CI 接入见 #40。
+**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。其余子集与全量（#56–#59）随 M2 推进；发布与 CI 接入见 #40。
 
 ## 通用检查面
 

@@ -24,6 +24,8 @@
 from __future__ import annotations
 
 import re
+import uuid
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -31,6 +33,7 @@ import dpe_hash
 import pytest
 
 from dpe_conformance.config import Identity
+from dpe_conformance.hooks import PROBE_HEADER, HookDriver, inject_error_payload
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
     WireDocument,
@@ -42,6 +45,7 @@ from dpe_conformance.support import (
     delete,
     has_dpe_vary,
     move,
+    optional_identity,
     text_element,
 )
 
@@ -400,20 +404,78 @@ def test_code_status_precondition_required(
     assert_problem(response, status=428, code="DPE_PRECONDITION_REQUIRED")
 
 
-def test_code_status_rate_limited_is_not_blackbox_constructible() -> None:
-    """HTTP §5：``DPE_RATE_LIMITED`` → ``429``（MUST 带 ``Retry-After``，缺省给 ``1``）。
+def _assert_retry_after_syntax(value: str) -> None:
+    """``Retry-After`` 的语法（RFC 9110 §10.2.3，与 #109 对齐）：``delay-seconds``（1*DIGIT）
+    或 HTTP-date；语义（等待时长、取整方式）不在规范内，不在这里断言。"""
+    if value.isascii() and value.isdigit():
+        return
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        when = None
+    assert when is not None, (
+        f"Retry-After 既不是 delay-seconds 也不是 HTTP-date（RFC 9110 §10.2.3）：{value!r}"
+    )
 
-    429 需要服务端主动限流，黑盒无法构造；现有服务端钩子（``self-write`` /
-    ``expire-session``）也不能注入该状态——显式 skip 并计入计数，待错误注入钩子落地后
-    实现（见 #123）。
+
+@pytest.mark.parametrize(("code", "status"), [("DPE_RATE_LIMITED", 429), ("DPE_UNAVAILABLE", 503)])
+def test_error_injection_status_problem_and_recovery(
+    conformance_target: Target,
+    inject_error_hook: HookDriver,
+    code: str,
+    status: int,
+) -> None:
+    """HTTP §5（#123）：经错误注入钩子构造 ``DPE_RATE_LIMITED`` → 429 与 ``DPE_UNAVAILABLE`` →
+    503——problem 体全形、``Retry-After`` MUST 出现且语法符合 RFC 9110 §10.2.3、给定的提示值被
+    如实反映（delay-seconds 形态）；不带探针头的请求不受影响（受鉴权保护的服务端也照常跑只读
+    检查，故带可选身份）；注入计数用完后带探针头的请求恢复正常。
+
+    命中探针的请求**不带凭证**：注入按裁定契约不依赖身份与凭证，这条请求同时证明该属性
+    （拦截在认证之前，见包 README 的钩子契约）。
     """
-    pytest.skip("无黑盒构造手段：429 需服务端主动限流，错误注入钩子见 #123")
+    probe = uuid.uuid4().hex
+    result = inject_error_hook.call(
+        inject_error_payload(code=code, probe=probe, count=2, retry_after=7)
+    )
+    assert result.ok, f"inject-error 钩子失败：{result.detail}"
+
+    untouched = conformance_target.send(
+        "GET", "capabilities", contract=None, identity=optional_identity(conformance_target)
+    )
+    assert untouched.status_code == 200, "不带探针头的请求不得受注入影响"
+    for _ in range(2):
+        response = conformance_target.send(
+            "GET", "capabilities", contract=None, headers={PROBE_HEADER: probe}
+        )
+        assert_problem(response, status=status, code=code, documents_path=False)
+        header = response.headers.get("Retry-After")
+        assert header is not None, "429 / 503 MUST 带 Retry-After（HTTP §5）"
+        _assert_retry_after_syntax(header)
+        if header.isascii() and header.isdigit():
+            # delay-seconds 形态：给定的 retry_after 必须被如实反映（HTTP-date 形态豁免）
+            assert int(header) == 7, f"注入的 retry_after=7 应被如实反映，实际为 {header!r}"
+    recovered = conformance_target.send(
+        "GET",
+        "capabilities",
+        contract=None,
+        identity=optional_identity(conformance_target),
+        headers={PROBE_HEADER: probe},
+    )
+    assert recovered.status_code == 200, "注入计数用完后探针请求应恢复走引擎"
 
 
-def test_code_status_unavailable_is_not_blackbox_constructible() -> None:
-    """HTTP §5：``DPE_UNAVAILABLE`` → ``503``（MUST 带 ``Retry-After``，缺省给 ``1``）。
-
-    503 需要服务端主动下线，黑盒无法构造；现有服务端钩子也不能注入该状态——显式 skip 并
-    计入计数，待错误注入钩子落地后实现（见 #123）。
-    """
-    pytest.skip("无黑盒构造手段：503 需服务端主动下线，错误注入钩子见 #123")
+def test_error_injection_default_retry_after_is_one(
+    conformance_target: Target, inject_error_hook: HookDriver
+) -> None:
+    """HTTP §5（#123）：注入不給 ``retry_after`` 时，``Retry-After`` 恰好是服务端的缺省提示值
+    ``1``（「实现没有可给的提示值时给 1」，不可缺省）。"""
+    probe = uuid.uuid4().hex
+    result = inject_error_hook.call(inject_error_payload(code="DPE_RATE_LIMITED", probe=probe))
+    assert result.ok, f"inject-error 钩子失败：{result.detail}"
+    response = conformance_target.send(
+        "GET", "capabilities", contract=None, headers={PROBE_HEADER: probe}
+    )
+    assert_problem(response, status=429, code="DPE_RATE_LIMITED", documents_path=False)
+    assert response.headers.get("Retry-After") == "1", (
+        "缺省提示值必须是 1（HTTP §5：429 / 503 的 Retry-After 不可缺省）"
+    )

@@ -12,7 +12,11 @@
   同样受 CAS 与报文校验约束，只绕过对外授权；
 - ``expire-session`` → ``Engine.expire_session``：让一个暂存会话立即过期（不必等 ≥ 1 小时的 TTL）；
 - ``clock/advance`` → ``AdjustableClock.advance``：把时钟向前拨，制造「闲置超过 TTL」与可精确
-  断言的续期（``staging_ttl_seconds`` 保持规范要求的 ≥ 3600，不去改小它）。
+  断言的续期（``staging_ttl_seconds`` 保持规范要求的 ≥ 3600，不去改小它）；
+- ``inject-error`` → HTTP 层拦截（#123）：让带探针头 ``DPE-Conformance-Probe`` 的请求按注入
+  状态直接得到 ``DPE_RATE_LIMITED``（429）或 ``DPE_UNAVAILABLE``（503），**不进入引擎**——用于
+  黑盒构造「429 / 503 MUST 带 ``Retry-After``」这条 MUST。探针头是规范外的测试侧信道词汇：
+  只在钩子启用时被识别，钩子关闭时完全忽略；载荷与检查面约定见 dpe-conformance 包 README。
 """
 
 from __future__ import annotations

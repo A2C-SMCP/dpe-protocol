@@ -22,6 +22,8 @@
     command = ["my-server", "expire-session"]
     [hooks.clock-advance]            # 推进服务端时钟 N 秒（会话 TTL 按推进后的时间判定）
     http = "http://127.0.0.1:8000/__hooks__/clock/advance"
+    [hooks.inject-error]             # 错误注入（#123）：让带探针头的请求得到 429 / 503
+    http = "http://127.0.0.1:8000/__hooks__/inject-error"
 
     [session]
     staging-ttl-seconds = 30         # 服务端以短 TTL 运行时的声明
@@ -85,6 +87,8 @@ class ConformanceConfig:
     uri_prefix: str
     #: 时钟推进钩子：载荷 ``{"advance_seconds": N}``，与服务端 TTL 判定对齐（见包 README）
     clock_advance: HookEndpoint | None = None
+    #: 错误注入钩子（#123）：让带探针头的请求得到 429 / 503（见包 README）
+    inject_error: HookEndpoint | None = None
 
     @staticmethod
     def empty() -> ConformanceConfig:
@@ -118,6 +122,7 @@ def load_config(path: Path) -> ConformanceConfig:
         self_write=hooks.get("self-write"),
         expire_session=hooks.get("expire-session"),
         clock_advance=hooks.get("clock-advance"),
+        inject_error=hooks.get("inject-error"),
         staging_ttl_seconds=_parse_session(raw.get("session", {})),
         uri_prefix=_parse_uri_prefix(raw.get("uri-prefix")),
     )
@@ -180,9 +185,10 @@ def _parse_hooks(raw: Any) -> Mapping[str, HookEndpoint]:
     hooks: dict[str, HookEndpoint] = {}
     for name, entry in table.items():
         where = f"hooks.{name}"
-        if name not in ("self-write", "expire-session", "clock-advance"):
+        if name not in ("self-write", "expire-session", "clock-advance", "inject-error"):
             raise ConfigError(
-                f"未知钩子 {name!r}（允许：self-write、expire-session、clock-advance）"
+                f"未知钩子 {name!r}（允许：self-write、expire-session、clock-advance、"
+                "inject-error）"
             )
         fields = _require_table(entry, where)
         _reject_unknown(fields, {"http", "command"}, where)

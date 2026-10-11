@@ -8,7 +8,8 @@
 
 夹具：``conformance_target``（会话级：客户端、一次性 URI 命名空间与请求助手）、
 ``identities`` 与 ``full_identity`` / ``scoped_identity`` / ``no_force_identity``、
-``self_write_hook``。未配置的身份或钩子使依赖它们的用例显式 skip（skip 计入计数——CI
+``self_write_hook``、``clock_advance_hook``、``inject_error_hook``。未配置的身份或钩子使
+依赖它们的用例显式 skip（skip 计入计数——CI
 据此断言执行数不低于基线，防止因 skip 而假绿）。
 
 计数在 ``pytest_sessionfinish`` 落盘：``totals`` 含 ``executed``（取得通过/失败结论的
@@ -300,6 +301,15 @@ def clock_advance_hook(conformance_target: Target) -> HookDriver:
     return HookDriver(endpoint, conformance_target.client)
 
 
+@pytest.fixture(scope="session")
+def inject_error_hook(conformance_target: Target) -> HookDriver:
+    """``inject-error`` 钩子（#123）；未配置时显式 skip（计入计数）。"""
+    endpoint = conformance_target.config.inject_error
+    if endpoint is None:
+        pytest.skip("未配置 inject-error 钩子（hooks.inject-error）")
+    return HookDriver(endpoint, conformance_target.client)
+
+
 __all__ = [
     "CHECKS_ROOT_ENV",
     "CONFIG_ENV",
@@ -312,6 +322,7 @@ __all__ = [
     "conformance_target",
     "full_identity",
     "identities",
+    "inject_error_hook",
     "no_force_identity",
     "scoped_identity",
     "self_write_hook",
