@@ -878,6 +878,30 @@ def test_commit_marks_unknown_when_a_bare_412_cannot_be_resolved() -> None:
     assert outcome_unknown(excinfo.value) is True
 
 
+def test_resolved_bare_412_is_determined_for_if_match() -> None:
+    """经 head 化解的裸 412（If-Match：head 显示内容不同，条件不成立）→ False。"""
+    server = Script(bare_412(), head_found(H2))
+    with pytest.raises(errors.PreconditionFailedError) as excinfo:
+        drive(core().commit(URI, DOC, BaseHash(H1)), server)
+    assert outcome_unknown(excinfo.value) is False
+
+
+def test_resolved_bare_412_is_determined_for_if_absent() -> None:
+    """经 head 化解的裸 412（IfAbsent：文档已存在且内容不同）→ False。"""
+    server = Script(bare_412(), head_found(H2))
+    with pytest.raises(errors.AlreadyExistsError) as excinfo:
+        drive(core().commit(URI, DOC, IfAbsent()), server)
+    assert outcome_unknown(excinfo.value) is False
+
+
+def test_resolved_bare_412_is_determined_for_delete() -> None:
+    """经 head 化解的裸 412（delete：head 显示内容不同）→ False。"""
+    server = Script(bare_412(), head_found(H2))
+    with pytest.raises(errors.PreconditionFailedError) as excinfo:
+        drive(core().delete(URI, H1), server)
+    assert outcome_unknown(excinfo.value) is False
+
+
 def test_commit_marks_unknown_on_a_bare_4xx_from_a_proxy() -> None:
     """代理返回的无码 4xx（401 等）：没有服务端的码、也没有底标 → 按未确定处理。"""
     with pytest.raises(errors.UnexpectedResponseError) as excinfo:

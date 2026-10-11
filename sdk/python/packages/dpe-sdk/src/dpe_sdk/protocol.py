@@ -505,9 +505,12 @@ def _note_attempt(tracker: _WriteAttempts | None, exc: BaseException) -> None:
 
 
 def _note_response(tracker: _WriteAttempts | None, response: Response) -> None:
-    """一次尝试收到无 DPE 错误码的响应（含校验失败的 2xx、未化解的裸 412、无码 4xx/5xx）时
-    置位；判据见 ``_uncertain_response``。"""
-    if tracker is not None and _uncertain_response(response):
+    """一次尝试收到无 DPE 错误码的响应（含校验失败的 2xx、无码 4xx/5xx）时置位。
+
+    **裸 412 除外**：它是可经 ``head`` 化解的歧义响应——化解成功（条件不成立/目标未达成）
+    即结果确定，只有未能化解时才由 ``_retry_misjudged_412`` 置位（与 Rust 侧同构）。
+    """
+    if tracker is not None and _uncertain_response(response) and not _bare_412(response):
         tracker.possibly_applied = True
 
 
@@ -1168,6 +1171,9 @@ class ProtocolCore:
                 _note_attempt(tracker, exc)
                 return (yield from self._confirm_force(uri, expected, total, exc))
             _note_response(tracker, response)
+            if _bare_412(response):
+                # force 请求不带条件头：裸 412 无从经 head「化解」，是非协议异常——可能已生效
+                tracker.possibly_applied = True
             if _gateway_lost(response):
                 lost = error_from_response(response)
                 return (yield from self._confirm_force(uri, expected, total, lost))
@@ -1190,7 +1196,7 @@ class ProtocolCore:
                         return _recovered(expected, total)
                     raise AlreadyExistsError(f"{uri} 已存在（412 无 DPE 错误码，经 head 判定）")
             else:
-                current = yield from self._confirm_head(uri)
+                current = yield from self._confirm_412_head(uri, tracker)
                 if current == expected:
                     return _recovered(expected, total)
                 if current is None:
@@ -1604,19 +1610,35 @@ class ProtocolCore:
         ``head`` 的读数（文档不存在为 ``None``），条件不成立的情形交调用方按各自的 code 判定；
         ``response`` 已不是裸 412（重发成功或得到带码错误）时 ``current`` 无意义。``retried``
         只计本循环的重发，``_send`` 因响应丢失的重发由调用方自行合并。
+
+        结果标记：裸 412 是歧义的（可能出自中间层误判），``_send`` 不为它置位；**未能化解**
+        时才置「可能已生效」——``head`` 判定本身失败，或重发后仍是裸 412、按非协议错误上报。
         """
         retried = False
         while _bare_412(response):
-            current = yield from self._confirm_head(uri)
+            current = yield from self._confirm_412_head(uri, tracker)
             if not holds(current):
                 return response, current, retried
             if retried:
+                if tracker is not None:
+                    tracker.possibly_applied = True  # 重发后仍未能化解
                 raise UnexpectedResponseError(
                     f"{uri}：{held}，重发后仍是无 DPE 错误码的 412", status=412
                 )
             retried = True
             response, _ = yield from self._send(request, tracker)
         return response, None, retried
+
+    def _confirm_412_head(
+        self, uri: str, tracker: _WriteAttempts | None
+    ) -> Generator[Request, Response, str | None]:
+        """裸 412 的 ``head`` 判定：判定本身失败即「未能化解」，置「可能已生效」后照常抛出。"""
+        try:
+            return (yield from self._confirm_head(uri))
+        except Exception:
+            if tracker is not None:
+                tracker.possibly_applied = True
+            raise
 
     def _check_base_hash(self, value: str) -> None:
         """``base_hash`` 必须是本次声明契约的 hash：不接受裸 hash，也不接受别的契约的值。"""
