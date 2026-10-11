@@ -12,6 +12,8 @@
 - **退出**：``process_exited`` 在插件退出时立即触发，不等管道关闭——插件可能留有持有 stdout 的
   子进程（§6.3）。退出后在宽限期内等待 stdout EOF，让退出前写出的响应先送达，然后归类：非零退出码
   或信号为 ``plugin_crashed``（轮级），以 0 退出为协议级（插件在响应前退出）。
+- **进程组清理**：``close`` 对插件进程组先 TERM、宽限期后 KILL，不以管道是否被持有为条件
+  （§6.3）——插件退出后留下的、不持有管道的残余进程同样终止。
 - **写入**：经 transport 非阻塞写出，背压由 ``pause_writing`` / ``resume_writing`` 给出；等待背压
   解除与等待响应在同一个超时内，插件不读 stdin 时请求不会无限挂起。
 - **请求**：``initialize`` 必须是第一条；``request`` 超时后发 ``cancel`` 通知（§6.7），宽限期内
@@ -156,6 +158,7 @@ class PluginHost:
         self._fatal: RunFailure | None = None
         self._initialized = False
         self._closing = False
+        self._torn_down = False  # 关闭已完成：此后不再发信号（组长 pid 可能被复用）
         self._close_task: asyncio.Future[None] | None = None
 
         self._writable = asyncio.Event()
@@ -220,10 +223,11 @@ class PluginHost:
         self._callback(self._on_started_cb, transport.get_pid())
 
     async def close(self, *, graceful: bool = True) -> None:
-        """关闭插件（§6.3）：``shutdown`` → 关 stdin → 等待退出 → 进程组 TERM → KILL。
+        """关闭插件（§6.3）：``shutdown`` → 关 stdin → 等待退出 → 进程组清理（``_sweep_group``）。
 
-        ``graceful=False`` 时跳过 ``shutdown``。插件退出后若管道仍被其子进程持有，同样按进程组
-        终止。可重入：并发调用共享同一次关闭。
+        进程组清理对进程组先 TERM、宽限期后 KILL，不以管道是否被持有为条件：插件退出后残留
+        的进程同样在清理范围内（不持有管道的残余无法事件驱动地观测，宽限期对它们按时间给足）。
+        ``graceful=False`` 时跳过 ``shutdown``。可重入：并发调用共享同一次关闭。
         """
         if self._transport is None:
             return
@@ -252,9 +256,10 @@ class PluginHost:
         if self._stdin is not None:
             self._stdin.close()
         await self._escalate(self._exited)
-        # 插件已退出；残留的子进程仍持有管道时，按进程组终止
-        await self._escalate(self._all_closed)
+        # 进程组清理（§6.3）：插件已退出不代表进程组已空，无条件再清理一次
+        await self._sweep_group()
         transport.close()
+        self._torn_down = True
         self._fail_pending(RoundFailure("plugin_crashed", "插件已关闭"))
 
     async def _escalate(self, event: asyncio.Event) -> None:
@@ -264,6 +269,44 @@ class PluginHost:
                 self._signal_group(sig)
             if await self._wait(event):
                 return
+
+    async def _sweep_group(self) -> None:
+        """进程组清理（§6.3）：对插件进程组 TERM →（宽限期）→ KILL，不以管道是否被持有为条件。
+
+        组内已无成员时无事可做——常见情形零成本，也避免向可能已被复用的组长 pid 发信号。
+        组内还有成员就先 TERM：持有管道的残余可经管道事件观察到退出而提前结束等待；不持有
+        管道的残余观测不到，宽限期按时间补足。宽限期后仍存在成员时 KILL——这是对观测不到的
+        残余唯一有效的终止手段。宿主只保证终止、不保证回收（#102）。
+        """
+        if not self._group_alive():
+            return
+        began = self._loop.time()
+        self._signal_group(signal.SIGTERM)
+        await self._wait(self._all_closed)
+        if self._group_alive():
+            # 仍有成员：管道全关时它们观测不到（不持有管道，或尚未被回收的残留），宽限期按
+            # 时间补足（已用满时为零）
+            await asyncio.sleep(max(0.0, self._grace - (self._loop.time() - began)))
+            self._signal_group(_SIGKILL)
+        await self._wait(self._all_closed)
+
+    def _group_alive(self) -> bool:
+        """插件进程组内是否还有成员（POSIX：经 ``killpg(pgid, 0)`` 探测，僵尸也计入）。
+
+        组长退出后组仍可寻址，因此插件已退出不代表组已空（§6.3）。组已不存在时返回 ``False``：
+        清理无事可做，也避免向可能已被复用的组长 pid 发信号。非 POSIX 平台没有进程组探测，
+        返回 ``False``——那里的清理以 ``_escalate`` 对进程本体的终止为限。
+        """
+        transport = self._transport
+        if transport is None or not _POSIX:
+            return False
+        try:
+            os.killpg(transport.get_pid(), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # 组存在但不属本进程：仍是未清理的成员
+        return True
 
     # ------------------------------------------------------------------ 请求
 
@@ -575,7 +618,9 @@ class PluginHost:
 
     def _signal_group(self, sig: int) -> None:
         transport = self._transport
-        if transport is None or self._all_closed.is_set():
+        # 判据是实例是否已拆完（_torn_down），不是管道是否全关（_all_closed）：残留进程可能不持有
+        # 任何管道（§6.3），管道全关不代表进程组已空。拆完后必须停发信号——组长 pid 可能被系统复用。
+        if transport is None or self._torn_down:
             return
         with contextlib.suppress(ProcessLookupError, PermissionError):
             if _POSIX:
