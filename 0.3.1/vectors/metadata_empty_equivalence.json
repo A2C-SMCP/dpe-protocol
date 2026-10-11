@@ -1,0 +1,163 @@
+{
+  "name": "metadata_empty_equivalence",
+  "kind": "document",
+  "description": "三层 metadata 缺省、为 null、为 {} 三者等价（规范化时补为 {}，契约 1 §3.2）；页 title 缺省与为 null 等价。",
+  "documents": {
+    "absent": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "null": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": null
+            }
+          ],
+          "page_metadata": null
+        }
+      ]
+    },
+    "empty": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {}
+            }
+          ],
+          "page_metadata": {}
+        }
+      ],
+      "doc_metadata": {}
+    },
+    "title_null": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "title_absent": {
+      "file_type": "md",
+      "pages": [
+        {
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "absent": {
+      "dpe1": {
+        "doc_hash": "dpe1:f569645048dc7cc638da6aae7f5b3c31a74af75371240789f283be1c7fd21ad7",
+        "pages": [
+          {
+            "page_hash": "dpe1:dc0c04943f7c60430b96ff5471ecde93159643f735dfb7154a1e636d30f93cff",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "null": {
+      "dpe1": {
+        "doc_hash": "dpe1:f569645048dc7cc638da6aae7f5b3c31a74af75371240789f283be1c7fd21ad7",
+        "pages": [
+          {
+            "page_hash": "dpe1:dc0c04943f7c60430b96ff5471ecde93159643f735dfb7154a1e636d30f93cff",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "empty": {
+      "dpe1": {
+        "doc_hash": "dpe1:f569645048dc7cc638da6aae7f5b3c31a74af75371240789f283be1c7fd21ad7",
+        "pages": [
+          {
+            "page_hash": "dpe1:dc0c04943f7c60430b96ff5471ecde93159643f735dfb7154a1e636d30f93cff",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "title_null": {
+      "dpe1": {
+        "doc_hash": "dpe1:4347236ded7b1947764651896291907887c5e108379673b000d77daf32751dde",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "title_absent": {
+      "dpe1": {
+        "doc_hash": "dpe1:4347236ded7b1947764651896291907887c5e108379673b000d77daf32751dde",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "absent.doc_hash",
+        "null.doc_hash",
+        "empty.doc_hash"
+      ]
+    },
+    {
+      "equal": [
+        "title_null.doc_hash",
+        "title_absent.doc_hash"
+      ]
+    }
+  ]
+}

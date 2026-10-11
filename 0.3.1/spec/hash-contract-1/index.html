@@ -1,0 +1,1423 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="DPE（Document / Page / Element）标准协议规范">
+      
+      
+      
+        <link rel="canonical" href="https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/">
+      
+      
+        <link rel="prev" href="../core/">
+      
+      
+        <link rel="next" href="../bindings/http/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Hash 契约 1 - DPE Protocol</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#dpe-hash-契约-1dpe1" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../.." title="DPE Protocol" class="md-header__button md-logo" aria-label="DPE Protocol" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            DPE Protocol
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Hash 契约 1
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换到深色模式"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换到深色模式" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7M9 21v-1h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1m3-17a5 5 0 0 0-5 5c0 2.05 1.23 3.81 3 4.58V16h4v-2.42c1.77-.77 3-2.53 3-4.58a5 5 0 0 0-5-5"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换到浅色模式"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换到浅色模式" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7M9 21a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-1H9z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/A2C-SMCP/dpe-protocol" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    dpe-protocol
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="标签" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  首页
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../core/" class="md-tabs__link">
+          
+  
+  
+  协议规范
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../vectors/" class="md-tabs__link">
+          
+  
+  
+  一致性
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../docs/plan/v1-plan/" class="md-tabs__link">
+          
+  
+  
+  计划与迁移
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="DPE Protocol" class="md-nav__button md-logo" aria-label="DPE Protocol" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    DPE Protocol
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/A2C-SMCP/dpe-protocol" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    dpe-protocol
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    协议规范
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    协议规范
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../core/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core v1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hash 契约 1
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hash 契约 1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="页面目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      页面目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-值格式" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 值格式
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-输入源即内容" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 输入：源即内容
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-原语" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 原语
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 原语">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-对象-hash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 对象 hash
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-规范化-norm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 规范化 norm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-结构化值rfc-8785-jcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 结构化值（RFC 8785 JCS）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-层间不会混淆" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 层间不会混淆
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-content_hash元素对象" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. content_hash（元素对象）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. content_hash（元素对象）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-category-表与内容字段" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 category 表与内容字段
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-blob-与-image" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 blob 与 Image
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-page_hash-与-doc_hashtree-对象" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. page_hash 与 doc_hash（tree 对象）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-契约演进" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 契约演进
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bindings/http/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP 绑定
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connector-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Connector 契约
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    一致性
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    一致性
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vectors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    一致性向量
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../conformance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    服务端跑分器
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    计划与迁移
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    计划与迁移
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/plan/v1-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v1 计划
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/migration/kernel-to-dpe1/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    内核迁移对照
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="页面目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      页面目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-值格式" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 值格式
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-输入源即内容" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 输入：源即内容
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-原语" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 原语
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 原语">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-对象-hash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 对象 hash
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-规范化-norm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 规范化 norm
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-结构化值rfc-8785-jcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 结构化值（RFC 8785 JCS）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-层间不会混淆" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 层间不会混淆
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-content_hash元素对象" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. content_hash（元素对象）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. content_hash（元素对象）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-category-表与内容字段" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 category 表与内容字段
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-blob-与-image" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 blob 与 Image
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-page_hash-与-doc_hashtree-对象" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. page_hash 与 doc_hash（tree 对象）
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-契约演进" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 契约演进
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+  <nav class="md-path" aria-label="导航栏" >
+    <ol class="md-path__list">
+      
+        
+  
+  
+    <li class="md-path__item">
+      <a href="../.." class="md-path__link">
+        
+  <span class="md-ellipsis">
+    首页
+  </span>
+
+      </a>
+    </li>
+  
+
+      
+      
+        
+  
+  
+    
+    
+      <li class="md-path__item">
+        <a href="../core/" class="md-path__link">
+          
+  <span class="md-ellipsis">
+    协议规范
+  </span>
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ol>
+  </nav>
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="dpe-hash-契约-1dpe1">DPE Hash 契约 1（<code>dpe1</code>）<a class="headerlink" href="#dpe-hash-契约-1dpe1" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>状态：<strong>定稿</strong>（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：<a href="../../docs/plan/v1-plan/">docs/plan/v1-plan.md</a> §0.1、§7–§8，经 Issue #3、#4、#6、#30、#31、#60、#95 修订（#60 为原位修订，见 plan §7 修订注记）
+本文关键词 MUST / MUST NOT / SHOULD / MAY 按 RFC 2119 理解。</p>
+</blockquote>
+<p>Hash 契约定义<strong>内容身份</strong>的计算方式：给定一篇文档，任何合规实现都必须逐字节算出相同的 <code>content_hash</code> / <code>page_hash</code> / <code>doc_hash</code>。doc_hash 同时是文档的版本令牌（core.md §1）。契约版本与投递协议版本是两个独立的轴；本文是契约 <strong>1</strong>，值前缀为 <code>dpe1:</code>。</p>
+<p>契约 1 是一棵三层同构的 tree，与 Git 的对象模型一一对应：元素对象 ↔ blob，页对象与文档对象 ↔ tree。每一层都是「自身内容 + 子对象 hash 的有序列表」，hash 的原像就是该对象本身。</p>
+<p><strong>hash 只由契约版本和对象内容决定</strong>：不存在按文件类型或其他条件选择的 hash 策略（#3 S9）。</p>
+<p>一致性向量（<a href="../../vectors/">vectors/</a>）是本契约的组成部分：实现 MUST 通过全部向量，向量与本文冲突时视为规范缺陷，按治理流程修订（见 CLAUDE.md）。</p>
+<h2 id="1-值格式">1. 值格式<a class="headerlink" href="#1-值格式" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>格式</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>content_hash</code> / <code>page_hash</code> / <code>doc_hash</code></td>
+<td><code>dpe1:&lt;64 lowercase hex&gt;</code></td>
+<td>完整 SHA-256，不截断，前缀标明契约版本</td>
+</tr>
+<tr>
+<td>blob 引用</td>
+<td><code>sha256:&lt;64 lowercase hex&gt;</code></td>
+<td>对 blob 原始字节的 SHA-256，与 OCI digest 惯例一致</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>hex MUST 为小写。带前缀的完整字符串才是 hash 值；比较、存储、传输 MUST 携带前缀。</li>
+<li>实现 MUST 拒绝无前缀或前缀未知的 hash 值（<code>DPE_CONTRACT_UNSUPPORTED</code>）。</li>
+</ul>
+<h2 id="2-输入源即内容">2. 输入：源即内容<a class="headerlink" href="#2-输入源即内容" title="Permanent link">&para;</a></h2>
+<p>DPE 的每个字段都由源提供（plan §0.1 P2），除身份 <code>file_uri</code> 外<strong>全部</strong>进 hash，没有保留键、没有过滤、没有例外：正文、category、<code>file_type</code>、文档 title 与页 title，以及 doc / page / element 三层 metadata 的全部键（含版面坐标、图片 url、源页码标签等）。</p>
+<p>规范性规则：</p>
+<ul>
+<li><strong>服务端衍生物不进 DPE 字段</strong>：服务端计算或写回的数据（keywords、各类服务端 id、抽取过程写回的字段）MUST NOT 写入任何 DPE 字段，因此也永远不会进入 hash（否则形成"写回 → hash 变 → 重算 → 再写回"的自触发循环）。它们存放在服务端自己的存储中（core.md §2.4）。</li>
+<li><strong>源提供的字段 MUST NOT 携带会自行变化的默认值</strong>（如 <code>created_at</code> 缺省取当前时间）：值由源提供，源给不出就留空。</li>
+<li><strong>易变字段不应进入 metadata</strong>：不随内容变化、却会频繁变化的源字段（浏览计数、最近访问时间、在线状态、同步时间戳等）SHOULD NOT 放进任何 metadata。</li>
+<li><strong>顺序属于内容，位置不属于对象身份</strong>：页序（文档对象 <code>pages</code> 的数组顺序）与页内元素序（页对象 <code>elements</code> 的数组顺序）都是内容，由上层对象体现；任何对象的 hash 都不含它自己在上层中的位置。因此插入、删除、移动一页时，只有文档对象变化，其余页对象与元素对象都不变、无需重传——这只为传输去重，不意味着位置变化不是内容变化（plan §0.1 P3）。</li>
+</ul>
+<h2 id="3-原语">3. 原语<a class="headerlink" href="#3-原语" title="Permanent link">&para;</a></h2>
+<h3 id="31-对象-hash">3.1 对象 hash<a class="headerlink" href="#31-对象-hash" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>H(obj) = "dpe1:" + hex( SHA-256( utf8( JCS( norm(obj) ) ) ) )
+</code></pre></div>
+<p>这是契约 1 唯一的原语：三层对象都用它计算 hash，没有长度前缀、分段拼接等其他构造。</p>
+<h3 id="32-规范化-norm">3.2 规范化 <code>norm</code><a class="headerlink" href="#32-规范化-norm" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>递归删除值为 null 的键</strong>（#3 S5）：对象中值为 null 的键 MUST 在 JCS 之前删除，即<strong>缺省 ≡ null</strong>。否则实现方给模型新增一个可选字段，所有存量 hash 都会变化，等于一次隐性契约升级。数组元素不受此规则影响（<code>[null]</code> 原样保留）。</li>
+<li><strong>metadata 字段缺省视同 <code>{}</code></strong>：元素的 <code>metadata</code>、页对象的 <code>page_metadata</code>、文档对象的 <code>doc_metadata</code> 缺省或为 null 时，取 <code>{}</code>；即这三个字段在原像中总是出现。</li>
+</ol>
+<p>除此之外不做任何改写。空串 <code>""</code> 是一个值，与 null（缺省）不等价（向量 <code>null_vs_empty_distinct</code>）。</p>
+<p><strong>hash 的是投递的内容，不是语义等价物</strong>（#3 S5）：字符串按收到的原样进入 hash，协议不做 Unicode 规范化（NFC/NFD）、URL 规范化 / percent-encode 等任何改写。实现侧的序列化框架若会自动改写（如 URL 类型自动编码），MUST 在进 hash 前还原为原始输入。</p>
+<h3 id="33-结构化值rfc-8785-jcs">3.3 结构化值（RFC 8785 JCS）<a class="headerlink" href="#33-结构化值rfc-8785-jcs" title="Permanent link">&para;</a></h3>
+<p>对象一律用 <a href="https://www.rfc-editor.org/rfc/rfc8785">RFC 8785 JCS</a> 序列化为 UTF-8 字节。要点：</p>
+<ul>
+<li>对象键按 UTF-16 码元序排序；</li>
+<li>数字按 ECMAScript <code>Number::toString</code> 序列化（整数不带小数点，指数不带前导零）。有效数字取能往返的最短位数；同为最短的候选有多个时 MUST 取最接近真值者，与两者等距时 MUST 取末位为偶数者（即 ECMAScript 该算法 Note 2 的推荐做法，RFC 8785 附带的测试数据、Python <code>repr</code> 均如此；部分语言标准库的最短格式化在等距时不取偶，不能直接使用，见向量 <code>jcs_numbers</code>）；</li>
+<li><strong>整数字面量</strong>（不含小数点与指数）绝对值超过 2^53−1 时 MUST 拒绝；带小数点或指数的数字按 IEEE-754 double 解析后序列化（向量 <code>jcs_numbers</code>）；</li>
+<li>时间戳一律为 RFC 3339 UTC 字符串（<code>Z</code> 结尾），作为字符串参与 JCS，不做时区换算之外的改写。</li>
+</ul>
+<p>JCS 实现的正确性由 <code>kind: "jcs"</code> 向量单独校验；向量 <code>preimage_basic</code> 给出三层对象规范化后的完整原像，供逐字节排查。</p>
+<h3 id="34-层间不会混淆">3.4 层间不会混淆<a class="headerlink" href="#34-层间不会混淆" title="Permanent link">&para;</a></h3>
+<p>三层对象都是<strong>封闭 schema</strong>：出现未定义的字段 MUST 拒绝（core.md §2）。三层各有一个必有、且只有它有的键——元素的 <code>category</code>、页对象的 <code>elements</code>、文档对象的 <code>pages</code>——因此不同层的对象不可能有相同的原像，不需要额外的类型标签（作用相当于 Git 的对象头）。多处违例时的校验顺序与错误码见 core.md §2.8。</p>
+<h2 id="4-content_hash元素对象">4. <code>content_hash</code>（元素对象）<a class="headerlink" href="#4-content_hash元素对象" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>content_hash = H(element)
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>element      = { "category": …, 按 §4.1 该 category 允许的内容字段…, "metadata": {…} }
+</code></pre></div>
+<p>category 进 hash（#3 S3：以什么语义角色呈现属于内容本身；<code>Title("Foo")</code> 与 <code>NarrativeText("Foo")</code> 是不同内容）。category 是<strong>封闭枚举</strong>；遇到本契约未列出的 category，实现 MUST 拒绝（<code>DPE_CATEGORY_UNKNOWN</code>），MUST NOT 退化为 text-only hash。</p>
+<h3 id="41-category-表与内容字段">4.1 category 表与内容字段<a class="headerlink" href="#41-category-表与内容字段" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>category</th>
+<th>允许的内容字段（均可选）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Image</code></td>
+<td><code>text</code>、<code>blob</code>、<code>mime_type</code></td>
+</tr>
+<tr>
+<td><code>Table</code>、<code>Formula</code></td>
+<td><code>text</code>、<code>text_as_html</code></td>
+</tr>
+<tr>
+<td>其余（见下）</td>
+<td><code>text</code></td>
+</tr>
+</tbody>
+</table>
+<p>text-only category 全集：<code>UncategorizedText</code>、<code>CheckBox</code>、<code>CompositeElement</code>、<code>FigureCaption</code>、<code>NarrativeText</code>、<code>ListItem</code>、<code>Title</code>、<code>Address</code>、<code>EmailAddress</code>、<code>PageBreak</code>、<code>TableChunk</code>、<code>Header</code>、<code>Footer</code>、<code>CodeSnippet</code>、<code>PageNumber</code>、<code>FormKeysValues</code>、<code>tfchat</code>。其中 <code>tfchat</code> 是开放格式名，属 plan §1 命名规则的登记例外（category 侧；例外清单见 plan §1）。</p>
+<p>内容字段的值均为字符串（<code>blob</code> 为 §1 的 blob 引用）。出现其 category 未允许的字段 MUST 拒绝。</p>
+<p>二进制内容一律经通用的 <code>blob</code> / <code>mime_type</code> 携带，不为每种媒体另设字段名（类比 OCI 描述符的 <code>digest</code> + <code>mediaType</code>）。本表决定哪些 category 可以携带 blob；以后新增二进制类别（如音频、视频）只需增加 category 与表行，字段名与 hash 原语都不变（新增 category 本身仍按下段升契约次版本）。<code>FormKeysValues</code> 的键值对如由源随元素 metadata 提供，则自然进入 hash，无需专门的内容字段。</p>
+<p>新增 category 需要升契约次版本，并通过 capabilities 协商（§6）。本表以机器可读形式随向量发布（<code>vectors/manifest.json</code> 的 <code>category_content_fields</code>），SDK MUST 以常量导出，并与之一致。</p>
+<h3 id="42-blob-与-image">4.2 blob 与 Image<a class="headerlink" href="#42-blob-与-image" title="Permanent link">&para;</a></h3>
+<ul>
+<li>字节由 blob 承载，<code>blob</code> 是字节的引用（<code>"sha256:…"</code>），<code>mime_type</code> 是字节的媒体类型（如 <code>image/png</code>），二者直接作为元素对象的字段进 hash；图片 url、版面坐标等源信息放在元素 metadata 中，与其他源字段一样进 hash（§2）。同一张图换一个 url 即内容变化（向量 <code>image_url_is_content</code>）。</li>
+<li><strong>SDK 上传辅助</strong>（非规范性，登记为 M2 SDK 需求）：SDK 应提供辅助函数——给它本地路径或字节，它计算 <code>sha256:</code> 引用、上传 blob 并把元素替换为引用。字节只经 <code>blob</code> 携带，这是正向定义；协议不对 metadata 中的路径类字符串做任何识别或拒收。</li>
+<li><strong>字节由持有数据源凭证的一方提供</strong>：需要数据源凭证才能取得的图片，由产出方（connector，或直接调用 SDK 的上游）用自己的凭证取回字节；推送侧（SDK / 运行器）只负责计算 <code>sha256:</code> 引用并上传 blob。运行器不持有数据源凭证，MUST NOT 自行解引用数据源 url（connector 契约 §0、§1-2）。字节确实无法取得时，<code>blob</code> 缺省。</li>
+<li>服务端不负责抓取 url；OCR / 抽取出的文字若由服务端生成，属服务端衍生物，不进 DPE（图片型文档不再需要特殊 hash 策略，#3 S9）。</li>
+</ul>
+<h2 id="5-page_hash-与-doc_hashtree-对象">5. <code>page_hash</code> 与 <code>doc_hash</code>（tree 对象）<a class="headerlink" href="#5-page_hash-与-doc_hashtree-对象" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>page_hash = H(page)         page     = { "title"?: …, "page_metadata": {…}, "elements": [content_hash…] }
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>doc_hash  = H(document)     document = { "file_type": …, "title"?: …, "doc_metadata": {…}, "pages": [page_hash…] }
+</code></pre></div>
+<ul>
+<li><code>elements</code> / <code>pages</code> 是子对象 hash 完整字符串（含 <code>dpe1:</code> 前缀）的数组，<strong>数组顺序即阅读顺序</strong>。子对象 hash 的契约 MUST 与本对象相同：前缀缺失或为不受支持的契约时拒绝（<code>DPE_CONTRACT_UNSUPPORTED</code>，§1）；前缀为受支持、但与本对象不同的契约时（契约混用）拒绝（<code>DPE_VALIDATION</code>）。重复出现照常重复：内容完全相同的元素共用同一个元素对象，内容完全相同的页共用同一个页对象（向量 <code>duplicate_pages</code>）。</li>
+<li>页没有页号字段：页的位置就是它在 <code>pages</code> 中的下标。源文件自带的页码标签（印刷页码、PDF PageLabels，如 <code>iv</code>）是源内容，放进 <code>page_metadata</code>。由位置算出的序号 SHOULD NOT 写进 <code>page_metadata</code>——它会让插入一页后，后续每一页的页对象都变化，页层重新出现连锁重传。</li>
+<li>文档对象与页对象的 <code>title</code> 为字符串，可缺省（缺省与 null 等价，<code>""</code> 是独立的值）；<code>file_type</code> 为 core.md §2.5 的字符串值（开放取值），不合 §2.5 语法 MUST 拒绝（<code>DPE_VALIDATION</code>）。</li>
+<li>空文档（0 页）与空页（0 元素）均合法：<code>pages</code> / <code>elements</code> 为 <code>[]</code>。</li>
+</ul>
+<h2 id="6-契约演进">6. 契约演进<a class="headerlink" href="#6-契约演进" title="Permanent link">&para;</a></h2>
+<ul>
+<li>契约版本在能力发现阶段协商（core.md §3.1）；hash 值自带版本前缀，跨版本的值不可比。</li>
+<li><strong>何时必须升契约版本</strong>：一旦存在落库数据，或者已发布的包、已部署的服务依赖本契约的 hash 值（本仓库发布的参考 SDK 不算，它们就是本契约的实现），任何 hash 规则变更都 MUST 升契约版本。在此之前，hash 规则可在本契约内原位修订，并在 plan 修订注记中记录（如 #60）。</li>
+<li><strong>升级对应规则</strong>（#3 S8）：服务端按已存的（页序号, 页内序号）用新契约<strong>逐对象原位重算</strong>，MUST NOT 重新做差异配对；元素身份（学习产物的归属）保持不变。</li>
+<li><strong>升级期的版本令牌</strong>：doc_hash 同时是 CAS 令牌（core.md §5.1）。过渡期内，服务端 MUST 把同一内容在任一受支持契约下的 doc_hash 都视为该文档的当前版本（<code>If-Match</code> 按所带值的契约前缀比较、<code>unchanged</code> 按请求声明的契约判定），读接口按请求声明的契约返回值（core.md §3.1）；契约升级本身 MUST NOT 让任何写入者的前置条件失效，也 MUST NOT 让快路径筛选把未变内容判为变化。</li>
+<li>契约升级 MUST NOT 引起未变内容的重推或重学（判据见 plan §13-7）。</li>
+<li>向量包含契约升级演练：同一份内容同时给出 <code>dpe1</code> 与假想 <code>dpe2</code> 的期望值，两个契约下的逐页、逐元素结果按位置一一对应，即为对应关系断言（<code>dpe2</code> 定义见 vectors/README.md，仅用于测试）。</li>
+</ul>
+<p>实现方从既有 hash 规则迁移到本契约的对照，见 <a href="../../docs/migration/kernel-to-dpe1/">docs/migration/kernel-to-dpe1.md</a>（非规范）。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/A2C-SMCP/dpe-protocol" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["content.code.copy", "announce.dismiss", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "search.suggest", "search.highlight", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

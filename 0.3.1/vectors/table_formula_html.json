@@ -1,0 +1,63 @@
+{
+  "name": "table_formula_html",
+  "kind": "document",
+  "description": "Table / Formula 的身份包含 text_as_html：text 相同而 html 不同时 hash 不同。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "tables",
+          "elements": [
+            {
+              "category": "Table",
+              "text": "a b",
+              "text_as_html": "<table><tr><td>a</td><td>b</td></tr></table>"
+            },
+            {
+              "category": "Table",
+              "text": "a b",
+              "text_as_html": "<table><tr><td>a</td></tr><tr><td>b</td></tr></table>"
+            },
+            {
+              "category": "Formula",
+              "text": "E=mc^2",
+              "text_as_html": "<math>E=mc<sup>2</sup></math>"
+            },
+            {
+              "category": "TableChunk",
+              "text": "a b"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:28cc4c79b487071500acdf25a44b8726531c2c1c32b39901344b212fbd6a12bb",
+        "pages": [
+          {
+            "page_hash": "dpe1:e6adedd0de9ba01cee9de995697b6bdaaa6f7a125f61ad21bd002d586acc0eb6",
+            "elements": [
+              "dpe1:342e4f5c122932e3b0e5193d44d178b569bcaf57dd9359a253ba08b8cae9197f",
+              "dpe1:3020c6b136a03207f1a739b60886b25b84ddedfbe32bf9b4e2a0f18b1820b994",
+              "dpe1:7759a8e3a46e7c948dc0243e05c4f250d8910b2f4440f394c2e706dc80f1b628",
+              "dpe1:0b7a81e9e854cb64c98f79eccc47595301d02f08973dd03993a35dbd9accb902"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.1",
+        "doc.pages.0.elements.3"
+      ]
+    }
+  ]
+}
