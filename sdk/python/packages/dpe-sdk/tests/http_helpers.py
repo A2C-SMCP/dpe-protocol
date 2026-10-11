@@ -1,12 +1,13 @@
 """HTTP 绑定测试的辅助：把参考服务端挂到 httpx 的 ASGITransport 上，经真实客户端路径驱动。
 
 ``ProtocolCore`` 产出的 ``Request`` 由 ``Remote.send`` 原样发出（target 已编码，拼在 remote 之后），
-响应还原为 ``Response``——这就是 #13 传输适配要做的事，测试里只保留最小形态。
+响应还原为 ``Response``——这就是 #13 传输适配要做的事，测试里只保留最小形态。``Recorder`` /
+``Lossy`` 是插在 ``Remote.send`` 与操作之间的请求包装器（记录、模拟响应丢失）。
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,9 @@ from engine_helpers import make_engine
 #: 带路径的 remote（HTTP 绑定 §1：remote 是任意 base URL，不使用域名根）
 REMOTE = "http://dpe.test/r/1"
 PREFIX = "/r/1"
+
+#: 把 ``ProtocolCore`` 的请求描述交给下游（``Remote.send`` 或包装器）的函数形态
+Send = Callable[[Request], Awaitable[Response]]
 
 
 @dataclass
@@ -81,3 +85,58 @@ def problem(response: httpx.Response) -> dict[str, Any]:
     assert body["type"] == f"urn:dpe:error:{slug}"
     assert body["title"] == slug.replace("-", " ")
     return body
+
+
+# ----------------------------------------------------------------------
+# 请求包装器（插在操作与 ``Remote.send`` 之间）
+# ----------------------------------------------------------------------
+
+
+class Recorder:
+    """记录发出的请求，其余原样转发。"""
+
+    def __init__(self, send: Send) -> None:
+        self._send = send
+        self.sent: list[Request] = []
+
+    async def __call__(self, request: Request) -> Response:
+        self.sent.append(request)
+        return await self._send(request)
+
+
+class Lossy(Recorder):
+    """命中 ``match`` 的第一次请求照常送达、响应随即丢弃（服务端已生效，客户端收不到结果）。"""
+
+    def __init__(self, send: Send, match: Callable[[Request], bool]) -> None:
+        super().__init__(send)
+        self._match = match
+        self.dropped = 0
+
+    async def __call__(self, request: Request) -> Response:
+        response = await super().__call__(request)
+        if self.dropped == 0 and self._match(request):
+            self.dropped += 1
+            raise ConnectionError("响应丢失（引擎已处理）")
+        return response
+
+
+def chunk_spans(requests: list[Request]) -> list[tuple[int, int, int]]:
+    """请求里的 ``Content-Range`` 解析为 (起点, 终点, 总量)。"""
+    spans = []
+    for request in requests:
+        value = request.headers.get("Content-Range")
+        if value is None:
+            continue
+        span, _, total = value.removeprefix("bytes ").partition("/")
+        first, _, last = span.partition("-")
+        spans.append((int(first), int(last), int(total)))
+    return spans
+
+
+def session_ids(requests: list[Request]) -> set[str]:
+    """请求里出现过的暂存会话 id（``staging/{sid}/…`` 的第二段）。"""
+    return {
+        request.target.split("/")[1]
+        for request in requests
+        if request.target.startswith("staging/")
+    }
