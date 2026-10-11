@@ -15,8 +15,10 @@ from urllib.parse import unquote
 
 import dpe_hash
 import pytest
-from dpe_sdk import errors
+from dpe_sdk import Document, errors
 from dpe_sdk.protocol import (
+    IfAbsent,
+    Operation,
     Request,
     Response,
     adrive,
@@ -85,6 +87,40 @@ def test_every_request_declares_the_contract() -> None:
         request = next(op)
         assert request.headers["DPE-Hash-Contract"] == "dpe2"
         op.close()
+
+
+def test_retry_safe_marks_read_only_operations() -> None:
+    """``Request.retry_safe``：只读操作为真（含走 POST 的 batch_head），写操作与
+    ``negotiate`` / ``upload_*`` 为假——传输层据此决定连接失败与超时后能否自行重发，
+    不按 HTTP 方法推断（见 ``protocol`` 模块说明）。"""
+    c = core()
+    document = Document.model_validate(text_doc(["hello"]))
+    reads: list[Operation[Any]] = [
+        fetch_capabilities(),
+        c.head("s3://bucket/a.md"),
+        c.batch_head(["s3://bucket/a.md"]),
+        c.get_skeleton("s3://bucket/a.md"),
+        c.list_page(),
+    ]
+    for op in reads:
+        request = next(op)
+        op.close()
+        assert request.retry_safe is True
+    writes: list[Operation[Any]] = [
+        c.negotiate("s3://bucket/a.md", document),
+        c.commit("s3://bucket/a.md", document, IfAbsent()),
+        c.deliver("s3://bucket/a.md", document, IfAbsent()),
+        c.delete("s3://bucket/a.md", H1),
+        c.move("s3://bucket/a.md", "s3://bucket/b.md", H1),
+    ]
+    for op in writes:
+        request = next(op)
+        op.close()
+        assert request.retry_safe is False
+
+
+def test_retry_safe_defaults_to_false() -> None:
+    assert Request("GET", "x").retry_safe is False
 
 
 # ---------------------------------------------------------------------- 编码

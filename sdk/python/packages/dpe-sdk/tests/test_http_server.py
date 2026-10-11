@@ -10,11 +10,7 @@ import json
 import socket
 import subprocess
 import sys
-import tempfile
-import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
-from typing import Any
 
 import httpx
 import pytest
@@ -22,47 +18,9 @@ from dpe_sdk.models import Document
 from dpe_sdk.protocol import IfAbsent, ProtocolCore, Request, Response, drive, fetch_capabilities
 from dpe_sdk.testing.__main__ import _authority, _authorizer
 from engine_helpers import inline, text_doc
+from server_helpers import spawn_server as _spawn
 
 C = "dpe1"
-
-
-@contextmanager
-def _spawn(*extra: str) -> Iterator[dict[str, Any]]:
-    """启动参考服务端子进程，产出公布的一行 JSON（``url`` 与（启用钩子时的）``hooks``）。
-
-    另给 ``stderr``：一个读子进程 stderr 至当下的函数（启动告警等）。
-    """
-    # stderr 落到临时文件：管道无人读取时，服务端日志写满缓冲会让子进程阻塞
-    with tempfile.TemporaryFile(mode="w+") as log:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "dpe_sdk.testing", "--port", "0", *extra],
-            stdout=subprocess.PIPE,
-            stderr=log,
-            text=True,
-        )
-        assert proc.stdout is not None
-        stdout = proc.stdout
-        lines: list[str] = []
-        reader = threading.Thread(target=lambda: lines.append(stdout.readline()))
-        reader.start()
-        reader.join(timeout=20)
-        try:
-            if not lines or not lines[0]:
-                proc.kill()
-                proc.wait(timeout=5)
-                log.seek(0)
-                pytest.fail(f"参考服务端未公布地址：{log.read()}")
-
-            def stderr() -> str:
-                log.seek(0)
-                return log.read()
-
-            info: dict[str, Any] = json.loads(lines[0])
-            info["stderr"] = stderr
-            yield info
-        finally:
-            proc.terminate()
-            proc.wait(timeout=10)
 
 
 @pytest.fixture

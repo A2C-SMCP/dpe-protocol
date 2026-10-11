@@ -33,6 +33,31 @@ doc.hashes()  # {"doc_hash", "pages": [{"page_hash", "elements"}…]}
 - 客户端本地判定不经 `DpeError`：本地判定为不合法时（如 `get_skeleton`、`commit`、`delete`、`move` 的 URI 不符合 core §1.1，`base_hash` 不是本次声明契约的 hash）在发请求前即抛 `dpe_hash` 的错误（`ValidationError` / `ContractUnsupportedError`，均为 `ValueError` 子类，带规范错误码）；响应不合规抛 `UnexpectedResponseError`；force 提交的响应丢失且事后 `head` 未能确认生效时抛 `ForceNotConfirmedError`（SDK 不重放 force，core §5.2）。捕获 `DpeError` 的调用方请按需一并处理；
 - `dpe_sdk.wire`：各端点的响应模型（`Capabilities`、`Head`、`Skeleton`、`ListPage`、`CommitResult` 等）；信封对未知成员宽容，内嵌的三层对象仍是封闭 schema。
 
+## 传输适配（httpx）
+
+`dpe_sdk.transport` 把 sans-IO 核心接到 httpx 上：`DpeClient`（同步）与 `AsyncDpeClient`（异步）一对一包装 `ProtocolCore` 的全部操作。传输层只做 I/O——拼 URL（remote 之后接核心产出的已编码 target，不再编码）、注入凭证、按策略 gzip、还原响应；协议判定与重试规则全部在核心（分工细节见模块 docstring）。
+
+```python
+from dpe_sdk.credentials import StaticCredentialProvider
+from dpe_sdk.protocol import BaseHash, IfAbsent
+from dpe_sdk.transport import DpeClient
+
+with DpeClient(
+    "https://example.com/anything/r/42",  # remote：base URL，不含查询串与凭证
+    credential=StaticCredentialProvider("Bearer <token>"),
+) as client:
+    created = client.commit("s3://bucket/a.md", document, IfAbsent())
+    client.deliver("s3://bucket/a.md", document, BaseHash(created.doc_hash))
+    conf = client.capabilities().limits  # capabilities 快照（契约与 limits 与它绑定）
+```
+
+- **remote**：只接受 http / https、有主机名、无查询串与片段、不带凭证信息（凭证走 `CredentialProvider`）；capabilities 在实例内快照一次，服务端变更能力后新建客户端；
+- **凭证**：`CredentialProvider`（`dpe_sdk.credentials`）在每个请求发送前调用一次（传输层内部的重发同样重新取，轮换中的短时凭证在长等待后仍可用），返回 `Authorization` 头的完整值（含方案名）；SDK 不感知鉴权方案，也不解释凭证内容；
+- **gzip**：服务端 capabilities 声明 `gzip`、请求体是 `application/json`、不小于 1024 字节且不是分块请求（带 `Content-Range`）时才压缩；分块上传按规范（§7）MUST NOT 压缩；
+- **重试**：传输层只自行重发三类——`retry_safe` 的请求（只读操作与断点查询，含走 POST 的 `batch_head`）遇上的网络失败、任何请求上确定未发出的建连失败、以及可重试的 DPE 错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，按 `code` 的 `retryable` 判定）按 `Retry-After`（秒数或 HTTP 日期）等待后原样重发（等待上限 5 分钟，更长则抛给调用方）。写请求可能已发出后的超时与响应丢失一律抛回核心，由核心按 core §5.2 处理，**绝不自动 force**；
+- **异常**：httpx 的连接失败、超时等异常原样抛出、按类型区分，不包装成协议错误；
+- **依赖边界**：`dpe-hash` 保持零依赖；httpx 是 `dpe-sdk` 的运行时依赖，且 `dpe_sdk` 顶层不 import 传输模块（按需 `from dpe_sdk.transport import …`）。
+
 ## 参考服务端（testing）
 
 `dpe_sdk.testing.Engine` 是内存版 DPE 服务端的核心引擎（不含传输），按规范的求值顺序实现 core 语义（含暂存会话与分块上传，#43），供集成测试与第三方实现对照：
@@ -159,4 +184,4 @@ python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
 
 钩子通道是测试侧信道：不做 DPE 认证、默认关闭、只建议监听本机（缺省 127.0.0.1）。
 
-> 客户端协议核心、传输适配与增量推送尚在开发中（#12–#17）。
+> 增量推送（StatefulPusher、媒体上传辅助）与 dpe-run 尚在开发中（#14–#17）。
