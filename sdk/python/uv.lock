@@ -180,7 +180,7 @@ dependencies = [
 requires-dist = [
     { name = "dpe-hash", editable = "packages/dpe-hash" },
     { name = "httpx", specifier = ">=0.27,<1" },
-    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest", specifier = ">=8.3,<10" },
 ]
 
 [[package]]

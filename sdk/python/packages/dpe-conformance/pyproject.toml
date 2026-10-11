@@ -20,8 +20,10 @@ dependencies = [
     # 期望 hash 只依赖 dpe-hash（#26）：跑分器不依赖 dpe-sdk 与任何服务端实现
     "dpe-hash==0.3.1-dev",
     "httpx>=0.27,<1",
-    # 套件以 pytest 实现（--section 过滤、skip 语义与 JUnit XML 直接复用其报告设施）
-    "pytest>=8.3",
+    # 套件以 pytest 实现（--section 过滤、skip 语义与 JUnit XML 直接复用其报告设施）。
+    # 计数归章依赖 Node.location 的 rootpath 相对语义（pytest 9 已核实），锁主版本上界；
+    # 升级 pytest 主版本时放开上界并重跑全套件。
+    "pytest>=8.3,<10",
 ]
 
 [project.scripts]
