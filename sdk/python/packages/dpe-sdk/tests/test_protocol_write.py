@@ -25,6 +25,8 @@ from dpe_sdk.protocol import (
     Response,
     adrive,
     drive,
+    mark_request_not_sent,
+    outcome_unknown,
 )
 from dpe_sdk.testing import Engine
 from dpe_sdk.wire import CommitResult, MoveResult
@@ -774,3 +776,110 @@ def test_engine_round_trip_of_lost_force() -> None:
     lossy = LoseFirstResponse(engine_send(make_engine()))
     assert drive(core().commit(URI, DOC, Force()), lossy) == unchanged()
     assert methods(lossy.requests) == ["PUT", "HEAD"]
+
+
+# ---------------------------------------------------------------------- 写操作的结果标记
+
+
+def test_outcome_unknown_defaults_to_true_without_a_mark() -> None:
+    """谓词只对写操作有意义：无标记（不是从核心写路径逃出的异常）一律按结果未知处理。"""
+    assert outcome_unknown(ValueError("本地错误")) is True
+    # 只有传输层的「确定未发出」底标、没有核心的结果标记时，仍按未知处理
+    refused = ConnectionError("建连失败")
+    mark_request_not_sent(refused)
+    assert outcome_unknown(refused) is True
+
+
+def test_commit_marks_determined_when_nothing_was_sent() -> None:
+    """首发即「确定未发出」（带底标）：写请求从未出链路 → False（确定未生效），重发同理。"""
+    refused = ConnectionError("建连失败")
+    mark_request_not_sent(refused)
+    server = Script(refused, refused, refused)  # 首发 + max_resends 两次重发
+    with pytest.raises(ConnectionError) as excinfo:
+        drive(core().commit(URI, DOC, IfAbsent()), server)
+    assert outcome_unknown(excinfo.value) is False
+
+
+def test_commit_marks_unknown_when_a_lost_attempt_happened_first() -> None:
+    """首发可能是丢响应（无底标）：之后重发无论怎么失败（含确定未发出），标记一律 True。"""
+    refused = ConnectionError("建连失败")
+    mark_request_not_sent(refused)
+    server = Script(lost(), refused, refused)
+    with pytest.raises(ConnectionError) as excinfo:
+        drive(core().commit(URI, DOC, IfAbsent()), server)
+    assert outcome_unknown(excinfo.value) is True
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_commit_marks_unknown_on_a_bare_5xx_response(status: int) -> None:
+    """没有 DPE 错误码的 5xx（网关或上游可能已处理）→ True。"""
+    gateway = Response(status, {"Content-Type": "text/html"}, b"<h1>gateway</h1>")
+    with pytest.raises(errors.UnexpectedResponseError) as excinfo:
+        run(core().commit(URI, DOC, IfAbsent()), gateway)
+    assert outcome_unknown(excinfo.value) is True
+
+
+def test_commit_marks_determined_on_a_coded_rejection() -> None:
+    """带 DPE 错误码的明确拒绝（服务端已裁决）→ False。"""
+    with pytest.raises(errors.ValidationError) as excinfo:
+        run(core().commit(URI, DOC, IfAbsent()), problem("DPE_VALIDATION", 400))
+    assert outcome_unknown(excinfo.value) is False
+
+
+def test_commit_marks_unknown_when_a_lost_attempt_is_followed_by_a_retryable_error() -> None:
+    """首发丢响应、重发得到 429（耗尽后返回）：首发可能已生效 → True——
+    普通 DpeError 也要看标记，不能按「服务端明确裁决」一概判为确定。"""
+    server = Script(lost(), problem("DPE_RATE_LIMITED", 429, retryable=True))
+    with pytest.raises(errors.RateLimitedError) as excinfo:
+        drive(core().commit(URI, DOC, IfAbsent()), server)
+    assert outcome_unknown(excinfo.value) is True
+
+
+def test_deliver_marks_determined_when_the_commit_was_never_sent() -> None:
+    """deliver 的 negotiate 阶段失败：commit 尚未发出 → False（确定未生效）。"""
+    big = Document.model_validate(text_doc(["y" * 200]))
+    small = ProtocolCore(caps(limits={"max_payload_bytes": 120}))  # 内联放不下 → 先 negotiate
+    with pytest.raises(ConnectionError) as excinfo:
+        drive(small.deliver(URI, big, IfAbsent()), Script(lost()))
+    assert outcome_unknown(excinfo.value) is False
+
+
+def test_gateway_lost_marks_unknown() -> None:
+    """网关 502/504（无 DPE 错误码）预算耗尽：请求已到过网关 → True。"""
+    server = Script(
+        Response(504, {"Content-Type": "text/html"}, b"gw"),
+        Response(504, {"Content-Type": "text/html"}, b"gw"),
+        Response(504, {"Content-Type": "text/html"}, b"gw"),
+    )
+    with pytest.raises(errors.UnexpectedResponseError) as excinfo:
+        drive(core().commit(URI, DOC, IfAbsent()), server)
+    assert outcome_unknown(excinfo.value) is True
+
+
+def test_commit_marks_unknown_when_a_success_response_fails_validation() -> None:
+    """收到 2xx 但核心自洽校验失败：服务端已处理过请求 → True（可能已生效），不得清意图。"""
+    body = {
+        "status": "created",
+        "doc_hash": H2,  # 与提交内容不符 → 校验失败
+        "delta": {"added": 1, "removed": 0, "retained": 0},
+    }
+    broken = ok(body, 201, {"DPE-Doc-Hash": H2})
+    with pytest.raises(errors.UnexpectedResponseError) as excinfo:
+        run(core().commit(URI, DOC, IfAbsent()), broken)
+    assert outcome_unknown(excinfo.value) is True
+
+
+def test_commit_marks_unknown_when_a_bare_412_cannot_be_resolved() -> None:
+    """未化解的裸 412（head 判定本身失败）：可能出自中间层误判、无法确认未生效 → True。"""
+    bare = Response(412, {"Content-Type": "text/html"}, b"precondition")
+    server = Script(bare, lost(), lost(), lost())  # 裸 412 后的 head 三次都丢响应
+    with pytest.raises(ConnectionError) as excinfo:
+        drive(core().commit(URI, DOC, BaseHash(H1)), server)
+    assert outcome_unknown(excinfo.value) is True
+
+
+def test_commit_marks_unknown_on_a_bare_4xx_from_a_proxy() -> None:
+    """代理返回的无码 4xx（401 等）：没有服务端的码、也没有底标 → 按未确定处理。"""
+    with pytest.raises(errors.UnexpectedResponseError) as excinfo:
+        run(core().commit(URI, DOC, IfAbsent()), Response(401, {"WWW-Authenticate": "x"}, b""))
+    assert outcome_unknown(excinfo.value) is True

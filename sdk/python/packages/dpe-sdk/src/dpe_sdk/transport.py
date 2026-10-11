@@ -6,7 +6,9 @@
 在核心。传输层**可以**自行重发的情形只有三类：
 
 1. ``Request.retry_safe`` 为真的请求（只读操作与断点查询）遇到连接错误、超时等网络失败；
-2. 任何请求遇到确定未发出的失败（``httpx.ConnectError`` / ``httpx.ConnectTimeout``）；
+2. 任何请求遇到确定未发出的失败（``httpx.ConnectError`` / ``httpx.ConnectTimeout``）——
+   放弃发送时在该异常上打底标（``protocol.mark_request_not_sent``），写操作据此把「确定未生效」
+   与「结果未知」分开（异常类型不变，兼容新增）；
 3. 响应是可重试的 DPE 错误——按 ``code`` 的 ``retryable`` 判定（不按状态码，HTTP 绑定 §3.2），
    即 ``DPE_RATE_LIMITED`` / ``DPE_UNAVAILABLE``——等待 ``Retry-After`` 后原样重发（等待不超过
    ``_MAX_RETRY_WAIT``；更长的等待不吸收，错误带 ``retry_after`` 抛出，何时重试由调用方决定）。
@@ -58,10 +60,11 @@ from dpe_sdk.protocol import (
     drive,
     error_from_response,
     fetch_capabilities,
+    mark_request_not_sent,
 )
 from dpe_sdk.wire import Capabilities, CommitResult, ListPage, MoveResult, Skeleton
 
-__all__ = ["AsyncDpeClient", "DpeClient"]
+__all__ = ["AsyncDpeClient", "DpeClient", "not_sent"]
 
 _JSON = "application/json"
 _AUTHORIZATION = "Authorization"
@@ -78,6 +81,17 @@ _MAX_RETRY_WAIT = 300.0
 
 #: 确定未发出（请求一个字节都没到链路上）的失败：任何请求都可原样重发
 _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
+def not_sent(exc: BaseException) -> bool:
+    """该异常是否表示请求**确定未发出**（如建连失败）。
+
+    传输层用它判定重发安全性，并在放弃发送时据此给异常打底标（``mark_request_not_sent``）。
+    **写操作结果的判定请用 ``protocol.outcome_unknown(exc)``**——写操作是多请求、核心内部还会
+    重发的复合操作，必须按单次尝试的判据整体判定，不能对最终异常套用本函数。
+    """
+    return isinstance(exc, _NOT_SENT)
+
 
 #: 网络失败（对端或链路的问题，重发是恢复手段）；``LocalProtocolError``（本地请求构造问题）与
 #: ``UnsupportedProtocol``（配置问题）不在此列，重发没有意义
@@ -222,7 +236,7 @@ class _ClientBase:
     def _resendable(self, request: Request, exc: Exception) -> bool:
         """该异常下原样重发是否安全：确定未发出的失败任何请求都可以；网络失败只在
         ``retry_safe`` 的请求上（写请求可能已发出，交核心按 core §5.2 判定）。"""
-        if isinstance(exc, _NOT_SENT):
+        if not_sent(exc):
             return True
         return request.retry_safe and _network_failure(exc)
 
@@ -279,6 +293,8 @@ class DpeClient(_ClientBase):
                 reply = self._http.request(request.method, url, headers=headers, content=content)
             except Exception as exc:
                 if attempt >= self._max_retries or not self._resendable(request, exc):
+                    if not_sent(exc):
+                        mark_request_not_sent(exc)  # 底标：写操作据此判定「确定未生效」
                     raise
                 attempt += 1
                 continue
@@ -445,6 +461,8 @@ class AsyncDpeClient(_ClientBase):
                 )
             except Exception as exc:
                 if attempt >= self._max_retries or not self._resendable(request, exc):
+                    if not_sent(exc):
+                        mark_request_not_sent(exc)  # 底标：写操作据此判定「确定未生效」
                     raise
                 attempt += 1
                 continue

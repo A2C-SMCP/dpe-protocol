@@ -17,6 +17,22 @@ MUST NOT 自行重发；``retry_safe`` 为真的请求（只读操作与断点�
 原样重试（``retryable``）与请求的重发安全性无关，任何请求都可由传输层处理，它们不改变请求
 是否生效的判定。
 
+**写操作的结果标记**（异常上的属性，兼容新增，不改变异常类型）：写操作失败时，调用方需要知道
+「本次写入是否可能已生效」——``deliver`` 是多请求操作、核心内部还会重发，只看最后抛出的异常
+类型不够。标记协议两段：
+
+1. 传输层在放弃发送时，若抛出的异常属「确定未发出」（请求一个字节都没出链路，如建连失败），
+   用 ``mark_request_not_sent(exc)`` 打底标；
+2. 核心对写请求本身（commit / delete / move 的那个请求；不含 negotiate、upload 与 head）按
+   **单次尝试**观察，判据是「正面依据」——只有三种结局算「确定」：收到带 DPE 错误码的响应
+   （服务端明确裁决）、成功响应且核心自洽校验全部通过（校验失败会走异常路径、按未确定处理）、
+   传输层标明「确定未发出」。**其余一切结局都记「可能已生效」**：无底标的传输异常，以及任何
+   无码响应——2xx 但校验/解析失败、未化解的裸 412、无码的 4xx（代理 401/404 等）与 5xx。
+   写操作抛出的异常逃出时，核心显式打结果标记（读取用公开谓词 ``outcome_unknown``）。
+
+调用方（如 ``dpe_sdk.pusher`` 的待定意图）只消费公开谓词 ``outcome_unknown(exc)``：**无标记
+一律按 True（可能已生效）处理**——保守方向，标记没写上也不会误判为「确定未生效」。
+
 **契约**：``ProtocolCore`` 只使用调用方显式指定的一个 hash 契约（缺省 ``dpe_hash.CONTRACT``），
 服务端不接受时失败，不换契约、不降级（core §3.1）；之后每个请求都带 ``DPE-Hash-Contract``，
 响应中的每个 hash 都必须属于该契约。
@@ -112,6 +128,8 @@ __all__ = [
     "drive",
     "error_from_response",
     "fetch_capabilities",
+    "mark_request_not_sent",
+    "outcome_unknown",
     "retry_after_seconds",
 ]
 
@@ -421,6 +439,82 @@ _GATEWAY_STATUSES = frozenset({502, 504})
 def _gateway_lost(response: Response) -> bool:
     """无 DPE 错误码的 502 / 504：写操作按响应丢失处理（见模块说明）。"""
     return response.status in _GATEWAY_STATUSES and not _is_dpe_error(response)
+
+
+# ----------------------------------------------------------------------
+# 写操作的结果标记（见模块说明；属性名与读写各只有一处）
+# ----------------------------------------------------------------------
+
+#: 传输层在「确定未发出」的传输异常上打的底标（``mark_request_not_sent``）
+_REQUEST_NOT_SENT = "dpe_request_not_sent"
+#: 核心在写操作异常上打的「结果未知」标记（``outcome_unknown``）
+_OUTCOME_UNKNOWN = "dpe_outcome_unknown"
+
+
+def mark_request_not_sent(exc: BaseException) -> None:
+    """给「确定未发出」（请求一个字节都没出链路，如建连失败）的传输异常打底标。
+
+    传输层在放弃发送、向上抛出此类异常时调用；写操作据此把「确定未生效」与「可能已生效」
+    分开。属性设不上时保持无标记＝按可能已发出处理（保守方向）。
+    """
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, _REQUEST_NOT_SENT, True)
+
+
+def _attempt_not_sent(exc: BaseException) -> bool:
+    """只读这一处：该次尝试是否确定未发出（带 ``mark_request_not_sent`` 的底标）。"""
+    return getattr(exc, _REQUEST_NOT_SENT, False) is True
+
+
+def _uncertain_response(response: Response) -> bool:
+    """该响应是否让写请求的结果可能已生效（判据见模块说明的「正面依据」三条）。
+
+    只有带 DPE 错误码的响应是服务端明确裁决（结果确定）；**其余一切无码响应都按未确定处理**
+    ——2xx 但校验/解析失败、未化解的裸 412、代理返回的无码 4xx（401/404 等）与 5xx 都可能有
+    效。成功响应正常通过校验时不会走到异常路径，此处的置位无副作用；校验失败则按未确定。
+    """
+    return not _is_dpe_error(response)
+
+
+def outcome_unknown(exc: BaseException) -> bool:
+    """写操作（``commit`` / ``delete`` / ``move`` / ``deliver``）失败抛出的异常是否「结果未知」。
+
+    - **只对写操作有意义**：核心在写操作异常逃出时，按写请求本身的**单次尝试**观察显式置
+      True / False。「确定」只有三种正面依据——收到带 DPE 错误码的响应、成功响应且自洽校验
+      全部通过、传输层标明「确定未发出」；其余一切结局（无底标的传输异常、任何无码响应含
+      校验失败的 2xx 与未化解的裸 412、无码 4xx/5xx）都是「可能已生效」。negotiate / upload /
+      head 阶段的失败不参与（当时 commit 尚未发出，整体按「确定未生效」打标）；
+    - **无标记时一律返回 True**（保守：可能已生效）——不是从核心写路径抛出的异常、或标记因故
+      没写上时，调用方（如 ``dpe_sdk.pusher`` 的待定意图）都应按「结果未知」处理。
+    """
+    return getattr(exc, _OUTCOME_UNKNOWN, None) is not False
+
+
+@dataclass
+class _WriteAttempts:
+    """一次写操作的尝试观察（每次写操作独有，核心并发使用下不共享）。"""
+
+    #: 写请求本身是否有过「结果可能已生效」的尝试
+    possibly_applied: bool = False
+
+
+def _note_attempt(tracker: _WriteAttempts | None, exc: BaseException) -> None:
+    """一次尝试以「不确定」结束（传输异常且没有「确定未发出」底标）时置位。"""
+    if tracker is not None and not _attempt_not_sent(exc):
+        tracker.possibly_applied = True
+
+
+def _note_response(tracker: _WriteAttempts | None, response: Response) -> None:
+    """一次尝试收到无 DPE 错误码的响应（含校验失败的 2xx、未化解的裸 412、无码 4xx/5xx）时
+    置位；判据见 ``_uncertain_response``。"""
+    if tracker is not None and _uncertain_response(response):
+        tracker.possibly_applied = True
+
+
+def _mark_outcome(exc: BaseException, tracker: _WriteAttempts) -> None:
+    """写操作的异常逃出时显式打结果标记（True / False）；设不上属性时保持无标记（按未知）。"""
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, _OUTCOME_UNKNOWN, tracker.possibly_applied)
 
 
 def _expect(response: Response, status: int = 200) -> None:
@@ -1045,7 +1139,15 @@ class ProtocolCore:
             body["objects"] = parts.objects
         if isinstance(precondition, Force):
             body["force"] = True
-        return (yield from self._commit(uri, body, precondition, parts.doc_hash, parts.total))
+        tracker = _WriteAttempts()
+        try:
+            result = yield from self._commit(
+                uri, body, precondition, parts.doc_hash, parts.total, tracker
+            )
+        except Exception as exc:
+            _mark_outcome(exc, tracker)  # 结果标记（见模块说明；异常类型不变）
+            raise
+        return result
 
     def _commit(
         self,
@@ -1054,6 +1156,7 @@ class ProtocolCore:
         precondition: CommitPrecondition,
         expected: str,
         total: int,
+        tracker: _WriteAttempts,
     ) -> Operation[CommitResult]:
         """commit 的请求与结果处理（请求体已构造）：force、裸 412 与响应丢失的规则见 ``commit``。"""
         headers = self._condition(precondition)
@@ -1062,12 +1165,14 @@ class ProtocolCore:
             try:
                 response = yield request
             except Exception as exc:
+                _note_attempt(tracker, exc)
                 return (yield from self._confirm_force(uri, expected, total, exc))
+            _note_response(tracker, response)
             if _gateway_lost(response):
                 lost = error_from_response(response)
                 return (yield from self._confirm_force(uri, expected, total, lost))
             return self._commit_result(response, expected, total)
-        response, _ = yield from self._send(request)
+        response, _ = yield from self._send(request, tracker)
         if _bare_412(response):
             if isinstance(precondition, IfAbsent):
                 # 文档不存在时 if_absent 的前置条件实际成立：412 只能出自中间层误判，
@@ -1078,6 +1183,7 @@ class ProtocolCore:
                     response,
                     holds=lambda head: head is None,
                     held="文档仍不存在（if_absent 的前置条件成立）",
+                    tracker=tracker,
                 )
                 if _bare_412(response):
                     if current == expected:
@@ -1129,15 +1235,24 @@ class ProtocolCore:
         dpe_hash.normalize_file_uri(uri)
         self._condition(precondition)
         parts = self._wire_parts(document)
-        if session is not None:
-            return (yield from self._staged(uri, parts, precondition, session, blobs, None))
-        inline = self._inline_body(parts, force=isinstance(precondition, Force))
-        if len(self._json_body(inline)) <= self.limits.max_payload_bytes:
-            return (yield from self._inline(uri, parts, inline, precondition, blobs))
-        negotiated = yield from self._negotiate(uri, parts)
-        return (
-            yield from self._staged(uri, parts, precondition, negotiated.session, blobs, negotiated)
-        )
+        tracker = _WriteAttempts()
+        try:
+            if session is not None:
+                return (
+                    yield from self._staged(uri, parts, precondition, session, blobs, None, tracker)
+                )
+            inline = self._inline_body(parts, force=isinstance(precondition, Force))
+            if len(self._json_body(inline)) <= self.limits.max_payload_bytes:
+                return (yield from self._inline(uri, parts, inline, precondition, blobs, tracker))
+            negotiated = yield from self._negotiate(uri, parts)
+            return (
+                yield from self._staged(
+                    uri, parts, precondition, negotiated.session, blobs, negotiated, tracker
+                )
+            )
+        except Exception as exc:
+            _mark_outcome(exc, tracker)  # 结果标记（见模块说明；异常类型不变）
+            raise
 
     def _inline_body(self, parts: _Parts, *, force: bool) -> dict[str, Any]:
         """快路径请求体（内联文档对象、全部页对象与元素对象）。"""
@@ -1157,6 +1272,7 @@ class ProtocolCore:
         inline: dict[str, Any],
         precondition: CommitPrecondition,
         blobs: Callable[[str], BlobSource | bytes] | None,
+        tracker: _WriteAttempts,
     ) -> Operation[CommitResult]:
         """快路径，含缺内容的恢复：开会话把缺失对象补进去，再以「内联 + staging_session」重提。"""
         body = dict(inline)
@@ -1172,7 +1288,7 @@ class ProtocolCore:
                         pending = None
                     return (
                         yield from self._commit(
-                            uri, body, precondition, parts.doc_hash, parts.total
+                            uri, body, precondition, parts.doc_hash, parts.total, tracker
                         )
                     )
                 except MissingContentError as exc:
@@ -1187,7 +1303,7 @@ class ProtocolCore:
                         if recovery is None:
                             return (
                                 yield from self._staged(
-                                    uri, parts, precondition, session, blobs, None
+                                    uri, parts, precondition, session, blobs, None, tracker
                                 )
                             )
                         body = recovery
@@ -1200,7 +1316,9 @@ class ProtocolCore:
                     recovery = self._recovery_body(inline, session)
                     if recovery is None:
                         return (
-                            yield from self._staged(uri, parts, precondition, session, blobs, None)
+                            yield from self._staged(
+                                uri, parts, precondition, session, blobs, None, tracker
+                            )
                         )
                     body = recovery
         except Exception as exc:
@@ -1224,6 +1342,7 @@ class ProtocolCore:
         session: Session,
         blobs: Callable[[str], BlobSource | bytes] | None,
         negotiated: Negotiated | None,
+        tracker: _WriteAttempts,
     ) -> Operation[CommitResult]:
         """暂存路径：逐层补传后 commit 引用会话；两类恢复见 ``deliver``。
 
@@ -1253,7 +1372,7 @@ class ProtocolCore:
                         pending_missing = None
                     return (
                         yield from self._commit(
-                            uri, body, precondition, parts.doc_hash, parts.total
+                            uri, body, precondition, parts.doc_hash, parts.total, tracker
                         )
                     )
                 except MissingContentError as exc:
@@ -1358,28 +1477,34 @@ class ProtocolCore:
         request = self._request(
             "DELETE", "documents?" + _query(uri=uri), headers={"If-Match": f'"{base_hash}"'}
         )
-        response, resent = yield from self._send(request)
-        response, current, retried = yield from self._retry_misjudged_412(
-            request,
-            uri,
-            response,
-            holds=lambda head: head == base_hash,
-            held="doc_hash 等于 If-Match",
-        )
-        resent = resent or retried
-        if _bare_412(response):
-            if current is None:
-                return None
-            raise PreconditionFailedError(
-                f"expected {base_hash}, current {current}（412 无 DPE 错误码，经 head 判定）"
-            )
+        tracker = _WriteAttempts()
         try:
-            _expect(response, 204)
-        except NotFoundError:
-            if resent:
-                return None  # 目标状态「不存在」已达成（core §5.2）
+            response, resent = yield from self._send(request, tracker)
+            response, current, retried = yield from self._retry_misjudged_412(
+                request,
+                uri,
+                response,
+                holds=lambda head: head == base_hash,
+                held="doc_hash 等于 If-Match",
+                tracker=tracker,
+            )
+            resent = resent or retried
+            if _bare_412(response):
+                if current is None:
+                    return None
+                raise PreconditionFailedError(
+                    f"expected {base_hash}, current {current}（412 无 DPE 错误码，经 head 判定）"
+                )
+            try:
+                _expect(response, 204)
+            except NotFoundError:
+                if resent:
+                    return None  # 目标状态「不存在」已达成（core §5.2）
+                raise
+            return None
+        except Exception as exc:
+            _mark_outcome(exc, tracker)  # 结果标记（见模块说明；异常类型不变）
             raise
-        return None
 
     def move(self, from_uri: str, to_uri: str, base_hash: str) -> Operation[MoveResult]:
         """``POST move``：``from_uri → to_uri`` 原子改名，前置条件在请求体（core §5.2）。
@@ -1392,29 +1517,42 @@ class ProtocolCore:
         dpe_hash.normalize_file_uri(to_uri)
         self._check_base_hash(base_hash)
         body = {"from_uri": from_uri, "to_uri": to_uri, "base_hash": base_hash}
-        response, _ = yield from self._send(self._request("POST", "move", body))
-        _expect(response)
-        result = _parse(response, MoveResult)
-        if result.doc_hash != base_hash:
-            raise UnexpectedResponseError(
-                f"move 结果的 doc_hash {result.doc_hash!r} 不等于 base_hash {base_hash!r}",
-                status=response.status,
-            )
-        self._check_doc_hash_header(response, base_hash)
-        return result
+        tracker = _WriteAttempts()
+        try:
+            response, _ = yield from self._send(self._request("POST", "move", body), tracker)
+            _expect(response)
+            result = _parse(response, MoveResult)
+            if result.doc_hash != base_hash:
+                raise UnexpectedResponseError(
+                    f"move 结果的 doc_hash {result.doc_hash!r} 不等于 base_hash {base_hash!r}",
+                    status=response.status,
+                )
+            self._check_doc_hash_header(response, base_hash)
+            return result
+        except Exception as exc:
+            _mark_outcome(exc, tracker)  # 结果标记（见模块说明；异常类型不变）
+            raise
 
-    def _send(self, request: Request) -> Generator[Request, Response, tuple[Response, bool]]:
+    def _send(
+        self, request: Request, tracker: _WriteAttempts | None = None
+    ) -> Generator[Request, Response, tuple[Response, bool]]:
         """发送 ``request``，驱动方抛回的异常与无 DPE 错误码的 502 / 504 视为响应丢失，原样重发
         至多 ``max_resends`` 次；仍失败则抛出最后一次的异常，或返回最后一次的网关响应（由调用方
-        按非协议错误上报）。返回响应与它是否来自重发。"""
+        按非协议错误上报）。返回响应与它是否来自重发。
+
+        ``tracker`` 只传写请求本身（commit / delete / move；negotiate、upload 与 head 不传）：
+        按单次尝试记录「结果是否可能已生效」（见 ``outcome_unknown`` 与模块说明）。
+        """
         resends = 0
         while True:
             try:
                 response = yield request
-            except Exception:
+            except Exception as exc:
+                _note_attempt(tracker, exc)
                 if resends >= self.max_resends:
                     raise
             else:
+                _note_response(tracker, response)
                 if not _gateway_lost(response) or resends >= self.max_resends:
                     return response, resends > 0
             resends += 1
@@ -1456,6 +1594,7 @@ class ProtocolCore:
         *,
         holds: Callable[[str | None], bool],
         held: str,
+        tracker: _WriteAttempts | None = None,
     ) -> Generator[Request, Response, tuple[Response, str | None, bool]]:
         """裸 412 的中间层误判重试（HTTP 绑定 §3.2）：``head`` 判定后前置条件实际成立
         （``holds`` 为真）而目标状态未达成时，原样重发一次；重发后仍是裸 412 时再 ``head`` 判定
@@ -1476,7 +1615,7 @@ class ProtocolCore:
                     f"{uri}：{held}，重发后仍是无 DPE 错误码的 412", status=412
                 )
             retried = True
-            response, _ = yield from self._send(request)
+            response, _ = yield from self._send(request, tracker)
         return response, None, retried
 
     def _check_base_hash(self, value: str) -> None:
