@@ -18,6 +18,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::run::pattern::check_pattern;
 use crate::run::schema::{int_form, is_known_type, parse_defs_ref, CompiledSchema};
+use crate::run::secrets::is_base_env_name;
 use crate::run::InstanceFailure;
 
 /// 清单的文件名（§4.1）；`plugin.manifest` 指向的文件不强制此名。
@@ -44,21 +45,6 @@ const MANIFEST_MEMBERS: [&str; 7] = [
 
 /// §4.1：`secrets` 每项的封闭成员集。
 const SECRET_MEMBERS: [&str; 3] = ["name", "description", "required"];
-
-/// §4.3 基础环境（§4.3 第 1 部分）的全平台名单，另加全部 `LC_*`。
-const BASE_ENV_NAMES: [&str; 11] = [
-    "PATH",
-    "HOME",
-    "LANG",
-    "TZ",
-    "TMPDIR", // POSIX
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "PATHEXT",
-    "COMSPEC", // Windows
-];
 
 /// §4.1.1 封闭关键字子集：`config_schema`（含 `$defs` 中与所有嵌套位置）只允许这些关键字。
 const ALLOWED_KEYWORDS: [&str; 43] = [
@@ -406,10 +392,6 @@ fn is_secret_name(name: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-}
-
-fn is_base_env_name(name: &str) -> bool {
-    BASE_ENV_NAMES.contains(&name) || name.starts_with("LC_")
 }
 
 // ---------------------------------------------------------------------------

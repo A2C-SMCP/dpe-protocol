@@ -1,12 +1,12 @@
 //! dpe-sdk：DPE 协议 Rust SDK。
 //!
 //! 依赖 `dpe-hash` 计算 hash；承载 sans-IO 协议核心、传输适配、增量推送（#20–#25）与
-//! dpe-run 的运行器侧协议核心（`run`，connector 契约：清单与实例配置校验，§4.1–§4.2）。
-//! 协议核心不绑定异步运行时：默认 feature `http` 才引入 reqwest / tokio 适配，
+//! dpe-run 的运行器侧协议核心（`run`，connector 契约：清单、实例配置与实例定义校验，
+//! §4.1–§4.4）。协议核心不绑定异步运行时：默认 feature `http` 才引入 reqwest / tokio 适配，
 //! `--no-default-features` 下核心可独立编译（CI 有断言）。
 //!
-//! 已落地：[`models`]（三层对象的数据模型，core §2）与 [`run`]（connector 契约的清单与
-//! 实例配置校验）；其余随 Milestone `rust-sdk v0.1.6` 落地。
+//! 已落地：[`models`]（三层对象的数据模型，core §2）与 [`run`]（connector 契约的清单、
+//! 实例配置与实例定义校验）；其余随 Milestone `rust-sdk v0.1.6` 落地。
 
 #![forbid(unsafe_code)]
 
