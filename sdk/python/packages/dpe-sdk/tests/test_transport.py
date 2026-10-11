@@ -586,6 +586,52 @@ async def test_a_bare_429_is_not_retried_and_not_guessed() -> None:
     assert excinfo.value.status == 429
 
 
+async def test_retryable_errors_are_resent_on_writes_too() -> None:
+    """写请求（``retry_safe`` 为假）遇到按 ``code`` 判定的可重试错误时，传输层原样重发——
+    这是写路径上唯一允许传输层自行重发的情形（core §6：``retryable`` 即请求未被处理）。"""
+    documents: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=CAPABILITIES)
+        documents.append(request.read())
+        if len(documents) == 1:
+            return _problem("DPE_RATE_LIMITED", 429, **{"Retry-After": "0"})
+        document = _doc("hello")
+        return httpx.Response(
+            201,
+            json={
+                "status": "created",
+                "doc_hash": document.doc_hash(),
+                "delta": {"added": 1, "removed": 0, "retained": 0},
+            },
+        )
+
+    with DpeClient(REMOTE, transport=httpx.MockTransport(handler)) as client:
+        result = client.commit("s3://bucket/a.md", _doc("hello"), IfAbsent())
+    assert (len(documents), result.status) == (2, "created")
+    assert documents[0] == documents[1]  # 原样重发：两次的请求体逐字节相同
+
+
+async def test_a_bare_503_on_a_write_is_not_resent() -> None:
+    """无 ``DPE-Error-Code`` 的 503 不是可重试的 DPE 错误：不猜 code、写请求也不重发（§5）。"""
+    documents: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=CAPABILITIES)
+        documents.append(request.read())
+        return httpx.Response(503, headers={"Retry-After": "0"})
+
+    with (
+        DpeClient(REMOTE, transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(UnexpectedResponseError) as excinfo,
+    ):
+        client.commit("s3://bucket/a.md", _doc("hello"), IfAbsent())
+    assert len(documents) == 1
+    assert excinfo.value.status == 503
+
+
 async def test_batch_head_is_retry_safe_despite_being_a_post() -> None:
     """重发安全性来自 ``retry_safe``，不按 HTTP 方法推断：batch_head 走 POST 但只读。"""
 
