@@ -37,6 +37,7 @@ uv run bump-my-version bump patch     # 开下一周期：X.Y.Z → X.Y.(Z+1)-de
 ```
 
 - 标签触发 `release-python.yml`：先跑与 PR 相同的完整门禁（`python-sdk.yml`），再校验标签指向 main 上的提交，构建后经 environment 审批发布；
+- bump 的 `pre_commit_hooks` 会连带刷新**以 path 引用 SDK 的独立 uv 项目**的锁文件并一并提交（目前为 `connectors/git`；新增消费者时在 `pyproject.toml` 追加一对 hook）——漏刷会被 `python-sdk.yml` 的 `locks` 守卫在 SDK 侧拦住（它枚举仓库内全部已提交的 `uv.lock`，新消费者零维护即被覆盖，见 #106）；
 - 发布走 PyPI Trusted Publishing（OIDC），每个包一个 GitHub environment（`pypi-dpe-hash` / `pypi-dpe-sdk`），登记约定见 Issue #10 评论；
 - 开发版标签 `py-v*-dev` 不触发发布，`check_packages.py --expect-version` 也拒绝发布开发版；
 - dpe-hash 先发、dpe-sdk 后发（后者依赖前者）。

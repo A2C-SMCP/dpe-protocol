@@ -71,8 +71,16 @@ message = "Bump python-sdk version: {current_version} → {new_version}"
 tag = true
 tag_name = "py-v{new_version}"
 tag_message = "python-sdk {new_version}"
-# uv.lock 里的成员版本是 PEP 440 规范化形式（0.1.4-dev → 0.1.4.dev0），由 uv lock 重算
-pre_commit_hooks = ["uv lock --quiet", "git add uv.lock"]
+# uv.lock 里的成员版本是 PEP 440 规范化形式（0.1.4-dev → 0.1.4.dev0），由 uv lock 重算。
+# 以 path 引用 SDK 成员包的独立 uv 项目，其 uv.lock 同样钉着 SDK 版本，必须一并刷新（#106）：
+# 目前消费者只有 connectors/git；新增消费者时在此追加一对 hook（刷新 + git add），
+# python-sdk.yml 的 locks 守卫会枚举全部已提交的 uv.lock 校验，漏刷在 SDK 侧即被拦住。
+pre_commit_hooks = [
+    "uv lock --quiet",
+    "git add uv.lock",
+    "uv lock --quiet --directory ../../connectors/git",
+    "git add ../../connectors/git/uv.lock",
+]
 
 [tool.bumpversion.parts.pre_l]
 values = ["dev", "final"]
