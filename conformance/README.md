@@ -2,7 +2,7 @@
 
 黑盒 HTTP 跑分器：对着任意实现了 [core.md](../spec/core.md) + [HTTP 绑定](../spec/bindings/http.md) 的 remote 跑一遍协议语义（CAS、暂存原子切换、delta 如实回报、错误格式等），供各服务端在自己的 CI 中执行。
 
-**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章，入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。检查子集与全量（#27、#54–#59）随 M2 推进；发布与 CI 接入见 #40。
+**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。其余子集与全量（#54–#59）随 M2 推进；发布与 CI 接入见 #40。
 
 ## 通用检查面
 
