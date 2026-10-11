@@ -6,8 +6,8 @@ Cargo.toml               # workspace 根（不是 crate）：成员、共享元�
 pyproject.toml           # bump-my-version（版本工具是 Python 的，与 sdk/python/ 同款两态约定）
 vector-consumers.json    # 跨 crate 的向量消费登记（kind → 消费文件），见下
 crates/dpe-hash/         # dpe-hash：hash 核心、file_uri 规范化与契约常量，仅依赖 sha2 + serde + serde_json + ryu
-crates/dpe-sdk/          # dpe-sdk：sans-IO 协议核心（`run`：connector 清单与实例配置校验，§4.1–§4.2）；
-                         # 默认 feature `http` 提供 reqwest / tokio 适配
+crates/dpe-sdk/          # dpe-sdk：sans-IO 协议核心（`run`：connector 清单、实例配置与实例定义校验，
+                         # §4.1–§4.4）；默认 feature `http` 提供 reqwest / tokio 适配
 ```
 
 两个 crate 与 Python SDK 行为对等（CLAUDE.md「两个 SDK 行为对等」）：测试**直接读取仓库根目录的 `vectors/`**（不复制），逐字节校验；crate 测试失败而 `make check-vectors` 通过时，错的是 SDK。向量位置可用 `DPE_VECTORS_DIR` 覆盖（如在仓库之外运行测试）。

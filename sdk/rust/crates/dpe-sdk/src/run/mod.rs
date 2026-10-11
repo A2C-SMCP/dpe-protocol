@@ -1,19 +1,29 @@
-//! dpe-run 的运行器侧协议核心（connector 契约）：插件清单与实例配置校验（§4.1–§4.2），
-//! 含 §4.1.1 的 `config_schema` 可移植正则子集。
+//! dpe-run 的运行器侧协议核心（connector 契约）：插件清单、实例配置与实例定义的校验
+//! （§4.1–§4.4），含 §4.1.1 的 `config_schema` 可移植正则子集。
 //!
 //! - [`manifest`]：清单（`dpe-connector.json`）与实例配置校验（§4.1–§4.2），
 //!   [`manifest::parse_manifest`] / [`manifest::validate_config`]；
+//! - [`definition`]：实例定义（§4.4，独立运行器规范档）的解析与校验，
+//!   [`definition::parse_definition`] / [`definition::load_definition`] /
+//!   [`definition::check_against_manifest`] / [`definition::resolve_command`]；
+//! - [`secrets`]：凭证来源引用与「remote 凭证不可达」的判定（§4.3），
+//!   [`secrets::SourceRef`] / [`secrets::same_source`]；
 //! - [`pattern`]：`config_schema` 的 `pattern` / `patternProperties` 子集（§4.1.1），
 //!   含合法性判定（[`pattern::check_pattern`]）与匹配（[`pattern::Pattern`]）。
 //!
-//! 两部分都是 sans-IO：只处理已解析的 JSON 值，不访问网络或文件。与 Python SDK 的
-//! `dpe_sdk.run.manifest` / `dpe_sdk.run._pattern` 行为对等。插件宿主与线协议（§6）不在
-//! 本模块范围内，随后续任务落地。
+//! 各部分都是 sans-IO：只处理已解析的 JSON 值，不访问网络。本地文件系统访问有三处：实例
+//! 定义的读取（[`definition::load_definition`]）、命令的 `PATH` 查找
+//! （[`definition::resolve_command`]），以及 [`definition::parse_definition`] 的凭证同源检查
+//! ——`remote.credential` 与 `file` 型数据源凭证同在时会解析引用路径（`lstat` / `readlink`，
+//! §4.3），因此**同一 JSON 值在不同文件系统状态下的结论可以不同**。与 Python SDK 的
+//! `dpe_sdk.run` 行为对等。插件宿主与线协议（§6）不在本模块范围内，随后续任务落地。
 
 use std::fmt;
 
+pub mod definition;
 pub mod manifest;
 pub mod pattern;
+pub mod secrets;
 
 pub(crate) mod schema;
 
@@ -21,6 +31,8 @@ pub(crate) mod schema;
 pub const MANIFEST_INVALID: &str = "manifest_invalid";
 /// §7.1：实例配置未通过 `config_schema`（实例级失败）。
 pub const CONFIG_SCHEMA_VIOLATION: &str = "config_schema_violation";
+/// §7.4：实例定义不合法（实例级失败）。
+pub const DEFINITION_INVALID: &str = "definition_invalid";
 
 /// 实例级失败（connector 契约 §7.1）：不改动实例定义、清单或凭证就无法恢复，MUST NOT 自动重试。
 /// `code` 取 §7.4 轮报告 `failures` 元素的码名。
@@ -41,6 +53,13 @@ impl InstanceFailure {
     pub(crate) fn config_schema_violation(message: impl Into<String>) -> Self {
         InstanceFailure {
             code: CONFIG_SCHEMA_VIOLATION,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn definition_invalid(message: impl Into<String>) -> Self {
+        InstanceFailure {
+            code: DEFINITION_INVALID,
             message: message.into(),
         }
     }
