@@ -9,6 +9,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "dpe-conformance",
     "dpe-hash",
     "dpe-python-sdk-workspace",
     "dpe-sdk",
@@ -166,6 +167,23 @@ wheels = [
 ]
 
 [[package]]
+name = "dpe-conformance"
+version = "0.3.1.dev0"
+source = { editable = "packages/dpe-conformance" }
+dependencies = [
+    { name = "dpe-hash" },
+    { name = "httpx" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dpe-hash", editable = "packages/dpe-hash" },
+    { name = "httpx", specifier = ">=0.27,<1" },
+    { name = "pytest", specifier = ">=8.3" },
+]
+
+[[package]]
 name = "dpe-hash"
 version = "0.3.1.dev0"
 source = { editable = "packages/dpe-hash" }
@@ -178,6 +196,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "bump-my-version" },
+    { name = "dpe-conformance" },
     { name = "dpe-hash" },
     { name = "dpe-sdk", extra = ["server"] },
     { name = "mypy" },
@@ -191,6 +210,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "bump-my-version", specifier = ">=0.28.0" },
+    { name = "dpe-conformance", editable = "packages/dpe-conformance" },
     { name = "dpe-hash", editable = "packages/dpe-hash" },
     { name = "dpe-sdk", extras = ["server"], editable = "packages/dpe-sdk" },
     { name = "mypy", specifier = ">=1.13" },

@@ -14,8 +14,8 @@ DPE（Document / Page / Element）**标准协议**的权威仓库：规范、has
 - `scripts/gen_vectors.py`：向量生成器 = hash 契约与 connector §4.1.1 `config_schema` 正则子集向量的**规范参考实现**（仅标准库；子集实现见同目录 `pattern_subset.py`）
 - `scripts/pattern_subset.py`：connector §4.1.1 正则子集的规范参考实现（文法解析、合法性判定、显式码点区间转译）
 - `scripts/pattern_budget/`：§4.1.1 结构上界的资源余量探针（独立 cargo 工程，不进 CI）
-- `conformance/`：黑盒 HTTP 跑分器（M2）
-- `sdk/python/`：uv workspace，`dpe-hash`（零依赖 hash 核心）+ `dpe-sdk` 两个包（M2，见 `sdk/python/README.md`）；`sdk/rust/`：对等 cargo workspace，`dpe-hash`（hash 核心）+ `dpe-sdk` 两个 crate（M2，见 `sdk/rust/README.md`）
+- `conformance/`：黑盒 HTTP 跑分器检查面（M2；CLI 与套件在 `sdk/python/packages/dpe-conformance/`，见其 README）
+- `sdk/python/`：uv workspace，`dpe-hash`（零依赖 hash 核心）+ `dpe-sdk` + `dpe-conformance`（一致性跑分器）三个包（M2，见 `sdk/python/README.md`）；`sdk/rust/`：对等 cargo workspace，`dpe-hash`（hash 核心）+ `dpe-sdk` 两个 crate（M2，见 `sdk/rust/README.md`）
 
 ## 命令
 
