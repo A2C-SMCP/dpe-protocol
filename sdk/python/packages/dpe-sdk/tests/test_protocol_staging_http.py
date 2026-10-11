@@ -13,7 +13,7 @@ from typing import Any
 
 import dpe_hash
 import pytest
-from dpe_sdk import Document, errors
+from dpe_sdk import Document, PageObject, errors
 from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent, Request, Response, adrive
 from engine_helpers import FakeClock, id_factory, make_engine
 from http_helpers import Lossy, Recorder, Send, chunk_spans, problem, remote, session_ids
@@ -101,6 +101,19 @@ class Tick(Recorder):
     async def __call__(self, request: Request) -> Response:
         self._clock.advance(self._seconds)
         return await super().__call__(request)
+
+
+class Recorded(Recorder):
+    """记录每个请求与它收到的响应（断言「核心确实收到了这条错误」）。"""
+
+    def __init__(self, send: Send) -> None:
+        super().__init__(send)
+        self.responses: list[Response] = []
+
+    async def __call__(self, request: Request) -> Response:
+        response = await super().__call__(request)
+        self.responses.append(response)
+        return response
 
 
 async def test_deliver_chunks_a_large_page_against_the_reference_server() -> None:
@@ -332,7 +345,10 @@ async def test_deliver_renews_the_session_past_the_ttl() -> None:
 
 async def test_blind_resend_of_an_applied_middle_chunk_is_rejected_with_the_offset() -> None:
     """#73（HTTP 绑定 §4.7）：中间块已被接受后盲目重发同一块 → 400 + ``DPE-Upload-Offset``
-    （本会话已收字节数），按该偏移续传成功；断点查询（HEAD，只读、不续期）给出同一偏移。"""
+    （本会话已收字节数），按该偏移续传成功；断点查询（HEAD，只读、不续期）给出同一偏移。
+
+    这是服务端侧的对照；核心收到该 400 后自己按偏移续传见
+    ``test_blob_upload_resyncs_from_the_offset_in_a_400``。"""
     clock = FakeClock()
     async with remote(small_engine(clock=clock, staging_ttl_seconds=3600)) as r:
         core = await r.core()
@@ -365,6 +381,46 @@ async def test_blind_resend_of_an_applied_middle_chunk_is_rejected_with_the_offs
         assert last.status_code == 201
         done = await r.raw("HEAD", base)
         assert done.headers["dpe-upload-offset"] == str(len(IMAGE))
+
+
+async def test_blob_upload_resyncs_from_the_offset_in_a_400() -> None:
+    """#73 客户端侧（HTTP 绑定 §4.7）：本会话已有进度时，核心的上传从 0 开始，收到
+    400 + ``DPE-Upload-Offset`` 后**直接按该偏移续传**（不回退重发、不重开会话），完成后可提交。"""
+    document = image_doc()
+    async with remote(small_engine()) as r:
+        core = await r.core()
+        negotiated = await r.run(core.negotiate(URI, document))
+        base = f"staging/{negotiated.session.id}/blobs/{REF}"
+        # 服务端已有第一块（对客户端是「别处传来的既成进度」）：核心上传前并不知道
+        first = await r.raw(
+            "PUT", base, headers={"Content-Range": "bytes 0-99/250"}, content=IMAGE[:100]
+        )
+        assert first.status_code == 202
+
+        recorder = Recorded(r.send)
+        await adrive(core.upload_blob(negotiated.session, BlobSource.from_bytes(IMAGE)), recorder)
+        # 第一条 PUT 从 0 开始并收到 400 + 偏移 100；第二条直接从 100 继续（不重发 0-99）
+        assert recorder.responses[0].status == 400
+        assert recorder.responses[0].header("DPE-Error-Code") == "DPE_VALIDATION"
+        assert recorder.responses[0].header("DPE-Upload-Offset") == "100"
+        assert chunk_spans(recorder.sent) == [(0, 99, 250), (100, 199, 250), (200, 249, 250)]
+        # 全程一个会话，不开新会话
+        assert session_ids(recorder.sent) == {negotiated.session.id}
+        # 完成后偏移等于总字节数；补齐文档其余层后，引用同一会话提交成功、内容一致
+        done = await r.raw("HEAD", base)
+        assert done.headers["dpe-upload-offset"] == str(len(IMAGE))
+        page = document.pages[0]
+        await r.run(
+            core.upload_page(
+                negotiated.session,
+                PageObject(elements=[element.content_hash() for element in page.elements]),
+            )
+        )
+        await r.run(core.upload_element(negotiated.session, page.elements[0]))
+        result = await r.run(core.commit(URI, document, IfAbsent(), session=negotiated.session))
+        assert (result.status, result.doc_hash) == ("created", document.doc_hash())
+        skeleton = await r.run(core.get_skeleton(URI))
+        assert skeleton is not None and skeleton.doc_hash == document.doc_hash()
 
 
 async def test_resume_query_reports_the_three_states_and_resets_after_discard() -> None:
