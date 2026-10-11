@@ -597,7 +597,9 @@ fn conflict_action(
 /// `urlsplit` 的实现细节**——括号字面量的格式、IPvFuture、`%zone`、NFKC 同形检查，以及控制
 /// 字符与前导空白的清除，都是 CPython 的加固行为、不是规范；在 Rust 里逐条复制等于用实现倒逼
 /// 规范（CLAUDE.md：两份实现出现分歧时修规范，不互相对齐），且会随 CPython 补丁版本漂移。
-/// 因此在这些边缘输入上，两侧在 #112 落地前可能结果不同（Rust 侧更严格）。
+/// 因此在这些边缘输入上，两侧在 #112 落地前可能结果不同，且方向不一：Rust 不做清理也不做
+/// 字面量校验——会接受 CPython 拒绝的输入（如括号字面量格式非法、netloc 带 NFKC 分隔符
+/// 字符），也会拒绝 CPython 清理后接受的输入（如前导空白、制表符）。
 ///
 /// 消息不回显 URL（可能含 userinfo 密码，形式恰是「凭证误写在 URL 里」，§4.3「不外泄」）。
 fn check_remote_url(url: &str) -> Result<(), InstanceFailure> {
