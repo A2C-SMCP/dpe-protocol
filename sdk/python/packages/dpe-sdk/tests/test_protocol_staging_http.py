@@ -1,4 +1,4 @@
-"""暂存路径对真实参考服务端（#49）：页分块、blob 断点续传、会话过期与缺失恢复。
+"""暂存路径对真实参考服务端（#49、#50）：页分块、blob 断点续传、会话过期与缺失恢复。
 
 ``ProtocolCore`` 产出的请求经 ``ASGITransport`` 发给 ``dpe_sdk.testing`` 的参考服务端；
 「响应丢失」用包装器模拟：请求照常到达引擎（状态已变），客户端拿不到结果。
@@ -7,15 +7,16 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 import dpe_hash
 import pytest
 from dpe_sdk import Document, errors
 from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent, Request, Response, adrive
-from engine_helpers import FakeClock, make_engine
-from http_helpers import remote
+from engine_helpers import FakeClock, id_factory, make_engine
+from http_helpers import Lossy, Recorder, Send, chunk_spans, problem, remote, session_ids
 
 pytestmark = pytest.mark.anyio
 
@@ -29,8 +30,6 @@ URI = "test://docs/staged"
 TARGET = "documents?uri=test%3A%2F%2Fdocs%2Fstaged"
 IMAGE = b"\x89PNG" + b"x" * 246  # 250 字节
 REF = dpe_hash.blob_ref(IMAGE)
-
-Send = Callable[[Request], Awaitable[Response]]
 
 
 def image_doc() -> Document:
@@ -72,34 +71,6 @@ def small_engine(**overrides: Any) -> Any:
     return make_engine(**limits)
 
 
-class Recorder:
-    """记录发出的请求，其余原样转发。"""
-
-    def __init__(self, send: Send) -> None:
-        self._send = send
-        self.sent: list[Request] = []
-
-    async def __call__(self, request: Request) -> Response:
-        self.sent.append(request)
-        return await self._send(request)
-
-
-class Lossy(Recorder):
-    """命中 ``match`` 的第一次请求照常送达、响应随即丢弃（服务端已生效，客户端收不到结果）。"""
-
-    def __init__(self, send: Send, match: Callable[[Request], bool]) -> None:
-        super().__init__(send)
-        self._match = match
-        self.dropped = 0
-
-    async def __call__(self, request: Request) -> Response:
-        response = await super().__call__(request)
-        if self.dropped == 0 and self._match(request):
-            self.dropped += 1
-            raise ConnectionError("响应丢失（引擎已处理）")
-        return response
-
-
 class Expire(Recorder):
     """命中 ``match`` 的第一次请求转发前拨快时钟：会话在服务端立即过期。"""
 
@@ -119,25 +90,17 @@ class Expire(Recorder):
         return await super().__call__(request)
 
 
-def chunk_spans(requests: list[Request]) -> list[tuple[int, int, int]]:
-    """请求里的 ``Content-Range`` 解析为 (起点, 终点, 总量)。"""
-    spans = []
-    for request in requests:
-        value = request.headers.get("Content-Range")
-        if value is None:
-            continue
-        span, _, total = value.removeprefix("bytes ").partition("/")
-        first, _, last = span.partition("-")
-        spans.append((int(first), int(last), int(total)))
-    return spans
+class Tick(Recorder):
+    """每个请求发出前拨快时钟 ``seconds`` 秒（会话只在成功的上传时续期）。"""
 
+    def __init__(self, send: Send, clock: FakeClock, seconds: float) -> None:
+        super().__init__(send)
+        self._clock = clock
+        self._seconds = seconds
 
-def session_ids(requests: list[Request]) -> set[str]:
-    return {
-        request.target.split("/")[1]
-        for request in requests
-        if request.target.startswith("staging/")
-    }
+    async def __call__(self, request: Request) -> Response:
+        self._clock.advance(self._seconds)
+        return await super().__call__(request)
 
 
 async def test_deliver_chunks_a_large_page_against_the_reference_server() -> None:
@@ -267,3 +230,180 @@ async def test_deliver_reuses_the_session_after_a_cas_failure() -> None:
         assert [request.method for request in recorder.sent] == ["PUT"]
         skeleton = await r.run(core.get_skeleton(URI))
         assert skeleton is not None and skeleton.doc_hash == changed.doc_hash()
+
+
+# ---------------------------------------------------------------------- 集成场景（#50）
+
+
+def incremental_docs() -> tuple[Document, Document]:
+    """V1 → V2：第一页追加一个文本与一个带 blob 的图片元素，第二页不动（未变的层不应重传）。"""
+    image = {"category": "Image", "blob": REF, "mime_type": "image/png"}
+    texts = [{"category": "NarrativeText", "text": text} for text in ("x", "a")]
+    v1 = Document.model_validate(
+        {
+            "file_type": "md",
+            "pages": [
+                {"elements": texts},
+                {"elements": [{"category": "NarrativeText", "text": "b"}]},
+            ],
+        }
+    )
+    v2 = Document.model_validate(
+        {
+            "file_type": "md",
+            "pages": [
+                {"elements": [*texts, {"category": "NarrativeText", "text": "c"}, image]},
+                {"elements": [{"category": "NarrativeText", "text": "b"}]},
+            ],
+        }
+    )
+    return v1, v2
+
+
+async def test_deliver_uploads_only_the_changed_layers_on_an_incremental_update() -> None:
+    """增量投递：去重范围固定为本文档（core §3.3），只传变更的页、元素与 blob。
+
+    ``max_payload_bytes=240``：negotiate 与 commit 请求体放得下，而快路径内联体放不下（必然走
+    暂存路径）、变更页（302 字节）与 blob（250 字节）都放不下（必然分块）；会话 id 用确定性的
+    短值，尺寸可推算。
+    """
+    v1, v2 = incremental_docs()
+    changed_page = v2.hashes()["pages"][0]["page_hash"]
+    new_text, new_image = v2.hashes()["pages"][0]["elements"][2:]
+    async with remote(small_engine(max_payload_bytes=240, session_id_factory=id_factory())) as r:
+        core = await r.core()
+        assert (await r.run(core.deliver(URI, v1, IfAbsent()))).status == "created"
+
+        recorder = Recorder(r.send)
+        result = await adrive(
+            core.deliver(URI, v2, BaseHash(v1.doc_hash()), blobs=lambda ref: IMAGE), recorder
+        )
+        assert (
+            result.status,
+            result.delta.added,
+            result.delta.removed,
+            result.delta.retained,
+        ) == ("updated", 2, 0, 3)
+        sent = recorder.sent
+        (sid,) = session_ids(sent)  # 全程一个会话；重开会多出一个，这里直接失败
+        # 只有变更的页被上传（未变的第二页不重传），页对象按分块走完
+        pages = [request for request in sent if "/pages/" in request.target]
+        assert {request.target for request in pages} == {f"staging/{sid}/pages/{changed_page}"}
+        spans = chunk_spans(pages)
+        assert spans[0][0] == 0 and spans[-1][1] + 1 == spans[0][2]
+        assert all(span[0] == spans[i - 1][1] + 1 for i, span in enumerate(spans) if i)
+        # 只有两个新元素被上传（未变元素不重传；顺序无规范约束，按集合断言）
+        assert {request.target for request in sent if "/objects/" in request.target} == {
+            f"staging/{sid}/objects/{new_text}",
+            f"staging/{sid}/objects/{new_image}",
+        }
+        blobs = [request for request in sent if "/blobs/" in request.target]
+        assert {request.target for request in blobs} == {f"staging/{sid}/blobs/{REF}"}
+        blob_spans = chunk_spans(blobs)
+        assert all(span[2] == len(IMAGE) for span in blob_spans)
+        assert blob_spans[0][0] == 0 and blob_spans[-1][1] + 1 == len(IMAGE)
+        # 最后的 commit 引用会话，不内联页与元素
+        commit = sent[-1]
+        assert (commit.method, commit.target) == ("PUT", TARGET)
+        body = json.loads(commit.body_bytes() or b"")
+        assert body["staging_session"] == sid
+        assert "pages" not in body and "objects" not in body
+        skeleton = await r.run(core.get_skeleton(URI))
+        assert skeleton is not None and skeleton.doc_hash == v2.doc_hash()
+        assert len(skeleton.pages) == 2
+
+
+async def test_deliver_renews_the_session_past_the_ttl() -> None:
+    """会话续期（core §3.4）：每次成功上传把过期时间推后——总耗时超过 TTL 的长流程，
+    仍以同一个会话完成，不重开 negotiate。"""
+    clock = FakeClock()
+    async with remote(small_engine(clock=clock, staging_ttl_seconds=3600)) as r:
+        core = await r.core()
+        start = clock.now
+        # 每个请求前拨 1000 秒：单步间隔小于 TTL，但流程总耗时远大于 TTL
+        tick = Tick(r.send, clock, 1000)
+        result = await adrive(core.deliver(URI, many_elements_doc(), IfAbsent()), tick)
+        assert result.status == "created"
+        assert clock.now - start > timedelta(seconds=3600)
+        assert len(session_ids(tick.sent)) == 1
+        skeleton = await r.run(core.get_skeleton(URI))
+        assert skeleton is not None and skeleton.doc_hash == many_elements_doc().doc_hash()
+
+
+async def test_blind_resend_of_an_applied_middle_chunk_is_rejected_with_the_offset() -> None:
+    """#73（HTTP 绑定 §4.7）：中间块已被接受后盲目重发同一块 → 400 + ``DPE-Upload-Offset``
+    （本会话已收字节数），按该偏移续传成功；断点查询（HEAD，只读、不续期）给出同一偏移。"""
+    clock = FakeClock()
+    async with remote(small_engine(clock=clock, staging_ttl_seconds=3600)) as r:
+        core = await r.core()
+        negotiated = await r.run(core.negotiate(URI, image_doc()))
+        base = f"staging/{negotiated.session.id}/blobs/{REF}"
+        # 第一块已被接受（202 的响应在客户端看来「丢失」）
+        first = await r.raw(
+            "PUT", base, headers={"Content-Range": f"bytes 0-99/{len(IMAGE)}"}, content=IMAGE[:100]
+        )
+        assert (first.status_code, first.headers["dpe-upload-offset"]) == (202, "100")
+        # 盲目重发同一块：不命中「已完成」的 200，而是 400 + 本会话已收字节数
+        blind = await r.raw(
+            "PUT", base, headers={"Content-Range": f"bytes 0-99/{len(IMAGE)}"}, content=IMAGE[:100]
+        )
+        assert (blind.status_code, problem(blind)["code"]) == (400, "DPE_VALIDATION")
+        assert blind.headers["dpe-upload-offset"] == "100"
+        # 断点查询给出同一偏移，且不续期（拨钟后过期时间不变）
+        clock.advance(60)
+        head = await r.raw("HEAD", base)
+        assert (head.status_code, head.headers["dpe-upload-offset"]) == (200, "100")
+        assert head.headers["dpe-session-expires"] == first.headers["dpe-session-expires"]
+        # 按已收偏移续传剩余两块
+        middle = await r.raw(
+            "PUT", base, headers={"Content-Range": "bytes 100-199/250"}, content=IMAGE[100:200]
+        )
+        assert (middle.status_code, middle.headers["dpe-upload-offset"]) == (202, "200")
+        last = await r.raw(
+            "PUT", base, headers={"Content-Range": "bytes 200-249/250"}, content=IMAGE[200:]
+        )
+        assert last.status_code == 201
+        done = await r.raw("HEAD", base)
+        assert done.headers["dpe-upload-offset"] == str(len(IMAGE))
+
+
+async def test_resume_query_reports_the_three_states_and_resets_after_discard() -> None:
+    """#73（HTTP 绑定 §4.7）：断点查询三状态——本会话无进度 → 200 + 偏移 0（不得 404）、
+    已完成 → 该对象总字节数、到齐校验失败被丢弃 → 归 0。"""
+    async with remote(small_engine()) as r:
+        core = await r.core()
+        negotiated = await r.run(core.negotiate(URI, image_doc()))
+        base = f"staging/{negotiated.session.id}/blobs/{REF}"
+        # ① 无进度：200 + 偏移 0（绝不是 404）
+        empty = await r.raw("HEAD", base)
+        assert (empty.status_code, empty.headers["dpe-upload-offset"]) == (200, "0")
+        # ② 到齐校验失败被丢弃：已收的中间态先有偏移，失败后归 0
+        part = await r.raw(
+            "PUT", base, headers={"Content-Range": "bytes 0-99/250"}, content=IMAGE[:100]
+        )
+        assert part.status_code == 202
+        assert (await r.raw("HEAD", base)).headers["dpe-upload-offset"] == "100"
+        second = await r.raw(
+            "PUT", base, headers={"Content-Range": "bytes 100-199/250"}, content=b"y" * 100
+        )
+        assert second.status_code == 202
+        wrong = await r.raw(
+            "PUT", base, headers={"Content-Range": "bytes 200-249/250"}, content=b"y" * 50
+        )
+        assert (wrong.status_code, problem(wrong)["code"]) == (400, "DPE_HASH_MISMATCH")
+        discarded = await r.raw("HEAD", base)
+        assert discarded.headers["dpe-upload-offset"] == "0"
+        # ③ 完成：偏移 = 该对象总字节数
+        statuses = []
+        for start in range(0, len(IMAGE), 100):
+            piece = IMAGE[start : start + 100]
+            response = await r.raw(
+                "PUT",
+                base,
+                headers={"Content-Range": f"bytes {start}-{start + len(piece) - 1}/250"},
+                content=piece,
+            )
+            statuses.append(response.status_code)
+        assert statuses[-1] == 201
+        done = await r.raw("HEAD", base)
+        assert done.headers["dpe-upload-offset"] == str(len(IMAGE))
