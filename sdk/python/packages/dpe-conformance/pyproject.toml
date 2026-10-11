@@ -1,6 +1,6 @@
 [project]
 name = "dpe-conformance"
-version = "0.3.1-dev"
+version = "0.3.1"
 description = "DPE 服务端一致性跑分器：对任意 remote 黑盒运行协议检查，输出 JUnit XML 与执行/跳过计数"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ classifiers = [
 ]
 dependencies = [
     # 期望 hash 只依赖 dpe-hash（#26）：跑分器不依赖 dpe-sdk 与任何服务端实现
-    "dpe-hash==0.3.1-dev",
+    "dpe-hash==0.3.1",
     "httpx>=0.27,<1",
     # 套件以 pytest 实现（--section 过滤、skip 语义与 JUnit XML 直接复用其报告设施）。
     # 计数归章依赖 Node.location 的 rootpath 相对语义（pytest 9 已核实），锁主版本上界；
