@@ -11,9 +11,11 @@
 已转发、源站结果未知），都视为「请求可能已到达服务端、响应丢失」，由操作自己判定——commit
 （非 force）、delete、move 原样重发（幂等由内容保证，至多 ``max_resends`` 次），delete 在重发
 后得到 ``DPE_NOT_FOUND`` 视为成功；force 提交不重放，先 ``head`` 判定。只有操作知道自己在重发，
-所以写请求可能已发出之后，传输层 MUST NOT 自行重发；确定未发出的失败（如建连失败）与
-``DPE_RATE_LIMITED`` / ``DPE_UNAVAILABLE`` 的原样重试（``retryable``）仍可由传输层处理，它们
-不改变请求是否生效的判定。只读请求原样重发总是安全的，传输层可以自行重发。
+所以 ``Request.retry_safe`` 为假的请求（写操作与 negotiate、upload_*）一旦可能已发出，传输层
+MUST NOT 自行重发；``retry_safe`` 为真的请求（只读操作与断点查询）原样重发总是安全的，传输层
+可以自行重发。确定未发出的失败（如建连失败）与 ``DPE_RATE_LIMITED`` / ``DPE_UNAVAILABLE`` 的
+原样重试（``retryable``）与请求的重发安全性无关，任何请求都可由传输层处理，它们不改变请求
+是否生效的判定。
 
 **契约**：``ProtocolCore`` 只使用调用方显式指定的一个 hash 契约（缺省 ``dpe_hash.CONTRACT``），
 服务端不接受时失败，不换契约、不降级（core §3.1）；之后每个请求都带 ``DPE-Hash-Contract``，
@@ -108,6 +110,7 @@ __all__ = [
     "Session",
     "adrive",
     "drive",
+    "error_from_response",
     "fetch_capabilities",
     "retry_after_seconds",
 ]
@@ -192,12 +195,18 @@ class Request:
 
     ``body`` 为 ``BlobRange`` 时是延迟的字节区间（大 blob 的分块上传），用 ``body_bytes()``
     取出字节；适配层 MUST NOT 把 ``BlobRange`` 本身交给 HTTP 客户端。
+
+    ``retry_safe`` 表示原样重发该请求总是安全的（只读操作与断点查询为真，写操作与
+    ``negotiate`` / ``upload_*`` 为假）：传输层对为真的请求可以在连接失败、超时等网络失败后
+    自行重发；为假的请求一旦可能已经发出（不是确定未发出的建连失败），传输层 MUST NOT 重发，
+    交回操作按 core §5.2 判定。判定不看 HTTP 方法——``batch_head`` 走 POST 但只读。
     """
 
     method: str
     target: str
     headers: Mapping[str, str] = field(default_factory=dict)
     body: bytes | BlobRange | None = None
+    retry_safe: bool = False
 
     def body_bytes(self) -> bytes | None:
         """取出请求体的字节（``BlobRange`` 在这里解出）。源给的字节数与声明的区间不符时抛
@@ -373,9 +382,12 @@ def _problem(response: Response) -> Mapping[str, Any] | None:
     return None
 
 
-def _error(response: Response) -> DpeError | UnexpectedResponseError:
+def error_from_response(response: Response) -> DpeError | UnexpectedResponseError:
     """错误响应对应的异常（HTTP 绑定 §3.2、§5）：problem 体的 ``code`` 优先，其次
-    ``DPE-Error-Code`` 头，都没有则不是 DPE 错误。"""
+    ``DPE-Error-Code`` 头，都没有则不是 DPE 错误。
+
+    传输适配层用它判定传输层可自行重试的响应（``retryable``，不按状态码分派）。
+    """
     retry_after = retry_after_seconds(response.header("retry-after"))
     problem = _problem(response)
     if problem is not None:
@@ -412,11 +424,11 @@ def _gateway_lost(response: Response) -> bool:
 
 
 def _expect(response: Response, status: int = 200) -> None:
-    """响应状态码必须是 ``status``；错误状态码按 ``_error`` 抛出，其他状态码视为不合规。"""
+    """响应状态码必须是 ``status``；错误状态码按 ``error_from_response`` 抛出，其余不合规。"""
     if response.status == status:
         return
     if response.status >= 400:
-        raise _error(response)
+        raise error_from_response(response)
     raise UnexpectedResponseError(f"期望 HTTP {status}", status=response.status)
 
 
@@ -431,7 +443,7 @@ def _parse(response: Response, model: type[_M], context: Mapping[str, Any] | Non
 
 def fetch_capabilities() -> Operation[Capabilities]:
     """``GET capabilities``（HTTP 绑定 §4.1）：唯一不带契约头的请求。"""
-    response = yield Request("GET", "capabilities")
+    response = yield Request("GET", "capabilities", retry_safe=True)
     _expect(response)
     return _parse(response, Capabilities)
 
@@ -497,13 +509,14 @@ class ProtocolCore:
         headers: Mapping[str, str] | None = None,
         *,
         content_type: str = _JSON,
+        retry_safe: bool = False,
     ) -> Request:
         headers = {CONTRACT_HEADER: self.contract, **(headers or {})}
         payload: bytes | BlobRange | None = None
         if body is not None:
             headers["Content-Type"] = content_type
             payload = body if isinstance(body, (bytes, BlobRange)) else self._json_body(body)
-        return Request(method, target, headers, payload)
+        return Request(method, target, headers, payload, retry_safe)
 
     def _json_body(self, body: Mapping[str, Any]) -> bytes:
         """JSON 请求体的字节；尺寸预检与实际发送共用它（量到的字节就是要发出去的字节）。"""
@@ -566,7 +579,7 @@ class ProtocolCore:
 
     def head(self, uri: str) -> Operation[str | None]:
         """``HEAD documents?uri=``：文档的 doc_hash，不存在为 ``None``（HTTP 绑定 §3.3）。"""
-        response = yield self._request("HEAD", "documents?" + _query(uri=uri))
+        response = yield self._request("HEAD", "documents?" + _query(uri=uri), retry_safe=True)
         return self._head_result(response)
 
     def _head_result(self, response: Response) -> str | None:
@@ -590,7 +603,7 @@ class ProtocolCore:
         result: list[str | None] = []
         for start in range(0, len(uris), size):
             chunk = list(uris[start : start + size])
-            response = yield self._request("POST", "heads", {"uris": chunk})
+            response = yield self._request("POST", "heads", {"uris": chunk}, retry_safe=True)
             _expect(response)
             heads = _parse(response, BatchHeads).heads
             if len(heads) != len(chunk):
@@ -613,7 +626,7 @@ class ProtocolCore:
         ``uri`` 不合法（core §1.1 文法）时本地即抛 ``dpe_hash.ValidationError``，不发请求。
         """
         expected_uri = dpe_hash.normalize_file_uri(uri)
-        response = yield self._request("GET", "documents?" + _query(uri=uri))
+        response = yield self._request("GET", "documents?" + _query(uri=uri), retry_safe=True)
         try:
             _expect(response)
         except NotFoundError:
@@ -663,7 +676,7 @@ class ProtocolCore:
         target = "documents?" + _query(
             prefix=prefix, cursor=cursor, limit=None if limit is None else str(limit)
         )
-        response = yield self._request("GET", target)
+        response = yield self._request("GET", target, retry_safe=True)
         _expect(response)
         page = _parse(response, ListPage)
         for i, entry in enumerate(page.documents):
@@ -729,7 +742,7 @@ class ProtocolCore:
         """upload 的成功响应（201 本会话新写入 / 200 重复，HTTP 绑定 §4.6）：续期并校验，
         失败（含 410 会话不可用）按 problem 体的 code 抛出。"""
         if response.status >= 400:
-            raise _error(response)
+            raise error_from_response(response)
         if response.status not in (200, 201):
             raise UnexpectedResponseError("upload 期望 HTTP 200 或 201", status=response.status)
         self._renew(session, response)
@@ -887,9 +900,9 @@ class ProtocolCore:
 
         只读、不续期；会话不可用（410）原样抛 ``SessionExpiredError``，由调用方重开 negotiate。
         """
-        response, _ = yield from self._send(self._request("HEAD", target))
+        response, _ = yield from self._send(self._request("HEAD", target, retry_safe=True))
         if response.status >= 400:
-            raise _error(response)
+            raise error_from_response(response)
         if response.status != 200:
             raise UnexpectedResponseError("断点查询期望 HTTP 200", status=response.status)
         self._renew(session, response)
@@ -948,7 +961,7 @@ class ProtocolCore:
                 continue
             if _gateway_lost(response):
                 if recoveries <= 0:
-                    raise _error(response)
+                    raise error_from_response(response)
                 recoveries -= 1
                 offset = yield from self._resume(session, target, total)
                 continue
@@ -965,7 +978,7 @@ class ProtocolCore:
                 continue
             if response.status < 400:
                 return response
-            error = _error(response)
+            error = error_from_response(response)
             hint = self._offset_hint(response)
             if isinstance(error, ValidationError) and hint is not None:
                 # 偏移不连续的错误响应带本会话已收字节数：直接据它重同步（免一次断点查询）
@@ -1051,7 +1064,7 @@ class ProtocolCore:
             except Exception as exc:
                 return (yield from self._confirm_force(uri, expected, total, exc))
             if _gateway_lost(response):
-                lost = _error(response)
+                lost = error_from_response(response)
                 return (yield from self._confirm_force(uri, expected, total, lost))
             return self._commit_result(response, expected, total)
         response, _ = yield from self._send(request)
@@ -1408,7 +1421,9 @@ class ProtocolCore:
 
     def _confirm_head(self, uri: str) -> Generator[Request, Response, str | None]:
         """写操作结果不确定时的 ``head``（只读，响应丢失时同样原样重发）。"""
-        response, _ = yield from self._send(self._request("HEAD", "documents?" + _query(uri=uri)))
+        response, _ = yield from self._send(
+            self._request("HEAD", "documents?" + _query(uri=uri), retry_safe=True)
+        )
         return self._head_result(response)
 
     def _confirm_force(
@@ -1487,7 +1502,7 @@ class ProtocolCore:
     def _commit_result(self, response: Response, expected: str, total: int) -> CommitResult:
         """commit 响应（HTTP 绑定 §4.8）：201 即 created，200 即 updated / unchanged。"""
         if response.status >= 400:
-            raise _error(response)
+            raise error_from_response(response)
         if response.status not in (200, 201):
             raise UnexpectedResponseError("commit 期望 HTTP 200 或 201", status=response.status)
         result = _parse(response, CommitResult)

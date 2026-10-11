@@ -1,9 +1,10 @@
 """dpe-sdk：DPE 协议 Python SDK。
 
 依赖 dpe-hash 计算 hash；承载三层对象的数据模型（``dpe_sdk.models``）、协议错误
-（``dpe_sdk.errors``）、响应报文（``dpe_sdk.wire``）、sans-IO 协议核心（``dpe_sdk.protocol``）
-内存版参考服务端（``dpe_sdk.testing``）与 dpe-run 运行器的组成部分（``dpe_sdk.run``，不在顶层
-导入），以及后续的传输适配与增量推送（#13–#15）。
+（``dpe_sdk.errors``）、响应报文（``dpe_sdk.wire``）、sans-IO 协议核心（``dpe_sdk.protocol``）、
+httpx 传输适配与凭证注入（``dpe_sdk.transport`` / ``dpe_sdk.credentials``，不在顶层导入——按需
+import，不拉入 httpx）、内存版参考服务端（``dpe_sdk.testing``）与 dpe-run 运行器的组成部分
+（``dpe_sdk.run``，同样不在顶层导入），以及后续的增量推送（#14–#15）。
 """
 
 from importlib.metadata import version

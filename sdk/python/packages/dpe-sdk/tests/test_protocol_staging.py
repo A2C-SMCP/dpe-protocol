@@ -296,6 +296,26 @@ def test_blob_chunk_lost_response_resumes_from_the_server_offset() -> None:
     assert last.headers["Content-Type"] == "image/png"
 
 
+def test_retry_safe_flags_on_uploads_and_the_resume_query() -> None:
+    """写请求与 ``negotiate`` / ``upload_*`` 都不是重发安全的；分块恢复的断点查询（HEAD）是只读的，
+    ``retry_safe`` 为真——传输层只对后者在连接失败与超时后自行重发（见 ``protocol`` 模块说明）。"""
+    server = Script(
+        uploaded(status=202, offset=100),
+        TimeoutError("块 2 的响应丢失"),
+        resume(100),
+        uploaded(status=202, offset=200),
+        uploaded({}),
+    )
+    assert drive(chunked_core().upload_blob(SESSION, BLOB), server) is None
+    assert [(r.method, r.retry_safe) for r in server.requests] == [
+        ("PUT", False),
+        ("PUT", False),
+        ("HEAD", True),
+        ("PUT", False),
+        ("PUT", False),
+    ]
+
+
 def test_blob_chunk_completed_before_resume_resends_the_last_chunk() -> None:
     """响应丢失但服务端已收完：偏移等于总量即已完成，重发末块（非空区间）取缺失清单。"""
     server = Script(
