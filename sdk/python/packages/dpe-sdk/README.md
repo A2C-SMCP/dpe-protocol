@@ -3,6 +3,7 @@
 [DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的 Python SDK：把结构化文档正确、增量、可靠地投递到任意 DPE 服务端。
 
 - sans-IO 协议核心 + httpx 传输适配（sync / async）；
+- 增量推送器 `StatefulPusher` / `AsyncStatefulPusher`（本地状态只作缓存，冲突如实上报、绝不自动 force）；
 - 只接受 remote URL 与可插拔的 `CredentialProvider`，不封装任何服务端私有端点；
 - hash 由 [`dpe-hash`](https://pypi.org/project/dpe-hash/) 计算（同版本精确依赖）；
 - 规范与源码：<https://github.com/A2C-SMCP/dpe-protocol>。
@@ -86,6 +87,26 @@ source = source_from_stream(open("big.bin", "rb"))  # 可 seek 的句柄
 - **内存不随文件大小增长**：路径与流分块流式哈希（内存 O(`chunk_bytes`)）；`read_blob` 的来源分两趟——先分块读一遍算出摘要与总长（契约 §6.7：摘要与总长确定后才可开始上传），`read` 再按偏移请求同一份快照（句柄保证任意偏移、同一偏移结果一致），不整读、不落盘；
 - **只在缺 blob 时触碰来源**：`deliver` 只对缺失的 blob 调用 `blobs`——未变文档（`unchanged`）完全不读取来源（大文件与 `read_blob` 往返都可能很贵）。注意来源在**构造时**就完成哈希：大文件与 `read_blob` 来源应把构造放进回调（`blobs=lambda ref: source_from_path(...)`）——未变文档连哈希都不会发生，前提是 `ref` 不靠本次构造取得（例如来自上一次投递）；需要先构造拿 `ref` 时，把同一个来源复用给回调（如上面的示例）；
 - **不替调用方解引用**：url 与凭证属于 connector（契约 1 §4.2）；不可 seek 的流请改用 `read_blob` 回调或先落为临时文件（`source_from_stream` 会如实拒绝）。
+
+## 增量推送（StatefulPusher）
+
+`dpe_sdk.pusher` 面向 connector / 上层：给它一批文档，只推送变化的部分。判定机制按 connector 契约 §7.2 实现（同步状态、前置条件判定表、意图日志）；冲突处置策略归调用方。
+
+```python
+from dpe_sdk.pusher import MemoryStateStore, StatefulPusher
+
+with DpeClient("https://example.com/anything/r/42") as client:
+    pusher = StatefulPusher(client, state=MemoryStateStore())  # 状态只作缓存；落盘实现由调用方注入
+    results = pusher.push({uri: document for uri, document in batch})
+    for result in results:
+        print(result.status)  # created / updated / unchanged / achieved / conflict / failed
+```
+
+- **只推变化**：本地算 doc_hash（N）与 `batch_head` 读到的 remote 值（R）比较；R == N 记 `achieved` 并跳过写入。快路径 / 逐层协商的分界完全复用核心 `deliver`（inline 请求体 ≤ `capabilities.limits.max_payload_bytes`），本模块不引入任何阈值；`concurrency` 只限制并发度（各篇独立）；
+- **同步状态 + 意图日志**（§7.2）：同步状态（L）是每篇文档最近一次确认的 remote doc_hash，决定写入的前置条件（`if_absent` / `base_hash`）；写入前先把意图持久化到 `StateStore`（`save` 返回后才发写请求），结果确定即清除、只有结果未知（`unknown=True`）才保留，下一轮按意图对账恢复。缺省 `MemoryStateStore` 只在进程内、**不保证崩溃持久**；落盘实现属运行器的状态目录（契约 §4.4）；
+- **冲突如实上报**：`status == "conflict"`，带读到的（或冲突后重读的）remote 状态；**绝不自动 force、不自动重提**——`source_wins` / `report` 等策略与轮内重试上限归调用方，重提用 `expected_base` 覆盖前置条件（值为 `None` 表示确认「不存在」）；
+- **错误与凭证**：复用 `DpeClient` 的传输层（gzip、`Retry-After`、`CredentialProvider` 全部适用）；失败按异常原类型如实回报，`unknown=True` 表示结果未确定——由核心的 `outcome_unknown` 判据给出（写请求任何一次尝试可能已到达服务端即未知，含「首发丢响应后重发得到 DPE 错误或建连失败」等序列），此时意图保留、下一轮对账恢复；
+- 本版本覆盖 commit 路径（create / update / 冲突上报）；delete / move 意图随 #14 的后续部分提供。
 
 ## 参考服务端（testing）
 
@@ -213,4 +234,4 @@ python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
 
 钩子通道是测试侧信道：不做 DPE 认证、默认关闭、只建议监听本机（缺省 127.0.0.1）。
 
-> 增量推送（StatefulPusher）与 dpe-run 尚在开发中（#14、#16–#17）。
+> dpe-run（运行器与示例插件）尚在开发中（#16–#17）；增量推送的 delete / move 意图随 #14 的后续部分提供。

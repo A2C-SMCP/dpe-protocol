@@ -14,9 +14,7 @@ import json
 import math
 import threading
 import time
-from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from typing import Any
@@ -24,8 +22,11 @@ from typing import Any
 import dpe_hash
 import httpx
 import pytest
+from client_helpers import PREFIX, REMOTE, ClientRecorder
+from client_helpers import in_process_client as in_process
+from dpe_sdk import protocol as protocol_module
 from dpe_sdk import transport as transport_module
-from dpe_sdk.credentials import CredentialProvider, StaticCredentialProvider
+from dpe_sdk.credentials import StaticCredentialProvider
 from dpe_sdk.errors import (
     AlreadyExistsError,
     DpeError,
@@ -44,15 +45,12 @@ from dpe_sdk.protocol import (
     adrive,
     error_from_response,
 )
-from dpe_sdk.testing import Engine, PrefixAuthorizer, create_app
+from dpe_sdk.testing import PrefixAuthorizer, create_app
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
 from engine_helpers import make_engine, text_doc
 from protocol_helpers import CAPABILITIES, H1
 
 pytestmark = pytest.mark.anyio
-
-REMOTE = "http://dpe.test/r/1"
-PREFIX = "/r/1"
 
 
 @pytest.fixture
@@ -71,39 +69,6 @@ def _problem(code: str, status: int, **headers: str) -> httpx.Response:
         json={"type": "urn:dpe:error:x", "title": "t", "status": status, "code": code},
         headers={"Content-Type": "application/problem+json", "DPE-Error-Code": code, **headers},
     )
-
-
-class _Recorder(httpx.AsyncBaseTransport):
-    """记录每个请求的头与体，然后转发给内层 transport。"""
-
-    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
-        self._inner = inner
-        self.requests: list[httpx.Request] = []
-        self.headers: list[dict[str, str]] = []
-        self.bodies: list[bytes] = []
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        self.headers.append(dict(request.headers))
-        self.bodies.append(request.read())
-        return await self._inner.handle_async_request(request)
-
-
-@asynccontextmanager
-async def in_process(
-    engine: Engine | None = None,
-    *,
-    credential: CredentialProvider | None = None,
-    **app_options: Any,
-) -> AsyncIterator[tuple[AsyncDpeClient, _Recorder]]:
-    """异步客户端对真实参考服务端（ASGI 应用，进程内）。"""
-    app = create_app(engine or make_engine(), prefix=PREFIX, **app_options)
-    recorder = _Recorder(httpx.ASGITransport(app=app))
-    client = AsyncDpeClient(REMOTE, credential=credential, transport=recorder)
-    try:
-        yield client, recorder
-    finally:
-        await client.aclose()
 
 
 # ---------------------------------------------------------------------- remote
@@ -326,7 +291,7 @@ async def test_chunk_put_failure_resumes_via_the_head_query() -> None:
     )
     source = BlobSource(ref, len(data), lambda offset, length: data[offset : offset + length])
     app = create_app(engine, prefix=PREFIX)
-    recorder = _Recorder(_FlakyChunks(httpx.ASGITransport(app=app)))
+    recorder = ClientRecorder(_FlakyChunks(httpx.ASGITransport(app=app)))
     async with AsyncDpeClient(REMOTE, transport=recorder) as client:
         result = await client.deliver(
             "s3://bucket/flaky.png", document, IfAbsent(), blobs=lambda _: source
@@ -742,3 +707,36 @@ async def test_error_from_response_maps_problem_bodies() -> None:
     response = Response(412, {"Content-Type": "application/problem+json"}, body)
     assert isinstance(error_from_response(response), PreconditionFailedError)
     assert not isinstance(error_from_response(Response(500, {}, b"<html>")), DpeError)
+
+
+async def test_not_sent_classifies_connect_failures() -> None:
+    """公开的「确定未发出」判定：建连失败为真（写操作调用方据此清除待定意图），其余为假。"""
+    assert transport_module.not_sent(httpx.ConnectError("refused"))
+    assert transport_module.not_sent(httpx.ConnectTimeout("timed out"))
+    assert not transport_module.not_sent(httpx.ReadTimeout("lost"))
+    assert not transport_module.not_sent(httpx.RemoteProtocolError("closed"))
+    assert not transport_module.not_sent(ValueError("local"))
+
+
+async def test_not_sent_failures_carry_the_base_mark() -> None:
+    """传输层放弃发送时给「确定未发出」的异常打底标（写操作结果标记协议的一半）。"""
+
+    def refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    with (
+        DpeClient(REMOTE, transport=httpx.MockTransport(refused)) as client,
+        pytest.raises(httpx.ConnectError) as excinfo,
+    ):
+        client.capabilities()
+    assert protocol_module._attempt_not_sent(excinfo.value)
+
+    def lost(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("lost", request=request)
+
+    with (
+        DpeClient(REMOTE, transport=httpx.MockTransport(lost)) as client,
+        pytest.raises(httpx.ReadTimeout) as timeout_info,
+    ):
+        client.capabilities()
+    assert not protocol_module._attempt_not_sent(timeout_info.value)
