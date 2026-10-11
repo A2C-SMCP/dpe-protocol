@@ -16,8 +16,8 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 {
   "schema": 1,
   "target": "https://host/r/1",
-  "totals": {"executed": 46, "passed": 46, "failed": 0, "errors": 0, "skipped": 0, "collection_errors": 0},
-  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 14, "passed": 14, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}}
+  "totals": {"executed": 89, "passed": 89, "failed": 0, "errors": 0, "skipped": 2, "collection_errors": 0},
+  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}, "write_ops": {"executed": 20, "passed": 20, "failed": 0, "errors": 0, "skipped": 0}, "http_binding": {"executed": 19, "passed": 19, "failed": 0, "errors": 0, "skipped": 2}}
 }
 ```
 
@@ -36,8 +36,8 @@ env = "DPE_CONF_FULL_AUTH"
 [identities.scoped]                        # 仅前缀可写（服务端按该前缀授予写权）
 authorization = "Bearer scoped"
 prefix = "dpe://acme/scoped/"
-[identities.no-force]                      # 无 force 权限（force 的 403 检查）
-env = "DPE_CONF_NO_FORCE_AUTH"
+[identities.no-force]                      # 无 force 权限（force 的 403 检查；需对测试
+env = "DPE_CONF_NO_FORCE_AUTH"             # 命名空间可写，否则该检查显式 skip 并计数）
 
 [hooks.self-write]                         # 服务端自身写入（core §2.4 同级写入）
 http = "http://127.0.0.1:8000/__hooks__/self-write"

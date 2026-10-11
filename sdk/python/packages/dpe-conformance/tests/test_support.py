@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from dpe_conformance.checks import http_binding as http_binding_checks
 from dpe_conformance.checks import read as read_checks
 from dpe_conformance.config import Identity
 from dpe_conformance.plugin import Target
@@ -181,3 +182,45 @@ def test_stub_list_budget_exhausted_skips() -> None:
     """规模超出预算仍未见到该文档 → 显式 skip 并计入计数，不判失败。"""
     with pytest.raises(pytest.skip.Exception, match="预算"):
         _run_stub_check(_StubListTarget([], endless=True))
+
+
+# ------------------------------------ test_code_status_payload_too_large 的预算分支桩
+
+
+class _StubPayloadLimit:
+    """最小桩 Target：capabilities 按脚本给出 ``max_payload_bytes``，越界 PUT 按脚本应答。
+
+    ``limit`` 超过检查预算时触发 skip 分支；``respond`` 让越界请求返回 201（模拟违例服务端，
+    触发判红分支）。「找到即过」分支由 E2E（参考服务端实跑 413）覆盖。
+    """
+
+    def __init__(self, limit: int, *, respond: int = 413) -> None:
+        self._limit = limit
+        self._respond = respond
+
+    def uri(self, path: str) -> str:
+        return "dpe://conformance/stub/" + path.lstrip("/")
+
+    def send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        request = httpx.Request(method, f"http://dpe.test/{path}")
+        if path == "capabilities":
+            return httpx.Response(
+                200, json={"limits": {"max_payload_bytes": self._limit}}, request=request
+            )
+        return httpx.Response(self._respond, json={}, request=request)
+
+
+def _run_payload_check(stub: _StubPayloadLimit) -> None:
+    http_binding_checks.test_code_status_payload_too_large(cast(Target, stub), _stub_identity())
+
+
+def test_stub_payload_limit_over_budget_skips() -> None:
+    """服务端声明的上限超过预算 → 显式 skip 并计入计数，不构造越界请求、不判红。"""
+    with pytest.raises(pytest.skip.Exception, match="预算"):
+        _run_payload_check(_StubPayloadLimit(1 << 40))
+
+
+def test_stub_payload_violation_fails() -> None:
+    """越界请求未得到 413 + DPE_PAYLOAD_TOO_LARGE（如返回 201）→ 判失败（真实协议违例）。"""
+    with pytest.raises(AssertionError):
+        _run_payload_check(_StubPayloadLimit(1024, respond=201))
