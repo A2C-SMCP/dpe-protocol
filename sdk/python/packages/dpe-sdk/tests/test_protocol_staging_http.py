@@ -9,14 +9,22 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import timedelta
-from typing import Any
 
 import dpe_hash
 import pytest
 from dpe_sdk import Document, PageObject, errors
 from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent, Request, Response, adrive
-from engine_helpers import FakeClock, id_factory, make_engine
-from http_helpers import Lossy, Recorder, Send, chunk_spans, problem, remote, session_ids
+from engine_helpers import FakeClock, id_factory
+from http_helpers import (
+    Lossy,
+    Recorder,
+    Send,
+    chunk_spans,
+    problem,
+    remote,
+    session_ids,
+    small_engine,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -57,18 +65,6 @@ def many_elements_doc(count: int = 10) -> Document:
             ],
         }
     )
-
-
-def small_engine(**overrides: Any) -> Any:
-    """小限额的参考服务端：``max_payload_bytes=200``、``blob_chunk_bytes=100``。"""
-    limits: dict[str, Any] = {
-        "max_payload_bytes": 200,
-        "blob_chunk_bytes": 100,
-        "page_max_bytes": 4096,
-        "blob_max_bytes": 4096,
-    }
-    limits.update(overrides)
-    return make_engine(**limits)
 
 
 class Expire(Recorder):

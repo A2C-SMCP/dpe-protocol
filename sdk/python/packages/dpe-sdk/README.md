@@ -58,6 +58,35 @@ with DpeClient(
 - **异常**：httpx 的连接失败、超时等异常原样抛出、按类型区分，不包装成协议错误；
 - **依赖边界**：`dpe-hash` 保持零依赖；httpx 是 `dpe-sdk` 的运行时依赖，且 `dpe_sdk` 顶层不 import 传输模块（按需 `from dpe_sdk.transport import …`）。
 
+## 媒体上传辅助（#15）
+
+`dpe_sdk.media` 把调用方显式给出的字节来源适配成核心要的 `BlobSource`（`sha256:` 引用 + 总长 + 任意偏移读取）。**只做来源适配**——分块、断点续传与「400 + `DPE-Upload-Offset` 重同步」都在核心（`ProtocolCore.upload_blob` / `deliver` 的 `blobs` 参数）。来源一律由调用方显式给出：SDK 不解析 url、不识别 metadata 里的路径字符串；内存字节直接用 `BlobSource.from_bytes`。
+
+```python
+from dpe_sdk import Document
+from dpe_sdk.media import source_from_path, source_from_read_blob, source_from_stream
+from dpe_sdk.protocol import IfAbsent
+
+image = source_from_path("diagram.png")  # 本地路径：分块流式哈希，不整读进内存
+document = Document.model_validate(
+    {
+        "file_type": "md",
+        "pages": [
+            {"elements": [{"category": "Image", "blob": image.ref, "mime_type": "image/png"}]}
+        ],
+    }
+)
+client.deliver("s3://bucket/a.md", document, IfAbsent(), blobs=lambda ref: image)
+
+# connector 契约 §6.7 的 read_blob（句柄已绑定）：read(offset, max_bytes) -> (data, eof)
+source = source_from_read_blob(read_blob_call, expected_size=20480)
+source = source_from_stream(open("big.bin", "rb"))  # 可 seek 的句柄
+```
+
+- **内存不随文件大小增长**：路径与流分块流式哈希（内存 O(`chunk_bytes`)）；`read_blob` 的来源分两趟——先分块读一遍算出摘要与总长（契约 §6.7：摘要与总长确定后才可开始上传），`read` 再按偏移请求同一份快照（句柄保证任意偏移、同一偏移结果一致），不整读、不落盘；
+- **只在缺 blob 时触碰来源**：`deliver` 只对缺失的 blob 调用 `blobs`——未变文档（`unchanged`）完全不读取来源（大文件与 `read_blob` 往返都可能很贵）。注意来源在**构造时**就完成哈希：大文件与 `read_blob` 来源应把构造放进回调（`blobs=lambda ref: source_from_path(...)`）——未变文档连哈希都不会发生，前提是 `ref` 不靠本次构造取得（例如来自上一次投递）；需要先构造拿 `ref` 时，把同一个来源复用给回调（如上面的示例）；
+- **不替调用方解引用**：url 与凭证属于 connector（契约 1 §4.2）；不可 seek 的流请改用 `read_blob` 回调或先落为临时文件（`source_from_stream` 会如实拒绝）。
+
 ## 参考服务端（testing）
 
 `dpe_sdk.testing.Engine` 是内存版 DPE 服务端的核心引擎（不含传输），按规范的求值顺序实现 core 语义（含暂存会话与分块上传，#43），供集成测试与第三方实现对照：
@@ -184,4 +213,4 @@ python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
 
 钩子通道是测试侧信道：不做 DPE 认证、默认关闭、只建议监听本机（缺省 127.0.0.1）。
 
-> 增量推送（StatefulPusher、媒体上传辅助）与 dpe-run 尚在开发中（#14–#17）。
+> 增量推送（StatefulPusher）与 dpe-run 尚在开发中（#14、#16–#17）。
