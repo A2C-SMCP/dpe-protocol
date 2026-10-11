@@ -111,12 +111,15 @@ fn write_requests_are_not_retry_safe() {
     let c = core("dpe1");
     let document = test_doc();
     let requests = [
-        first_request(c.commit(URI, &document, Precondition::IfAbsent).unwrap()),
         first_request(
-            c.commit(URI, &document, Precondition::BaseHash(h1()))
+            c.commit(URI, &document, Precondition::IfAbsent, None)
                 .unwrap(),
         ),
-        first_request(c.commit(URI, &document, Precondition::Force).unwrap()),
+        first_request(
+            c.commit(URI, &document, Precondition::BaseHash(h1()), None)
+                .unwrap(),
+        ),
+        first_request(c.commit(URI, &document, Precondition::Force, None).unwrap()),
         first_request(c.delete(URI, &h1()).unwrap()),
         first_request(c.move_document(URI, "s3://bucket/b.md", &h1()).unwrap()),
     ];
@@ -132,7 +135,7 @@ fn commit_if_absent_request() {
     let document = test_doc();
     let (result, server) = run(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         [committed(&document, "created", 2, 0, 0)],
     );
@@ -163,7 +166,7 @@ fn commit_base_hash_builds_if_match_itself() {
     let one = h1();
     let (_, server) = run(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(one.clone()))
+            .commit(URI, &document, Precondition::BaseHash(one.clone()), None)
             .unwrap(),
         [committed(&document, "updated", 1, 1, 1)],
     );
@@ -181,7 +184,7 @@ fn commit_force_has_no_condition_header() {
     let document = test_doc();
     let (_, server) = run(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         [committed(&document, "updated", 1, 1, 1)],
     );
@@ -198,7 +201,7 @@ fn commit_dedups_pages_and_objects() {
     let response = json_response_with(201, commit_body(&document, "created", 6, 0, 0), &[]);
     let (result, server) = run(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         [response],
     );
@@ -254,8 +257,12 @@ fn base_hash_must_belong_to_the_declared_contract() {
         ("dpe1:XYZ", ErrorKind::Validation),
     ];
     for (value, kind) in cases {
-        let error =
-            expect_error(c.commit(URI, &document, Precondition::BaseHash(value.to_owned())));
+        let error = expect_error(c.commit(
+            URI,
+            &document,
+            Precondition::BaseHash(value.to_owned()),
+            None,
+        ));
         assert_eq!(error.kind(), kind, "{value}");
         let error = expect_error(c.delete(URI, value));
         assert_eq!(error.kind(), kind, "{value}");
@@ -270,7 +277,7 @@ fn write_operations_validate_uris_locally() {
     let document = test_doc();
     let one = h1();
     assert_eq!(
-        expect_error(c.commit("no scheme", &document, Precondition::IfAbsent)).kind(),
+        expect_error(c.commit("no scheme", &document, Precondition::IfAbsent, None)).kind(),
         ErrorKind::Validation
     );
     assert_eq!(
@@ -304,7 +311,8 @@ fn commit_under_drill_contract() {
         &[],
     );
     let (result, server) = run(
-        c.commit(URI, &document, Precondition::IfAbsent).unwrap(),
+        c.commit(URI, &document, Precondition::IfAbsent, None)
+            .unwrap(),
         [response],
     );
     assert_eq!(result.unwrap().doc_hash, expected);
@@ -326,7 +334,7 @@ fn commit_results() {
     ] {
         let (result, _) = run(
             core("dpe1")
-                .commit(URI, &document, Precondition::BaseHash(h1()))
+                .commit(URI, &document, Precondition::BaseHash(h1()), None)
                 .unwrap(),
             [response],
         );
@@ -365,7 +373,7 @@ fn commit_rejects_inconsistent_results() {
     for (i, response) in responses.into_iter().enumerate() {
         let (result, _) = run(
             core("dpe1")
-                .commit(URI, &document, Precondition::BaseHash(h1()))
+                .commit(URI, &document, Precondition::BaseHash(h1()), None)
                 .unwrap(),
             [response],
         );
@@ -386,7 +394,7 @@ fn commit_rejects_inconsistent_results() {
     );
     let (result, _) = run(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         [response],
     );
@@ -404,7 +412,7 @@ fn commit_rejects_inconsistent_results() {
     );
     let (result, _) = run(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         [response],
     );
@@ -431,7 +439,7 @@ fn commit_errors_are_raised_as_is() {
         let mut script = Script::new().response(problem(code, status, Value::Null));
         let result = protocol_common::drive_script(
             core("dpe1")
-                .commit(URI, &document, Precondition::BaseHash(h1()))
+                .commit(URI, &document, Precondition::BaseHash(h1()), None)
                 .unwrap(),
             &mut script,
         );
@@ -451,7 +459,7 @@ fn commit_lost_response_is_resent_and_recovers_as_unchanged() {
             .response(committed(&document, "unchanged", 0, 0, 2));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         &mut script,
     );
@@ -469,7 +477,7 @@ fn commit_resend_then_precondition_failed_is_reported() {
     ));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         &mut script,
     );
@@ -492,7 +500,8 @@ fn commit_resends_are_bounded() {
         )
         .unwrap();
         let result = protocol_common::drive_script(
-            c.commit(URI, &document, Precondition::IfAbsent).unwrap(),
+            c.commit(URI, &document, Precondition::IfAbsent, None)
+                .unwrap(),
             &mut script,
         );
         let error = expect_error(result);
@@ -518,7 +527,7 @@ fn force_lost_response_is_not_replayed_head_confirms() {
         .response(head_found(&doc_hash(&document)));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         &mut script,
     );
@@ -537,7 +546,7 @@ fn force_lost_response_not_confirmed_is_reported() {
         });
         let result = protocol_common::drive_script(
             core("dpe1")
-                .commit(URI, &document, Precondition::Force)
+                .commit(URI, &document, Precondition::Force, None)
                 .unwrap(),
             &mut script,
         );
@@ -566,7 +575,7 @@ fn force_lost_response_and_head_failure() {
         .lost("head 3");
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         &mut script,
     );
@@ -592,7 +601,7 @@ fn force_head_resend_then_confirms() {
         .response(head_found(&doc_hash(&document)));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         &mut script,
     );
@@ -609,7 +618,7 @@ fn force_head_error_is_not_confirmed() {
             .response(problem("DPE_UNAVAILABLE", 503, Value::Null));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         &mut script,
     );
@@ -633,7 +642,7 @@ fn commit_bare_412_head_equal_is_success() {
         .response(head_found(&doc_hash(&document)));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         &mut script,
     );
@@ -660,7 +669,9 @@ fn commit_bare_412_is_judged_by_head() {
             head_missing()
         });
         let result = protocol_common::drive_script(
-            core("dpe1").commit(URI, &document, precondition).unwrap(),
+            core("dpe1")
+                .commit(URI, &document, precondition, None)
+                .unwrap(),
             &mut script,
         );
         assert_eq!(expect_error(result).kind(), kind);
@@ -677,7 +688,7 @@ fn commit_if_absent_bare_412_head_equal_is_success() {
         .response(head_found(&doc_hash(&document)));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         &mut script,
     );
@@ -695,7 +706,7 @@ fn commit_if_absent_bare_412_head_missing_resends_once() {
         .response(committed(&document, "created", 2, 0, 0));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         &mut script,
     );
@@ -720,7 +731,7 @@ fn commit_if_absent_bare_412_twice_head_still_missing_is_reported() {
         .response(head_missing());
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         &mut script,
     );
@@ -745,7 +756,7 @@ fn commit_if_absent_bare_412_twice_is_judged_by_head_again() {
         .response(head_found(&h2()));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         &mut script,
     );
@@ -758,7 +769,7 @@ fn commit_if_absent_bare_412_twice_is_judged_by_head_again() {
         .response(head_found(&doc_hash(&document)));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         &mut script,
     );
@@ -778,7 +789,7 @@ fn commit_lost_then_bare_412_is_judged_by_head() {
         .response(head_found(&doc_hash(&document)));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         &mut script,
     );
@@ -795,7 +806,7 @@ fn commit_412_with_error_code_header_is_not_bare() {
     ));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         &mut script,
     );
@@ -810,7 +821,7 @@ fn force_bare_412_is_unexpected() {
     let mut script = Script::new().response(bare_412());
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         &mut script,
     );
@@ -1002,7 +1013,7 @@ fn force_gateway_timeout_is_confirmed_by_head() {
             .response(head_found(&doc_hash(&document)));
         let result = protocol_common::drive_script(
             core("dpe1")
-                .commit(URI, &document, Precondition::Force)
+                .commit(URI, &document, Precondition::Force, None)
                 .unwrap(),
             &mut script,
         );
@@ -1019,7 +1030,7 @@ fn force_gateway_timeout_not_confirmed() {
         .response(head_found(&h1()));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         &mut script,
     );
@@ -1041,7 +1052,7 @@ fn gateway_timeout_is_resent_for_cas_writes() {
             .response(committed(&document, "unchanged", 0, 0, 2));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::BaseHash(h1()))
+            .commit(URI, &document, Precondition::BaseHash(h1()), None)
             .unwrap(),
         &mut script,
     );
@@ -1075,7 +1086,7 @@ fn gateway_timeout_resends_are_bounded() {
         .response(gateway(504));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::IfAbsent)
+            .commit(URI, &document, Precondition::IfAbsent, None)
             .unwrap(),
         &mut script,
     );
@@ -1092,7 +1103,7 @@ fn gateway_status_with_error_code_is_a_dpe_error() {
     let mut script = Script::new().response(problem("DPE_UNAVAILABLE", 504, Value::Null));
     let result = protocol_common::drive_script(
         core("dpe1")
-            .commit(URI, &document, Precondition::Force)
+            .commit(URI, &document, Precondition::Force, None)
             .unwrap(),
         &mut script,
     );
@@ -1215,7 +1226,9 @@ fn write_state_machines_reject_misuse_and_are_terminal() {
     let one = h1();
 
     // 等待响应时 poll：报错但不改变状态（在飞响应随后仍可回送）
-    let mut op = c.commit(URI, &document, Precondition::IfAbsent).unwrap();
+    let mut op = c
+        .commit(URI, &document, Precondition::IfAbsent, None)
+        .unwrap();
     assert!(matches!(op.poll(), Ok(Step::Send(_))));
     assert_eq!(expect_error(op.poll()).kind(), ErrorKind::InvalidArgument);
     op.on_response(committed(&document, "created", 2, 0, 0))
@@ -1241,7 +1254,9 @@ fn write_state_machines_reject_misuse_and_are_terminal() {
     );
 
     // 裸 412 链：HEAD 在飞时 poll 报错、状态保持，随后照常续走
-    let mut op = c.commit(URI, &document, Precondition::IfAbsent).unwrap();
+    let mut op = c
+        .commit(URI, &document, Precondition::IfAbsent, None)
+        .unwrap();
     assert!(matches!(op.poll(), Ok(Step::Send(_))));
     op.on_response(bare_412()).expect("回送裸 412");
     assert_eq!(next_send(&mut op).method, Method::Head);
@@ -1254,7 +1269,7 @@ fn write_state_machines_reject_misuse_and_are_terminal() {
 
     // 业务错误后终态：poll / on_response / on_transport_error 都是用法错误
     let mut op = c
-        .commit(URI, &document, Precondition::BaseHash(one.clone()))
+        .commit(URI, &document, Precondition::BaseHash(one.clone()), None)
         .unwrap();
     assert!(matches!(op.poll(), Ok(Step::Send(_))));
     expect_error(op.on_response(problem("DPE_FORBIDDEN", 403, Value::Null)));
@@ -1281,7 +1296,7 @@ fn write_state_machines_reject_misuse_and_are_terminal() {
     assert_eq!(expect_error(op.poll()).kind(), ErrorKind::InvalidArgument);
 
     // force 的 head 确认阶段：在飞时 poll 报错，随后照常确认成功
-    let mut op = c.commit(URI, &document, Precondition::Force).unwrap();
+    let mut op = c.commit(URI, &document, Precondition::Force, None).unwrap();
     assert!(matches!(op.poll(), Ok(Step::Send(_))));
     op.on_transport_error(Box::new(Lost("put")))
         .expect("进入 head 确认");

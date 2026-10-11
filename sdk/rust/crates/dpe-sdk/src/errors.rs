@@ -176,6 +176,10 @@ struct Details {
     transport: Option<TransportError>,
     /// 本错误由哪个错误引起（如无法确认 force 时的 head 失败），经 `source()` 取回。
     cause: Option<Box<Error>>,
+    /// `deliver` 在失败时附加的当前暂存会话（core §3.4；会话只作缓存）。
+    session: Option<crate::protocol::Session>,
+    /// 写操作失败时显式置位：本次写入是否可能已经生效（见 [`Error::outcome_unknown`]）。
+    outcome_unknown: Option<bool>,
 }
 
 impl Error {
@@ -253,6 +257,27 @@ impl Error {
         });
         details.cause = Some(Box::new(cause));
         error
+    }
+
+    /// 本地判定的 `DPE_MISSING_CONTENT`（`deliver` 缺少 blob 的字节来源）：错误码与清单照常
+    /// 给出，但由客户端判定，MUST NOT 被 `deliver` 的恢复循环当作「服务端要求补传」再消费预算。
+    pub(crate) fn local_missing_content(message: impl Into<String>, missing: Missing) -> Self {
+        let mut error = Self::new(ErrorKind::MissingContent, message);
+        error.details_mut().missing = Some(missing);
+        error
+    }
+
+    /// 置位「本次写入是否可能已经生效」（写操作在失败时显式给出）。
+    pub(crate) fn with_outcome_unknown(mut self, value: bool) -> Self {
+        self.details_mut().outcome_unknown = Some(value);
+        self
+    }
+
+    /// 附上当前暂存会话（`deliver` 失败时用）：上层可重新读取文档后以新的前置条件引用同一
+    /// 会话重提，已上传到会话的内容无需重传（core §3.4）。无会话时也照样标记 `None`。
+    pub(crate) fn with_session(mut self, session: Option<crate::protocol::Session>) -> Self {
+        self.details_mut().session = session;
+        self
     }
 
     /// 补上响应状态码（wire 层解析出的不合规响应由协议核心补 response.status）。
@@ -378,6 +403,31 @@ impl Error {
         self.details
             .as_deref()
             .and_then(|details| details.force.as_ref())
+    }
+
+    /// 本次写入是否可能已经生效（写操作 `commit` / `delete` / `move_document` / `deliver`
+    /// 失败时置位；**只针对写请求本身**，不含 `negotiate` / `upload_*` / `head` 的失败）。
+    ///
+    /// **只有三种结局算「确定」（不置真）**：带 DPE 错误码的响应；成功响应且核心的自洽校验
+    /// 全部通过；带 [`NotSent`](crate::protocol::NotSent) 标记的传输错误（传输层确定请求没
+    /// 发出）。其余一律为真——无 `NotSent` 的传输错误、任何**无码**响应（无码 4xx / 5xx、
+    /// 2xx 但自洽校验或解析失败、没能化解的裸 412）。经 `head` 判定化解的裸 412 与
+    /// `negotiate` / `upload_*` / `head` 阶段的失败不影响本值（后者在写请求未发出时为假）。
+    /// **没有置位的错误（`None`）保守地返回真**——调用方对不确定的结果应先重新读取。
+    pub fn outcome_unknown(&self) -> bool {
+        self.details
+            .as_deref()
+            .and_then(|details| details.outcome_unknown)
+            .unwrap_or(true)
+    }
+
+    /// 失败时附加的当前暂存会话（`deliver` 抛出的错误上有值）：上层可在重新读取文档后以新的
+    /// 前置条件引用同一会话重提（core §3.4），已上传到会话的内容无需重传；会话只作缓存，失效
+    /// 时重开 negotiate 即可，结果与不复用时一致。不是 `deliver` 的错误为 `None`。
+    pub fn session(&self) -> Option<&crate::protocol::Session> {
+        self.details
+            .as_deref()
+            .and_then(|details| details.session.as_ref())
     }
 }
 
