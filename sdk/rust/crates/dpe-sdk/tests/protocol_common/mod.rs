@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use dpe_sdk::protocol::{
-    drive, Operation, ProtocolCore, Request, Response, TransportError, DEFAULT_MAX_RESENDS,
+    drive, Operation, ProtocolCore, Request, Response, Step, TransportError, DEFAULT_MAX_RESENDS,
     DOC_HASH_HEADER, ERROR_CODE_HEADER,
 };
 use dpe_sdk::wire::Capabilities;
@@ -168,7 +168,7 @@ impl std::error::Error for Lost {}
 
 /// 按脚本逐次给出响应或传输异常（模拟响应丢失），并记录收到的请求。
 pub struct Script {
-    steps: VecDeque<Result<Response, &'static str>>,
+    steps: VecDeque<Result<Response, TransportError>>,
     pub requests: Vec<Request>,
 }
 
@@ -185,18 +185,43 @@ impl Script {
         self
     }
 
+    /// 传输异常（请求可能已到达服务端）。
     pub fn lost(mut self, note: &'static str) -> Self {
-        self.steps.push_back(Err(note));
+        self.steps.push_back(Err(Box::new(Lost(note))));
+        self
+    }
+
+    /// 任意传输错误（如 `protocol::not_sent` 标注的建连失败）。
+    pub fn error(mut self, error: TransportError) -> Self {
+        self.steps.push_back(Err(error));
         self
     }
 
     pub fn send(&mut self, request: Request) -> Result<Response, TransportError> {
         self.requests.push(request);
-        match self.steps.pop_front().expect("脚本没有更多步骤") {
-            Ok(response) => Ok(response),
-            Err(note) => Err(Box::new(Lost(note))),
+        self.steps.pop_front().expect("脚本没有更多步骤")
+    }
+}
+
+/// 同步驱动 `&mut` 操作直到完成（[`drive`] 的借用版本；调用方保留操作做后续断言）。
+pub fn drive_ref<O: Operation>(
+    op: &mut O,
+    mut send: impl FnMut(Request) -> Result<Response, TransportError>,
+) -> Result<O::Output, Error> {
+    loop {
+        match op.poll()? {
+            Step::Send(request) => match send(request) {
+                Ok(response) => op.on_response(response)?,
+                Err(error) => op.on_transport_error(error)?,
+            },
+            Step::Done(output) => return Ok(output),
         }
     }
+}
+
+/// 用脚本驱动 `&mut` 操作；返回结果与脚本（含收到的请求）。
+pub fn drive_script_ref<O: Operation>(op: &mut O, script: &mut Script) -> Result<O::Output, Error> {
+    drive_ref(op, |request| script.send(request))
 }
 
 /// 用脚本驱动操作；返回结果与脚本（含收到的请求）。
@@ -390,4 +415,245 @@ pub fn moved_with(value: &str, headers: &[(&str, &str)]) -> Response {
     let mut all: Vec<(&str, &str)> = vec![(DOC_HASH_HEADER, value)];
     all.extend(headers.iter().copied());
     json_response_with(200, json!({"doc_hash": value}), &all)
+}
+
+// ---------------------------------------------------------------------- 暂存路径（#49）
+
+/// 会话过期时间的字面（RFC 3339 UTC；与 Python 侧 `SESSION_EXPIRES` 对等）。
+pub const SESSION_EXPIRES: &str = "2026-10-01T00:00:00Z";
+/// 暂存用例的文档 uri（与 Python 侧 `URI` 对等）。
+pub const SESSION_URI: &str = "s3://bucket/a.md";
+
+/// 测试用会话（与 Python `SESSION` 对等）。
+pub fn session() -> dpe_sdk::protocol::Session {
+    dpe_sdk::protocol::Session {
+        id: "st-1".to_owned(),
+        uri: SESSION_URI.to_owned(),
+        expires_at: SESSION_EXPIRES.to_owned(),
+    }
+}
+
+/// 带指定 id 的会话。
+pub fn session_with_id(id: &str) -> dpe_sdk::protocol::Session {
+    dpe_sdk::protocol::Session {
+        id: id.to_owned(),
+        uri: SESSION_URI.to_owned(),
+        expires_at: SESSION_EXPIRES.to_owned(),
+    }
+}
+
+/// negotiate 的成功响应（Python `negotiated`）。
+pub fn negotiated(sid: &str, missing_pages: &[&str], missing_content_hashes: &[&str]) -> Response {
+    negotiated_at(sid, missing_pages, missing_content_hashes, SESSION_EXPIRES)
+}
+
+/// negotiate 的成功响应（自定义过期时间）。
+pub fn negotiated_at(
+    sid: &str,
+    missing_pages: &[&str],
+    missing_content_hashes: &[&str],
+    expires_at: &str,
+) -> Response {
+    json_ok(json!({
+        "missing_pages": missing_pages,
+        "missing_content_hashes": missing_content_hashes,
+        "staging_session": {"id": sid, "expires_at": expires_at},
+    }))
+}
+
+/// upload 的成功响应（Python `uploaded`）：`202` 无体（带偏移与过期时间），`200` / `201` 的
+/// 体是下一层缺失清单（`{}` 表示没有缺失）。
+pub fn uploaded(status: u16, offset: Option<u64>, missing: Value) -> Response {
+    let mut headers: Vec<(String, String)> = vec![(
+        dpe_sdk::protocol::SESSION_EXPIRES_HEADER.to_owned(),
+        SESSION_EXPIRES.to_owned(),
+    )];
+    if let Some(offset) = offset {
+        headers.push((
+            dpe_sdk::protocol::UPLOAD_OFFSET_HEADER.to_owned(),
+            offset.to_string(),
+        ));
+    }
+    if status == 202 {
+        return Response::new(status, headers, Vec::new());
+    }
+    let mut all: Vec<(String, String)> =
+        vec![("Content-Type".to_owned(), "application/json".to_owned())];
+    all.extend(headers);
+    Response::new(
+        status,
+        all,
+        serde_json::to_vec(&missing).expect("JSON 值总能序列化"),
+    )
+}
+
+/// 断点查询（HEAD）的 200 响应（Python `resume`）。
+pub fn resume(offset: u64) -> Response {
+    Response::new(
+        200,
+        [
+            (
+                dpe_sdk::protocol::UPLOAD_OFFSET_HEADER.to_owned(),
+                offset.to_string(),
+            ),
+            (
+                dpe_sdk::protocol::SESSION_EXPIRES_HEADER.to_owned(),
+                SESSION_EXPIRES.to_owned(),
+            ),
+        ],
+        Vec::new(),
+    )
+}
+
+/// 分块偏移不连续的 400：`DPE_VALIDATION` + `DPE-Upload-Offset`（Python `offset_problem`）。
+pub fn offset_problem(offset: u64) -> Response {
+    let body = json!({
+        "type": "urn:dpe:error:validation",
+        "title": "validation",
+        "status": 400,
+        "code": "DPE_VALIDATION",
+    });
+    Response::new(
+        400,
+        [
+            (
+                "Content-Type".to_owned(),
+                "application/problem+json".to_owned(),
+            ),
+            ("DPE-Error-Code".to_owned(), "DPE_VALIDATION".to_owned()),
+            (
+                dpe_sdk::protocol::UPLOAD_OFFSET_HEADER.to_owned(),
+                offset.to_string(),
+            ),
+        ],
+        serde_json::to_vec(&body).expect("JSON 值总能序列化"),
+    )
+}
+
+/// 测试用的 blob 字节（与 Python `IMAGE` 对等）。
+pub fn image_bytes() -> Vec<u8> {
+    b"binary-image".to_vec()
+}
+
+/// 测试用 blob 的引用（与 Python `REF` 对等）。
+pub fn image_ref() -> String {
+    dpe_hash::blob_ref(&image_bytes())
+}
+
+/// Image 元素的测试文档（Python `image_doc`）。
+pub fn image_doc() -> dpe_sdk::ExpandedDocument {
+    dpe_sdk::ExpandedDocument::from_value(
+        &json!({
+            "file_type": "md",
+            "pages": [{"elements": [
+                {"category": "Image", "blob": image_ref(), "mime_type": "image/png"}
+            ]}],
+        }),
+        dpe_sdk::CONTRACT,
+    )
+    .expect("测试文档必须合法")
+}
+
+/// 覆盖 limits 的能力构造（Python `caps(limits={...})` 的对等）。
+pub fn caps_with_limits(overrides: &[(&str, u64)]) -> Capabilities {
+    let mut body = capabilities_body();
+    for (key, value) in overrides {
+        body["limits"][*key] = json!(value);
+    }
+    Capabilities::from_value(&body).expect("限额模板必须合法")
+}
+
+/// 指定能力与重发预算的核心。
+pub fn core_with_caps(capabilities: Capabilities, max_resends: u32) -> ProtocolCore {
+    ProtocolCore::new(capabilities, "dpe1", max_resends).expect("模板能力与核心兼容")
+}
+
+/// 小限额的核心（Python `staged_core`：内联体放不下，强制走暂存路径）。
+pub fn staged_core() -> ProtocolCore {
+    core_with_caps(caps_with_limits(&[("max_payload_bytes", 120)]), 2)
+}
+
+/// 250 字节、单块 100 的核心（Python `chunked_core`）。
+pub fn chunked_core(max_resends: u32) -> ProtocolCore {
+    core_with_caps(
+        caps_with_limits(&[("max_payload_bytes", 100), ("blob_chunk_bytes", 100)]),
+        max_resends,
+    )
+}
+
+/// `(起点, 长度)` 的分块序列（Python `chunk_ranges`）。
+pub fn chunk_ranges(total: u64, size: u64) -> Vec<(u64, u64)> {
+    (0..total)
+        .step_by(size as usize)
+        .map(|start| (start, size.min(total - start)))
+        .collect()
+}
+
+/// 与核心相同的紧凑 JSON 长度（断言内联体尺寸用）。
+pub fn wire_json_len(value: &Value) -> u64 {
+    serde_json::to_vec(value).expect("JSON 值总能序列化").len() as u64
+}
+
+/// 由逐页文本构造的文档的页 hash 与元素 hash（与 Python `inline()` 对等的最小形态）。
+pub fn page_and_element_hashes(
+    document: &dpe_sdk::ExpandedDocument,
+) -> (Vec<String>, Vec<Vec<String>>) {
+    let hashes = document
+        .hashes(dpe_sdk::CONTRACT)
+        .expect("测试文档必须合法");
+    (
+        hashes
+            .pages
+            .iter()
+            .map(|page| page.page_hash.clone())
+            .collect(),
+        hashes
+            .pages
+            .iter()
+            .map(|page| page.elements.clone())
+            .collect(),
+    )
+}
+
+/// 展开文档的线上部件（测试侧独立实现，与核心 `_wire_parts` 等价；用于构造期望请求体）。
+pub struct Parts {
+    pub document: Value,
+    pub pages: Vec<Value>,
+    pub objects: Vec<Value>,
+}
+
+/// 见 [`Parts`]。
+pub fn parts_for(document: &dpe_sdk::ExpandedDocument) -> Parts {
+    let hashes = document
+        .hashes(dpe_sdk::CONTRACT)
+        .expect("测试文档必须合法");
+    let mut pages = Vec::new();
+    let mut objects = Vec::new();
+    let mut seen_pages = std::collections::HashSet::new();
+    let mut seen_objects = std::collections::HashSet::new();
+    for (page, page_hashes) in document.pages.iter().zip(&hashes.pages) {
+        if !seen_pages.insert(page_hashes.page_hash.clone()) {
+            continue;
+        }
+        let mut wire_page = serde_json::to_value(page).expect("页总能序列化");
+        wire_page["elements"] = json!(page_hashes.elements);
+        pages.push(wire_page);
+        for (element, content_hash) in page.elements.iter().zip(&page_hashes.elements) {
+            if !seen_objects.insert(content_hash.clone()) {
+                continue;
+            }
+            objects.push(serde_json::to_value(element).expect("元素总能序列化"));
+        }
+    }
+    let mut document_object = serde_json::to_value(document).expect("文档总能序列化");
+    document_object["pages"] = json!(hashes
+        .pages
+        .iter()
+        .map(|page| page.page_hash.clone())
+        .collect::<Vec<_>>());
+    Parts {
+        document: document_object,
+        pages,
+        objects,
+    }
 }

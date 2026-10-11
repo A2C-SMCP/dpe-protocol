@@ -78,6 +78,35 @@ pub struct ListPage {
     pub next_cursor: Option<String>,
 }
 
+/// negotiate 开启的暂存会话（HTTP 绑定 §4.5）。`expires_at` 为 RFC 3339 UTC。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagingSession {
+    pub id: String,
+    pub expires_at: String,
+}
+
+/// `POST negotiate` 的响应（HTTP 绑定 §4.5）：逐层缺失清单与会话。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NegotiateResult {
+    /// 文档对象引用、而不可得的页对象（缺省为空）。
+    pub missing_pages: Vec<String>,
+    /// 附带的页对象中引用、而不可得的元素对象（缺省为空）。
+    pub missing_content_hashes: Vec<String>,
+    pub staging_session: StagingSession,
+}
+
+/// 页对象上传完成后的响应体（HTTP 绑定 §4.6）：它引用的缺失元素对象（缺省为空）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageUploadMissing {
+    pub missing_content_hashes: Vec<String>,
+}
+
+/// 元素对象上传完成后的响应体（HTTP 绑定 §4.6）：它引用的缺失 blob（缺省为空）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ElementUploadMissing {
+    pub missing_blobs: Vec<String>,
+}
+
 /// `DPE_MISSING_CONTENT` 的缺失清单，按层给出（core §3.3、HTTP 绑定 §5）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Missing {
@@ -341,6 +370,60 @@ impl MoveResult {
     }
 }
 
+impl NegotiateResult {
+    /// 由 negotiate 的响应体构造；`missing_pages` / `missing_content_hashes` 可缺省（空数组），
+    /// `staging_session` 必现。
+    pub fn from_value(value: &Value) -> Result<Self, Error> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("NegotiateResult", "响应体必须是对象"))?;
+        Self::from_object(object).map_err(wrap("NegotiateResult"))
+    }
+
+    fn from_object(object: &Map<String, Value>) -> Result<Self, String> {
+        let session_value = object
+            .get("staging_session")
+            .ok_or("缺少字段 staging_session".to_owned())?;
+        let session_object = session_value
+            .as_object()
+            .ok_or("字段 staging_session 必须是对象".to_owned())?;
+        Ok(NegotiateResult {
+            missing_pages: optional_string_list_field(object, "missing_pages")?,
+            missing_content_hashes: optional_string_list_field(object, "missing_content_hashes")?,
+            staging_session: StagingSession {
+                id: string_field(session_object, "id")?,
+                expires_at: string_field(session_object, "expires_at")?,
+            },
+        })
+    }
+}
+
+impl PageUploadMissing {
+    /// 由页对象上传的响应体构造（`missing_content_hashes` 可缺省）。
+    pub fn from_value(value: &Value) -> Result<Self, Error> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("PageUploadMissing", "响应体必须是对象"))?;
+        Ok(PageUploadMissing {
+            missing_content_hashes: optional_string_list_field(object, "missing_content_hashes")
+                .map_err(wrap("PageUploadMissing"))?,
+        })
+    }
+}
+
+impl ElementUploadMissing {
+    /// 由元素对象上传的响应体构造（`missing_blobs` 可缺省）。
+    pub fn from_value(value: &Value) -> Result<Self, Error> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("ElementUploadMissing", "响应体必须是对象"))?;
+        Ok(ElementUploadMissing {
+            missing_blobs: optional_string_list_field(object, "missing_blobs")
+                .map_err(wrap("ElementUploadMissing"))?,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 解析辅助
 // ---------------------------------------------------------------------------
@@ -389,6 +472,28 @@ fn string_list_field(object: &Map<String, Value>, key: &str) -> Result<Vec<Strin
         Some(_) => return Err(format!("字段 {key} 必须是数组")),
         None => return Err(format!("缺少字段 {key}")),
     };
+    let mut parsed = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Value::String(text) => parsed.push(text.clone()),
+            _ => return Err(format!("字段 {key} 的每一项必须是字符串")),
+        }
+    }
+    Ok(parsed)
+}
+
+/// 可缺省的字符串数组字段（缺省为空数组；出现时必须是字符串数组，`null` 不合规——与
+/// Python 侧「有默认值的字段也不接受显式 null」一致）。
+fn optional_string_list_field(
+    object: &Map<String, Value>,
+    key: &str,
+) -> Result<Vec<String>, String> {
+    let Some(value) = object.get(key) else {
+        return Ok(Vec::new());
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| format!("字段 {key} 必须是数组"))?;
     let mut parsed = Vec::with_capacity(items.len());
     for item in items {
         match item {

@@ -32,15 +32,17 @@
 //! **请求目标**：`target` 是相对 remote 的路径与已编码的查询串（HTTP 绑定 §1），传输层把它
 //! 原样拼在 remote 之后（remote 不带尾部 `/`），**MUST NOT 再次编码**。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 
 use crate::errors::{Error, ErrorKind};
-use crate::models::ExpandedDocument;
+use crate::models::{ElementObject, ExpandedDocument, PageObject};
 use crate::wire::{
-    BatchHeads, Capabilities, CommitResult, CommitStatus, Delta, ListPage, MoveResult, Skeleton,
+    BatchHeads, Capabilities, CommitResult, CommitStatus, Delta, ElementUploadMissing, ListPage,
+    Missing, MoveResult, NegotiateResult, PageUploadMissing, Skeleton, StagingSession,
 };
 
 /// 本 SDK 实现的协议版本（capabilities 的 `protocol`）。
@@ -53,9 +55,56 @@ pub const CONTRACT_HEADER: &str = "DPE-Hash-Contract";
 pub const DOC_HASH_HEADER: &str = "DPE-Doc-Hash";
 /// DPE 错误响应的错误码头（HTTP 绑定 §5）；HEAD 响应只有它、没有 problem 体。
 pub const ERROR_CODE_HEADER: &str = "DPE-Error-Code";
+/// 暂存会话续期后的过期时间（negotiate / upload / 断点查询的响应头；core §3.4）。
+pub const SESSION_EXPIRES_HEADER: &str = "DPE-Session-Expires";
+/// 分块上传与断点查询的本会话已收字节数（HTTP 绑定 §4.7）。
+pub const UPLOAD_OFFSET_HEADER: &str = "DPE-Upload-Offset";
 
-/// 驱动方回送的传输异常（连接失败、超时等）。核心不窥探其内容，只按「响应丢失」判定。
+/// JSON 请求体的媒体类型。
+const JSON: &str = "application/json";
+
+/// 驱动方回送的传输异常（连接失败、超时等）。核心不窥探其内容，只按「响应丢失」判定；
+/// 传输层能确定「请求没发出」时用 [`not_sent`] 包装，写操作据此判定「结果是否未知」
+/// （见 [`Error::outcome_unknown`]）。
 pub type TransportError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// 「请求确定没有发出」的标记（如建连失败）：传输层在能确定时用 [`not_sent`] 包装。
+///
+/// 写操作只把**不能确定没发出**的传输错误记为「结果是否未知」为真（见
+/// [`Error::outcome_unknown`]）：核心用 `downcast_ref::<NotSent>()` 判定，没有这个标记就
+/// 按「可能已发出」处理。
+#[derive(Debug)]
+pub struct NotSent(TransportError);
+
+impl NotSent {
+    /// 原始传输错误（被标记为「确定没发出」）。
+    pub fn error(&self) -> &(dyn std::error::Error + 'static) {
+        self.0.as_ref()
+    }
+}
+
+impl fmt::Display for NotSent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for NotSent {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+/// 把传输错误标记为「请求确定没有发出」（如建连失败、请求尚未写入连接）：写操作据此把
+/// 「本次写入是否可能已生效」记为否（[`Error::outcome_unknown`]）。传输层能确定时才用。
+pub fn not_sent(error: impl Into<TransportError>) -> TransportError {
+    Box::new(NotSent(error.into()))
+}
+
+/// 该传输错误是否确定「请求没发出」。
+fn is_not_sent(error: &TransportError) -> bool {
+    error.downcast_ref::<NotSent>().is_some()
+}
 
 /// HTTP 方法（v1 绑定只用到这五个）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -140,12 +189,16 @@ impl Headers {
     }
 }
 
-/// 请求体。[`Body::Bytes`] 是完整字节；大 blob 的延迟区间（`BlobRange`）随后续任务加入。
+/// 请求体：完整字节（[`Body::Bytes`]）或延迟的字节区间（[`Body::BlobRange`]，大 blob 的
+/// 分块上传用）。适配层 MUST NOT 把 `BlobRange` 本身交给 HTTP 客户端——用
+/// [`Request::body_bytes`] 取出字节。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Body {
     None,
     Bytes(Vec<u8>),
+    /// 延迟区间：字节由驱动方取出（同步直接读；异步自行放进工作线程）。
+    BlobRange(BlobRange),
 }
 
 /// 写操作的前置条件（core §5.1）：三选一，没有「不带前置条件」的形式；写操作默认拒绝无
@@ -172,6 +225,170 @@ impl Precondition {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 暂存路径的基础类型（core §3.4、HTTP 绑定 §4.5–§4.7）
+// ---------------------------------------------------------------------------
+
+/// 客户端持有的暂存会话（core §3.4）：`id` 与规范化 `uri` 供 upload / commit 引用。
+///
+/// `expires_at` 随每个响应续期（`DPE-Session-Expires` 头），**只作诊断**（日志、展示）——
+/// 是否过期只信服务端信号：410（`DPE_SESSION_EXPIRED`）与断点查询响应里的过期时间。本地时钟
+/// 偏差会让仍有效的会话被提前放弃（新会话从空开始、已暂存内容全部重传），因此不用本地时钟
+/// 判定。会话只作缓存：失效时重开 negotiate，结果与不复用时一致。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+    /// 会话 id（引用它上传与提交）。
+    pub id: String,
+    /// 会话绑定的 file_uri（请求 uri 的规范化形式，core §1.1）。
+    pub uri: String,
+    /// 过期时间（RFC 3339 UTC 原文）：诊断用，不参与判定。
+    pub expires_at: String,
+}
+
+/// 缺失 blob 的字节来源回调（`deliver` 的参数）：`sha256:…` 引用 → 字节来源；没有对应
+/// 来源时返回 `None`（`deliver` 会如实失败并给出缺失清单）。
+pub type BlobProvider<'a> = &'a mut dyn FnMut(&str) -> Option<BlobSource>;
+
+/// blob 字节的读取器：按任意偏移给出字节（可 seek 的二进制流或内存字节都能适配）。
+///
+/// 实现方按请求的 `[offset, offset + length)` 返回字节；给的字节不足（越过末尾）或读取失败时
+/// 返回错误，由 [`Request::body_bytes`] 上报给驱动方（调用方的源有问题，不发请求）。
+pub trait BlobReader: Send + Sync {
+    /// 读出 `[offset, offset + length)` 的字节；不足时如实返回短读（长度不符由调用方判定）。
+    fn read(&self, offset: u64, length: u64) -> std::io::Result<Vec<u8>>;
+}
+
+/// blob 字节来源（sans-IO：核心不读源、不算摘要）。
+///
+/// `blob_ref`（`sha256:…`）与 `size` 在上传前确定：内存字节用 [`BlobSource::from_bytes`]
+/// 本地算出，可 seek 的流用 [`BlobSource::from_seekable`]（摘要由调用方算好传入，读流是调用方
+/// 的 I/O）；其他来源实现 [`BlobReader`] 后用 [`BlobSource::new`]。摘要由调用方算好传入
+/// （如 `dpe_hash::blob_ref`），核心不做本地校验——服务端在字节到齐后校验，可能返回
+/// `DPE_HASH_MISMATCH`（core §3.4）。
+#[derive(Clone)]
+pub struct BlobSource {
+    blob_ref: String,
+    size: u64,
+    reader: Arc<dyn BlobReader>,
+}
+
+impl BlobSource {
+    /// 由读取器构造；`blob_ref` 与 `size` 由调用方算好传入。
+    pub fn new(blob_ref: impl Into<String>, size: u64, reader: Arc<dyn BlobReader>) -> Self {
+        BlobSource {
+            blob_ref: blob_ref.into(),
+            size,
+            reader,
+        }
+    }
+
+    /// 由内存字节构造：`blob_ref` 与 `size` 本地算出（纯计算，不涉及 I/O）。
+    pub fn from_bytes(data: impl Into<Vec<u8>>) -> Self {
+        let raw = data.into();
+        BlobSource {
+            blob_ref: dpe_hash::blob_ref(&raw),
+            size: raw.len() as u64,
+            reader: Arc::new(raw),
+        }
+    }
+
+    /// 把可 seek 的二进制流适配为来源（媒体辅助、运行器用）。
+    ///
+    /// `blob_ref` 与 `size` 由调用方算好传入（读取流算 sha256 是调用方的 I/O，不在核心）；
+    /// 读取发生在 [`Request::body_bytes`] 被驱动方调用时（异步驱动方自行放到工作线程）。
+    pub fn from_seekable<R>(stream: R, blob_ref: impl Into<String>, size: u64) -> Self
+    where
+        R: std::io::Read + std::io::Seek + Send + 'static,
+    {
+        BlobSource {
+            blob_ref: blob_ref.into(),
+            size,
+            reader: Arc::new(SeekableReader(std::sync::Mutex::new(stream))),
+        }
+    }
+
+    /// blob 引用（`sha256:<64hex>`）。
+    pub fn blob_ref(&self) -> &str {
+        &self.blob_ref
+    }
+
+    /// blob 总长度（字节）。
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// 读取 `[offset, offset + length)` 的字节（转发给读取器）。
+    pub fn read(&self, offset: u64, length: u64) -> std::io::Result<Vec<u8>> {
+        self.reader.read(offset, length)
+    }
+}
+
+impl PartialEq for BlobSource {
+    /// 按 `blob_ref` 与 `size` 比较（读取器不参与：它不承载身份）。
+    fn eq(&self, other: &Self) -> bool {
+        self.blob_ref == other.blob_ref && self.size == other.size
+    }
+}
+
+impl Eq for BlobSource {}
+
+impl fmt::Debug for BlobSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BlobSource")
+            .field("blob_ref", &self.blob_ref)
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+/// 内存字节的来源。
+impl BlobReader for Vec<u8> {
+    fn read(&self, offset: u64, length: u64) -> std::io::Result<Vec<u8>> {
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(self.len());
+        let end = start
+            .saturating_add(usize::try_from(length).unwrap_or(usize::MAX))
+            .min(self.len());
+        Ok(self[start..end].to_vec())
+    }
+}
+
+/// 可 seek 流的来源（内部串行化访问：`BlobReader::read` 是 `&self`，seek 需要可变性）。
+struct SeekableReader<R>(std::sync::Mutex<R>);
+
+impl<R: std::io::Read + std::io::Seek + Send> BlobReader for SeekableReader<R> {
+    fn read(&self, offset: u64, length: u64) -> std::io::Result<Vec<u8>> {
+        let mut stream = self
+            .0
+            .lock()
+            .map_err(|_| std::io::Error::other("blob 源的锁已中毒"))?;
+        stream.seek(std::io::SeekFrom::Start(offset))?;
+        let mut block = Vec::with_capacity(usize::try_from(length).unwrap_or(0));
+        let mut remaining = length;
+        while remaining > 0 {
+            let mut piece = vec![0u8; usize::try_from(remaining.min(1 << 16)).unwrap_or(0)];
+            let read = stream.read(&mut piece)?;
+            if read == 0 {
+                break;
+            }
+            piece.truncate(read);
+            block.extend_from_slice(&piece);
+            remaining -= read as u64;
+        }
+        Ok(block)
+    }
+}
+
+/// 延迟的字节区间（请求体）：核心只描述「谁的 `[offset, offset + length)`」，字节由驱动方经
+/// [`Request::body_bytes`] 取出（同步直接读；异步自行放进工作线程）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobRange {
+    pub source: BlobSource,
+    pub offset: u64,
+    pub length: u64,
+}
+
 /// 请求描述。
 ///
 /// - `target`：相对 remote 的路径与已编码的查询串，传输层原样拼接，**MUST NOT 再次编码**；
@@ -185,6 +402,34 @@ pub struct Request {
     pub headers: Headers,
     pub body: Body,
     pub retry_safe: bool,
+}
+
+impl Request {
+    /// 取出请求体的字节（[`Body::BlobRange`] 在这里解出）。`Body::Bytes` 返回一份克隆；
+    /// 源给的字节数与声明的区间不符时返回错误（调用方的源有问题），不发请求。
+    pub fn body_bytes(&self) -> std::io::Result<Option<Vec<u8>>> {
+        match &self.body {
+            Body::None => Ok(None),
+            Body::Bytes(bytes) => Ok(Some(bytes.clone())),
+            Body::BlobRange(range) => {
+                let data = range.source.read(range.offset, range.length)?;
+                if data.len() as u64 != range.length {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "blob 源 {} 在 [{}, {}) 上给了 {} 字节（应为 {}）",
+                            range.source.blob_ref(),
+                            range.offset,
+                            range.offset + range.length,
+                            data.len(),
+                            range.length
+                        ),
+                    ));
+                }
+                Ok(Some(data))
+            }
+        }
+    }
 }
 
 /// 响应描述。头字段名不区分大小写（构造时统一为小写）；HEAD 响应的 `body` 为空。
@@ -436,6 +681,197 @@ impl ProtocolCore {
     }
 
     // ------------------------------------------------------------------
+    // 暂存路径（core §3.4、HTTP 绑定 §4.5–§4.7）
+    // ------------------------------------------------------------------
+
+    /// `POST negotiate`（HTTP 绑定 §4.5）：开启暂存会话并返回逐层缺失清单。
+    ///
+    /// 只提交文档对象——规范允许附带部分页对象（MAY），本 SDK 暂不提供该开关：增量场景下附带
+    /// 会把服务端已有的页也当请求体重传，收益方向相反。`uri` 不合法（core §1.1）时本地即失败，
+    /// 不发请求。
+    pub fn negotiate(
+        &self,
+        uri: &str,
+        document: &ExpandedDocument,
+    ) -> Result<NegotiateOp<'_>, Error> {
+        let parts = self.wire_parts(document)?;
+        self.negotiate_op(uri, &parts)
+    }
+
+    /// `PUT staging/{sid}/pages/{page_hash}`（HTTP 绑定 §4.6）：上传一个页对象（对象本身即请求
+    /// 体），返回它引用、而在去重范围内不可得的元素 content_hash（去重范围含本会话，core §3.3）。
+    ///
+    /// 整段超过 `max_payload_bytes` 时按 §4.7 分块（块上限 `blob_chunk_bytes`，总量上限
+    /// `page_max_bytes`，超限本地即拒；上游应把文档拆成更多页）。重复上传幂等（200）。
+    pub fn upload_page<'a>(
+        &'a self,
+        session: &'a mut Session,
+        page: &PageObject,
+    ) -> Result<UploadPageOp<'a>, Error> {
+        let page_hash = page.page_hash(&self.contract)?;
+        let payload = serde_json::to_vec(page).expect("数据模型总能序列化");
+        let runner = page_upload_runner(self, &session.id, &page_hash, payload)?;
+        Ok(UploadPageOp {
+            core: self,
+            session,
+            runner,
+            awaiting: false,
+            result: None,
+        })
+    }
+
+    /// `PUT staging/{sid}/objects/{content_hash}`（HTTP 绑定 §4.6）：上传一个元素对象，返回它
+    /// 引用的缺失 blob。
+    ///
+    /// 元素对象不分块（core §3.2）：超过 `max_payload_bytes`（只可能是超大文本）本地即拒，
+    /// 切分是上游的内容决策。重复上传幂等（200）。
+    pub fn upload_element<'a>(
+        &'a self,
+        session: &'a mut Session,
+        element: &ElementObject,
+    ) -> Result<UploadElementOp<'a>, Error> {
+        let content_hash = element.content_hash(&self.contract)?;
+        let payload = serde_json::to_vec(element).expect("数据模型总能序列化");
+        let runner = element_upload_runner(self, &session.id, &content_hash, payload)?;
+        Ok(UploadElementOp {
+            core: self,
+            session,
+            runner,
+            awaiting: false,
+            result: None,
+        })
+    }
+
+    /// `PUT staging/{sid}/blobs/{sha256}`（HTTP 绑定 §4.7）：整段或分块上传一个 blob。
+    ///
+    /// 总量超过 `blob_max_bytes` 本地即拒；不超过 `max_payload_bytes` 时一次 PUT（幂等，响应
+    /// 丢失原样重发），否则按 §4.7 分块并遵守「响应不确定先断点查询」的客户端义务。
+    /// `media_type` 缺省 `application/octet-stream`。
+    pub fn upload_blob<'a>(
+        &'a self,
+        session: &'a mut Session,
+        source: BlobSource,
+        media_type: Option<&str>,
+    ) -> Result<UploadBlobOp<'a>, Error> {
+        let content_type = media_type.unwrap_or("application/octet-stream");
+        let blob_ref = source.blob_ref().to_owned();
+        let runner = blob_upload_runner(self, &session.id, &blob_ref, source, content_type)?;
+        Ok(UploadBlobOp {
+            core: self,
+            session,
+            runner,
+            awaiting: false,
+            result: None,
+        })
+    }
+
+    /// 暂存上传请求：带契约头与自定义 `Content-Type`；写路径 `retry_safe = false`。
+    fn staging_request(&self, target: String, body: Body, content_type: &str) -> Request {
+        let mut headers = Headers::new();
+        headers.insert(CONTRACT_HEADER, self.contract.clone());
+        headers.insert("Content-Type", content_type);
+        Request {
+            method: Method::Put,
+            target,
+            headers,
+            body,
+            retry_safe: false,
+        }
+    }
+
+    /// 由 negotiate 响应对构造客户端会话；`expires_at` 必须是 RFC 3339。
+    fn session_from_wire(
+        &self,
+        raw: &StagingSession,
+        uri: &str,
+        response: &Response,
+    ) -> Result<Session, Error> {
+        if !is_rfc3339(&raw.expires_at) {
+            return Err(Error::unexpected(
+                format!("会话过期时间不是 RFC 3339：{:?}", raw.expires_at),
+                response.status(),
+                None,
+            ));
+        }
+        Ok(Session {
+            id: raw.id.clone(),
+            uri: uri.to_owned(),
+            expires_at: raw.expires_at.clone(),
+        })
+    }
+
+    /// 投递一篇文档（core §3.2）：自动选择快路径或暂存路径，只传变更。
+    ///
+    /// - 内联请求体不超过 `max_payload_bytes` 时走快路径（一次 `commit`）；否则逐层协商
+    ///   （negotiate → 缺失页 → 缺失元素 → 缺失 blob → commit 引用会话），只传缺失的部分；
+    /// - `DPE_MISSING_CONTENT`：按分层清单把缺失对象补传进**同一会话**后重新 commit；快路径下
+    ///   用「内联 + `staging_session`」的请求体，其余对象不必重传（blob 永远不能内联，是快路径
+    ///   唯一可能缺的一层）；
+    /// - `DPE_SESSION_EXPIRED`：重开 negotiate，新会话从空开始、按重算的缺失清单重走；
+    /// - `blobs`：缺失 blob 的字节来源（`sha256:…` → [`BlobSource`]；内存字节用
+    ///   [`BlobSource::from_bytes`] 包一层）；缺省时若确需上传 blob，失败并给出缺失清单；
+    /// - `session`：复用的暂存会话（core §3.4：CAS 失败后重新读取、以新前置条件引用同一会话
+    ///   重提，免重传）。会话只作缓存：失效时自动重开，结果与不复用时一致；
+    /// - 恢复轮预算（`max_resends`）用尽时抛出当时的错误；错误带 [`Error::session`]（当前
+    ///   会话，可能仍可复用），上层可重新读取后以其继续，结果与不限预算一致。
+    ///
+    /// **绝不自动 force**：`DPE_PRECONDITION_FAILED` / `DPE_ALREADY_EXISTS` / `DPE_NOT_FOUND`
+    /// 等原样抛出，不做恢复；只处理上述两类。
+    pub fn deliver<'a>(
+        &'a self,
+        uri: &str,
+        document: &ExpandedDocument,
+        precondition: Precondition,
+        blobs: Option<BlobProvider<'a>>,
+        session: Option<Session>,
+    ) -> Result<DeliverOp<'a>, Error> {
+        dpe_hash::normalize_file_uri(uri).map_err(|error| Error::from_hash_error(&error, ""))?;
+        self.condition(&precondition)?;
+        let parts = self.wire_parts(document)?;
+        DeliverOp::new(self, uri, parts, precondition, blobs, session)
+    }
+
+    /// 由已构造的请求体发起 commit（[`Self::commit`] 与 `deliver` 共用）。
+    fn commit_op(
+        &self,
+        uri: &str,
+        body: Value,
+        precondition: Precondition,
+        expected: String,
+        total: u64,
+    ) -> Result<CommitOp<'_>, Error> {
+        let headers = self.condition(&precondition)?;
+        let target = format!("documents?{}", query(&[("uri", Some(uri))]));
+        let request = self.write_request(Method::Put, target, Some(&body), &headers);
+        Ok(CommitOp {
+            core: self,
+            uri: uri.to_owned(),
+            request,
+            precondition,
+            expected,
+            total,
+            phase: CommitPhase::Submit,
+            resends: 0,
+            awaiting: false,
+            cause: None,
+            outcome_unknown: false,
+        })
+    }
+
+    /// 由已拆分的部件发起 negotiate（[`Self::negotiate`] 与 `deliver` 共用）。
+    fn negotiate_op(&self, uri: &str, parts: &WireParts) -> Result<NegotiateOp<'_>, Error> {
+        let expected_uri = dpe_hash::normalize_file_uri(uri)
+            .map_err(|error| Error::from_hash_error(&error, ""))?;
+        let body = json!({"file_uri": uri, "document": &parts.document});
+        let request = self.write_request(Method::Post, "negotiate".to_owned(), Some(&body), &[]);
+        Ok(NegotiateOp {
+            core: self,
+            expected_uri,
+            phase: Phase::Ready(request),
+        })
+    }
+
+    // ------------------------------------------------------------------
     // 写操作（core §3.3、§4、§5）
     // ------------------------------------------------------------------
 
@@ -454,32 +890,21 @@ impl ProtocolCore {
         uri: &str,
         document: &ExpandedDocument,
         precondition: Precondition,
+        session: Option<&Session>,
     ) -> Result<CommitOp<'_>, Error> {
         dpe_hash::normalize_file_uri(uri).map_err(|error| Error::from_hash_error(&error, ""))?;
-        let headers = self.condition(&precondition)?;
         let parts = self.wire_parts(document)?;
-        let mut body = json!({
-            "document": parts.document,
-            "pages": parts.pages,
-            "objects": parts.objects,
-        });
+        let mut body = json!({"document": &parts.document});
+        if let Some(session) = session {
+            body["staging_session"] = Value::String(session.id.clone());
+        } else {
+            body["pages"] = json!(parts.pages);
+            body["objects"] = json!(parts.objects);
+        }
         if precondition == Precondition::Force {
             body["force"] = Value::Bool(true);
         }
-        let target = format!("documents?{}", query(&[("uri", Some(uri))]));
-        let request = self.write_request(Method::Put, target, Some(&body), &headers);
-        Ok(CommitOp {
-            core: self,
-            uri: uri.to_owned(),
-            request,
-            precondition,
-            expected: parts.doc_hash,
-            total: parts.total,
-            phase: CommitPhase::Submit,
-            resends: 0,
-            awaiting: false,
-            cause: None,
-        })
+        self.commit_op(uri, body, precondition, parts.doc_hash, parts.total)
     }
 
     /// `DELETE documents?uri=`（core §4）：CAS 走 `If-Match`（HTTP 绑定 §3.2）。
@@ -504,6 +929,7 @@ impl ProtocolCore {
             resends: 0,
             resent: false,
             awaiting: false,
+            outcome_unknown: false,
         })
     }
 
@@ -532,6 +958,7 @@ impl ProtocolCore {
             phase: MovePhase::Submit,
             resends: 0,
             awaiting: false,
+            outcome_unknown: false,
         })
     }
     // ------------------------------------------------------------------
@@ -620,23 +1047,34 @@ impl ProtocolCore {
         let hashes = document.hashes(&self.contract)?;
         let mut pages = Vec::new();
         let mut objects = Vec::new();
-        let mut seen_pages = HashSet::new();
-        let mut seen_objects = HashSet::new();
+        let mut page_by_hash = std::collections::HashMap::new();
+        let mut object_by_hash = std::collections::HashMap::new();
+        let mut blob_mime = std::collections::HashMap::new();
         let mut total: u64 = 0;
         for (page, page_hashes) in document.pages.iter().zip(&hashes.pages) {
             // 元素总数（含重复）：u64 求和的是内存中的元素数，溢出不可达；饱和写法纯防护
             total = total.saturating_add(page_hashes.elements.len() as u64);
-            if !seen_pages.insert(page_hashes.page_hash.clone()) {
+            if page_by_hash.contains_key(&page_hashes.page_hash) {
                 continue; // 同一页对象的元素也已全部收录
             }
             let mut wire_page = serde_json::to_value(page).expect("数据模型总能序列化");
             wire_page["elements"] = json!(page_hashes.elements);
+            page_by_hash.insert(page_hashes.page_hash.clone(), wire_page.clone());
             pages.push(wire_page);
             for (element, content_hash) in page.elements.iter().zip(&page_hashes.elements) {
-                if !seen_objects.insert(content_hash.clone()) {
+                if object_by_hash.contains_key(content_hash) {
                     continue;
                 }
+                object_by_hash.insert(
+                    content_hash.clone(),
+                    serde_json::to_value(element).expect("数据模型总能序列化"),
+                );
                 objects.push(serde_json::to_value(element).expect("数据模型总能序列化"));
+                let blob = element.blob.as_ref().and_then(|value| value.as_ref());
+                if let Some(blob) = blob {
+                    let mime = element.mime_type.as_ref().and_then(|value| value.clone());
+                    blob_mime.entry(blob.clone()).or_insert(mime);
+                }
             }
         }
         let mut document_object = serde_json::to_value(document).expect("数据模型总能序列化");
@@ -649,6 +1087,9 @@ impl ProtocolCore {
             document: document_object,
             pages,
             objects,
+            page_by_hash,
+            object_by_hash,
+            blob_mime,
             doc_hash: hashes.doc_hash,
             total,
         })
@@ -1133,11 +1574,18 @@ impl Operation for ListPageOp<'_> {
 // 写操作的状态机（fast path）
 // ---------------------------------------------------------------------------
 
-/// 展开文档的线上部件（快路径请求体）。
+/// 展开文档的线上部件（快路径请求体与暂存上传共用同一份推导）。
+#[derive(Debug)]
 struct WireParts {
     document: Value,
     pages: Vec<Value>,
     objects: Vec<Value>,
+    /// 页 hash → 线上页对象（暂存路径按缺失清单取用）。
+    page_by_hash: std::collections::HashMap<String, Value>,
+    /// content_hash → 线上元素对象。
+    object_by_hash: std::collections::HashMap<String, Value>,
+    /// blob 引用 → 媒体类型（元素未给 `mime_type` 时为 `None`）；键集合即本文档引用的全部 blob。
+    blob_mime: std::collections::HashMap<String, Option<String>>,
     doc_hash: String,
     /// 元素总数（含重复，供 delta 校验）。
     total: u64,
@@ -1209,6 +1657,8 @@ pub struct CommitOp<'a> {
     /// force 的响应丢失原因（PUT 的传输异常或无 DPE 错误码的网关响应），作为
     /// `ForceNotConfirmed` 错误的 cause（core §5.2）。
     cause: Option<Error>,
+    /// 本次写入是否可能已经生效（只针对提交请求本身；白名单判据见 [`Error::outcome_unknown`]）。
+    outcome_unknown: bool,
 }
 
 #[derive(Debug)]
@@ -1228,6 +1678,11 @@ enum CommitPhase {
 }
 
 impl CommitOp<'_> {
+    /// 本次写入是否可能已经生效（只针对提交请求本身；`deliver` 据此累计）。
+    pub(crate) fn outcome_unknown(&self) -> bool {
+        self.outcome_unknown
+    }
+
     /// 提交响应的结果校验并落位结果。
     fn finish(&mut self, response: Response) -> Result<(), Error> {
         let result = self
@@ -1245,6 +1700,8 @@ impl CommitOp<'_> {
     /// `Submit` 的响应。
     fn step_submit(&mut self, response: Response) -> Result<(), Error> {
         if self.precondition == Precondition::Force {
+            // force 不带条件头：任何无码结局都无从判定（裸 412 也不例外）
+            self.outcome_unknown |= !is_dpe_error(&response);
             if is_gateway_lost(&response) {
                 // 不重放 force：先 head 判定（core §5.2）
                 self.cause = Some(error_from_response(&response));
@@ -1254,6 +1711,7 @@ impl CommitOp<'_> {
             }
             return self.finish(response);
         }
+        self.outcome_unknown |= response_outcome_unknown(&response);
         if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
             self.resends += 1;
             return Ok(());
@@ -1268,9 +1726,14 @@ impl CommitOp<'_> {
 
     /// `HeadAfter412` 的响应：判定前置条件是否实际成立。
     fn step_head_after_412(&mut self, response: Response, retried: bool) -> Result<(), Error> {
-        match head_step(self.core, response, &mut self.resends)? {
-            HeadStep::Resend => Ok(()),
-            HeadStep::Done(current) => self.judge_412(current, retried),
+        match head_step(self.core, response, &mut self.resends) {
+            Ok(HeadStep::Resend) => Ok(()),
+            Ok(HeadStep::Done(current)) => self.judge_412(current, retried),
+            Err(error) => {
+                // head 判定本身失败：裸 412 无从化解，本次写入结果不确定
+                self.outcome_unknown = true;
+                Err(error)
+            }
         }
     }
 
@@ -1286,6 +1749,8 @@ impl CommitOp<'_> {
             Precondition::IfAbsent => {
                 if current.is_none() {
                     if retried {
+                        // 重发后仍是裸 412：没能化解
+                        self.outcome_unknown = true;
                         return Err(Error::unexpected(
                             format!(
                                 "{}：文档仍不存在（if_absent 的前置条件成立），重发后仍是无 DPE 错误码的 412",
@@ -1334,6 +1799,7 @@ impl CommitOp<'_> {
 
     /// `Resend412` 的响应（原样重发一次之后的）。
     fn step_resend_412(&mut self, response: Response) -> Result<(), Error> {
+        self.outcome_unknown |= response_outcome_unknown(&response);
         if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
             self.resends += 1;
             return Ok(());
@@ -1431,7 +1897,7 @@ impl Operation for CommitOp<'_> {
         if outcome.is_err() {
             self.phase = CommitPhase::Finished;
         }
-        outcome
+        outcome.map_err(|error| error.with_outcome_unknown(self.outcome_unknown))
     }
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
@@ -1444,6 +1910,7 @@ impl Operation for CommitOp<'_> {
         let outcome = match self.phase {
             // force：响应丢失不重放，先 head 判定
             CommitPhase::Submit if self.precondition == Precondition::Force => {
+                self.outcome_unknown |= !is_not_sent(&error);
                 self.cause = Some(Error::transport(error));
                 self.resends = 0;
                 self.phase = CommitPhase::ConfirmForce;
@@ -1451,6 +1918,7 @@ impl Operation for CommitOp<'_> {
             }
             // 写请求可能已到达：原样重发（幂等由内容保证），至多 max_resends 次
             CommitPhase::Submit | CommitPhase::Resend412 => {
+                self.outcome_unknown |= !is_not_sent(&error);
                 if self.resends < self.core.max_resends() {
                     self.resends += 1;
                     Ok(())
@@ -1490,7 +1958,7 @@ impl Operation for CommitOp<'_> {
         if outcome.is_err() {
             self.phase = CommitPhase::Finished;
         }
-        outcome
+        outcome.map_err(|error| error.with_outcome_unknown(self.outcome_unknown))
     }
 }
 
@@ -1506,6 +1974,8 @@ pub struct DeleteOp<'a> {
     /// 是否发生过原样重发：重发后得到 `DPE_NOT_FOUND` 视为成功（core §5.2）。
     resent: bool,
     awaiting: bool,
+    /// 本次写入是否可能已经生效（只针对删除请求本身）。
+    outcome_unknown: bool,
 }
 
 #[derive(Debug)]
@@ -1544,6 +2014,7 @@ impl DeleteOp<'_> {
     }
 
     fn step_submit(&mut self, response: Response) -> Result<(), Error> {
+        self.outcome_unknown |= response_outcome_unknown(&response);
         if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
             self.resends += 1;
             self.resent = true;
@@ -1560,42 +2031,49 @@ impl DeleteOp<'_> {
     /// 裸 412 的 head 判定（HTTP 绑定 §3.2）：不存在即成功；不等于 `base_hash` 抛
     /// `DPE_PRECONDITION_FAILED`；仍等于则是中间层误判，原样重发一次。
     fn step_head_after_412(&mut self, response: Response, retried: bool) -> Result<(), Error> {
-        match head_step(self.core, response, &mut self.resends)? {
-            HeadStep::Resend => Ok(()),
-            HeadStep::Done(current) => {
-                if current.as_deref() == Some(self.base_hash.as_str()) {
-                    if retried {
-                        return Err(Error::unexpected(
-                            format!(
-                                "{}：doc_hash 等于 If-Match，重发后仍是无 DPE 错误码的 412",
-                                self.uri
-                            ),
-                            412,
-                            None,
-                        ));
-                    }
-                    self.resent = true;
-                    self.resends = 0;
-                    self.phase = DeletePhase::Resend412;
-                    return Ok(());
-                }
-                if current.is_none() {
-                    self.done();
-                    return Ok(());
-                }
-                Err(Error::protocol(
-                    ErrorKind::PreconditionFailed,
-                    format!(
-                        "expected {}, current {}（412 无 DPE 错误码，经 head 判定）",
-                        self.base_hash,
-                        current.unwrap_or_default()
-                    ),
-                ))
+        let current = match head_step(self.core, response, &mut self.resends) {
+            Ok(HeadStep::Resend) => return Ok(()),
+            Ok(HeadStep::Done(current)) => current,
+            Err(error) => {
+                // head 判定本身失败：裸 412 无从化解，本次写入结果不确定
+                self.outcome_unknown = true;
+                return Err(error);
             }
+        };
+        if current.as_deref() == Some(self.base_hash.as_str()) {
+            if retried {
+                // 重发后仍是裸 412：没能化解
+                self.outcome_unknown = true;
+                return Err(Error::unexpected(
+                    format!(
+                        "{}：doc_hash 等于 If-Match，重发后仍是无 DPE 错误码的 412",
+                        self.uri
+                    ),
+                    412,
+                    None,
+                ));
+            }
+            self.resent = true;
+            self.resends = 0;
+            self.phase = DeletePhase::Resend412;
+            return Ok(());
         }
+        if current.is_none() {
+            self.done();
+            return Ok(());
+        }
+        Err(Error::protocol(
+            ErrorKind::PreconditionFailed,
+            format!(
+                "expected {}, current {}（412 无 DPE 错误码，经 head 判定）",
+                self.base_hash,
+                current.unwrap_or_default()
+            ),
+        ))
     }
 
     fn step_resend_412(&mut self, response: Response) -> Result<(), Error> {
+        self.outcome_unknown |= response_outcome_unknown(&response);
         if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
             self.resends += 1;
             self.resent = true;
@@ -1658,7 +2136,7 @@ impl Operation for DeleteOp<'_> {
         if outcome.is_err() {
             self.phase = DeletePhase::Finished;
         }
-        outcome
+        outcome.map_err(|error| error.with_outcome_unknown(self.outcome_unknown))
     }
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
@@ -1670,6 +2148,7 @@ impl Operation for DeleteOp<'_> {
         self.awaiting = false;
         let outcome = match self.phase {
             DeletePhase::Submit | DeletePhase::Resend412 => {
+                self.outcome_unknown |= !is_not_sent(&error);
                 if self.resends < self.core.max_resends() {
                     self.resends += 1;
                     self.resent = true;
@@ -1693,7 +2172,7 @@ impl Operation for DeleteOp<'_> {
         if outcome.is_err() {
             self.phase = DeletePhase::Finished;
         }
-        outcome
+        outcome.map_err(|error| error.with_outcome_unknown(self.outcome_unknown))
     }
 }
 
@@ -1706,6 +2185,8 @@ pub struct MoveOp<'a> {
     phase: MovePhase,
     resends: u32,
     awaiting: bool,
+    /// 本次写入是否可能已经生效（只针对 move 请求本身）。
+    outcome_unknown: bool,
 }
 
 #[derive(Debug)]
@@ -1767,6 +2248,8 @@ impl Operation for MoveOp<'_> {
         self.awaiting = false;
         let outcome = match self.phase {
             MovePhase::Submit => {
+                // move 没有条件头求值回退：任何无码结局都无从判定
+                self.outcome_unknown |= !is_dpe_error(&response);
                 if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
                     self.resends += 1;
                     Ok(())
@@ -1781,7 +2264,7 @@ impl Operation for MoveOp<'_> {
         if outcome.is_err() {
             self.phase = MovePhase::Finished;
         }
-        outcome
+        outcome.map_err(|error| error.with_outcome_unknown(self.outcome_unknown))
     }
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
@@ -1793,6 +2276,7 @@ impl Operation for MoveOp<'_> {
         self.awaiting = false;
         let outcome = match self.phase {
             MovePhase::Submit => {
+                self.outcome_unknown |= !is_not_sent(&error);
                 if self.resends < self.core.max_resends() {
                     self.resends += 1;
                     Ok(())
@@ -1807,9 +2291,1586 @@ impl Operation for MoveOp<'_> {
         if outcome.is_err() {
             self.phase = MovePhase::Finished;
         }
+        outcome.map_err(|error| error.with_outcome_unknown(self.outcome_unknown))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 暂存路径的状态机（HTTP 绑定 §4.5–§4.7）
+// ---------------------------------------------------------------------------
+
+/// [`ProtocolCore::negotiate`] 的结果（HTTP 绑定 §4.5）：会话与逐层缺失清单。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Negotiated {
+    pub session: Session,
+    /// 文档对象引用、而不可得的页对象。
+    pub missing_pages: Vec<String>,
+    /// 附带的页对象中引用、而不可得的元素对象（本 SDK 不附带页对象，因此恒为空）。
+    pub missing_content_hashes: Vec<String>,
+}
+
+/// `negotiate` 的操作（见 [`ProtocolCore::negotiate`]）。
+#[derive(Debug)]
+pub struct NegotiateOp<'a> {
+    core: &'a ProtocolCore,
+    /// 请求 `uri` 的规范化形式（core §1.1），会话绑定它。
+    expected_uri: String,
+    phase: Phase<Negotiated>,
+}
+
+impl Operation for NegotiateOp<'_> {
+    type Output = Negotiated;
+
+    fn poll(&mut self) -> Result<Step<Negotiated>, Error> {
+        self.phase.poll()
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        self.phase.respond(|| {
+            expect_status(&response, 200)?;
+            let result = parse_response(&response, NegotiateResult::from_value)?;
+            for (i, page_hash) in result.missing_pages.iter().enumerate() {
+                self.core.check_hash(
+                    page_hash,
+                    response.status(),
+                    &format!("missing_pages[{i}]"),
+                )?;
+            }
+            for (i, content_hash) in result.missing_content_hashes.iter().enumerate() {
+                self.core.check_hash(
+                    content_hash,
+                    response.status(),
+                    &format!("missing_content_hashes[{i}]"),
+                )?;
+            }
+            let session = self.core.session_from_wire(
+                &result.staging_session,
+                &self.expected_uri,
+                &response,
+            )?;
+            Ok(Negotiated {
+                session,
+                missing_pages: result.missing_pages,
+                missing_content_hashes: result.missing_content_hashes,
+            })
+        })
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        self.phase.fail()?;
+        Err(Error::transport(error))
+    }
+}
+
+/// 暂存上传的载荷（分块时按区间给出请求体）。
+#[derive(Debug)]
+enum ChunkPayload {
+    /// 页对象：完整字节（块是内存切片）。
+    Bytes(Arc<Vec<u8>>),
+    /// blob：延迟区间（字节不进核心）。
+    Blob(BlobSource),
+}
+
+/// 分块上传与恢复的状态机（HTTP 绑定 §4.7；页对象与 blob 共用）。
+///
+/// 任何一块的响应丢失或不确定（驱动回送的异常、无错误码的 502 / 504）时 MUST NOT 盲目重发：
+/// 先断点查询（HEAD 同一 URL，只读、不续期）再按已收偏移续传；查到的偏移等于声明的总量即上传
+/// 已完成，重发末块（非空区间）取缺失清单；偏移不连续（`DPE_VALIDATION` 且响应带
+/// `DPE-Upload-Offset`）直接按该头重同步（免一次断点查询）。每一步恢复计入 `max_resends`
+/// 预算，用尽后如实抛出；断点查询自身按只读请求重发（`_send` 语义，每次查询预算独立）。
+///
+/// `202` 表示「已追加本块、未到齐」（§4.7 第 7 步）：偏移必须恰好前进本块的长度且严格小于
+/// 总量，否则服务端在重复旧状态——继续重发同一个块会陷入无进展的循环，因此判不合规（每轮
+/// 202 严格前进一块，循环由结构保证有界，不占用恢复预算）。
+#[derive(Debug)]
+struct Chunked<'a> {
+    core: &'a ProtocolCore,
+    target: String,
+    total: u64,
+    /// 块大小上限：`blob_chunk_bytes` 与 `max_payload_bytes` 的较小者。
+    chunk_size: u64,
+    payload: ChunkPayload,
+    content_type: String,
+    /// 本会话已收偏移。
+    offset: u64,
+    /// 末块的起点（偏移等于总量时重发它取缺失清单，不发空区间）。
+    last: u64,
+    /// 剩余恢复预算。
+    recoveries: u32,
+    /// 当前断点查询自身的重发记账（每次新查询独立）。
+    resume_resends: u32,
+    /// 在飞的动作。
+    inflight: Option<ChunkFlight>,
+    /// 恢复步骤产出的待发请求（由操作侧的 poll 取出）。
+    pending: Option<Request>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChunkFlight {
+    /// 数据块（起点、长度）。
+    Chunk { from: u64, length: u64 },
+    /// 断点查询（HEAD）。
+    Resume,
+}
+
+/// 分块机器的回送结果。
+enum ChunkOutcome {
+    /// 还有请求要发。
+    Continue,
+    /// 上传完成：最终响应。
+    Done(Response),
+}
+
+impl<'a> Chunked<'a> {
+    fn new(
+        core: &'a ProtocolCore,
+        target: String,
+        total: u64,
+        payload: ChunkPayload,
+        content_type: &str,
+    ) -> Self {
+        Chunked {
+            chunk_size: core
+                .limits()
+                .blob_chunk_bytes
+                .min(core.limits().max_payload_bytes),
+            core,
+            target,
+            total,
+            payload,
+            content_type: content_type.to_owned(),
+            offset: 0,
+            last: 0,
+            recoveries: core.max_resends(),
+            resume_resends: 0,
+            inflight: None,
+            pending: None,
+        }
+    }
+
+    /// 产出下一个要发的请求（有恢复步骤留下的待发请求时先取出）。
+    fn next_request(&mut self) -> Result<Request, Error> {
+        if let Some(request) = self.pending.take() {
+            return Ok(request);
+        }
+        debug_assert!(self.inflight.is_none(), "有在飞请求时不应再取");
+        if self.offset < self.total {
+            self.last = self.offset; // 末块的起点
+        }
+        let from = if self.offset < self.total {
+            self.offset
+        } else {
+            self.last
+        };
+        let length = self.chunk_size.min(self.total - from);
+        self.inflight = Some(ChunkFlight::Chunk { from, length });
+        Ok(self.chunk_request(from, length))
+    }
+
+    /// 数据块的请求（`Content-Range: bytes {from}-{to}/{total}`）。
+    fn chunk_request(&self, from: u64, length: u64) -> Request {
+        let body = match &self.payload {
+            ChunkPayload::Bytes(bytes) => {
+                Body::Bytes(bytes[from as usize..(from + length) as usize].to_vec())
+            }
+            ChunkPayload::Blob(source) => Body::BlobRange(BlobRange {
+                source: source.clone(),
+                offset: from,
+                length,
+            }),
+        };
+        let mut request = self
+            .core
+            .staging_request(self.target.clone(), body, &self.content_type);
+        request.headers.insert(
+            "Content-Range",
+            format!("bytes {}-{}/{}", from, from + length - 1, self.total),
+        );
+        request
+    }
+
+    /// 断点查询请求（HEAD 同一 URL，只读：`retry_safe = true`，不续期）。
+    fn resume_request(&self) -> Request {
+        self.core
+            .request(Method::Head, self.target.clone(), Body::None, &[], true)
+    }
+
+    /// 开始一次断点查询（重置它自身的重发记账）。
+    fn start_resume(&mut self) -> ChunkOutcome {
+        self.resume_resends = 0;
+        self.inflight = Some(ChunkFlight::Resume);
+        self.pending = Some(self.resume_request());
+        ChunkOutcome::Continue
+    }
+
+    /// 开始一次断点查询并继续（内部使用：`?` 友好的包装）。
+    fn resume_continue(&mut self) -> ChunkOutcome {
+        self.start_resume()
+    }
+
+    /// 回送响应并推进。
+    fn feed(&mut self, response: Response, session: &mut Session) -> Result<ChunkOutcome, Error> {
+        let flight = self.inflight.take().expect("feed 只在有在飞请求时调用");
+        match flight {
+            ChunkFlight::Resume => {
+                // 断点查询：只读，可原样重发（`_send` 语义）
+                if is_gateway_lost(&response) && self.resume_resends < self.core.max_resends() {
+                    self.resume_resends += 1;
+                    self.inflight = Some(ChunkFlight::Resume);
+                    self.pending = Some(self.resume_request());
+                    return Ok(ChunkOutcome::Continue);
+                }
+                if response.status() >= 400 {
+                    return Err(error_from_response(&response));
+                }
+                if response.status() != 200 {
+                    return Err(Error::unexpected(
+                        format!("断点查询期望 HTTP 200，得到 {}", response.status()),
+                        response.status(),
+                        None,
+                    ));
+                }
+                renew_session(session, &response);
+                let offset = require_offset(&response, &self.target)?;
+                if offset > self.total {
+                    return Err(Error::unexpected(
+                        format!(
+                            "{} 的已收偏移 {offset} 超过总量 {}",
+                            self.target, self.total
+                        ),
+                        response.status(),
+                        None,
+                    ));
+                }
+                self.offset = offset;
+                self.pending = Some(self.next_request()?);
+                Ok(ChunkOutcome::Continue)
+            }
+            ChunkFlight::Chunk { from, length } => {
+                if is_gateway_lost(&response) {
+                    if self.recoveries == 0 {
+                        return Err(error_from_response(&response));
+                    }
+                    self.recoveries -= 1;
+                    return Ok(self.resume_continue());
+                }
+                if response.status() == 202 {
+                    renew_session(session, &response);
+                    let offset = require_offset(&response, &self.target)?;
+                    let appended = from + length;
+                    if offset != appended || offset >= self.total {
+                        return Err(Error::unexpected(
+                            format!(
+                                "{} 的 202 已收偏移 {offset}：本块追加后应为 {appended} 且未到齐（总量 {}）",
+                                self.target, self.total
+                            ),
+                            response.status(),
+                            None,
+                        ));
+                    }
+                    self.offset = offset;
+                    self.pending = Some(self.next_request()?);
+                    return Ok(ChunkOutcome::Continue);
+                }
+                if response.status() < 400 {
+                    return Ok(ChunkOutcome::Done(response));
+                }
+                let error = error_from_response(&response);
+                if error.kind() == ErrorKind::Validation {
+                    if let Some(hint) = offset_hint(&response) {
+                        // 偏移不连续的错误响应带本会话已收字节数：直接据它重同步（免一次断点查询）
+                        if hint > self.total {
+                            return Err(Error::unexpected(
+                                format!(
+                                    "{} 的偏移重同步值 {hint} 超过总量 {}",
+                                    self.target, self.total
+                                ),
+                                response.status(),
+                                None,
+                            ));
+                        }
+                        if self.recoveries > 0 {
+                            self.recoveries -= 1;
+                            self.offset = hint;
+                            self.pending = Some(self.next_request()?);
+                            return Ok(ChunkOutcome::Continue);
+                        }
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// 回送传输异常并推进。
+    fn feed_transport_error(&mut self, error: TransportError) -> Result<ChunkOutcome, Error> {
+        let flight = self.inflight.take().expect("feed 只在有在飞请求时调用");
+        match flight {
+            ChunkFlight::Resume => {
+                if self.resume_resends < self.core.max_resends() {
+                    self.resume_resends += 1;
+                    self.inflight = Some(ChunkFlight::Resume);
+                    self.pending = Some(self.resume_request());
+                    Ok(ChunkOutcome::Continue)
+                } else {
+                    Err(Error::transport(error))
+                }
+            }
+            ChunkFlight::Chunk { .. } => {
+                if self.recoveries == 0 {
+                    return Err(Error::transport(error));
+                }
+                self.recoveries -= 1;
+                Ok(self.resume_continue())
+            }
+        }
+    }
+}
+
+/// 一次上传的执行状态（整段 / 分块），三个 upload 操作共用；结果处理由各操作自己做。
+#[derive(Debug)]
+struct UploadRunner<'a> {
+    phase: UploadPhase<'a>,
+}
+
+#[derive(Debug)]
+enum UploadPhase<'a> {
+    /// 整段 PUT（`_send` 语义：响应丢失与网关丢失原样重发）。
+    Whole { request: Request, resends: u32 },
+    /// 分块（`_chunked` 语义）。
+    Chunked(Box<Chunked<'a>>),
+    /// 终态。
+    Finished,
+}
+
+impl<'a> UploadRunner<'a> {
+    fn whole(request: Request) -> Self {
+        UploadRunner {
+            phase: UploadPhase::Whole {
+                request,
+                resends: 0,
+            },
+        }
+    }
+
+    fn chunked(
+        core: &'a ProtocolCore,
+        target: String,
+        total: u64,
+        payload: ChunkPayload,
+        content_type: &str,
+    ) -> Self {
+        UploadRunner {
+            phase: UploadPhase::Chunked(Box::new(Chunked::new(
+                core,
+                target,
+                total,
+                payload,
+                content_type,
+            ))),
+        }
+    }
+
+    fn finish(&mut self) {
+        self.phase = UploadPhase::Finished;
+    }
+
+    /// 取下一个要发的请求。
+    fn next_request(&mut self) -> Result<Request, Error> {
+        match &mut self.phase {
+            UploadPhase::Whole { request, .. } => Ok(request.clone()),
+            UploadPhase::Chunked(chunked) => chunked.next_request(),
+            UploadPhase::Finished => Err(usage_error("操作已完成或以错误终止：poll 不应再次调用")),
+        }
+    }
+
+    /// 回送响应；`Ok(Some(response))` 表示上传完成（200/201），`Ok(None)` 表示还有请求要发。
+    fn feed(
+        &mut self,
+        response: Response,
+        session: &mut Session,
+        core: &ProtocolCore,
+    ) -> Result<Option<Response>, Error> {
+        match &mut self.phase {
+            UploadPhase::Whole { resends, .. } => {
+                if is_gateway_lost(&response) && *resends < core.max_resends() {
+                    *resends += 1;
+                    return Ok(None);
+                }
+                Ok(Some(response))
+            }
+            UploadPhase::Chunked(chunked) => match chunked.feed(response, session)? {
+                ChunkOutcome::Continue => Ok(None),
+                ChunkOutcome::Done(response) => Ok(Some(response)),
+            },
+            UploadPhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        }
+    }
+
+    /// 回送传输异常；`Ok(None)` 表示原样重发。
+    fn feed_transport_error(
+        &mut self,
+        error: TransportError,
+        core: &ProtocolCore,
+    ) -> Result<(), Error> {
+        match &mut self.phase {
+            UploadPhase::Whole { resends, .. } => {
+                if *resends < core.max_resends() {
+                    *resends += 1;
+                    Ok(())
+                } else {
+                    Err(Error::transport(error))
+                }
+            }
+            UploadPhase::Chunked(chunked) => match chunked.feed_transport_error(error)? {
+                ChunkOutcome::Continue => Ok(()),
+                ChunkOutcome::Done(_) => unreachable!("分块的传输异常路径不会完成"),
+            },
+            UploadPhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        }
+    }
+}
+
+/// `upload_page` 的操作（见 [`ProtocolCore::upload_page`]）。
+#[derive(Debug)]
+pub struct UploadPageOp<'a> {
+    core: &'a ProtocolCore,
+    session: &'a mut Session,
+    runner: UploadRunner<'a>,
+    awaiting: bool,
+    result: Option<Vec<String>>,
+}
+
+impl Operation for UploadPageOp<'_> {
+    type Output = Vec<String>;
+
+    fn poll(&mut self) -> Result<Step<Vec<String>>, Error> {
+        if let Some(result) = self.result.take() {
+            self.runner.finish();
+            return Ok(Step::Done(result));
+        }
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        let request = self.runner.next_request()?;
+        self.awaiting = true;
+        Ok(Step::Send(request))
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = self.receive(response);
+        if outcome.is_err() {
+            self.runner.finish();
+        }
+        outcome
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = self.runner.feed_transport_error(error, self.core);
+        if outcome.is_err() {
+            self.runner.finish();
+        }
         outcome
     }
 }
+
+impl UploadPageOp<'_> {
+    /// 上传完成的响应：续期、校验状态码与响应体，返回缺失元素清单。
+    fn receive(&mut self, response: Response) -> Result<(), Error> {
+        let Some(response) = self.runner.feed(response, self.session, self.core)? else {
+            return Ok(());
+        };
+        upload_ok(self.session, &response)?;
+        let missing = parse_response(&response, PageUploadMissing::from_value)?;
+        for (i, content_hash) in missing.missing_content_hashes.iter().enumerate() {
+            self.core.check_hash(
+                content_hash,
+                response.status(),
+                &format!("missing_content_hashes[{i}]"),
+            )?;
+        }
+        self.result = Some(missing.missing_content_hashes);
+        Ok(())
+    }
+}
+
+/// `upload_element` 的操作（见 [`ProtocolCore::upload_element`]）。
+#[derive(Debug)]
+pub struct UploadElementOp<'a> {
+    core: &'a ProtocolCore,
+    session: &'a mut Session,
+    runner: UploadRunner<'a>,
+    awaiting: bool,
+    result: Option<Vec<String>>,
+}
+
+impl Operation for UploadElementOp<'_> {
+    type Output = Vec<String>;
+
+    fn poll(&mut self) -> Result<Step<Vec<String>>, Error> {
+        if let Some(result) = self.result.take() {
+            self.runner.finish();
+            return Ok(Step::Done(result));
+        }
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        let request = self.runner.next_request()?;
+        self.awaiting = true;
+        Ok(Step::Send(request))
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = self.receive(response);
+        if outcome.is_err() {
+            self.runner.finish();
+        }
+        outcome
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = self.runner.feed_transport_error(error, self.core);
+        if outcome.is_err() {
+            self.runner.finish();
+        }
+        outcome
+    }
+}
+
+impl UploadElementOp<'_> {
+    /// 上传完成的响应：续期、校验状态码与响应体，返回缺失 blob 清单。
+    fn receive(&mut self, response: Response) -> Result<(), Error> {
+        let Some(response) = self.runner.feed(response, self.session, self.core)? else {
+            return Ok(());
+        };
+        upload_ok(self.session, &response)?;
+        let missing = parse_response(&response, ElementUploadMissing::from_value)?;
+        for (i, blob) in missing.missing_blobs.iter().enumerate() {
+            check_blob_ref(blob, response.status(), &format!("missing_blobs[{i}]"))?;
+        }
+        self.result = Some(missing.missing_blobs);
+        Ok(())
+    }
+}
+
+/// `upload_blob` 的操作（见 [`ProtocolCore::upload_blob`]）。
+#[derive(Debug)]
+pub struct UploadBlobOp<'a> {
+    core: &'a ProtocolCore,
+    session: &'a mut Session,
+    runner: UploadRunner<'a>,
+    awaiting: bool,
+    /// 完成标志（`Some` = 结果就绪，poll 取出后进入终态）。
+    result: Option<()>,
+}
+
+impl Operation for UploadBlobOp<'_> {
+    type Output = ();
+
+    fn poll(&mut self) -> Result<Step<()>, Error> {
+        if self.result.take().is_some() {
+            self.runner.finish();
+            return Ok(Step::Done(()));
+        }
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        let request = self.runner.next_request()?;
+        self.awaiting = true;
+        Ok(Step::Send(request))
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = self.receive(response);
+        if outcome.is_err() {
+            self.runner.finish();
+        }
+        outcome
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = self.runner.feed_transport_error(error, self.core);
+        if outcome.is_err() {
+            self.runner.finish();
+        }
+        outcome
+    }
+}
+
+impl UploadBlobOp<'_> {
+    /// 上传完成的响应：续期并校验状态码（blob 没有下一层清单）。
+    fn receive(&mut self, response: Response) -> Result<(), Error> {
+        let Some(response) = self.runner.feed(response, self.session, self.core)? else {
+            return Ok(());
+        };
+        upload_ok(self.session, &response)?;
+        self.result = Some(());
+        Ok(())
+    }
+}
+
+/// 按 `DPE-Session-Expires` 更新会话的过期时间（诊断用）：缺失或无法解析时沿用旧值——
+/// 它只是副本，是否过期以服务端判定为准（core §3.4）。
+fn renew_session(session: &mut Session, response: &Response) {
+    let Some(value) = response.header(SESSION_EXPIRES_HEADER) else {
+        return;
+    };
+    if is_rfc3339(value) {
+        session.expires_at = value.to_owned();
+    }
+}
+
+/// upload 的成功响应（201 本会话新写入 / 200 重复，HTTP 绑定 §4.6）：续期并校验，失败
+/// （含 410 会话不可用）按 problem 体的 code 抛出。
+fn upload_ok(session: &mut Session, response: &Response) -> Result<(), Error> {
+    if response.status() >= 400 {
+        return Err(error_from_response(response));
+    }
+    if response.status() != 200 && response.status() != 201 {
+        return Err(Error::unexpected(
+            format!("upload 期望 HTTP 200 或 201，得到 {}", response.status()),
+            response.status(),
+            None,
+        ));
+    }
+    renew_session(session, response);
+    Ok(())
+}
+
+/// 响应里可用的 `DPE-Upload-Offset`（本会话已收字节数）；不可用时为 `None`。
+fn offset_hint(response: &Response) -> Option<u64> {
+    let value = response.header(UPLOAD_OFFSET_HEADER)?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok() // 超长数字串（放不下 u64）按「头不可用」处理，不抛裸转换错误
+}
+
+/// 必须带合法 `DPE-Upload-Offset` 的响应。
+fn require_offset(response: &Response, what: &str) -> Result<u64, Error> {
+    offset_hint(response).ok_or_else(|| {
+        Error::unexpected(
+            format!("{what} 的响应缺少合法的 {UPLOAD_OFFSET_HEADER}"),
+            response.status(),
+            None,
+        )
+    })
+}
+
+/// 报文中的 blob 引用必须是合法的 `sha256:<64hex>`（契约 1 §1）。
+fn check_blob_ref(value: &str, status: u16, what: &str) -> Result<(), Error> {
+    dpe_hash::parse_blob_ref(value).map(|_| ()).map_err(|_| {
+        Error::unexpected(
+            format!("{what} {value:?} 不是合法的 blob 引用"),
+            status,
+            None,
+        )
+    })
+}
+
+// ---------------------------------------------------------------------------
+// deliver：快路径 / 暂存路径的组合机器（core §3.2–§3.4）
+// ---------------------------------------------------------------------------
+
+/// 投递模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliverMode {
+    /// 快路径：内联请求体（恢复时加 `staging_session`）。
+    Inline,
+    /// 暂存路径：请求体只含文档对象与 `staging_session`。
+    Staged,
+}
+
+/// negotiate 完成后进入的分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliverGoal {
+    /// 快路径恢复：算「内联 + 会话」的请求体重提；加上会话 id 即超限时回落暂存路径。
+    InlineRecovery,
+    /// 暂存路径：按新清单补传后重新提交。
+    Staged,
+}
+
+/// `deliver` 的操作（见 [`ProtocolCore::deliver`]）。
+pub struct DeliverOp<'a> {
+    core: &'a ProtocolCore,
+    uri: String,
+    parts: WireParts,
+    precondition: Precondition,
+    expected: String,
+    total: u64,
+    /// 快路径的当前内联体（恢复时替换为「内联 + `staging_session`」）。
+    inline: Option<Value>,
+    /// 缺失 blob 的字节来源。
+    blobs: Option<BlobProvider<'a>>,
+    /// 当前暂存会话（会话只作缓存；续期只影响诊断字段）。
+    session: Option<Session>,
+    /// 恢复轮预算。
+    budget: u32,
+    /// 待补传的清单（来自 commit 的 `DPE_MISSING_CONTENT` 或 negotiate）。
+    pending: Option<Missing>,
+    queue: ManifestQueue,
+    /// 当前清单是否已展开进队列（重开 negotiate / 收到新清单时重置）。
+    queue_active: bool,
+    mode: DeliverMode,
+    /// negotiate 完成后要做的事。
+    after_negotiate: Option<DeliverGoal>,
+    phase: DeliverPhase<'a>,
+    awaiting: bool,
+    /// 本次写入是否可能已经生效（来自 commit 请求本身的不确定尝试；negotiate / upload 不算）。
+    outcome_unknown: bool,
+}
+
+#[derive(Debug)]
+enum DeliverPhase<'a> {
+    InlineCommit(Box<CommitOp<'a>>),
+    Negotiate(Box<NegotiateOp<'a>>),
+    Upload(Box<ManifestJob<'a>>),
+    StagedCommit(Box<CommitOp<'a>>),
+    Finished,
+}
+
+impl fmt::Debug for DeliverOp<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeliverOp")
+            .field("uri", &self.uri)
+            .field("mode", &self.mode)
+            .field("budget", &self.budget)
+            .field("session", &self.session)
+            .field("awaiting", &self.awaiting)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> DeliverOp<'a> {
+    fn new(
+        core: &'a ProtocolCore,
+        uri: &str,
+        parts: WireParts,
+        precondition: Precondition,
+        blobs: Option<BlobProvider<'a>>,
+        session: Option<Session>,
+    ) -> Result<Self, Error> {
+        let expected = parts.doc_hash.clone();
+        let total = parts.total;
+        let mut op = DeliverOp {
+            core,
+            uri: uri.to_owned(),
+            parts,
+            precondition,
+            expected,
+            total,
+            inline: None,
+            blobs,
+            session: None,
+            budget: core.max_resends(),
+            pending: None,
+            queue: ManifestQueue::default(),
+            queue_active: false,
+            mode: DeliverMode::Inline,
+            after_negotiate: None,
+            phase: DeliverPhase::Finished,
+            awaiting: false,
+            outcome_unknown: false,
+        };
+        if let Some(session) = session {
+            // 复用的会话（内容应已在其中）：直接 commit 引用它，缺什么由缺失清单驱动补传。
+            op.mode = DeliverMode::Staged;
+            op.session = Some(session);
+            op.start_commit()?;
+            return Ok(op);
+        }
+        let inline = op.build_inline_body();
+        if json_body_len(&inline) <= core.limits().max_payload_bytes {
+            op.inline = Some(inline);
+            op.start_commit()?;
+        } else {
+            op.mode = DeliverMode::Staged;
+            op.start_negotiate(DeliverGoal::Staged)?;
+        }
+        Ok(op)
+    }
+
+    /// 快路径的内联体（文档对象 + 全部页对象与元素对象；force 带 `"force": true`）。
+    fn build_inline_body(&self) -> Value {
+        let mut body = json!({
+            "document": &self.parts.document,
+            "pages": &self.parts.pages,
+            "objects": &self.parts.objects,
+        });
+        if self.precondition == Precondition::Force {
+            body["force"] = Value::Bool(true);
+        }
+        body
+    }
+
+    /// 快路径恢复的请求体（内联 + `staging_session`）；加上会话 id 会超过
+    /// `max_payload_bytes` 时为 `None`——会话已开出，改由暂存路径继续（它的请求体只含文档对象；
+    /// 传输层按整段请求体判 413，见 core §3.3 第 0 步）。
+    fn recovery_body(&self, session: &Session) -> Option<Value> {
+        let mut body = self.inline.clone()?;
+        body["staging_session"] = Value::String(session.id.clone());
+        (json_body_len(&body) <= self.core.limits().max_payload_bytes).then_some(body)
+    }
+
+    /// 当前会话的 id（暂存路径必有会话）。
+    fn session_id(&self) -> &str {
+        &self.session.as_ref().expect("暂存路径必有会话").id
+    }
+
+    /// 发起 commit（按当前模式与当前请求体）。
+    fn start_commit(&mut self) -> Result<(), Error> {
+        let body = match self.mode {
+            DeliverMode::Inline => self.inline.clone().expect("快路径必有内联体"),
+            DeliverMode::Staged => {
+                let mut body = json!({
+                    "document": &self.parts.document,
+                    "staging_session": self.session_id(),
+                });
+                if self.precondition == Precondition::Force {
+                    body["force"] = Value::Bool(true);
+                }
+                body
+            }
+        };
+        let op = self.core.commit_op(
+            &self.uri,
+            body,
+            self.precondition.clone(),
+            self.expected.clone(),
+            self.total,
+        )?;
+        self.phase = match self.mode {
+            DeliverMode::Inline => DeliverPhase::InlineCommit(Box::new(op)),
+            DeliverMode::Staged => DeliverPhase::StagedCommit(Box::new(op)),
+        };
+        Ok(())
+    }
+
+    /// 发起 negotiate。
+    fn start_negotiate(&mut self, goal: DeliverGoal) -> Result<(), Error> {
+        let op = self.core.negotiate_op(&self.uri, &self.parts)?;
+        self.after_negotiate = Some(goal);
+        self.phase = DeliverPhase::Negotiate(Box::new(op));
+        Ok(())
+    }
+
+    /// negotiate 完成后的推进。
+    fn after_negotiated(&mut self, negotiated: Negotiated) -> Result<(), Error> {
+        let goal = self
+            .after_negotiate
+            .take()
+            .expect("negotiate 完成后必有目标");
+        self.session = Some(negotiated.session.clone());
+        match goal {
+            DeliverGoal::InlineRecovery => {
+                match self.recovery_body(&negotiated.session) {
+                    Some(body) => {
+                        self.inline = Some(body);
+                        // 会话已开：先在新会话里补传记住的清单（若有），再以「内联 + 会话」重提
+                        self.queue_active = false;
+                        self.advance()
+                    }
+                    None => {
+                        // 加上会话 id 即超限：会话已开出，改由暂存路径继续（清单丢弃，
+                        // 缺什么由下一次 commit 的缺失清单重新给出）。暂存阶段是新的恢复轮
+                        // （同 Python：`_inline` 与 `_staged` 各自持有 `budget = max_resends`）。
+                        self.mode = DeliverMode::Staged;
+                        self.budget = self.core.max_resends();
+                        self.pending = None;
+                        self.queue_active = false;
+                        self.start_commit()
+                    }
+                }
+            }
+            DeliverGoal::Staged => {
+                self.pending = Some(Missing {
+                    pages: negotiated.missing_pages,
+                    content_hashes: negotiated.missing_content_hashes,
+                    blobs: Vec::new(),
+                });
+                self.queue_active = false;
+                self.advance()
+            }
+        }
+    }
+
+    /// 主循环：展开待补传清单 → 逐项上传（层序）→ 无待传时 commit。
+    ///
+    /// 清单在整轮完成前一直保留：上传中途会话失效重开 negotiate 时，清单要在新会话里重传
+    /// （Python `_inline` / `_staged` 的 `pending` 语义）。
+    fn advance(&mut self) -> Result<(), Error> {
+        if let Some(missing) = self.pending.as_ref() {
+            if !self.queue_active {
+                self.queue = ManifestQueue::default();
+                self.queue.fill(missing.clone())?;
+                self.queue_active = true;
+            }
+        }
+        match self.next_job()? {
+            Some(job) => {
+                self.phase = DeliverPhase::Upload(Box::new(job));
+                Ok(())
+            }
+            None => {
+                self.pending = None;
+                self.queue_active = false;
+                self.start_commit()
+            }
+        }
+    }
+
+    /// 队列里的下一个上传任务（层序：页 → 元素 → blob；blob 层先整体校验再上传）。
+    fn next_job(&mut self) -> Result<Option<ManifestJob<'a>>, Error> {
+        if let Some(page_hash) = self.queue.pages.pop_front() {
+            let Some(page) = self.parts.page_by_hash.get(&page_hash).cloned() else {
+                return Err(Error::unexpected(
+                    format!("缺失清单里的页 {page_hash} 不是本次提交引用的对象"),
+                    400,
+                    None,
+                ));
+            };
+            let payload = serde_json::to_vec(&page).expect("JSON 值总能序列化");
+            let runner = page_upload_runner(self.core, self.session_id(), &page_hash, payload)?;
+            return Ok(Some(ManifestJob {
+                kind: JobKind::Page,
+                runner,
+                awaiting: false,
+            }));
+        }
+        if let Some(content_hash) = self.queue.objects.pop_front() {
+            let Some(element) = self.parts.object_by_hash.get(&content_hash).cloned() else {
+                return Err(Error::unexpected(
+                    format!("缺失清单里的元素 {content_hash} 不是本次提交引用的对象"),
+                    400,
+                    None,
+                ));
+            };
+            let payload = serde_json::to_vec(&element).expect("JSON 值总能序列化");
+            let runner =
+                element_upload_runner(self.core, self.session_id(), &content_hash, payload)?;
+            return Ok(Some(ManifestJob {
+                kind: JobKind::Element,
+                runner,
+                awaiting: false,
+            }));
+        }
+        if !self.queue.blobs.is_empty() {
+            if !self.queue.blobs_validated {
+                self.queue.blobs_validated = true;
+                // 清单来自 400 的 DPE_MISSING_CONTENT：格式与成员资格先于取字节校验，口径同页与元素
+                for blob in &self.queue.blobs {
+                    check_blob_ref(blob, 400, "缺失清单里的 blob")?;
+                    if !self.parts.blob_mime.contains_key(blob) {
+                        return Err(Error::unexpected(
+                            format!("缺失清单里的 blob {blob} 不是本次提交引用的对象"),
+                            400,
+                            None,
+                        ));
+                    }
+                }
+                if self.blobs.is_none() {
+                    // 本地判定：缺少字节来源。直接逃出恢复循环（不消耗预算），对外仍是带缺失
+                    // 清单的 `DPE_MISSING_CONTENT` 类错误。
+                    let missing = Missing {
+                        pages: Vec::new(),
+                        content_hashes: Vec::new(),
+                        blobs: self.queue.blobs.iter().cloned().collect(),
+                    };
+                    return Err(Error::local_missing_content(
+                        "缺少 blob 的字节来源（deliver 的 blobs 参数或直接 upload_blob），无法补传",
+                        missing,
+                    ));
+                }
+            }
+            let blob = self.queue.blobs.pop_front().expect("上面已判非空");
+            let source = (self.blobs.as_mut().expect("上面已判有来源"))(&blob);
+            let Some(source) = source else {
+                return Err(Error::invalid_argument(format!(
+                    "blob 来源回调没有给出 {blob} 的字节来源"
+                )));
+            };
+            let media_type = self.parts.blob_mime.get(&blob).cloned().flatten();
+            let runner = blob_upload_runner(
+                self.core,
+                self.session_id(),
+                &blob,
+                source,
+                media_type.as_deref().unwrap_or("application/octet-stream"),
+            )?;
+            return Ok(Some(ManifestJob {
+                kind: JobKind::Blob,
+                runner,
+                awaiting: false,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// `Err` 的两类恢复（core §3.4）或如实上报。
+    fn handle_error(&mut self, error: Error) -> Result<(), Error> {
+        if error.kind() == ErrorKind::MissingContent {
+            if self.budget == 0 {
+                return Err(error);
+            }
+            if self.session.is_none() {
+                if self.mode == DeliverMode::Inline {
+                    // 快路径：先开会话，再以「内联 + 会话」补传重提
+                    self.budget -= 1;
+                    self.pending = error.missing().cloned();
+                    self.queue_active = false;
+                    return self.start_negotiate(DeliverGoal::InlineRecovery);
+                }
+                // 暂存路径还没有会话（如首个 negotiate 就报 MISSING_CONTENT）：没有可补传的
+                // 会话，不进入恢复循环，如实上报（同 Python：`deliver` 的初始 `_negotiate`
+                // 不在 `_staged` 的恢复循环内）。
+                return Err(error);
+            }
+            self.budget -= 1;
+            self.pending = error.missing().cloned();
+            self.queue_active = false;
+            return self.advance();
+        }
+        if error.kind() == ErrorKind::SessionExpired {
+            if self.budget == 0 {
+                return Err(error);
+            }
+            self.budget -= 1;
+            let goal = match self.mode {
+                DeliverMode::Inline => DeliverGoal::InlineRecovery,
+                DeliverMode::Staged => DeliverGoal::Staged,
+            };
+            return self.start_negotiate(goal);
+        }
+        Err(error)
+    }
+
+    /// 统一收尾：出错时进入终态并把当前会话附到错误上（Python `_attach_session` 的对等）。
+    fn settle(&mut self, outcome: Result<(), Error>) -> Result<(), Error> {
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.phase = DeliverPhase::Finished;
+                Err(error
+                    .with_session(self.session.clone())
+                    .with_outcome_unknown(self.outcome_unknown))
+            }
+        }
+    }
+
+    /// 回送响应（阶段分派）。
+    fn receive(&mut self, response: Response) -> Result<(), Error> {
+        let stage = std::mem::replace(&mut self.phase, DeliverPhase::Finished);
+        match stage {
+            DeliverPhase::InlineCommit(mut op) => match op.on_response(response) {
+                Ok(()) => {
+                    self.phase = DeliverPhase::InlineCommit(op);
+                    Ok(())
+                }
+                Err(error) => {
+                    self.outcome_unknown |= op.outcome_unknown();
+                    self.handle_error(error)
+                }
+            },
+            DeliverPhase::StagedCommit(mut op) => match op.on_response(response) {
+                Ok(()) => {
+                    self.phase = DeliverPhase::StagedCommit(op);
+                    Ok(())
+                }
+                Err(error) => {
+                    self.outcome_unknown |= op.outcome_unknown();
+                    self.handle_error(error)
+                }
+            },
+            DeliverPhase::Negotiate(mut op) => match op.on_response(response) {
+                Ok(()) => match op.poll() {
+                    Ok(Step::Done(negotiated)) => self.after_negotiated(negotiated),
+                    other => Err(Error::invalid_argument(format!(
+                        "内部错误：negotiate 完成态异常（{other:?}）"
+                    ))),
+                },
+                Err(error) => self.handle_error(error),
+            },
+            DeliverPhase::Upload(mut job) => {
+                let session = self.session.as_mut().expect("暂存路径必有会话");
+                match job.receive(response, self.core, session) {
+                    Ok(None) => {
+                        self.phase = DeliverPhase::Upload(job);
+                        Ok(())
+                    }
+                    Ok(Some(JobOutcome::MissingElements(hashes))) => {
+                        self.queue.extend_objects(hashes);
+                        self.advance()
+                    }
+                    Ok(Some(JobOutcome::MissingBlobs(blobs))) => {
+                        self.queue.extend_blobs(blobs);
+                        self.advance()
+                    }
+                    Ok(Some(JobOutcome::Done)) => self.advance(),
+                    Err(error) => self.handle_error(error),
+                }
+            }
+            DeliverPhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        }
+    }
+}
+
+impl Operation for DeliverOp<'_> {
+    type Output = CommitResult;
+
+    fn poll(&mut self) -> Result<Step<CommitResult>, Error> {
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        /// 各阶段归一化后的 poll 结果。
+        enum Polled {
+            Send(Request),
+            Done(CommitResult),
+        }
+        let polled: Result<Polled, Error> =
+            match std::mem::replace(&mut self.phase, DeliverPhase::Finished) {
+                DeliverPhase::Finished => {
+                    return Err(usage_error("操作已完成或以错误终止：poll 不应再次调用"))
+                }
+                DeliverPhase::InlineCommit(mut op) => {
+                    let outcome = op.poll().map(|step| match step {
+                        Step::Send(request) => Polled::Send(request),
+                        Step::Done(result) => Polled::Done(result),
+                    });
+                    if outcome.is_ok() {
+                        self.phase = DeliverPhase::InlineCommit(op);
+                    }
+                    outcome
+                }
+                DeliverPhase::StagedCommit(mut op) => {
+                    let outcome = op.poll().map(|step| match step {
+                        Step::Send(request) => Polled::Send(request),
+                        Step::Done(result) => Polled::Done(result),
+                    });
+                    if outcome.is_ok() {
+                        self.phase = DeliverPhase::StagedCommit(op);
+                    }
+                    outcome
+                }
+                DeliverPhase::Negotiate(mut op) => {
+                    let outcome = match op.poll() {
+                        Ok(Step::Send(request)) => Ok(Polled::Send(request)),
+                        // negotiate 的结果由 on_response 立即取出，poll 不会见到完成态
+                        Ok(Step::Done(_)) => Err(Error::invalid_argument(
+                            "内部错误：negotiate 在 poll 中完成",
+                        )),
+                        Err(error) => Err(error),
+                    };
+                    if outcome.is_ok() {
+                        self.phase = DeliverPhase::Negotiate(op);
+                    }
+                    outcome
+                }
+                DeliverPhase::Upload(mut job) => {
+                    let outcome = job.next_request().map(Polled::Send);
+                    if outcome.is_ok() {
+                        self.phase = DeliverPhase::Upload(job);
+                    }
+                    outcome
+                }
+            };
+        match polled {
+            Ok(Polled::Send(request)) => {
+                self.awaiting = true;
+                Ok(Step::Send(request))
+            }
+            Ok(Polled::Done(result)) => {
+                self.phase = DeliverPhase::Finished;
+                Ok(Step::Done(result))
+            }
+            Err(error) => {
+                self.phase = DeliverPhase::Finished;
+                Err(error)
+            }
+        }
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = self.receive(response);
+        self.settle(outcome)
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let stage = std::mem::replace(&mut self.phase, DeliverPhase::Finished);
+        let outcome = match stage {
+            DeliverPhase::InlineCommit(mut op) => match op.on_transport_error(error) {
+                Ok(()) => {
+                    self.phase = DeliverPhase::InlineCommit(op);
+                    Ok(())
+                }
+                Err(error) => {
+                    self.outcome_unknown |= op.outcome_unknown();
+                    self.handle_error(error)
+                }
+            },
+            DeliverPhase::StagedCommit(mut op) => match op.on_transport_error(error) {
+                Ok(()) => {
+                    self.phase = DeliverPhase::StagedCommit(op);
+                    Ok(())
+                }
+                Err(error) => {
+                    self.outcome_unknown |= op.outcome_unknown();
+                    self.handle_error(error)
+                }
+            },
+            DeliverPhase::Negotiate(mut op) => match op.on_transport_error(error) {
+                Ok(()) => {
+                    self.phase = DeliverPhase::Negotiate(op);
+                    Ok(())
+                }
+                Err(error) => self.handle_error(error),
+            },
+            DeliverPhase::Upload(mut job) => match job.on_transport_error(error, self.core) {
+                Ok(()) => {
+                    self.phase = DeliverPhase::Upload(job);
+                    Ok(())
+                }
+                Err(error) => self.handle_error(error),
+            },
+            DeliverPhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        };
+        self.settle(outcome)
+    }
+}
+
+/// 补传清单里的一个上传任务（页 / 元素 / blob）。
+#[derive(Debug)]
+struct ManifestJob<'a> {
+    kind: JobKind,
+    runner: UploadRunner<'a>,
+    awaiting: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobKind {
+    Page,
+    Element,
+    Blob,
+}
+
+/// 上传任务完成时的产物（按层给出下一层缺失的对象）。
+#[derive(Debug)]
+enum JobOutcome {
+    /// 页上传完成：它引用的缺失元素。
+    MissingElements(Vec<String>),
+    /// 元素上传完成：它引用的缺失 blob。
+    MissingBlobs(Vec<String>),
+    /// blob 上传完成。
+    Done,
+}
+
+impl<'a> ManifestJob<'a> {
+    /// 下一个要发的请求。
+    fn next_request(&mut self) -> Result<Request, Error> {
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        let request = self.runner.next_request()?;
+        self.awaiting = true;
+        Ok(request)
+    }
+
+    /// 回送响应；`Ok(None)` 表示还有请求要发。
+    fn receive(
+        &mut self,
+        response: Response,
+        core: &ProtocolCore,
+        session: &mut Session,
+    ) -> Result<Option<JobOutcome>, Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let Some(response) = self.runner.feed(response, session, core)? else {
+            return Ok(None);
+        };
+        upload_ok(session, &response)?;
+        match self.kind {
+            JobKind::Page => {
+                let missing = parse_response(&response, PageUploadMissing::from_value)?;
+                for (i, content_hash) in missing.missing_content_hashes.iter().enumerate() {
+                    core.check_hash(
+                        content_hash,
+                        response.status(),
+                        &format!("missing_content_hashes[{i}]"),
+                    )?;
+                }
+                Ok(Some(JobOutcome::MissingElements(
+                    missing.missing_content_hashes,
+                )))
+            }
+            JobKind::Element => {
+                let missing = parse_response(&response, ElementUploadMissing::from_value)?;
+                for (i, blob) in missing.missing_blobs.iter().enumerate() {
+                    check_blob_ref(blob, response.status(), &format!("missing_blobs[{i}]"))?;
+                }
+                Ok(Some(JobOutcome::MissingBlobs(missing.missing_blobs)))
+            }
+            JobKind::Blob => Ok(Some(JobOutcome::Done)),
+        }
+    }
+
+    /// 回送传输异常。
+    fn on_transport_error(
+        &mut self,
+        error: TransportError,
+        core: &ProtocolCore,
+    ) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        self.runner.feed_transport_error(error, core)
+    }
+}
+
+/// 补传清单展开后的上传队列（层序：页 → 元素 → blob；blob 层先整体校验再上传）。
+#[derive(Default, Debug)]
+struct ManifestQueue {
+    pages: VecDeque<String>,
+    objects: VecDeque<String>,
+    blobs: VecDeque<String>,
+    seen_pages: HashSet<String>,
+    seen_objects: HashSet<String>,
+    seen_blobs: HashSet<String>,
+    /// blob 层是否已整体校验（格式 + 成员资格 + 字节来源）。
+    blobs_validated: bool,
+}
+
+impl ManifestQueue {
+    /// 由清单填充队列（成员资格在上传消费时校验，与 Python 的消费顺序一致）；重复项只上传一次。
+    fn fill(&mut self, missing: Missing) -> Result<(), Error> {
+        for page_hash in missing.pages {
+            if self.seen_pages.insert(page_hash.clone()) {
+                self.pages.push_back(page_hash);
+            }
+        }
+        for content_hash in missing.content_hashes {
+            self.push_object(content_hash);
+        }
+        self.extend_blobs(missing.blobs);
+        Ok(())
+    }
+
+    /// 追加一个待传元素（去重）。
+    fn push_object(&mut self, content_hash: String) {
+        if self.seen_objects.insert(content_hash.clone()) {
+            self.objects.push_back(content_hash);
+        }
+    }
+
+    /// 追加一个待传 blob（去重）。
+    fn extend_blobs(&mut self, blobs: impl IntoIterator<Item = String>) {
+        for blob in blobs {
+            if self.seen_blobs.insert(blob.clone()) {
+                self.blobs.push_back(blob);
+            }
+        }
+    }
+
+    /// 追加一批待传元素。
+    fn extend_objects(&mut self, hashes: impl IntoIterator<Item = String>) {
+        for content_hash in hashes {
+            self.push_object(content_hash);
+        }
+    }
+}
+
+/// 页对象上传的 runner（本地超限即拒；整段或分块）。
+fn page_upload_runner<'a>(
+    core: &'a ProtocolCore,
+    session_id: &str,
+    page_hash: &str,
+    payload: Vec<u8>,
+) -> Result<UploadRunner<'a>, Error> {
+    if payload.len() as u64 > core.limits().page_max_bytes {
+        return Err(Error::protocol(
+            ErrorKind::PayloadTooLarge,
+            format!(
+                "页对象 {} 字节，超过 page_max_bytes={}；上游应把文档拆成更多页",
+                payload.len(),
+                core.limits().page_max_bytes
+            ),
+        ));
+    }
+    let target = format!("staging/{session_id}/pages/{page_hash}");
+    Ok(bytes_upload_runner(core, target, payload, JSON))
+}
+
+/// 元素对象上传的 runner（不分块：超限本地即拒，切分是上游的内容决策）。
+fn element_upload_runner<'a>(
+    core: &'a ProtocolCore,
+    session_id: &str,
+    content_hash: &str,
+    payload: Vec<u8>,
+) -> Result<UploadRunner<'a>, Error> {
+    if payload.len() as u64 > core.limits().max_payload_bytes {
+        return Err(Error::protocol(
+            ErrorKind::PayloadTooLarge,
+            format!(
+                "元素对象 {} 字节，超过 max_payload_bytes={}；元素对象不分块，上游应切分文本",
+                payload.len(),
+                core.limits().max_payload_bytes
+            ),
+        ));
+    }
+    let target = format!("staging/{session_id}/objects/{content_hash}");
+    Ok(bytes_upload_runner(core, target, payload, JSON))
+}
+
+/// blob 上传的 runner：本地校验 ref 与总量，整段或分块。
+fn blob_upload_runner<'a>(
+    core: &'a ProtocolCore,
+    session_id: &str,
+    blob_ref: &str,
+    source: BlobSource,
+    content_type: &str,
+) -> Result<UploadRunner<'a>, Error> {
+    if dpe_hash::parse_blob_ref(source.blob_ref()).is_err() {
+        return Err(Error::invalid_argument(format!(
+            "blob 来源的 ref 不是 sha256 引用：{:?}",
+            source.blob_ref()
+        )));
+    }
+    if source.blob_ref() != blob_ref {
+        return Err(Error::invalid_argument(format!(
+            "blob 来源的 ref {} 与需要的 {blob_ref} 不符",
+            source.blob_ref()
+        )));
+    }
+    if source.size() > core.limits().blob_max_bytes {
+        return Err(Error::protocol(
+            ErrorKind::PayloadTooLarge,
+            format!(
+                "blob {} 字节，超过 blob_max_bytes={}",
+                source.size(),
+                core.limits().blob_max_bytes
+            ),
+        ));
+    }
+    let target = format!("staging/{session_id}/blobs/{blob_ref}");
+    let size = source.size();
+    if size <= core.limits().max_payload_bytes {
+        let body = Body::BlobRange(BlobRange {
+            source,
+            offset: 0,
+            length: size,
+        });
+        Ok(UploadRunner::whole(core.staging_request(
+            target,
+            body,
+            content_type,
+        )))
+    } else {
+        Ok(UploadRunner::chunked(
+            core,
+            target,
+            size,
+            ChunkPayload::Blob(source),
+            content_type,
+        ))
+    }
+}
+
+/// 内存字节上传的 runner（整段或分块）。
+fn bytes_upload_runner<'a>(
+    core: &'a ProtocolCore,
+    target: String,
+    payload: Vec<u8>,
+    content_type: &str,
+) -> UploadRunner<'a> {
+    if payload.len() as u64 <= core.limits().max_payload_bytes {
+        UploadRunner::whole(core.staging_request(target, Body::Bytes(payload), content_type))
+    } else {
+        UploadRunner::chunked(
+            core,
+            target,
+            payload.len() as u64,
+            ChunkPayload::Bytes(Arc::new(payload)),
+            content_type,
+        )
+    }
+}
+
+/// JSON 请求体的字节数（尺寸预检与实际发送共用同一序列化）。
+fn json_body_len(value: &Value) -> u64 {
+    serde_json::to_vec(value).expect("JSON 值总能序列化").len() as u64
+}
+
 // ---------------------------------------------------------------------------
 // 响应判定（HTTP 绑定 §3.2、§5）
 // ---------------------------------------------------------------------------
@@ -1847,6 +3908,16 @@ fn is_dpe_error(response: &Response) -> bool {
 /// 无 DPE 错误码的 412，如网关自行求值条件头的结果（HTTP 绑定 §3.2）。
 fn is_bare_412(response: &Response) -> bool {
     response.status() == 412 && !is_dpe_error(response)
+}
+
+/// 写请求的响应是否让「本次写入是否可能已生效」变得不确定。
+///
+/// 只有三种结局算「确定」：带 DPE 错误码的响应；成功响应且核心的自洽校验全部通过；
+/// 带 [`NotSent`] 标记的传输错误。其余一律不确定——任何**无码**响应都可能是中间层产物
+/// （无码 5xx / 4xx、解析或自洽校验失败的成功响应、没能化解的裸 412）。裸 412 例外：它可能
+/// 经 `head` 判定化解，置位交给判定路径（化解成功即确定，判定失败才置位）。
+fn response_outcome_unknown(response: &Response) -> bool {
+    !is_dpe_error(response) && !is_bare_412(response)
 }
 
 /// 无 DPE 错误码的 502 / 504：写操作按响应丢失处理（core §5.2、HTTP 绑定 §3.2）。
@@ -2060,6 +4131,90 @@ fn asctime_date(text: &str) -> Option<i64> {
         day,
         time_of_day(time)?,
     )
+}
+
+/// 时间戳是 RFC 3339（core：时间戳一律 RFC 3339 UTC）：`YYYY-MM-DD` + 分隔符（`T` / `t` /
+/// 空格，RFC 3339 §5.6 NOTE）+ `HH:MM:SS[.fraction]` + 偏移（`Z` / `z` / `±HH:MM`）。日期必须
+/// 真实存在；`second` 允许 60（闰秒）。
+///
+/// 与 Python 侧 `datetime.fromisoformat` 的差异（#109 同类：语言库内部宽松，不复制）：只接受
+/// 上述文法，不接受缺偏移、缺秒、非 `-` 分隔日期等 Python 额外放行的写法。
+fn is_rfc3339(text: &str) -> bool {
+    if text.len() < 20 || !text.is_ascii() {
+        return false;
+    }
+    let (date, rest) = text.split_at(10);
+    if !matches!(rest.as_bytes().first(), Some(b'T' | b't' | b' ')) {
+        return false;
+    }
+    let body = &rest[1..];
+    let Some(zone_at) = body.find(['Z', 'z', '+', '-']) else {
+        return false;
+    };
+    let (time, zone) = body.split_at(zone_at);
+    // 日期：YYYY-MM-DD
+    let date_parts: Vec<&str> = date.split('-').collect();
+    let [year, month, day] = date_parts.as_slice() else {
+        return false;
+    };
+    if year.len() != 4 || month.len() != 2 || day.len() != 2 {
+        return false;
+    }
+    let (Some(year), Some(month), Some(day)) =
+        (parse_digits(year), parse_digits(month), parse_digits(day))
+    else {
+        return false;
+    };
+    let (month, day) = (month as u32, day as u32);
+    if !(1..=12).contains(&month) || day < 1 || i64::from(day) > days_in_month(year as i64, month) {
+        return false;
+    }
+    // 时间：HH:MM:SS[.fraction]
+    let (clock, fraction) = match time.split_once('.') {
+        Some((clock, fraction)) => (clock, Some(fraction)),
+        None => (time, None),
+    };
+    if let Some(fraction) = fraction {
+        if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+    }
+    let clock_parts: Vec<&str> = clock.split(':').collect();
+    let [hour, minute, second] = clock_parts.as_slice() else {
+        return false;
+    };
+    let (Some(hour), Some(minute), Some(second)) = (
+        parse_digits(hour),
+        parse_digits(minute),
+        parse_digits(second),
+    ) else {
+        return false;
+    };
+    if hour > 23 || minute > 59 || second > 60 {
+        return false;
+    }
+    // 偏移：Z / z / ±HH:MM
+    match zone {
+        "Z" | "z" => true,
+        _ => {
+            let offset_parts: Vec<&str> = zone[1..].split(':').collect();
+            let [hours, minutes] = offset_parts.as_slice() else {
+                return false;
+            };
+            match (parse_digits(hours), parse_digits(minutes)) {
+                (Some(hours), Some(minutes)) => hours <= 23 && minutes <= 59,
+                _ => false,
+            }
+        }
+    }
+}
+
+/// 十进制无符号整数；非数字或放不下 `u64` 时为 `None`。
+fn parse_digits(text: &str) -> Option<u64> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// §5.6.7 的 `day-name`（区分大小写）。
