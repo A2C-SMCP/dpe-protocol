@@ -5,8 +5,9 @@
 //! §4.1–§4.4）。协议核心不绑定异步运行时：默认 feature `http` 才引入 reqwest / tokio 适配，
 //! `--no-default-features` 下核心可独立编译（CI 有断言）。
 //!
-//! 已落地：[`models`]（三层对象的数据模型，core §2）与 [`run`]（connector 契约的清单、
-//! 实例配置与实例定义校验）；其余随 Milestone `rust-sdk v0.1.6` 落地。
+//! 已落地：[`models`]（三层对象的数据模型，core §2）、[`protocol`]（sans-IO 协议核心：只读
+//! 操作、错误类型化）、[`errors`]、[`wire`] 与 [`run`]（connector 契约的清单、实例配置与实例
+//! 定义校验，§4.1–§4.4）；写操作、暂存路径与逐层协商随 Milestone `rust-sdk v0.2` 落地。
 
 #![forbid(unsafe_code)]
 
@@ -15,6 +16,15 @@ pub mod http;
 pub mod models;
 
 pub use models::{DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, PageObject};
+
+pub mod errors;
+pub mod protocol;
+pub mod wire;
+
+pub use errors::{Error, ErrorKind};
+pub use protocol::{
+    drive, fetch_capabilities, Operation, ProtocolCore, Request, Response, Step, TransportError,
+};
 
 pub mod run;
 

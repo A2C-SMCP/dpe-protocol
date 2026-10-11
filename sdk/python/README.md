@@ -7,6 +7,7 @@ tools/check_packages.py   # 打包约束检查（CI 与发布共用）
 tools/bench_hash.py       # dpe-hash 10 万元素原位重算基准（CI 只报告、不设门槛）
 packages/dpe-hash/        # import dpe_hash：零运行时依赖、纯 Python 的 hash 核心
 packages/dpe-sdk/         # import dpe_sdk：依赖 dpe-hash（同版本精确依赖）、pydantic v2、httpx、jsonschema（dpe-run 校验插件配置）
+packages/dpe-conformance/ # import dpe_conformance：服务端一致性跑分器（CLI + 套件，依赖 dpe-hash / httpx / pytest）
 ```
 
 ## 开发
@@ -14,7 +15,7 @@ packages/dpe-sdk/         # import dpe_sdk：依赖 dpe-hash（同版本精确�
 在本目录下运行：
 
 ```bash
-uv sync                      # 安装两个包（可编辑）与开发工具链
+uv sync                      # 安装三个包（可编辑）与开发工具链
 uv run ruff check && uv run ruff format --check
 uv run mypy                  # strict
 uv run pytest
@@ -28,7 +29,7 @@ CI（`.github/workflows/python-sdk.yml`）先跑 `make check-vectors`，再在 P
 
 ## 版本与发布
 
-SDK 版本是独立的一条轴，与文档版本（根 `pyproject.toml`）、协议版本（DPE v1）、hash 契约版本（`dpe1:`）互不牵动；两个包始终同版本，由本目录的 bump-my-version 管理：
+SDK 版本是独立的一条轴，与文档版本（根 `pyproject.toml`）、协议版本（DPE v1）、hash 契约版本（`dpe1:`）互不牵动；三个包始终同版本，由本目录的 bump-my-version 管理：
 
 ```bash
 uv run bump-my-version bump pre_l     # X.Y.Z-dev → X.Y.Z：commit + 标签 py-vX.Y.Z

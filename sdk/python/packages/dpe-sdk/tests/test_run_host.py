@@ -48,8 +48,8 @@ def run(coro: Awaitable[T]) -> T:
     return asyncio.run(bounded())
 
 
-def argv(mode: str) -> list[str]:
-    return [sys.executable, str(STUB), mode]
+def argv(mode: str, *extra: str) -> list[str]:
+    return [sys.executable, str(STUB), mode, *extra]
 
 
 def base_env() -> dict[str, str]:
@@ -576,3 +576,103 @@ def test_kill_before_start_is_noop() -> None:
 
     host = run(scenario())
     assert host.failure is not None and host.failure.code == "plugin_crashed"
+
+
+# ---------------------------------------------------------------- 进程组清理
+#
+# §6.3：插件进程组终结时（实例结束——正常关闭、插件崩溃后的收尾、运行器中止本轮；以及插件
+# 重启）对进程组执行一次 TERM →（宽限期）→ KILL 清理，不以管道是否被持有为条件。下列用例的
+# 残留子进程不持有任何运行器管道且忽略 SIGTERM（就绪后只有 KILL 能终止它）：「等管道全关」的
+# 旧清理路径对它完全不可见，正常关闭与崩溃两例因而是回归区分（旧路径下必红）；中止一例固定
+# 「运行器中止本轮」这一触发——kill 本身就清理进程组，该路径旧代码也通过，不承担回归区分。
+# 协作型一例（grace 用例）用愿意在 SIGTERM 后自行清理的残余定住宽限期本身：TERM 后立即 KILL
+# 的实现必红（标记缺失）。
+
+
+def _assert_detached_child_terminated(lines: list[str]) -> None:
+    if os.name == "posix":
+        child = _child_pid(lines)
+        assert _wait_terminated(child), f"残留子进程 {child} 未被终止（仍在运行）"
+
+
+def test_group_cleanup_terminates_detached_residual_on_normal_shutdown() -> None:
+    lines: list[str] = []
+
+    async def scenario() -> None:
+        host = await handshake("orphan_detached", on_stderr=lambda line, _: lines.append(line))
+        await host.close()  # 插件已正常退出，但留下了不持有管道的残留进程
+
+    run(scenario())
+    _assert_detached_child_terminated(lines)
+
+
+def test_group_cleanup_terminates_detached_residual_after_crash() -> None:
+    lines: list[str] = []
+
+    async def body(host: PluginHost) -> RoundFailure:
+        with pytest.raises(RoundFailure) as info:
+            await host.request("echo", {})  # 插件带着残留进程崩溃
+        return info.value
+
+    failure, _ = with_host(
+        "crash_orphan_detached", body, on_stderr=lambda line, _: lines.append(line)
+    )
+    assert failure.code == "plugin_crashed"
+    _assert_detached_child_terminated(lines)
+
+
+def test_group_cleanup_terminates_detached_residual_on_abort() -> None:
+    lines: list[str] = []
+
+    async def scenario() -> PluginHost:
+        host = await handshake("orphan_detached", on_stderr=lambda line, _: lines.append(line))
+        await host.kill()  # 中止本轮（§6.4）
+        return host
+
+    host = run(scenario())
+    assert host.failure is None  # 主动终止不算崩溃
+    _assert_detached_child_terminated(lines)
+
+
+def test_group_cleanup_gives_residual_its_grace(tmp_path: Path) -> None:
+    # 协作型残余（不持任何管道、装 SIGTERM handler：先清理再退出）必须拿到宽限期——TERM 后
+    # 立即 KILL 会让清理无法完成。标记文件即宽限期行为的判别证据（B1 修复的回归保护）。
+    marker = tmp_path / "cleaned"
+
+    async def scenario() -> None:
+        host = PluginHost(exit_grace=2.0)
+        await host.start(argv("orphan_graceful", str(marker)), base_env())
+        await host.initialize(manifest=MANIFEST, uri_prefix="stub://x/", config={})
+        await host.close()
+
+    run(scenario())
+    if os.name == "posix":
+        assert marker.exists() and marker.read_text() == "done", (
+            "残留子进程没拿到宽限期完成清理（TERM 后立即被 KILL）"
+        )
+
+
+def test_close_is_final_no_signals_after_teardown(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 拆完后不得再向进程组发信号（组长 pid 可能已被系统复用）：close 之后的 kill/close 重入
+    # 必须是纯空操作（_torn_down 不变式的回归保护；进程组信号是 POSIX 语义）
+    if os.name == "posix":
+        calls: list[int] = []
+        real_killpg = os.killpg
+
+        def counting_killpg(pgid: int, sig: int) -> None:
+            calls.append(sig)
+            real_killpg(pgid, sig)
+
+        monkeypatch.setattr(os, "killpg", counting_killpg)
+
+        async def scenario() -> PluginHost:
+            host = await handshake("ok")
+            await host.close()
+            after = len(calls)
+            await host.kill()
+            await host.close()
+            assert len(calls) == after, "close 完成后仍向进程组发了信号"
+            return host
+
+        host = run(scenario())
+        assert host.failure is None

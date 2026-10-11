@@ -15,6 +15,7 @@ members = ["packages/*"]
 dev = [
     "dpe-hash",
     "dpe-sdk[server]",
+    "dpe-conformance",
     "pytest>=8.3",
     "mypy>=1.13",
     "types-jsonschema",
@@ -25,6 +26,7 @@ dev = [
 [tool.uv.sources]
 dpe-hash = { workspace = true }
 dpe-sdk = { workspace = true }
+dpe-conformance = { workspace = true }
 
 [tool.ruff]
 target-version = "py311"
@@ -38,12 +40,14 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.mypy]
 strict = true
 python_version = "3.11"
-mypy_path = "tools:packages/dpe-sdk/tests"
+mypy_path = "tools:packages/dpe-sdk/tests:packages/dpe-conformance/tests"
 files = [
     "packages/dpe-hash/src",
     "packages/dpe-sdk/src",
+    "packages/dpe-conformance/src",
     "packages/dpe-hash/tests",
     "packages/dpe-sdk/tests",
+    "packages/dpe-conformance/tests",
     "tools/check_packages.py",
     "tools/bench_hash.py",
     "tools/tests",
@@ -51,13 +55,18 @@ files = [
 ]
 
 [tool.pytest.ini_options]
-# 两个包的 tests/ 都不是包，importlib 模式避免把它们插进 sys.path
+# 各包的 tests/ 都不是包，importlib 模式避免把它们插进 sys.path
 addopts = ["--import-mode=importlib", "--strict-markers"]
-testpaths = ["packages/dpe-hash/tests", "packages/dpe-sdk/tests", "tools/tests"]
-pythonpath = ["tools", "packages/dpe-sdk/tests"]
+testpaths = [
+    "packages/dpe-hash/tests",
+    "packages/dpe-sdk/tests",
+    "packages/dpe-conformance/tests",
+    "tools/tests",
+]
+pythonpath = ["tools", "packages/dpe-sdk/tests", "packages/dpe-conformance/tests"]
 
 # SDK 版本管理：与文档版本（根 pyproject.toml）、协议版本、hash 契约版本相互独立。
-# 两个包同步升版；在 sdk/python/ 目录下运行 `uv run bump-my-version bump …`。
+# 三个包同步升版；在 sdk/python/ 目录下运行 `uv run bump-my-version bump …`。
 # 两态与文档一致：X.Y.Z-dev = 开发中（不发布）；X.Y.Z = 发布（标签 py-vX.Y.Z 触发 release-python.yml）。
 [tool.bumpversion]
 current_version = "0.3.1-dev"
@@ -99,5 +108,16 @@ replace = 'version = "{new_version}"'
 # dpe-sdk 精确依赖同版本的 dpe-hash：两包同一标签发布，hash 行为必须一致
 [[tool.bumpversion.files]]
 filename = "packages/dpe-sdk/pyproject.toml"
+search = '"dpe-hash=={current_version}"'
+replace = '"dpe-hash=={new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "packages/dpe-conformance/pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+# dpe-conformance 同样精确依赖同版本的 dpe-hash（期望 hash 的行为与其余包一致）
+[[tool.bumpversion.files]]
+filename = "packages/dpe-conformance/pyproject.toml"
 search = '"dpe-hash=={current_version}"'
 replace = '"dpe-hash=={new_version}"'

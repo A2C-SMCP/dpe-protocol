@@ -23,4 +23,4 @@ let doc = ExpandedDocument::parse(
 assert!(doc.doc_hash(CONTRACT)?.starts_with("dpe1:"));
 ```
 
-> 数据模型（`models`）已落地；协议核心与传输适配随 Milestone `rust-sdk v0.1.6` 落地。
+> 数据模型（`models`）与协议核心（`protocol`，目前为只读操作；写操作与暂存路径随后续 PR）已落地；传输适配随 Milestone `rust-sdk v0.2` 落地。
