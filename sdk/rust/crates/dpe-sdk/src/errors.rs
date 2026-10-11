@@ -174,6 +174,8 @@ struct Details {
     force: Option<ForceNotConfirmed>,
     /// 传输透传的原始错误。
     transport: Option<TransportError>,
+    /// 本错误由哪个错误引起（如无法确认 force 时的 head 失败），经 `source()` 取回。
+    cause: Option<Box<Error>>,
 }
 
 impl Error {
@@ -230,6 +232,27 @@ impl Error {
         let mut wrapped = Self::new(ErrorKind::Transport, error.to_string());
         wrapped.details_mut().transport = Some(error);
         wrapped
+    }
+
+    /// force 提交的响应丢失、事后未能确认它已生效（core §5.2）；`cause` 是导致无法确认的
+    /// 原始错误（`head` 的传输异常、`head` 得到的 DPE 错误，或 PUT 的响应丢失本身），
+    /// 经 `source()` 取回。
+    pub(crate) fn unconfirmed_force(
+        message: impl Into<String>,
+        doc_hash: impl Into<String>,
+        current: Option<String>,
+        checked: bool,
+        cause: Error,
+    ) -> Self {
+        let mut error = Self::new(ErrorKind::ForceNotConfirmed, message);
+        let details = error.details_mut();
+        details.force = Some(ForceNotConfirmed {
+            doc_hash: doc_hash.into(),
+            current,
+            checked,
+        });
+        details.cause = Some(Box::new(cause));
+        error
     }
 
     /// 补上响应状态码（wire 层解析出的不合规响应由协议核心补 response.status）。
@@ -379,10 +402,11 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.details
-            .as_deref()
-            .and_then(|details| details.transport.as_ref())
-            .map(|error| error.as_ref() as _)
+        let details = self.details.as_deref()?;
+        if let Some(cause) = details.cause.as_deref() {
+            return Some(cause);
+        }
+        details.transport.as_ref().map(|error| error.as_ref() as _)
     }
 }
 

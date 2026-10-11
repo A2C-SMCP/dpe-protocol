@@ -9,6 +9,7 @@ use std::fmt;
 
 use dpe_sdk::protocol::{
     drive, Operation, ProtocolCore, Request, Response, TransportError, DEFAULT_MAX_RESENDS,
+    DOC_HASH_HEADER, ERROR_CODE_HEADER,
 };
 use dpe_sdk::wire::Capabilities;
 use dpe_sdk::Error;
@@ -64,6 +65,15 @@ pub fn core(contract: &str) -> ProtocolCore {
 /// 带自定义能力的核心（构造失败返回 `Err`，供兼容性用例断言）。
 pub fn core_from(capabilities: Capabilities, contract: &str) -> Result<ProtocolCore, Error> {
     ProtocolCore::new(capabilities, contract, DEFAULT_MAX_RESENDS)
+}
+
+/// 带自定义 max_resends 的核心（重发预算用例）。
+pub fn core_with_resends(
+    capabilities: Capabilities,
+    contract: &str,
+    max_resends: u32,
+) -> Result<ProtocolCore, Error> {
+    ProtocolCore::new(capabilities, contract, max_resends)
 }
 
 /// 由 JSON 值构造能力（用例常要改字段）。
@@ -244,4 +254,140 @@ pub fn skeleton_body(contract: &str, file_uri: &str) -> Value {
         "document": document,
         "pages": pages,
     })
+}
+
+// ---------------------------------------------------------------------- 写操作（#48）
+
+/// 由逐页文本构造展开文档（与 Python `engine_helpers.text_doc` 对等：每段文本一个
+/// NarrativeText 元素）。
+pub fn doc(pages: &[&[&str]]) -> dpe_sdk::ExpandedDocument {
+    let pages: Vec<Value> = pages
+        .iter()
+        .map(|texts| {
+            json!({
+                "elements": texts
+                    .iter()
+                    .map(|text| json!({"category": "NarrativeText", "text": text}))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    dpe_sdk::ExpandedDocument::from_value(
+        &json!({"file_type": "md", "pages": pages}),
+        dpe_sdk::CONTRACT,
+    )
+    .expect("测试文档必须合法")
+}
+
+/// 展开文档的 doc_hash（`dpe1`）。
+pub fn doc_hash(document: &dpe_sdk::ExpandedDocument) -> String {
+    document
+        .doc_hash(dpe_sdk::CONTRACT)
+        .expect("测试文档必须合法")
+}
+
+/// 200 + JSON 体 + 附加头的响应（与 Python `ok(body, status, headers)` 对等）。
+pub fn json_response_with(status: u16, body: Value, headers: &[(&str, &str)]) -> Response {
+    let mut all: Vec<(String, String)> =
+        vec![("Content-Type".to_owned(), "application/json".to_owned())];
+    all.extend(
+        headers
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned())),
+    );
+    Response::new(
+        status,
+        all,
+        serde_json::to_vec(&body).expect("JSON 值总能序列化"),
+    )
+}
+
+/// commit 响应体（Python `committed` 的体部分）：`doc_hash` 取被测文档的 hash。
+pub fn commit_body(
+    document: &dpe_sdk::ExpandedDocument,
+    status: &str,
+    added: u64,
+    removed: u64,
+    retained: u64,
+) -> Value {
+    json!({
+        "status": status,
+        "doc_hash": doc_hash(document),
+        "delta": {"added": added, "removed": removed, "retained": retained},
+    })
+}
+
+/// commit 的成功响应（Python `committed`）：created 为 201、其余 200，默认带 `DPE-Doc-Hash`。
+pub fn committed(
+    document: &dpe_sdk::ExpandedDocument,
+    status: &str,
+    added: u64,
+    removed: u64,
+    retained: u64,
+) -> Response {
+    let hash = doc_hash(document);
+    json_response_with(
+        if status == "created" { 201 } else { 200 },
+        commit_body(document, status, added, removed, retained),
+        &[(DOC_HASH_HEADER, &hash)],
+    )
+}
+
+/// 经 head 确认的成功结果（与原样重发得到的 `unchanged` 相同）。
+pub fn unchanged_result(
+    document: &dpe_sdk::ExpandedDocument,
+    retained: u64,
+) -> dpe_sdk::wire::CommitResult {
+    dpe_sdk::wire::CommitResult {
+        status: dpe_sdk::wire::CommitStatus::Unchanged,
+        doc_hash: doc_hash(document),
+        delta: dpe_sdk::wire::Delta {
+            added: 0,
+            removed: 0,
+            retained,
+        },
+    }
+}
+
+/// head 命中（200 + `DPE-Doc-Hash` + ETag）。
+pub fn head_found(value: &str) -> Response {
+    empty(
+        200,
+        &[(DOC_HASH_HEADER, value), ("ETag", &format!("\"{value}\""))],
+    )
+}
+
+/// head 未命中（404 + `DPE-Error-Code: DPE_NOT_FOUND`）。
+pub fn head_missing() -> Response {
+    empty(404, &[(ERROR_CODE_HEADER, "DPE_NOT_FOUND")])
+}
+
+/// 网关自行求值条件头得到的 412：既无 problem 体、也无 `DPE-Error-Code` 头。
+pub fn bare_412() -> Response {
+    Response::new(
+        412,
+        [("Content-Type", "text/html")],
+        b"<h1>412</h1>".to_vec(),
+    )
+}
+
+/// 无 DPE 错误码的网关响应（502 / 504）：写操作按「结果未知」处理。
+pub fn gateway(status: u16) -> Response {
+    Response::new(
+        status,
+        [("Content-Type", "text/html")],
+        b"<h1>gateway</h1>".to_vec(),
+    )
+}
+
+/// move 的成功响应（默认可带附加头：`moved_with`）。
+pub fn moved(value: &str) -> Response {
+    moved_with(value, &[])
+}
+
+/// move 的成功响应 + 附加头。
+pub fn moved_with(value: &str, headers: &[(&str, &str)]) -> Response {
+    let mut all: Vec<(&str, &str)> = vec![(DOC_HASH_HEADER, value)];
+    all.extend(headers.iter().copied());
+    json_response_with(200, json!({"doc_hash": value}), &all)
 }
