@@ -820,109 +820,88 @@ fn success_body_not_json() {
 
 // ---------------------------------------------------------------------- Retry-After
 
-/// `Retry-After` 换算（RFC 9110 §10.2.3）：delta-seconds、HTTP-date（含过时的 RFC 850 与
-/// asctime）与无法表示的大数；三种访问器结果可区分：「没有给」`None`、有限值、`INFINITY`。
+/// `Retry-After` 解析（RFC 9110 §10.2.3 / §5.6.7）：`delay-seconds` 与三种 HTTP-date 形式、
+/// 严格文法（区分大小写、时区只认 `GMT`、SP 的个数是文法的一部分）、日期/时刻的合法性、
+/// rfc850 两位年份的 50 年规则，以及不合文法一律 `None`。访问器可区分「没有给」（`None`）、
+/// 有限值与「等待很久」（`f64::INFINITY`）三种情况。
 #[test]
 fn retry_after_seconds_table() {
     // 2026-10-08T12:00:00Z（与 Python 侧测试同一时刻）
     let now = 1_791_460_800_i64;
+    /// 2026-10-08T12:00:00Z 起算的整 50 年（2026-10-08 → 2076-10-08）。
+    const FIFTY_YEARS: f64 = 1_577_923_200.0;
 
-    // 没有给 / 无法解析
-    assert_eq!(retry_after_seconds_at("", now), None);
-    assert_eq!(retry_after_seconds_at("-1", now), None);
-    assert_eq!(retry_after_seconds_at("1.5", now), None);
-    assert_eq!(retry_after_seconds_at("soon", now), None);
-    assert_eq!(retry_after_seconds_at("٣", now), None); // 非 ASCII 数字
-    assert_eq!(
-        retry_after_seconds_at("Thu, 08 Oct 2026 25:00:30 GMT", now),
-        None
-    );
-    assert_eq!(
-        retry_after_seconds_at("Thu, 32 Oct 2026 12:00:30 GMT", now),
-        None
-    );
-    assert_eq!(
-        retry_after_seconds_at("Thu, 08 Foo 2026 12:00:30 GMT", now),
-        None
-    );
+    let table: [(&str, Option<f64>); 56] = [
+        // —— delay-seconds（`1*DIGIT`；前后空白按 OWS 宽容）——
+        ("120", Some(120.0)),
+        (" 120 ", Some(120.0)),
+        ("0", Some(0.0)),
+        ("-1", None),   // 负数不合文法
+        ("+120", None), // 带符号不合文法
+        ("1.5", None),  // 小数不合文法
+        ("120s", None),
+        ("", None),
+        ("soon", None),
+        ("٣", None), // 非 ASCII 数字
+        // —— IMF-fixdate ——
+        ("Thu, 08 Oct 2026 12:00:30 GMT", Some(30.0)),
+        ("Wed, 08 Oct 2026 12:00:30 GMT", Some(30.0)), // 星期名不与日期核对（§5.6.7）
+        ("Sun, 06 Nov 1994 08:49:37 GMT", Some(0.0)),  // RFC 9110 的示例（已过去）
+        ("  Thu, 08 Oct 2026 12:00:30 GMT  ", Some(30.0)), // 前后空白
+        ("thu, 08 Oct 2026 12:00:30 GMT", None),       // 区分大小写
+        ("Thu, 08 oct 2026 12:00:30 GMT", None),
+        ("Thu, 08 Oct 2026 12:00:30 gmt", None),
+        ("Thu, 08 Oct 2026 12:00:30 UTC", None), // 时区只认 GMT
+        ("Thu, 08 Oct 2026 12:00:30 -0500", None),
+        ("Thu, 08 Oct 2026 12:00:30 GMT+00:00", None),
+        ("Thu, 08 Oct 2026 12:00:30", None),           // 缺 GMT
+        ("Thu, 08 Oct 2026 12:00:30 GMT extra", None), // 多余内容
+        ("Thu, 08 Oct 2026 12:00:30  GMT", None),      // SP 的个数不合文法
+        ("Thu, 8 Oct 2026 12:00:30 GMT", None),        // day 必须 2DIGIT
+        ("Thu, 08 Oct 26 12:00:30 GMT", None),         // IMF 的年份必须 4DIGIT
+        ("Thu, 08 Oct 2026 12:00 GMT", None),          // second 必须给出
+        ("Thu, 08 Oct 2026 25:00:30 GMT", None),       // hour 越界
+        ("Thu, 08 Oct 2026 12:60:30 GMT", None),       // minute 越界
+        ("Thu, 08 Oct 2026 12:00:61 GMT", None),       // second 只到 60（闰秒）
+        ("Thu, 08 Oct 2026 12:00:60 GMT", Some(60.0)), // 闰秒接受
+        ("Thu, 31 Feb 2026 12:00:30 GMT", None),       // 日期不存在
+        ("Thu, 29 Feb 2026 12:00:30 GMT", None),       // 非闰年
+        ("Thu, 29 Feb 2024 12:00:30 GMT", Some(0.0)),  // 闰年（已过去）
+        ("Thu, 08 Oct 2026 12:00:30 GMT,", None),
+        // —— rfc850-date（两位年份按 50 年规则，RFC 9110 §5.6.7）——
+        ("Thursday, 08-Oct-26 12:00:30 GMT", Some(30.0)), // 26 → 2026（未来 0 年）
+        ("Sunday, 06-Nov-94 08:49:37 GMT", Some(0.0)),    // RFC 9110 的示例（1994）
+        ("Thursday, 08-Oct-2026 12:00:30 GMT", None),     // rfc850 只允许两位年份
+        ("Thursday, 8-Oct-26 12:00:30 GMT", None),        // day 必须 2DIGIT
+        ("Thursday, 08-oct-26 12:00:30 GMT", None),       // 区分大小写
+        ("Thursday, 08-Oct-26 12:00:30 UTC", None),
+        ("Thursday, 08-Oct-76 12:00:00 GMT", Some(FIFTY_YEARS)), // 恰好 50 年整 → 2076 保留
+        ("Thursday, 08-Oct-76 12:00:30 GMT", Some(0.0)),         // 超过 50 年 30 秒 → 回退到 1976
+        ("Thursday, 08-Oct-77 12:00:30 GMT", Some(0.0)),         // 51 年 → 1977
+        ("Thursday, 08-Oct-99 12:00:30 GMT", Some(0.0)),         // 99 → 2099 超过 50 年 → 1999
+        ("Thu, 08-Oct-26 12:00:30 GMT", None), // rfc850 要求完整星期名（day-name-l），缩写不合法
+        ("Monday, 01-Mar-27 00:00:00 GMT", Some(12_398_400.0)), // 跨月：2027-03-01（未来）
+        ("Monday, 01-Mar-26 00:00:00 GMT", Some(0.0)), // 跨月：2026-03-01（已过去）
+        // —— asctime-date（`date3 = month SP ( 2DIGIT / ( SP 1DIGIT ) )`）——
+        ("Sun Nov  6 08:49:37 1994", Some(0.0)), // 双空格 + 1 位日（RFC 9110 的示例）
+        ("Sun Nov 06 08:49:37 1994", Some(0.0)), // 2DIGIT
+        ("Thu Oct  8 12:00:30 2026", Some(30.0)), // 未来时刻
+        ("Sun Nov 6 08:49:37 1994", None),       // 单空格 + 1 位日不合文法
+        ("sun Nov  6 08:49:37 1994", None),      // 区分大小写
+        ("Sun November  6 08:49:37 1994", None), // 月份只认三字母字面
+        ("Sun Nov  6 08:49:37 26", None),        // asctime 的年份必须 4DIGIT
+        ("Sun Nov  6 08:49:37 1994 GMT", None),  // asctime 不含时区
+        ("Sun Nov  6 08:49:37 1994 ", Some(0.0)), // 尾随空白
+    ];
+    for (value, expected) in table {
+        assert_eq!(retry_after_seconds_at(value, now), expected, "{value:?}");
+    }
 
-    // delta-seconds
-    assert_eq!(retry_after_seconds_at(" 120 ", now), Some(120.0));
-    assert_eq!(retry_after_seconds_at("0", now), Some(0.0));
-
-    // 合法但无法表示的秒数：仍是「等待很久」，不是「没有提示」
+    // 合法但无法表示的 delay-seconds：仍是「等待很久」，不是「没有提示」
     let huge = retry_after_seconds_at(&"9".repeat(400), now).unwrap();
     assert!(huge.is_infinite());
     let huger = retry_after_seconds_at(&"9".repeat(5000), now).unwrap();
     assert!(huger.is_infinite());
-
-    // HTTP-date（IMF-fixdate 与过时但接收方 MUST 接受的格式；宽松边界与 Python 的
-    // email.utils 实测逐条对齐）
-    let table: [(&str, Option<f64>); 33] = [
-        ("Thu, 08 Oct 2026 12:00:30 GMT", Some(30.0)),
-        ("Thu, 08 Oct 2026 12:00:00 GMT", Some(0.0)),
-        ("Thu, 08 Oct 2026 11:59:59 GMT", Some(0.0)), // 已过去 → 0
-        ("Thu, 08 Oct 2026 12:00:30", Some(30.0)),    // 无时区 → 按 UTC
-        ("Thu, 08 Oct 2026 12:00:30 +0000", Some(30.0)),
-        ("Thu, 08 Oct 2026 12:00:30 GMT+00:00", Some(30.0)), // 无法识别的时区 → UTC
-        ("Thu, 08 Oct 2026 12:00:30 UTC", Some(30.0)),
-        ("Thu, 08 Oct 2026 12:00 GMT", Some(0.0)), // 可省秒
-        ("Thu, 08 Oct 2026 12:00:30 -0000", Some(30.0)), // 未声明时区 → UTC
-        ("Thursday, 08-Oct-26 12:00:30 GMT", Some(30.0)), // RFC 850（可带完整星期名）
-        ("Thu, 08-Oct-2026 12:00:30 GMT", Some(30.0)),
-        ("Thu, 08 Oct 2026 12:00:30 EST", Some(5.0 * 3600.0 + 30.0)), // 时区名表
-        ("Thu, 08 Oct 2026 12:00:30 AST", Some(4.0 * 3600.0 + 30.0)),
-        ("Thu, 08 Oct 2026 12:00:30 -500", Some(5.0 * 3600.0 + 30.0)), // 数字时区
-        ("Thu, 08 Oct 2026 12:00:30 500", Some(0.0)),                  // +5 小时 → 已过去
-        ("Thu Nov  6 08:49:37 1994", Some(0.0)),                       // asctime（久远的过去）
-        ("08 Oct 2026 12:00:30 GMT", Some(30.0)),                      // 无星期名
-        ("Thu, 08 Oct 26 12:00:30 GMT", Some(30.0)),                   // 2 位年份
-        ("Thu, 08 January 2026 12:00:30 GMT", Some(0.0)),              // 完整月份名（一月已过去）
-        ("Mon, 06 Nov 1994 08:49:37 GMT", Some(0.0)),                  // RFC 9110 的示例（已过去）
-        ("Thursday Aug 27 14:37:31 2068", None), // 完整星期名的 asctime 不合法
-        ("Thu, , 08 Oct 2026 12:00:30 GMT", None), // 连续分隔符不合法
-        ("08 Oct 2026 12:00:30 2400", None),     // 时区偏移不少于 24 小时（datetime.timezone 约束）
-        ("08 Oct 2026 12:00:30 -9999", None),
-        ("08 Oct 2026 12:00:30 2359", Some(0.0)), // 边界：偏移 23:59（86340 秒）仍接受，时刻已过去
-        ("08 Oct 2026 12:00:30 -2359", Some(86_370.0)), // 负向边界：+23:59 之后
-        // 超大令牌：不溢出、不 panic（debug 也不），一律返回 None；Python 侧同组抛
-        // OverflowError（#109 记录，Rust 不复制崩溃）
-        ("08 Oct 2026 12:00:30 999999999999999999", None),
-        ("08 Oct 2026 12:00:30 9223372036854775807", None), // i64::MAX
-        ("08 Oct 2026 12:00:30 -9223372036854775808", None), // i64::MIN
-        ("08 Oct 2026 12:00:30 999999999999999999999999", None), // 放不进 i64 的字面量
-        ("08 Oct 2026 12:00:30-3+4", None), // 粘连 token 先按 '+' 切分（同 email.utils）
-        // 以下两条是「Rust 只接受 ASCII 十进制」的钉住用例：Python 的 int() 额外接受 Unicode
-        // 十进制数字（`int("٠٨")`）与下划线分隔（`int("1_0")`），记录在 #109，不复制。
-        ("٠٨ Oct 2026 12:00:30 GMT", None),
-        ("08 Oct 1_0 12:00:30 GMT", None),
-    ];
-    for (value, expected) in table {
-        assert_eq!(retry_after_seconds_at(value, now), expected, "{value}");
-    }
-
-    // 美系时区缩写（同 Python email.utils 的表）与数值时区
-    assert_eq!(
-        retry_after_seconds_at("Thu, 08 Oct 2026 12:00:30 EST", now),
-        Some(5.0 * 3600.0 + 30.0)
-    );
-    assert_eq!(
-        retry_after_seconds_at("Thu, 08 Oct 2026 12:00:30 PST", now),
-        Some(8.0 * 3600.0 + 30.0)
-    );
-    assert_eq!(
-        retry_after_seconds_at("Thu, 08 Oct 2026 12:00:30 -0500", now),
-        Some(5.0 * 3600.0 + 30.0)
-    );
-    assert_eq!(
-        retry_after_seconds_at("Thu, 08 Oct 2026 12:00:30 +05:30", now),
-        Some(30.0)
-    );
-    // 尾随内容与大小写
-    assert_eq!(
-        retry_after_seconds_at("Thu, 08 Oct 2026 12:00:30 GMT extra", now),
-        Some(30.0)
-    );
 }
 
 // ---------------------------------------------------------------------- 驱动约定

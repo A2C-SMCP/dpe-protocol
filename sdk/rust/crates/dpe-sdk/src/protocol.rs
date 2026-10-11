@@ -944,22 +944,29 @@ fn percent_encode(value: &str) -> String {
 // Retry-After（RFC 9110 §10.2.3）
 // ---------------------------------------------------------------------------
 
-/// `Retry-After` 头换算成秒：delta-seconds 或 HTTP-date（相对当前 UTC 时间，已过去的时刻为
-/// 0）；缺省或无法解析时为 `None`。合法但大到无法表示的秒数为 `f64::INFINITY`：它仍是
-/// 「等待很久」的提示，不能退化成「没有提示」——调用方可据此区分「没有给」「有限值」
+/// `Retry-After` 头换算成秒（RFC 9110 §10.2.3）：`delay-seconds`（`1*DIGIT`）或 `HTTP-date`
+/// （§5.6.7 的三种形式），相对当前 UTC 时间；已过去的时刻为 0，不合文法或无法解析时为
+/// `None`（「没有给出提示」）。合法但大到无法表示的 delay-seconds 为 `f64::INFINITY`：它
+/// 仍是「等待很久」的提示，不能退化成「没有提示」——调用方可据此区分「没有给」「有限值」
 /// 「无穷」三种情况。
+///
+/// 只接受 RFC 9110 的文法（区分大小写、时区只认字面 `GMT`，见 [`parse_http_date`]）；
+/// 与 Python 侧 0.4 之前的行为差异记录在 #109（Python 经 email.utils 解析）：不合文法的
+/// 输入上 Python 更宽松；rfc850-date 的两位年份 Python 按 POSIX 世纪规则（大于 68 为
+/// 1900+）解释，本实现按 §5.6.7 的 50 年规则。收紧与统一属 0.4 周期的规范/向量工作。
 pub fn retry_after_seconds(value: &str) -> Option<f64> {
     retry_after_seconds_at(value, unix_now_seconds())
 }
 
-/// [`retry_after_seconds`] 的显式时钟版本（测试与可控时钟用）。
+/// [`retry_after_seconds`] 的显式时钟版本（测试与可控时钟用）；`now_unix_seconds` 只用于
+/// rfc850-date 两位年份的 50 年规则（RFC 9110 §5.6.7）。
 pub fn retry_after_seconds_at(value: &str, now_unix_seconds: i64) -> Option<f64> {
     let text = value.trim();
     if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()) {
-        // delta-seconds：超长数字串（无法表示的秒数）解析为 inf，不当作「没有给」
+        // delay-seconds：超长数字串（无法表示的秒数）解析为 inf，不当作「没有给」
         return Some(text.parse::<f64>().unwrap_or(f64::INFINITY));
     }
-    let when = parse_http_date(text)?;
+    let when = parse_http_date(text, now_unix_seconds)?;
     Some((when as f64 - now_unix_seconds as f64).max(0.0))
 }
 
@@ -971,233 +978,212 @@ fn unix_now_seconds() -> i64 {
         .unwrap_or(0)
 }
 
-/// HTTP-date（RFC 9110 §5.6.7）→ Unix 秒（UTC）；无法解析为 `None`。
+/// HTTP-date（RFC 9110 §5.6.7）→ Unix 秒（UTC）；不合文法或日期不存在时为 `None`。
 ///
-/// 与 Python 侧 `retry_after_seconds` 的解析口径对等：本函数是 email.utils 的
-/// `_parsedate_tz`（加上 `parsedate_to_datetime` 的范围校验）的移植——IMF-fixdate 与过时但
-/// 接收方 MUST 接受的 RFC 850、asctime 都能解析，并保持它历史地接受的宽松写法（完整月份名、
-/// 尾随逗号、可缺省的秒、时区名表、小于 100 的年份按 POSIX 两位年份规则提升）。范围校验同
-/// `datetime` 构造：年 1–9999、日期按闰年规则、时 0–23、分秒 0–59、时区偏移严格在 ±24h 内；
-/// 不合法一律 `None`。
-///
-/// **两处已知口径差异**（均为畸形输入，任何合规服务端都不会产生；见 #109）：
-/// - 数字令牌只接受 ASCII 十进制；Python 的 `int()` 额外接受下划线与 Unicode 十进制数字
-///   （如 `int("1_0")` 与 `int("٠٨")`）；
-/// - 整数形态的时区令牌只要偏移不可能在 ±24h 内（含放不进 `i64` 的巨大字面量）一律判整条
-///   日期不可用（`None`）；其中大到把 Python 的 `timedelta` 撑溢出的取值，Python 侧会漏出
-///   `OverflowError`（`retry_after_seconds` 只捕获 `TypeError` / `ValueError`，属缺陷），
-///   Rust 侧同样返回 `None`、不复制崩溃。
-fn parse_http_date(text: &str) -> Option<i64> {
-    // 令牌整形（与 _parsedate_tz 的处理逐条同构）
-    let mut tokens: Vec<&str> = text.split_whitespace().collect();
-    let first = *tokens.first()?;
-    // 星期名：以逗号结尾、或（小写后）就是三字母星期名时跳过；否则取最后一个逗号之后的部分
-    if first.ends_with(',') || is_day_name(first) {
-        tokens.remove(0);
-    } else if let Some(at) = first.rfind(',') {
-        tokens[0] = &first[at + 1..];
-    }
-    // RFC 850 的 `D-Mon-YY` 拆成三个令牌
-    if tokens.len() == 3 {
-        let parts: Vec<&str> = tokens[0].split('-').collect();
-        if parts.len() == 3 {
-            let mut expanded = parts;
-            expanded.extend_from_slice(&tokens[1..]);
-            tokens = expanded;
-        }
-    }
-    // 四个令牌时第 4 个可能连带了时区后缀（如 `GMT+00:00`）；分割点先找 `+` 再找 `-`
-    // （同 email.utils，两个符号同时出现时结果不同）
-    if tokens.len() == 4 {
-        let last = tokens[3];
-        match last.find('+').or_else(|| last.find('-')) {
-            Some(at) if at > 0 => {
-                let (head, tail) = last.split_at(at);
-                tokens[3] = head;
-                tokens.push(tail);
-            }
-            _ => tokens.push(""),
-        }
-    }
-    if tokens.len() < 5 {
-        return None;
-    }
-    let (mut day_text, mut month_text, mut year_text, mut time_text, mut zone_text) =
-        (tokens[0], tokens[1], tokens[2], tokens[3], tokens[4]);
-    if day_text.is_empty() || month_text.is_empty() || year_text.is_empty() {
-        return None;
-    }
-    let month = match month_number(month_text) {
-        Some(month) => month,
-        None => {
-            // asctime：月份写在最前
-            std::mem::swap(&mut day_text, &mut month_text);
-            month_number(month_text)?
-        }
-    };
-    day_text = day_text.strip_suffix(',').unwrap_or(day_text);
-    if year_text.find(':').is_some_and(|at| at > 0) {
-        std::mem::swap(&mut year_text, &mut time_text);
-    }
-    if let Some(stripped) = year_text.strip_suffix(',') {
-        year_text = stripped;
-        if year_text.is_empty() {
-            return None;
-        }
-    }
-    if !year_text.starts_with(|c: char| c.is_ascii_digit()) {
-        std::mem::swap(&mut year_text, &mut zone_text);
-    }
-    time_text = time_text.strip_suffix(',').unwrap_or(time_text);
-    let (hour, minute, second) = parse_time_of_day(time_text)?;
-    let year: i64 = year_text.parse().ok()?;
-    let day: i64 = day_text.parse().ok()?;
-    // 小于 100 的年份按 POSIX 两位年份规则提升（同 email.utils）
-    let year = if year < 100 {
-        year + if year > 68 { 1900 } else { 2000 }
-    } else {
-        year
-    };
-    // datetime 构造的范围校验（含闰年）
-    if !(1..=9999).contains(&year)
-        || day < 1
-        || day > days_in_month(year, month)
-        || !(0..=23).contains(&hour)
-        || !(0..=59).contains(&minute)
-        || !(0..=59).contains(&second)
-    {
-        return None;
-    }
-    let zone = match zone_offset(zone_text) {
-        Zone::Offset(offset) => offset,
-        // 未声明或无法识别的时区：按 UTC（同 email.utils 的 naive 语义）
-        Zone::Unknown => 0,
-        // 声明了但偏移不少于 24 小时（`datetime.timezone` 的约束）：整条日期不可用
-        Zone::OutOfRange => return None,
-    };
-    Some(days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - zone)
+/// §5.6.7 的三种形式都必须接受：IMF-fixdate（`Sun, 06 Nov 1994 08:49:37 GMT`）、
+/// rfc850-date（`Sunday, 06-Nov-94 08:49:37 GMT`）与 asctime-date
+/// （`Sun Nov  6 08:49:37 1994`）。文法**区分大小写**，SP 的个数是文法的一部分（按 `' '`
+/// 逐字切分，asctime 的 `date3` 只在 `SP SP 1DIGIT` 形式下允许 1 位日）；时区只认字面
+/// `GMT`。星期名不与日期核对（§5.6.7：接收方允许不校验，日期本身合法即可）；日期必须真实
+/// 存在（`31 Feb`、非闰年的 `29 Feb` 拒绝）；时刻按 `hour 00-23` / `minute 00-59` /
+/// `second 00-60`（闰秒）。`now_unix_seconds` 只用于 rfc850 两位年份的 50 年规则。
+fn parse_http_date(text: &str, now_unix_seconds: i64) -> Option<i64> {
+    imf_fixdate(text)
+        .or_else(|| rfc850_date(text, now_unix_seconds))
+        .or_else(|| asctime_date(text))
 }
 
-/// `HH:MM[:SS]`（秒可省）或非合规客户端的 `.` 分隔变体；各段按十进制解析（同 email.utils）。
-fn parse_time_of_day(token: &str) -> Option<(i64, i64, i64)> {
-    let parts: Vec<&str> = token.split(':').collect();
-    let (hour, minute, second) = match parts.as_slice() {
-        [hour, minute] => (*hour, *minute, "0"),
-        [hour, minute, second] => (*hour, *minute, *second),
-        [single] if single.contains('.') => {
-            let dot_parts: Vec<&str> = single.split('.').collect();
-            match dot_parts.as_slice() {
-                [hour, minute] => (*hour, *minute, "0"),
-                [hour, minute, second] => (*hour, *minute, *second),
-                _ => return None,
-            }
-        }
-        _ => return None,
+/// IMF-fixdate：`day-name "," SP date1 SP time-of-day SP GMT`；`date1 = day SP month SP year`
+/// （RFC 9110 §5.6.7）。
+fn imf_fixdate(text: &str) -> Option<i64> {
+    let parts: Vec<&str> = text.split(' ').collect();
+    let [weekday, day, month, year, time, "GMT"] = parts.as_slice() else {
+        return None;
     };
-    Some((
-        hour.parse().ok()?,
-        minute.parse().ok()?,
-        second.parse().ok()?,
-    ))
-}
-
-/// 三字母星期名（email.utils 的 `_daynames`；完整名称不在此列）。
-fn is_day_name(text: &str) -> bool {
-    matches!(
-        text.to_ascii_lowercase().as_str(),
-        "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun"
+    if !DAY_NAMES.contains(&weekday.strip_suffix(',')?) {
+        return None;
+    }
+    timestamp(
+        four_digits(year)?,
+        month_number(month)?,
+        two_digits(day)?,
+        time_of_day(time)?,
     )
 }
 
-/// 月份名（不区分大小写的三字母缩写或完整名称，同 email.utils 的 `_monthnames`）→ 月份号。
-fn month_number(text: &str) -> Option<u32> {
-    const MONTHS: [&str; 24] = [
-        "jan",
-        "feb",
-        "mar",
-        "apr",
-        "may",
-        "jun",
-        "jul",
-        "aug",
-        "sep",
-        "oct",
-        "nov",
-        "dec",
-        "january",
-        "february",
-        "march",
-        "april",
-        "may",
-        "june",
-        "july",
-        "august",
-        "september",
-        "october",
-        "november",
-        "december",
-    ];
-    let lower = text.to_ascii_lowercase();
-    MONTHS
-        .iter()
-        .position(|name| *name == lower)
-        .map(|index| (index % 12) as u32 + 1)
-}
-
-/// 时区令牌的判定结果。
-enum Zone {
-    /// 声明了、在范围内：相对 UTC 的秒偏移。
-    Offset(i64),
-    /// 未声明（空）或无法识别（不是时区名、也不是整数字面量的令牌）：按 UTC
-    /// （同 email.utils 的 naive 语义）。
-    Unknown,
-    /// 声明了但偏移不可能在 ±24h 内（含大到放不进 `i64` 的整数字面量）：整条日期不可用
-    /// （`datetime.timezone` 的约束）。
-    OutOfRange,
-}
-
-/// 时区令牌 → [`Zone`]。
-///
-/// 时区名表与数值形式同 email.utils：名字表（GMT/UTC/UT/Z 与美系 AST/ADT/EST/EDT/CST/CDT/
-/// MST/MDT/PST/PDT；`-0000` 与 `+0000` 都按 UTC），或按十进制解读后按
-/// `((v/100)*3600 + (v%100)*60)` 换算的 `±HHMM`（`-0500` 即 UTC−5 小时，`500` 即 UTC+5 小时）。
-///
-/// `|HHMM| ≥ 2360`（23 小时 60 分）时偏移必然 ≥ 24 小时，先短路判 [`Zone::OutOfRange`]：
-/// 换算的乘法只在小值上进行（任意大的十进制令牌——含 `i64::MIN` 与放不进 `i64` 的字面量——
-/// 都不会溢出或 panic）。
-fn zone_offset(token: &str) -> Zone {
-    let upper = token.to_ascii_uppercase();
-    let hhmm = match upper.as_str() {
-        "UT" | "UTC" | "GMT" | "Z" => 0,
-        "AST" => -400,
-        "ADT" => -300,
-        "EST" => -500,
-        "EDT" => -400,
-        "CST" => -600,
-        "CDT" => -500,
-        "MST" => -700,
-        "MDT" => -600,
-        "PST" => -800,
-        "PDT" => -700,
-        _ => {
-            let digits = upper.strip_prefix(['+', '-']).unwrap_or(&upper);
-            if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Zone::Unknown;
-            }
-            match upper.parse::<i64>() {
-                Ok(value) => value,
-                // 整数字面量但放不进 i64：偏移必然 ≥ 24 小时，整条日期不可用
-                Err(_) => return Zone::OutOfRange,
-            }
-        }
+/// rfc850-date：`day-name-l "," SP date2 SP time-of-day SP GMT`；`date2 = day "-" month "-"`
+/// 加两位年份（RFC 9110 §5.6.7，年份按 50 年规则解释，见 [`two_digit_year`]）。
+fn rfc850_date(text: &str, now_unix_seconds: i64) -> Option<i64> {
+    let parts: Vec<&str> = text.split(' ').collect();
+    let [weekday, date2, time, "GMT"] = parts.as_slice() else {
+        return None;
     };
-    let magnitude = hhmm.unsigned_abs();
-    if magnitude > 2359 {
-        return Zone::OutOfRange;
+    if !DAY_NAMES_LONG.contains(&weekday.strip_suffix(',')?) {
+        return None;
     }
-    let seconds = (magnitude / 100) * 3600 + (magnitude % 100) * 60;
-    let sign = if hhmm < 0 { -1 } else { 1 };
-    Zone::Offset(sign * seconds as i64)
+    let mut date = date2.split('-');
+    let day = two_digits(date.next()?)?;
+    let month = month_number(date.next()?)?;
+    let year2 = two_digits(date.next()?)?;
+    if date.next().is_some() {
+        return None;
+    }
+    let time = time_of_day(time)?;
+    let year = two_digit_year(year2, now_unix_seconds, month, day, time);
+    timestamp(year, month, day, time)
+}
+
+/// asctime-date：`day-name SP date3 SP time-of-day SP year`，
+/// `date3 = month SP ( 2DIGIT / ( SP 1DIGIT ) )`（RFC 9110 §5.6.7）。
+fn asctime_date(text: &str) -> Option<i64> {
+    let parts: Vec<&str> = text.split(' ').collect();
+    let (weekday, month, day, time, year) = match parts.as_slice() {
+        [weekday, month, day, time, year] => (*weekday, *month, two_digits(day)?, *time, *year),
+        // `SP SP 1DIGIT`：日只有 1 位，与月份名之间有两个 SP
+        [weekday, month, "", day, time, year] => (*weekday, *month, one_digit(day)?, *time, *year),
+        _ => return None,
+    };
+    if !DAY_NAMES.contains(&weekday) {
+        return None;
+    }
+    timestamp(
+        four_digits(year)?,
+        month_number(month)?,
+        day,
+        time_of_day(time)?,
+    )
+}
+
+/// §5.6.7 的 `day-name`（区分大小写）。
+const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+/// §5.6.7 的 `day-name-l`（rfc850-date 的完整星期名）。
+const DAY_NAMES_LONG: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+
+/// 月份字面 `%s"Jan"` 等（区分大小写）→ 月份号。
+fn month_number(text: &str) -> Option<u32> {
+    Some(match text {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    })
+}
+
+/// `2DIGIT`：恰好两位十进制。
+fn two_digits(text: &str) -> Option<u32> {
+    if text.len() != 2 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// `1DIGIT`。
+fn one_digit(text: &str) -> Option<u32> {
+    if text.len() != 1 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// `4DIGIT` 年份。
+fn four_digits(text: &str) -> Option<i64> {
+    if text.len() != 4 || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+/// `time-of-day = hour ":" minute ":" second`（各 `2DIGIT`；hour ≤ 23、minute ≤ 59、
+/// second ≤ 60——RFC 9110 §5.6.7 允许闰秒）。
+fn time_of_day(text: &str) -> Option<(i64, i64, i64)> {
+    let mut parts = text.split(':');
+    let hour = two_digits(parts.next()?)?;
+    let minute = two_digits(parts.next()?)?;
+    let second = two_digits(parts.next()?)?;
+    if parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    Some((hour.into(), minute.into(), second.into()))
+}
+
+/// 组装 Unix 秒；日期不存在（如 11 月 31 日、非闰年的 2 月 29 日）为 `None`。
+fn timestamp(
+    year: i64,
+    month: u32,
+    day: u32,
+    (hour, minute, second): (i64, i64, i64),
+) -> Option<i64> {
+    if day < 1 || i64::from(day) > days_in_month(year, month) {
+        return None;
+    }
+    Some(days_from_civil(year, month, i64::from(day)) * 86400 + hour * 3600 + minute * 60 + second)
+}
+
+/// rfc850 的两位年份 → 四位年份（RFC 9110 §5.6.7 的 50 年规则）：先按「当前世纪 + 两位年」
+/// 读；该时刻落在「现在」之后 50 年以上时（逐字段比较，含时刻），回退一个世纪——即取过去
+/// 100 年内末两位相同的最近一年。
+fn two_digit_year(
+    year2: u32,
+    now_unix_seconds: i64,
+    month: u32,
+    day: u32,
+    time: (i64, i64, i64),
+) -> i64 {
+    let (now_year, now_month, now_day) = civil_from_days(now_unix_seconds.div_euclid(86400));
+    let seconds_of_day = now_unix_seconds.rem_euclid(86400);
+    let now_time = (
+        seconds_of_day / 3600,
+        seconds_of_day % 3600 / 60,
+        seconds_of_day % 60,
+    );
+    let candidate = now_year.div_euclid(100) * 100 + i64::from(year2);
+    let beyond_fifty_years = candidate > now_year + 50
+        || (candidate == now_year + 50 && (month, day, time) > (now_month, now_day, now_time));
+    if beyond_fifty_years {
+        candidate - 100
+    } else {
+        candidate
+    }
+}
+
+/// 距 1970-01-01 的天数 → 公历日期（Howard Hinnant 的 civil_from_days 算法）。
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    };
+    (year + i64::from(month <= 2), month as u32, day as u32)
 }
 
 fn days_in_month(year: i64, month: u32) -> i64 {
