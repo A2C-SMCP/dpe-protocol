@@ -86,6 +86,47 @@ pub struct Missing {
     pub blobs: Vec<String>,
 }
 
+/// 新旧文档元素 content_hash 多重集之差（core §3.3）：计数都是非负整数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delta {
+    pub added: u64,
+    pub removed: u64,
+    pub retained: u64,
+}
+
+/// commit 的结果状态（core §3.3；封闭枚举）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitStatus {
+    Created,
+    Updated,
+    Unchanged,
+}
+
+impl CommitStatus {
+    /// 线上拼写。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CommitStatus::Created => "created",
+            CommitStatus::Updated => "updated",
+            CommitStatus::Unchanged => "unchanged",
+        }
+    }
+}
+
+/// commit 响应（core §3.3）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitResult {
+    pub status: CommitStatus,
+    pub doc_hash: String,
+    pub delta: Delta,
+}
+
+/// move 响应：目标文档的 doc_hash（HTTP 绑定 §4.9）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveResult {
+    pub doc_hash: String,
+}
+
 // ---------------------------------------------------------------------------
 // 解析入口（响应报文；失败为 UnexpectedResponse）
 // ---------------------------------------------------------------------------
@@ -245,6 +286,61 @@ impl ListPage {
     }
 }
 
+impl CommitResult {
+    /// 由 commit 的响应体构造；`status` 是封闭枚举（created / updated / unchanged），计数必须
+    /// 是 JSON 整数且非负。
+    pub fn from_value(value: &Value) -> Result<Self, Error> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("CommitResult", "响应体必须是对象"))?;
+        Self::from_object(object).map_err(wrap("CommitResult"))
+    }
+
+    fn from_object(object: &Map<String, Value>) -> Result<Self, String> {
+        let status = match object.get("status") {
+            Some(Value::String(text)) => match text.as_str() {
+                "created" => CommitStatus::Created,
+                "updated" => CommitStatus::Updated,
+                "unchanged" => CommitStatus::Unchanged,
+                _ => {
+                    return Err(format!(
+                        "status {text:?} 不是 created / updated / unchanged"
+                    ))
+                }
+            },
+            Some(_) => return Err("字段 status 必须是字符串".to_owned()),
+            None => return Err("缺少字段 status".to_owned()),
+        };
+        let doc_hash = string_field(object, "doc_hash")?;
+        let delta = match object.get("delta") {
+            Some(Value::Object(delta)) => delta,
+            Some(_) => return Err("字段 delta 必须是对象".to_owned()),
+            None => return Err("缺少字段 delta".to_owned()),
+        };
+        Ok(CommitResult {
+            status,
+            doc_hash,
+            delta: Delta {
+                added: count(delta, "added")?,
+                removed: count(delta, "removed")?,
+                retained: count(delta, "retained")?,
+            },
+        })
+    }
+}
+
+impl MoveResult {
+    /// 由 move 的响应体构造。
+    pub fn from_value(value: &Value) -> Result<Self, Error> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("MoveResult", "响应体必须是对象"))?;
+        Ok(MoveResult {
+            doc_hash: string_field(object, "doc_hash").map_err(wrap("MoveResult"))?,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 解析辅助
 // ---------------------------------------------------------------------------
@@ -301,6 +397,17 @@ fn string_list_field(object: &Map<String, Value>, key: &str) -> Result<Vec<Strin
         }
     }
     Ok(parsed)
+}
+
+/// 计数（多重集的大小）：必须是 JSON 整数且非负。
+fn count(object: &Map<String, Value>, key: &str) -> Result<u64, String> {
+    match object.get(key) {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .ok_or_else(|| format!("{key} 必须是非负整数")),
+        Some(_) => Err(format!("{key} 必须是非负整数")),
+        None => Err(format!("缺少字段 {key}")),
+    }
 }
 
 /// 限值：必须是非负的 JSON 整数，`min` 为下限（正整数限值为 1，会话 TTL 为 3600）。

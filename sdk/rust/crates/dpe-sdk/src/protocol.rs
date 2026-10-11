@@ -32,13 +32,16 @@
 //! **请求目标**：`target` 是相对 remote 的路径与已编码的查询串（HTTP 绑定 §1），传输层把它
 //! 原样拼在 remote 之后（remote 不带尾部 `/`），**MUST NOT 再次编码**。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use serde_json::{json, Value};
 
 use crate::errors::{Error, ErrorKind};
-use crate::wire::{BatchHeads, Capabilities, ListPage, Skeleton};
+use crate::models::ExpandedDocument;
+use crate::wire::{
+    BatchHeads, Capabilities, CommitResult, CommitStatus, Delta, ListPage, MoveResult, Skeleton,
+};
 
 /// 本 SDK 实现的协议版本（capabilities 的 `protocol`）。
 pub const PROTOCOL: &str = "dpe/1";
@@ -143,6 +146,30 @@ impl Headers {
 pub enum Body {
     None,
     Bytes(Vec<u8>),
+}
+
+/// 写操作的前置条件（core §5.1）：三选一，没有「不带前置条件」的形式；写操作默认拒绝无
+/// CAS 前置条件（`DPE_PRECONDITION_REQUIRED`）由服务端按此裁决。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Precondition {
+    /// `base_hash = H`：H 是读到的 doc_hash（HTTP 绑定：`If-Match: "H"`）。发出前校验它是本次
+    /// 声明契约的 hash——不接受裸 hash，也不接受别的契约的值；服务端按值比较、不做格式校验。
+    BaseHash(String),
+    /// `if_absent`：仅新建（HTTP 绑定：`If-None-Match: *`）。
+    IfAbsent,
+    /// 无条件覆盖（仅 commit；请求体 `"force": true`，不带条件头）。只在调用方显式传入时
+    /// 使用；SDK 绝不自动改用 force（core §5.2）。
+    Force,
+}
+
+impl Precondition {
+    /// `base_hash` 的值（其余前置条件为 `None`）。
+    pub fn base_hash(&self) -> Option<&str> {
+        match self {
+            Precondition::BaseHash(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 /// 请求描述。
@@ -339,7 +366,7 @@ impl ProtocolCore {
         let target = format!("documents?{}", query(&[("uri", Some(uri))]));
         HeadOp {
             core: self,
-            phase: Phase::Ready(self.request(Method::Head, target, Body::None, true)),
+            phase: Phase::Ready(self.request(Method::Head, target, Body::None, &[], true)),
         }
     }
 
@@ -370,7 +397,7 @@ impl ProtocolCore {
         Ok(GetSkeletonOp {
             core: self,
             expected_uri,
-            phase: Phase::Ready(self.request(Method::Get, target, Body::None, true)),
+            phase: Phase::Ready(self.request(Method::Get, target, Body::None, &[], true)),
         })
     }
 
@@ -404,30 +431,303 @@ impl ProtocolCore {
         );
         Ok(ListPageOp {
             core: self,
-            phase: Phase::Ready(self.request(Method::Get, target, Body::None, true)),
+            phase: Phase::Ready(self.request(Method::Get, target, Body::None, &[], true)),
         })
     }
 
     // ------------------------------------------------------------------
+    // 写操作（core §3.3、§4、§5）
+    // ------------------------------------------------------------------
+
+    /// `PUT documents?uri=`（core §3.2 的快路径）：一次提交文档对象、全部页对象与元素对象
+    /// （页与元素按 hash 去重后各发一份）。CAS 前置条件三选一（[`Precondition`]）；`uri` 不
+    /// 合法、`base_hash` 不属于本次声明契约时本地即失败，不发请求。
+    ///
+    /// 重试规则（core §5.2、HTTP 绑定 §3.2）：非 force 的响应丢失原样重发至多
+    /// [`max_resends`](ProtocolCore::max_resends) 次（首次已生效则得到 `unchanged`，首次的
+    /// delta 不可得）；force 的响应丢失（含无 DPE 错误码的 502 / 504）**不重放**，先 `head`
+    /// 判定；无 DPE 错误码的 412 先 `head` 再判定（`If-None-Match` 与 DELETE 对称，允许
+    /// 误判重试一次；`If-Match` 只判一次）；`DPE_PRECONDITION_FAILED` 等错误如实上报，
+    /// **绝不自动改用 force**。
+    pub fn commit(
+        &self,
+        uri: &str,
+        document: &ExpandedDocument,
+        precondition: Precondition,
+    ) -> Result<CommitOp<'_>, Error> {
+        dpe_hash::normalize_file_uri(uri).map_err(|error| Error::from_hash_error(&error, ""))?;
+        let headers = self.condition(&precondition)?;
+        let parts = self.wire_parts(document)?;
+        let mut body = json!({
+            "document": parts.document,
+            "pages": parts.pages,
+            "objects": parts.objects,
+        });
+        if precondition == Precondition::Force {
+            body["force"] = Value::Bool(true);
+        }
+        let target = format!("documents?{}", query(&[("uri", Some(uri))]));
+        let request = self.write_request(Method::Put, target, Some(&body), &headers);
+        Ok(CommitOp {
+            core: self,
+            uri: uri.to_owned(),
+            request,
+            precondition,
+            expected: parts.doc_hash,
+            total: parts.total,
+            phase: CommitPhase::Submit,
+            resends: 0,
+            awaiting: false,
+            cause: None,
+        })
+    }
+
+    /// `DELETE documents?uri=`（core §4）：CAS 走 `If-Match`（HTTP 绑定 §3.2）。
+    ///
+    /// 重试规则（core §5.2、HTTP 绑定 §3.2）：响应丢失时原样重发，重发后得到
+    /// `DPE_NOT_FOUND` 视为成功（目标状态「不存在」已达成；首次请求得到它则如实上报）；
+    /// 无 DPE 错误码的 412 先 `head`：不存在即成功，doc_hash 不等于 `base_hash` 抛
+    /// `DPE_PRECONDITION_FAILED`，仍等于则是中间层误判，原样重发一次；重发后仍是这样的 412
+    /// 时再 `head` 判定一次，doc_hash 仍等于 `base_hash` 才按非协议错误上报。
+    pub fn delete(&self, uri: &str, base_hash: &str) -> Result<DeleteOp<'_>, Error> {
+        dpe_hash::normalize_file_uri(uri).map_err(|error| Error::from_hash_error(&error, ""))?;
+        self.check_base_hash(base_hash)?;
+        let headers = vec![("If-Match", format!("\"{base_hash}\""))];
+        let target = format!("documents?{}", query(&[("uri", Some(uri))]));
+        let request = self.write_request(Method::Delete, target, None, &headers);
+        Ok(DeleteOp {
+            core: self,
+            uri: uri.to_owned(),
+            base_hash: base_hash.to_owned(),
+            request,
+            phase: DeletePhase::Submit,
+            resends: 0,
+            resent: false,
+            awaiting: false,
+        })
+    }
+
+    /// `POST move`：`from_uri → to_uri` 原子改名，前置条件在请求体（core §5.2；方法名对应
+    /// Python 的 `ProtocolCore.move`，`move` 是 Rust 关键字）。
+    ///
+    /// 响应丢失时原样重发：服务端对「源已不存在、目标内容等于 `base_hash`」返回成功（core
+    /// §5.2 第 4 步），其余错误如实上报。结果的 `doc_hash` 必须等于 `base_hash`（file_uri
+    /// 不进 hash），`DPE-Doc-Hash` 出现时必须一致。
+    pub fn move_document(
+        &self,
+        from_uri: &str,
+        to_uri: &str,
+        base_hash: &str,
+    ) -> Result<MoveOp<'_>, Error> {
+        dpe_hash::normalize_file_uri(from_uri)
+            .map_err(|error| Error::from_hash_error(&error, ""))?;
+        dpe_hash::normalize_file_uri(to_uri).map_err(|error| Error::from_hash_error(&error, ""))?;
+        self.check_base_hash(base_hash)?;
+        let body = json!({"from_uri": from_uri, "to_uri": to_uri, "base_hash": base_hash});
+        let request = self.write_request(Method::Post, "move".to_owned(), Some(&body), &[]);
+        Ok(MoveOp {
+            core: self,
+            base_hash: base_hash.to_owned(),
+            request,
+            phase: MovePhase::Submit,
+            resends: 0,
+            awaiting: false,
+        })
+    }
+    // ------------------------------------------------------------------
     // 请求与响应处理
     // ------------------------------------------------------------------
 
-    /// 带契约头的请求；有请求体时补 `Content-Type: application/json`。
-    fn request(&self, method: Method, target: String, body: Body, retry_safe: bool) -> Request {
-        let mut headers = Headers::new();
-        headers.insert(CONTRACT_HEADER, self.contract.clone());
+    /// 带契约头的请求；`headers` 是附加头（条件头等），有请求体时补
+    /// `Content-Type: application/json`。
+    fn request(
+        &self,
+        method: Method,
+        target: String,
+        body: Body,
+        headers: &[(&'static str, String)],
+        retry_safe: bool,
+    ) -> Request {
+        let mut all = Headers::new();
+        all.insert(CONTRACT_HEADER, self.contract.clone());
+        for (name, value) in headers {
+            all.insert(*name, value.clone());
+        }
         if !matches!(body, Body::None) {
-            headers.insert("Content-Type", "application/json");
+            all.insert("Content-Type", "application/json");
         }
         Request {
             method,
             target,
-            headers,
+            headers: all,
             body,
             retry_safe,
         }
     }
 
+    /// 写请求：带契约头与附加头、JSON 请求体（`None` 为无体）；写路径一律
+    /// `retry_safe = false`（请求可能已发出之后传输层 MUST NOT 自行重发，见模块说明）。
+    fn write_request(
+        &self,
+        method: Method,
+        target: String,
+        body: Option<&Value>,
+        headers: &[(&'static str, String)],
+    ) -> Request {
+        let mut all = Headers::new();
+        all.insert(CONTRACT_HEADER, self.contract.clone());
+        for (name, value) in headers {
+            all.insert(*name, value.clone());
+        }
+        let body = match body {
+            Some(value) => {
+                all.insert("Content-Type", "application/json");
+                json_body(value)
+            }
+            None => Body::None,
+        };
+        Request {
+            method,
+            target,
+            headers: all,
+            body,
+            retry_safe: false,
+        }
+    }
+
+    /// `base_hash` 必须是本次声明契约的 hash：不接受裸 hash，也不接受别的契约的值。
+    fn check_base_hash(&self, value: &str) -> Result<(), Error> {
+        dpe_hash::parse_hash_with(value, &[self.contract.as_str()])
+            .map(|_| ())
+            .map_err(|error| Error::from_hash_error(&error, ""))
+    }
+
+    /// 前置条件对应的条件头（HTTP 绑定 §3.2）；force 不带条件头。
+    fn condition(&self, precondition: &Precondition) -> Result<Vec<(&'static str, String)>, Error> {
+        Ok(match precondition {
+            Precondition::BaseHash(value) => {
+                self.check_base_hash(value)?;
+                vec![("If-Match", format!("\"{value}\""))]
+            }
+            Precondition::IfAbsent => vec![("If-None-Match", "*".to_owned())],
+            Precondition::Force => Vec::new(),
+        })
+    }
+
+    /// 把展开文档拆成线上部件（Python `_wire_parts` 的对等）：文档对象、按 hash 去重的页对象
+    /// 与元素对象，以及 doc_hash 与元素总数（含重复，供 delta 校验）。
+    fn wire_parts(&self, document: &ExpandedDocument) -> Result<WireParts, Error> {
+        let hashes = document.hashes(&self.contract)?;
+        let mut pages = Vec::new();
+        let mut objects = Vec::new();
+        let mut seen_pages = HashSet::new();
+        let mut seen_objects = HashSet::new();
+        let mut total: u64 = 0;
+        for (page, page_hashes) in document.pages.iter().zip(&hashes.pages) {
+            // 元素总数（含重复）：u64 求和的是内存中的元素数，溢出不可达；饱和写法纯防护
+            total = total.saturating_add(page_hashes.elements.len() as u64);
+            if !seen_pages.insert(page_hashes.page_hash.clone()) {
+                continue; // 同一页对象的元素也已全部收录
+            }
+            let mut wire_page = serde_json::to_value(page).expect("数据模型总能序列化");
+            wire_page["elements"] = json!(page_hashes.elements);
+            pages.push(wire_page);
+            for (element, content_hash) in page.elements.iter().zip(&page_hashes.elements) {
+                if !seen_objects.insert(content_hash.clone()) {
+                    continue;
+                }
+                objects.push(serde_json::to_value(element).expect("数据模型总能序列化"));
+            }
+        }
+        let mut document_object = serde_json::to_value(document).expect("数据模型总能序列化");
+        document_object["pages"] = json!(hashes
+            .pages
+            .iter()
+            .map(|page| page.page_hash.clone())
+            .collect::<Vec<_>>());
+        Ok(WireParts {
+            document: document_object,
+            pages,
+            objects,
+            doc_hash: hashes.doc_hash,
+            total,
+        })
+    }
+
+    /// commit 响应（HTTP 绑定 §4.8）：201 即 created，200 即 updated / unchanged；结果必须
+    /// 自洽（doc_hash 等于本地算出的提交内容、delta 与元素个数和状态一致、`DPE-Doc-Hash`
+    /// 出现时必须一致）。
+    fn commit_result(
+        &self,
+        response: &Response,
+        expected: &str,
+        total: u64,
+    ) -> Result<CommitResult, Error> {
+        if response.status() >= 400 {
+            return Err(error_from_response(response));
+        }
+        if response.status() != 200 && response.status() != 201 {
+            return Err(Error::unexpected(
+                format!("commit 期望 HTTP 200 或 201，得到 {}", response.status()),
+                response.status(),
+                None,
+            ));
+        }
+        let result = parse_response(response, CommitResult::from_value)?;
+        let broken = |reason: String| {
+            Error::unexpected(
+                format!("commit 结果不自洽：{reason}"),
+                response.status(),
+                None,
+            )
+        };
+        let created = result.status == CommitStatus::Created;
+        if (response.status() == 201) != created {
+            return Err(broken(format!(
+                "status {:?} 与 HTTP {} 不符",
+                result.status.as_str(),
+                response.status()
+            )));
+        }
+        if result.doc_hash != expected {
+            return Err(broken(format!(
+                "doc_hash {:?} 不等于提交内容的 {expected:?}",
+                result.doc_hash
+            )));
+        }
+        let delta = result.delta;
+        // 计数是服务端给的 u64：相加必须防溢出（Python 是任意精度 int，等价于 checked_add）
+        if delta.added.checked_add(delta.retained) != Some(total) {
+            return Err(broken(format!(
+                "added + retained 应为提交的元素个数 {total}"
+            )));
+        }
+        if created && (delta.removed != 0 || delta.retained != 0) {
+            return Err(broken(
+                "created 时旧文档为空，removed 与 retained 应为 0".to_owned(),
+            ));
+        }
+        if result.status == CommitStatus::Unchanged && (delta.added != 0 || delta.removed != 0) {
+            return Err(broken("unchanged 时 added 与 removed 应为 0".to_owned()));
+        }
+        self.check_doc_hash_header(response, expected)?;
+        Ok(result)
+    }
+
+    /// `DPE-Doc-Hash` 出现时必须等于结果的 doc_hash。缺失时宽容（同 `get_skeleton`）：权威值
+    /// 在响应体中，头只是副本；服务端漏写这个 MUST 头由一致性跑分器拦截。
+    fn check_doc_hash_header(&self, response: &Response, expected: &str) -> Result<(), Error> {
+        if let Some(header) = response.header(DOC_HASH_HEADER) {
+            if header != expected {
+                return Err(Error::unexpected(
+                    format!("{DOC_HASH_HEADER} {header:?} 与结果的 doc_hash {expected:?} 不符"),
+                    response.status(),
+                    None,
+                ));
+            }
+        }
+        Ok(())
+    }
     /// 响应中的 hash 必须属于本次声明的契约（core §3.1）。
     fn check_hash(&self, value: &str, status: u16, what: &str) -> Result<String, Error> {
         dpe_hash::parse_hash_with(value, &[self.contract.as_str()]).map_err(|_| {
@@ -726,9 +1026,13 @@ impl Operation for BatchHeadOp<'_> {
         let end = self.next_start.saturating_add(size).min(self.uris.len());
         let chunk = &self.uris[self.next_start..end];
         let body = json!({"uris": chunk});
-        let request = self
-            .core
-            .request(Method::Post, "heads".to_owned(), json_body(&body), true);
+        let request = self.core.request(
+            Method::Post,
+            "heads".to_owned(),
+            json_body(&body),
+            &[],
+            true,
+        );
         self.awaiting = Some((self.next_start, chunk.len()));
         self.next_start = end;
         Ok(Step::Send(request))
@@ -826,6 +1130,687 @@ impl Operation for ListPageOp<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// 写操作的状态机（fast path）
+// ---------------------------------------------------------------------------
+
+/// 展开文档的线上部件（快路径请求体）。
+struct WireParts {
+    document: Value,
+    pages: Vec<Value>,
+    objects: Vec<Value>,
+    doc_hash: String,
+    /// 元素总数（含重复，供 delta 校验）。
+    total: u64,
+}
+
+/// head 请求的判定结果（写操作的回退判定用）。
+enum HeadStep {
+    /// 命中网关丢失、预算内：原样重发（保持在当前阶段）。
+    Resend,
+    /// 得到读数（文档不存在为 `None`）。
+    Done(Option<String>),
+}
+
+/// head 回退判定用的请求（只读、可重发）。
+fn head_request(core: &ProtocolCore, uri: &str) -> Request {
+    core.request(
+        Method::Head,
+        format!("documents?{}", query(&[("uri", Some(uri))])),
+        Body::None,
+        &[],
+        true,
+    )
+}
+
+/// 处理一次 head 响应（`_send` 的重发语义；head 是只读请求，可原样重发）：命中网关丢失且
+/// 预算内时返回 [`HeadStep::Resend`]（调用方保持当前阶段、预算不清零），否则给出读数。
+fn head_step(
+    core: &ProtocolCore,
+    response: Response,
+    resends: &mut u32,
+) -> Result<HeadStep, Error> {
+    if is_gateway_lost(&response) && *resends < core.max_resends() {
+        *resends += 1;
+        return Ok(HeadStep::Resend);
+    }
+    Ok(HeadStep::Done(core.head_result(&response)?))
+}
+
+/// 经 `head` 确认的成功（core §5.2）：与原样重发得到的 `unchanged` 相同，首次写入的 delta
+/// 不可得。
+fn recovered_result(doc_hash: &str, total: u64) -> CommitResult {
+    CommitResult {
+        status: CommitStatus::Unchanged,
+        doc_hash: doc_hash.to_owned(),
+        delta: Delta {
+            added: 0,
+            removed: 0,
+            retained: total,
+        },
+    }
+}
+
+/// `commit` 的操作（见 [`ProtocolCore::commit`]）。
+#[derive(Debug)]
+pub struct CommitOp<'a> {
+    core: &'a ProtocolCore,
+    uri: String,
+    /// 提交请求（重发时原样再发一份克隆）。
+    request: Request,
+    precondition: Precondition,
+    /// 提交内容的 doc_hash（结果校验与 force 判定用）。
+    expected: String,
+    /// 元素总数（delta 校验用）。
+    total: u64,
+    phase: CommitPhase,
+    /// 当前发送序列的重发记账（每次重新开始一次发送序列时清零）。
+    resends: u32,
+    awaiting: bool,
+    /// force 的响应丢失原因（PUT 的传输异常或无 DPE 错误码的网关响应），作为
+    /// `ForceNotConfirmed` 错误的 cause（core §5.2）。
+    cause: Option<Error>,
+}
+
+#[derive(Debug)]
+enum CommitPhase {
+    /// 提交请求（`_send`：响应丢失原样重发至多 `max_resends` 次）。
+    Submit,
+    /// 裸 412 的 head 判定；`retried` 表示已原样重发过一次（仅 `IfAbsent` 会重发）。
+    HeadAfter412 { retried: bool },
+    /// 误判重发一次的提交请求。
+    Resend412,
+    /// force 的响应丢失：head 确认（只读、可重发）。
+    ConfirmForce,
+    /// 结果就绪（poll 取出后进入 `Finished`）。
+    Done(CommitResult),
+    /// 终态。
+    Finished,
+}
+
+impl CommitOp<'_> {
+    /// 提交响应的结果校验并落位结果。
+    fn finish(&mut self, response: Response) -> Result<(), Error> {
+        let result = self
+            .core
+            .commit_result(&response, &self.expected, self.total)?;
+        self.phase = CommitPhase::Done(result);
+        Ok(())
+    }
+
+    /// 经 head 确认的成功。
+    fn recovered(&mut self) {
+        self.phase = CommitPhase::Done(recovered_result(&self.expected, self.total));
+    }
+
+    /// `Submit` 的响应。
+    fn step_submit(&mut self, response: Response) -> Result<(), Error> {
+        if self.precondition == Precondition::Force {
+            if is_gateway_lost(&response) {
+                // 不重放 force：先 head 判定（core §5.2）
+                self.cause = Some(error_from_response(&response));
+                self.resends = 0;
+                self.phase = CommitPhase::ConfirmForce;
+                return Ok(());
+            }
+            return self.finish(response);
+        }
+        if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
+            self.resends += 1;
+            return Ok(());
+        }
+        if is_bare_412(&response) {
+            self.resends = 0;
+            self.phase = CommitPhase::HeadAfter412 { retried: false };
+            return Ok(());
+        }
+        self.finish(response)
+    }
+
+    /// `HeadAfter412` 的响应：判定前置条件是否实际成立。
+    fn step_head_after_412(&mut self, response: Response, retried: bool) -> Result<(), Error> {
+        match head_step(self.core, response, &mut self.resends)? {
+            HeadStep::Resend => Ok(()),
+            HeadStep::Done(current) => self.judge_412(current, retried),
+        }
+    }
+
+    /// 裸 412 的判定（HTTP 绑定 §3.2）：
+    /// - `If-None-Match: *`（与 DELETE 对称）：文档不存在即前置条件实际成立，是中间层误判，
+    ///   原样重发一次；重发后仍是这样的 412 时再判定一次，文档仍不存在才按非协议错误上报
+    ///   （MUST NOT 报 `DPE_NOT_FOUND`）。文档存在时按内容判定：等于提交内容 → 成功，否则
+    ///   `DPE_ALREADY_EXISTS`。
+    /// - `If-Match: "H"`：不重发；等于提交内容 → 成功；不存在 → `DPE_NOT_FOUND`；否则
+    ///   `DPE_PRECONDITION_FAILED`。
+    fn judge_412(&mut self, current: Option<String>, retried: bool) -> Result<(), Error> {
+        match self.precondition {
+            Precondition::IfAbsent => {
+                if current.is_none() {
+                    if retried {
+                        return Err(Error::unexpected(
+                            format!(
+                                "{}：文档仍不存在（if_absent 的前置条件成立），重发后仍是无 DPE 错误码的 412",
+                                self.uri
+                            ),
+                            412,
+                            None,
+                        ));
+                    }
+                    self.resends = 0;
+                    self.phase = CommitPhase::Resend412;
+                    return Ok(());
+                }
+                if current.as_deref() == Some(self.expected.as_str()) {
+                    self.recovered();
+                    return Ok(());
+                }
+                Err(Error::protocol(
+                    ErrorKind::AlreadyExists,
+                    format!("{} 已存在（412 无 DPE 错误码，经 head 判定）", self.uri),
+                ))
+            }
+            Precondition::BaseHash(_) => {
+                if current.as_deref() == Some(self.expected.as_str()) {
+                    self.recovered();
+                    return Ok(());
+                }
+                if current.is_none() {
+                    return Err(Error::protocol(
+                        ErrorKind::NotFound,
+                        format!("{} 不存在（412 无 DPE 错误码，经 head 判定）", self.uri),
+                    ));
+                }
+                Err(Error::protocol(
+                    ErrorKind::PreconditionFailed,
+                    format!(
+                        "expected {}, current {}（412 无 DPE 错误码，经 head 判定）",
+                        self.precondition.base_hash().unwrap_or_default(),
+                        current.unwrap_or_default()
+                    ),
+                ))
+            }
+            Precondition::Force => unreachable!("force 不带条件头，裸 412 无从谈起"),
+        }
+    }
+
+    /// `Resend412` 的响应（原样重发一次之后的）。
+    fn step_resend_412(&mut self, response: Response) -> Result<(), Error> {
+        if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
+            self.resends += 1;
+            return Ok(());
+        }
+        if is_bare_412(&response) {
+            self.resends = 0;
+            self.phase = CommitPhase::HeadAfter412 { retried: true };
+            return Ok(());
+        }
+        self.finish(response)
+    }
+
+    /// `ConfirmForce` 的响应：等于提交内容即成功，否则无法确认（core §5.2）。
+    fn step_confirm_force(&mut self, response: Response) -> Result<(), Error> {
+        match head_step(self.core, response, &mut self.resends) {
+            Ok(HeadStep::Resend) => Ok(()),
+            Ok(HeadStep::Done(current)) => {
+                if current.as_deref() == Some(self.expected.as_str()) {
+                    self.recovered();
+                    return Ok(());
+                }
+                Err(Error::unconfirmed_force(
+                    format!(
+                        "force 提交的响应丢失，当前 doc_hash 为 {current:?}，不等于提交内容 {:?}",
+                        self.expected
+                    ),
+                    self.expected.clone(),
+                    current,
+                    true,
+                    self.cause.take().expect("进入 ConfirmForce 时必有原因"),
+                ))
+            }
+            Err(error) => Err(Error::unconfirmed_force(
+                "force 提交的响应丢失，head 也失败，无法确认是否生效",
+                self.expected.clone(),
+                None,
+                false,
+                error,
+            )),
+        }
+    }
+}
+
+impl Operation for CommitOp<'_> {
+    type Output = CommitResult;
+
+    fn poll(&mut self) -> Result<Step<CommitResult>, Error> {
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        match std::mem::replace(&mut self.phase, CommitPhase::Finished) {
+            CommitPhase::Finished => Err(usage_error("操作已完成或以错误终止：poll 不应再次调用")),
+            CommitPhase::Done(result) => Ok(Step::Done(result)),
+            CommitPhase::Submit => {
+                self.phase = CommitPhase::Submit;
+                self.awaiting = true;
+                Ok(Step::Send(self.request.clone()))
+            }
+            CommitPhase::Resend412 => {
+                self.phase = CommitPhase::Resend412;
+                self.awaiting = true;
+                Ok(Step::Send(self.request.clone()))
+            }
+            CommitPhase::HeadAfter412 { retried } => {
+                self.phase = CommitPhase::HeadAfter412 { retried };
+                self.awaiting = true;
+                Ok(Step::Send(head_request(self.core, &self.uri)))
+            }
+            CommitPhase::ConfirmForce => {
+                self.phase = CommitPhase::ConfirmForce;
+                self.awaiting = true;
+                Ok(Step::Send(head_request(self.core, &self.uri)))
+            }
+        }
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = match self.phase {
+            CommitPhase::Submit => self.step_submit(response),
+            CommitPhase::Resend412 => self.step_resend_412(response),
+            CommitPhase::HeadAfter412 { retried } => self.step_head_after_412(response, retried),
+            CommitPhase::ConfirmForce => self.step_confirm_force(response),
+            CommitPhase::Done(_) | CommitPhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        };
+        if outcome.is_err() {
+            self.phase = CommitPhase::Finished;
+        }
+        outcome
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = match self.phase {
+            // force：响应丢失不重放，先 head 判定
+            CommitPhase::Submit if self.precondition == Precondition::Force => {
+                self.cause = Some(Error::transport(error));
+                self.resends = 0;
+                self.phase = CommitPhase::ConfirmForce;
+                Ok(())
+            }
+            // 写请求可能已到达：原样重发（幂等由内容保证），至多 max_resends 次
+            CommitPhase::Submit | CommitPhase::Resend412 => {
+                if self.resends < self.core.max_resends() {
+                    self.resends += 1;
+                    Ok(())
+                } else {
+                    Err(Error::transport(error))
+                }
+            }
+            // head 是只读请求：同样可原样重发
+            CommitPhase::HeadAfter412 { .. } => {
+                if self.resends < self.core.max_resends() {
+                    self.resends += 1;
+                    Ok(())
+                } else {
+                    Err(Error::transport(error))
+                }
+            }
+            // force 的 head 确认失败（重发已用尽）：无法确认
+            CommitPhase::ConfirmForce => {
+                let cause = Error::transport(error);
+                if self.resends < self.core.max_resends() {
+                    self.resends += 1;
+                    Ok(())
+                } else {
+                    Err(Error::unconfirmed_force(
+                        "force 提交的响应丢失，head 也失败，无法确认是否生效",
+                        self.expected.clone(),
+                        None,
+                        false,
+                        cause,
+                    ))
+                }
+            }
+            CommitPhase::Done(_) | CommitPhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        };
+        if outcome.is_err() {
+            self.phase = CommitPhase::Finished;
+        }
+        outcome
+    }
+}
+
+/// `delete` 的操作（见 [`ProtocolCore::delete`]）。
+#[derive(Debug)]
+pub struct DeleteOp<'a> {
+    core: &'a ProtocolCore,
+    uri: String,
+    base_hash: String,
+    request: Request,
+    phase: DeletePhase,
+    resends: u32,
+    /// 是否发生过原样重发：重发后得到 `DPE_NOT_FOUND` 视为成功（core §5.2）。
+    resent: bool,
+    awaiting: bool,
+}
+
+#[derive(Debug)]
+enum DeletePhase {
+    Submit,
+    HeadAfter412 { retried: bool },
+    Resend412,
+    Done,
+    Finished,
+}
+
+impl DeleteOp<'_> {
+    fn done(&mut self) {
+        self.phase = DeletePhase::Done;
+    }
+
+    /// 成功（204）或如实上报的错误；重发后得到 `DPE_NOT_FOUND` 视为成功（core §5.2）。
+    fn finish(&mut self, response: Response) -> Result<(), Error> {
+        if response.status() == 204 {
+            self.done();
+            return Ok(());
+        }
+        if response.status() >= 400 {
+            let error = error_from_response(&response);
+            if error.kind() == ErrorKind::NotFound && self.resent {
+                self.done();
+                return Ok(());
+            }
+            return Err(error);
+        }
+        Err(Error::unexpected(
+            format!("删除期望 HTTP 204，得到 {}", response.status()),
+            response.status(),
+            None,
+        ))
+    }
+
+    fn step_submit(&mut self, response: Response) -> Result<(), Error> {
+        if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
+            self.resends += 1;
+            self.resent = true;
+            return Ok(());
+        }
+        if is_bare_412(&response) {
+            self.resends = 0;
+            self.phase = DeletePhase::HeadAfter412 { retried: false };
+            return Ok(());
+        }
+        self.finish(response)
+    }
+
+    /// 裸 412 的 head 判定（HTTP 绑定 §3.2）：不存在即成功；不等于 `base_hash` 抛
+    /// `DPE_PRECONDITION_FAILED`；仍等于则是中间层误判，原样重发一次。
+    fn step_head_after_412(&mut self, response: Response, retried: bool) -> Result<(), Error> {
+        match head_step(self.core, response, &mut self.resends)? {
+            HeadStep::Resend => Ok(()),
+            HeadStep::Done(current) => {
+                if current.as_deref() == Some(self.base_hash.as_str()) {
+                    if retried {
+                        return Err(Error::unexpected(
+                            format!(
+                                "{}：doc_hash 等于 If-Match，重发后仍是无 DPE 错误码的 412",
+                                self.uri
+                            ),
+                            412,
+                            None,
+                        ));
+                    }
+                    self.resent = true;
+                    self.resends = 0;
+                    self.phase = DeletePhase::Resend412;
+                    return Ok(());
+                }
+                if current.is_none() {
+                    self.done();
+                    return Ok(());
+                }
+                Err(Error::protocol(
+                    ErrorKind::PreconditionFailed,
+                    format!(
+                        "expected {}, current {}（412 无 DPE 错误码，经 head 判定）",
+                        self.base_hash,
+                        current.unwrap_or_default()
+                    ),
+                ))
+            }
+        }
+    }
+
+    fn step_resend_412(&mut self, response: Response) -> Result<(), Error> {
+        if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
+            self.resends += 1;
+            self.resent = true;
+            return Ok(());
+        }
+        if is_bare_412(&response) {
+            self.resends = 0;
+            self.phase = DeletePhase::HeadAfter412 { retried: true };
+            return Ok(());
+        }
+        self.finish(response)
+    }
+}
+
+impl Operation for DeleteOp<'_> {
+    type Output = ();
+
+    fn poll(&mut self) -> Result<Step<()>, Error> {
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        match std::mem::replace(&mut self.phase, DeletePhase::Finished) {
+            DeletePhase::Finished => Err(usage_error("操作已完成或以错误终止：poll 不应再次调用")),
+            DeletePhase::Done => Ok(Step::Done(())),
+            DeletePhase::Submit => {
+                self.phase = DeletePhase::Submit;
+                self.awaiting = true;
+                Ok(Step::Send(self.request.clone()))
+            }
+            DeletePhase::Resend412 => {
+                self.phase = DeletePhase::Resend412;
+                self.awaiting = true;
+                Ok(Step::Send(self.request.clone()))
+            }
+            DeletePhase::HeadAfter412 { retried } => {
+                self.phase = DeletePhase::HeadAfter412 { retried };
+                self.awaiting = true;
+                Ok(Step::Send(head_request(self.core, &self.uri)))
+            }
+        }
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = match self.phase {
+            DeletePhase::Submit => self.step_submit(response),
+            DeletePhase::Resend412 => self.step_resend_412(response),
+            DeletePhase::HeadAfter412 { retried } => self.step_head_after_412(response, retried),
+            DeletePhase::Done | DeletePhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        };
+        if outcome.is_err() {
+            self.phase = DeletePhase::Finished;
+        }
+        outcome
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = match self.phase {
+            DeletePhase::Submit | DeletePhase::Resend412 => {
+                if self.resends < self.core.max_resends() {
+                    self.resends += 1;
+                    self.resent = true;
+                    Ok(())
+                } else {
+                    Err(Error::transport(error))
+                }
+            }
+            DeletePhase::HeadAfter412 { .. } => {
+                if self.resends < self.core.max_resends() {
+                    self.resends += 1;
+                    Ok(())
+                } else {
+                    Err(Error::transport(error))
+                }
+            }
+            DeletePhase::Done | DeletePhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        };
+        if outcome.is_err() {
+            self.phase = DeletePhase::Finished;
+        }
+        outcome
+    }
+}
+
+/// `move` 的操作（见 [`ProtocolCore::move_document`]）。
+#[derive(Debug)]
+pub struct MoveOp<'a> {
+    core: &'a ProtocolCore,
+    base_hash: String,
+    request: Request,
+    phase: MovePhase,
+    resends: u32,
+    awaiting: bool,
+}
+
+#[derive(Debug)]
+enum MovePhase {
+    Submit,
+    Done(MoveResult),
+    Finished,
+}
+
+impl MoveOp<'_> {
+    /// move 响应（HTTP 绑定 §4.9）：`doc_hash` 必须等于 `base_hash`；`DPE-Doc-Hash` 出现时
+    /// 必须一致。
+    fn finish(&mut self, response: Response) -> Result<(), Error> {
+        expect_status(&response, 200)?;
+        let result = parse_response(&response, MoveResult::from_value)?;
+        if result.doc_hash != self.base_hash {
+            return Err(Error::unexpected(
+                format!(
+                    "move 结果的 doc_hash {:?} 不等于 base_hash {:?}",
+                    result.doc_hash, self.base_hash
+                ),
+                response.status(),
+                None,
+            ));
+        }
+        self.core
+            .check_doc_hash_header(&response, &self.base_hash)?;
+        self.phase = MovePhase::Done(result);
+        Ok(())
+    }
+}
+
+impl Operation for MoveOp<'_> {
+    type Output = MoveResult;
+
+    fn poll(&mut self) -> Result<Step<MoveResult>, Error> {
+        if self.awaiting {
+            return Err(usage_error(
+                "poll 在等待响应时被调用：操作已发出请求，必须先回送响应或传输错误",
+            ));
+        }
+        match std::mem::replace(&mut self.phase, MovePhase::Finished) {
+            MovePhase::Finished => Err(usage_error("操作已完成或以错误终止：poll 不应再次调用")),
+            MovePhase::Done(result) => Ok(Step::Done(result)),
+            MovePhase::Submit => {
+                self.phase = MovePhase::Submit;
+                self.awaiting = true;
+                Ok(Step::Send(self.request.clone()))
+            }
+        }
+    }
+
+    fn on_response(&mut self, response: Response) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = match self.phase {
+            MovePhase::Submit => {
+                if is_gateway_lost(&response) && self.resends < self.core.max_resends() {
+                    self.resends += 1;
+                    Ok(())
+                } else {
+                    self.finish(response)
+                }
+            }
+            MovePhase::Done(_) | MovePhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        };
+        if outcome.is_err() {
+            self.phase = MovePhase::Finished;
+        }
+        outcome
+    }
+
+    fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
+        if !self.awaiting {
+            return Err(usage_error(
+                "on_response / on_transport_error 在未发出请求时被调用：请先 poll 并发送请求",
+            ));
+        }
+        self.awaiting = false;
+        let outcome = match self.phase {
+            MovePhase::Submit => {
+                if self.resends < self.core.max_resends() {
+                    self.resends += 1;
+                    Ok(())
+                } else {
+                    Err(Error::transport(error))
+                }
+            }
+            MovePhase::Done(_) | MovePhase::Finished => Err(usage_error(
+                "操作已完成或以错误终止：不能再回送响应或传输错误",
+            )),
+        };
+        if outcome.is_err() {
+            self.phase = MovePhase::Finished;
+        }
+        outcome
+    }
+}
+// ---------------------------------------------------------------------------
 // 响应判定（HTTP 绑定 §3.2、§5）
 // ---------------------------------------------------------------------------
 
@@ -845,6 +1830,29 @@ fn expect_status(response: &Response, expected: u16) -> Result<(), Error> {
     ))
 }
 
+/// 网关类状态码：请求可能已转发到源站，结果未知（RFC 9110 §15.6.3 Bad Gateway、§15.6.5
+/// Gateway Timeout）。服务端自己的暂时不可用是带错误码的 `DPE_UNAVAILABLE`（503），不在此列。
+const GATEWAY_STATUSES: [u16; 2] = [502, 504];
+
+/// 响应带 DPE 错误码：problem 体的 `code` 或 `DPE-Error-Code` 头（HTTP 绑定 §5）。
+fn is_dpe_error(response: &Response) -> bool {
+    problem_body(response).is_some()
+        || !response
+            .header(ERROR_CODE_HEADER)
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+}
+
+/// 无 DPE 错误码的 412，如网关自行求值条件头的结果（HTTP 绑定 §3.2）。
+fn is_bare_412(response: &Response) -> bool {
+    response.status() == 412 && !is_dpe_error(response)
+}
+
+/// 无 DPE 错误码的 502 / 504：写操作按响应丢失处理（core §5.2、HTTP 绑定 §3.2）。
+fn is_gateway_lost(response: &Response) -> bool {
+    GATEWAY_STATUSES.contains(&response.status()) && !is_dpe_error(response)
+}
 /// 错误响应对应的错误（HTTP 绑定 §3.2、§5）：problem 体的 `code` 优先，其次
 /// `DPE-Error-Code` 头，都没有则不是 DPE 错误。
 fn error_from_response(response: &Response) -> Error {
