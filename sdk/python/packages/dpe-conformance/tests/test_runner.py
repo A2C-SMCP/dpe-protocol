@@ -70,8 +70,10 @@ def test_sections_discovery() -> None:
         "capabilities",
         "commit",
         "http_binding",
+        "large",
         "read",
         "smoke",
+        "staging",
         "validation",
         "write_ops",
     )

@@ -132,3 +132,14 @@ def test_find_config_defaults_to_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert find_config(None) is None
     (tmp_path / "dpe-conformance.toml").write_text("schema = 1\n", encoding="utf-8")
     assert find_config(None) == Path("dpe-conformance.toml")
+
+
+def test_clock_advance_hook_and_default(tmp_path: Path) -> None:
+    """时钟推进钩子：可配置（HTTP/命令二选一），缺省为 None（相关检查 skip）。"""
+    assert ConformanceConfig.empty().clock_advance is None
+    config = _load(
+        tmp_path,
+        'schema = 1\n[hooks.clock-advance]\nhttp = "http://x/clock/advance"\n',
+    )
+    assert config.clock_advance is not None
+    assert config.clock_advance.http == "http://x/clock/advance"

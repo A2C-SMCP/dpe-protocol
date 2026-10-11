@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, cast
 
 import dpe_hash
@@ -255,11 +256,187 @@ __all__ = [
     "assert_doc_headers",
     "assert_head_error",
     "assert_problem",
+    "assert_staging_head_error",
+    "breakpoint_query",
     "build_document",
+    "chunk_upload",
     "commit",
     "delete",
+    "expires_at_header",
     "has_dpe_vary",
+    "limits_of",
     "move",
+    "negotiate",
     "optional_identity",
+    "parse_rfc3339",
+    "session_of",
+    "stage_all",
     "text_element",
+    "upload_blob",
+    "upload_element",
+    "upload_offset",
+    "upload_page",
 ]
+
+
+# ------------------------------------------------- 暂存会话、逐层上传与分块（#54 追加；只追加）
+
+
+def limits_of(target: Target, *, identity: Identity | None = None) -> Mapping[str, int]:
+    """capabilities 的 ``limits``（检查据此推导规模与分块大小，不写死数值；HTTP §4.1）。"""
+    response = target.send("GET", "capabilities", contract=None, identity=identity)
+    assert response.status_code == 200, f"capabilities 返回 {response.status_code}"
+    limits = response.json()["limits"]
+    assert isinstance(limits, dict), f"limits 必须是对象：{limits!r}"
+    return cast(Mapping[str, int], limits)
+
+
+def negotiate(
+    target: Target,
+    uri: str,
+    document: WireDocument,
+    *,
+    identity: Identity,
+    attach_pages: bool = True,
+) -> httpx.Response:
+    """``POST negotiate``（HTTP §4.5）：``file_uri`` + ``document``（可附带 ``pages``）。"""
+    body: dict[str, Any] = {"file_uri": uri, "document": document.document}
+    if attach_pages and document.pages:
+        body["pages"] = document.pages
+    return target.send("POST", "negotiate", identity=identity, json=body)
+
+
+def session_of(response: httpx.Response) -> tuple[str, datetime]:
+    """从 negotiate 响应取出 ``(session_id, expires_at)``（RFC 3339 UTC）。"""
+    session = response.json()["staging_session"]
+    session_id = session["id"]
+    assert isinstance(session_id, str) and session_id, f"staging_session.id 异常：{session_id!r}"
+    return session_id, parse_rfc3339(session["expires_at"])
+
+
+def parse_rfc3339(value: str) -> datetime:
+    """解析 RFC 3339 时间戳（UTC）为 ``datetime``（比较用；不校验精度与写法差异）。"""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def expires_at_header(response: httpx.Response) -> datetime:
+    """响应头 ``DPE-Session-Expires``（成功操作续期后的过期时间，HTTP §4.5/§4.6）。"""
+    value = response.headers.get("DPE-Session-Expires")
+    assert value is not None, "响应缺少 DPE-Session-Expires 头"
+    return parse_rfc3339(value)
+
+
+def upload_offset(response: httpx.Response) -> int:
+    """响应头 ``DPE-Upload-Offset``（本会话已收字节数，HTTP §4.7）。"""
+    value = response.headers.get("DPE-Upload-Offset")
+    assert value is not None, "响应缺少 DPE-Upload-Offset 头"
+    return int(value)
+
+
+def upload_page(
+    target: Target,
+    session_id: str,
+    page: Mapping[str, Any],
+    page_hash: str,
+    *,
+    identity: Identity,
+) -> httpx.Response:
+    """上传页对象（HTTP §4.6；体为该对象本身）。"""
+    return target.send(
+        "PUT", f"staging/{session_id}/pages/{page_hash}", identity=identity, json=dict(page)
+    )
+
+
+def upload_element(
+    target: Target,
+    session_id: str,
+    element: Mapping[str, Any],
+    content_hash_value: str,
+    *,
+    identity: Identity,
+) -> httpx.Response:
+    """上传元素对象（HTTP §4.6）。"""
+    return target.send(
+        "PUT",
+        f"staging/{session_id}/objects/{content_hash_value}",
+        identity=identity,
+        json=dict(element),
+    )
+
+
+def upload_blob(
+    target: Target, session_id: str, data: bytes, *, identity: Identity
+) -> httpx.Response:
+    """整体上传 blob（HTTP §4.7；路径的 ``sha256:`` 由字节算出）。"""
+    return target.send(
+        "PUT",
+        f"staging/{session_id}/blobs/{dpe_hash.blob_ref(data)}",
+        identity=identity,
+        content=data,
+        headers={"Content-Type": "application/octet-stream"},
+    )
+
+
+def chunk_upload(
+    target: Target,
+    session_id: str,
+    *,
+    kind: str,
+    ref: str,
+    data: bytes,
+    identity: Identity,
+    chunk_size: int,
+) -> list[httpx.Response]:
+    """按序分块上传（HTTP §4.7）：返回每个块的响应（中间块应为 202 + ``DPE-Upload-Offset``）。"""
+    assert chunk_size > 0
+    responses: list[httpx.Response] = []
+    total = len(data)
+    for start in range(0, total, chunk_size):
+        piece = data[start : start + chunk_size]
+        end = start + len(piece) - 1
+        responses.append(
+            target.send(
+                "PUT",
+                f"staging/{session_id}/{kind}/{ref}",
+                identity=identity,
+                content=piece,
+                headers={"Content-Range": f"bytes {start}-{end}/{total}"},
+            )
+        )
+    return responses
+
+
+def breakpoint_query(
+    target: Target, session_id: str, *, kind: str, ref: str, identity: Identity
+) -> httpx.Response:
+    """断点查询（HTTP §4.7）：``HEAD`` 同一 URL；只读、不续期。"""
+    return target.send("HEAD", f"staging/{session_id}/{kind}/{ref}", identity=identity)
+
+
+def stage_all(
+    target: Target, session_id: str, document: WireDocument, *, identity: Identity
+) -> None:
+    """把文档的全部页与元素对象逐层上传进会话（不含 blob；blob 用例自行上传）。"""
+    for page, page_hash in zip(document.pages, document.page_hashes, strict=True):
+        response = upload_page(target, session_id, page, page_hash, identity=identity)
+        assert response.status_code in (200, 201), (
+            f"页上传失败：{response.status_code} {response.text[:200]}"
+        )
+    for element in document.objects:
+        ref = dpe_hash.content_hash(cast(ElementObject, element))
+        response = upload_element(target, session_id, element, ref, identity=identity)
+        assert response.status_code in (200, 201), (
+            f"元素上传失败：{response.status_code} {response.text[:200]}"
+        )
+
+
+def assert_staging_head_error(response: httpx.Response, *, status: int, code: str) -> None:
+    """``staging/`` 路径的 HEAD 错误：只有 ``DPE-Error-Code`` 头、没有体，
+    且不带 Vary（HTTP §3.1）。"""
+    where = f"HEAD {response.request.url}"
+    assert response.status_code == status, f"{where}：预期 {status}，实际 {response.status_code}"
+    assert response.content == b"", f"{where}：HEAD 响应不得带内容"
+    assert response.headers.get("DPE-Error-Code") == code, (
+        f"{where}：DPE-Error-Code 是 {response.headers.get('DPE-Error-Code')!r}，期望 {code!r}"
+    )
+    assert not has_dpe_vary(response), "staging 路径不带 Vary: DPE-Hash-Contract（HTTP §3.1）"

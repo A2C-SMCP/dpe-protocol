@@ -6,7 +6,9 @@
 - ``self-write``（core §2.4 同级写入）：载荷是「commit 请求体成员 + file_uri + 前置条件」，
   成员名全为 DPE 协议词汇（``document`` / ``pages`` / ``objects`` / ``force`` /
   ``base_hash`` / ``if_absent`` / ``contract``）；
-- ``expire-session``：载荷 ``{"session_id": …}``，成功响应体给 ``{"expired": bool}``。
+- ``expire-session``：载荷 ``{"session_id": …}``，成功响应体给 ``{"expired": bool}``；
+- ``clock-advance``：载荷 ``{"advance_seconds": N}``（正整数）——把服务端时钟推进 N 秒，
+  **会话 TTL 按推进后的时间判定**；成功响应体给 ``{"now": "<RFC 3339>"}``。
 
 命令入口从 stdin 收一行 JSON 载荷，退出码 0 即成功（stdout 若为 JSON 对象则作为响应体）；
 HTTP 入口以 ``POST`` 发送同一载荷，2xx 即成功。
