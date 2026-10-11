@@ -20,6 +20,8 @@
     http = "http://127.0.0.1:8000/__hooks__/self-write"
     [hooks.expire-session]           # 会话立即过期；与 command 二选一
     command = ["my-server", "expire-session"]
+    [hooks.clock-advance]            # 推进服务端时钟 N 秒（会话 TTL 按推进后的时间判定）
+    http = "http://127.0.0.1:8000/__hooks__/clock/advance"
 
     [session]
     staging-ttl-seconds = 30         # 服务端以短 TTL 运行时的声明
@@ -81,6 +83,8 @@ class ConformanceConfig:
     expire_session: HookEndpoint | None
     staging_ttl_seconds: int | None
     uri_prefix: str
+    #: 时钟推进钩子：载荷 ``{"advance_seconds": N}``，与服务端 TTL 判定对齐（见包 README）
+    clock_advance: HookEndpoint | None = None
 
     @staticmethod
     def empty() -> ConformanceConfig:
@@ -113,6 +117,7 @@ def load_config(path: Path) -> ConformanceConfig:
         identities=identities,
         self_write=hooks.get("self-write"),
         expire_session=hooks.get("expire-session"),
+        clock_advance=hooks.get("clock-advance"),
         staging_ttl_seconds=_parse_session(raw.get("session", {})),
         uri_prefix=_parse_uri_prefix(raw.get("uri-prefix")),
     )
@@ -175,8 +180,10 @@ def _parse_hooks(raw: Any) -> Mapping[str, HookEndpoint]:
     hooks: dict[str, HookEndpoint] = {}
     for name, entry in table.items():
         where = f"hooks.{name}"
-        if name not in ("self-write", "expire-session"):
-            raise ConfigError(f"未知钩子 {name!r}（允许：self-write、expire-session）")
+        if name not in ("self-write", "expire-session", "clock-advance"):
+            raise ConfigError(
+                f"未知钩子 {name!r}（允许：self-write、expire-session、clock-advance）"
+            )
         fields = _require_table(entry, where)
         _reject_unknown(fields, {"http", "command"}, where)
         has_http = "http" in fields

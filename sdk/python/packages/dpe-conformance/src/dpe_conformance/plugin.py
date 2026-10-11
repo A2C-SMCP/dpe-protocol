@@ -291,6 +291,15 @@ def self_write_hook(conformance_target: Target) -> HookDriver:
     return HookDriver(endpoint, conformance_target.client)
 
 
+@pytest.fixture(scope="session")
+def clock_advance_hook(conformance_target: Target) -> HookDriver:
+    """``clock-advance`` 钩子（推进服务端时钟 N 秒）；未配置时显式 skip（计入计数）。"""
+    endpoint = conformance_target.config.clock_advance
+    if endpoint is None:
+        pytest.skip("未配置时钟推进钩子（hooks.clock-advance）")
+    return HookDriver(endpoint, conformance_target.client)
+
+
 __all__ = [
     "CHECKS_ROOT_ENV",
     "CONFIG_ENV",
@@ -298,6 +307,7 @@ __all__ = [
     "TARGET_ENV",
     "Target",
     "checks_root",
+    "clock_advance_hook",
     "collect_counts",
     "conformance_target",
     "full_identity",

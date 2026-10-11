@@ -11,6 +11,7 @@ from typing import Any, cast
 import httpx
 import pytest
 from dpe_conformance.checks import http_binding as http_binding_checks
+from dpe_conformance.checks import large as large_checks
 from dpe_conformance.checks import read as read_checks
 from dpe_conformance.config import Identity
 from dpe_conformance.plugin import Target
@@ -224,3 +225,26 @@ def test_stub_payload_violation_fails() -> None:
     """越界请求未得到 413 + DPE_PAYLOAD_TOO_LARGE（如返回 201）→ 判失败（真实协议违例）。"""
     with pytest.raises(AssertionError):
         _run_payload_check(_StubPayloadLimit(1024, respond=201))
+
+
+# ------------------------------------------------ 缺失清单截断容错（#54 追加单元）
+
+
+def test_missing_layer_strict_when_not_truncated() -> None:
+    """未截断：某层清单必须与实际缺失严格相等。"""
+    problem = {"missing": {"pages": ["dpe1:a", "dpe1:b"], "content_hashes": [], "blobs": []}}
+    large_checks._assert_missing_layer(problem, "pages", {"dpe1:a", "dpe1:b"})
+    with pytest.raises(AssertionError):
+        large_checks._assert_missing_layer(problem, "pages", {"dpe1:a"})
+
+
+def test_missing_layer_subset_when_truncated_flag_on_top_level() -> None:
+    """截断（``missing_truncated`` 在 problem 体**顶层**）：只断言子集，且容忍后层被截空。"""
+    problem = {
+        "missing": {"pages": [], "content_hashes": ["dpe1:a"], "blobs": []},
+        "missing_truncated": True,
+    }
+    large_checks._assert_missing_layer(problem, "content_hashes", {"dpe1:a", "dpe1:b"})
+    large_checks._assert_missing_layer(problem, "blobs", {"sha256:x"})  # 被截空也可接受
+    with pytest.raises(AssertionError):
+        large_checks._assert_missing_layer(problem, "content_hashes", {"dpe1:other"})
