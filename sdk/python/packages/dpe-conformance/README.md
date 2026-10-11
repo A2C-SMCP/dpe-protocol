@@ -16,8 +16,8 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 {
   "schema": 1,
   "target": "https://host/r/1",
-  "totals": {"executed": 113, "passed": 113, "failed": 0, "errors": 0, "skipped": 2, "collection_errors": 0},
-  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "large": {"executed": 13, "passed": 13, "failed": 0, "errors": 0, "skipped": 0}, "staging": {"executed": 11, "passed": 11, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}, "write_ops": {"executed": 20, "passed": 20, "failed": 0, "errors": 0, "skipped": 0}, "http_binding": {"executed": 19, "passed": 19, "failed": 0, "errors": 0, "skipped": 2}}
+  "totals": {"executed": 116, "passed": 116, "failed": 0, "errors": 0, "skipped": 0, "collection_errors": 0},
+  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "large": {"executed": 13, "passed": 13, "failed": 0, "errors": 0, "skipped": 0}, "staging": {"executed": 11, "passed": 11, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}, "write_ops": {"executed": 20, "passed": 20, "failed": 0, "errors": 0, "skipped": 0}, "http_binding": {"executed": 22, "passed": 22, "failed": 0, "errors": 0, "skipped": 0}}
 }
 ```
 
@@ -59,6 +59,12 @@ staging-ttl-seconds = 30                   # 服务端以短 TTL 运行时的声
 - **`self-write`**：载荷 = `file_uri` + `document`（可附 `pages` / `objects` / `force`，与 commit 请求体成员同名）与前置条件 `base_hash` 或 `if_absent`；
 - **`expire-session`**：载荷 `{"session_id": "…"}`；成功响应体给 `{"expired": true|false}`；
 - **`clock-advance`**：载荷 `{"advance_seconds": N}`（正整数）——把服务端时钟推进 N 秒，**会话 TTL 由此按推进后的时间判定**（用于「过期 = 最近一次成功操作 + TTL」与续期时刻的精确断言，跑分器不靠睡眠）；成功响应体给 `{"now": "<RFC 3339>"}`；
+- **`inject-error`**（#123）：载荷 `{"code", "probe", "count"?, "retry_after"?}`——让带请求头
+  `DPE-Conformance-Probe: <probe>` 的请求接下来 `count` 次（缺省 1）直接得到该错误
+  （`code` 只接受 `DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`）；`retry_after` 缺省时由服务端给
+  缺省提示值 `1`（HTTP 绑定 §5）。成功响应体给 `{"armed": true, "count": N}`。探针值由跑分器
+  每次生成，服务端只拦截同一探针的请求：不绑定身份、不携带凭证，未带该头（或头值不同）的
+  请求不受影响；该头只在钩子启用时被识别；
 - 成功判据：HTTP 入口 `POST` 得 2xx；命令入口从 stdin 收一行 JSON、退出码 0（stdout 若为 JSON 对象则作为响应体）。
 
 ## 章节与扩展

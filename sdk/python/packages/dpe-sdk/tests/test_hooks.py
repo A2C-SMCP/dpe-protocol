@@ -269,3 +269,196 @@ async def test_clock_advance_hook_renews_and_expires() -> None:
         assert gone.status_code == 410
         bad = await _hook(r, f"{HOOKS}/clock/advance", {"advance_seconds": 0})
         assert bad.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 错误注入（#123）：429 / 503 与 Retry-After 的黑盒构造
+# ---------------------------------------------------------------------------
+
+PROBE_HEADER = "DPE-Conformance-Probe"
+
+
+async def _armed(r: Remote, payload: dict[str, Any]) -> httpx.Response:
+    response = await _hook(r, f"{HOOKS}/inject-error", payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["armed"] is True
+    return response
+
+
+async def test_inject_error_hook_returns_429_in_full_form() -> None:
+    """注入后，带探针头的请求得到 429 + problem 全形 + ``Retry-After``；
+    不带探针头与探针不同的请求不受影响；计数用完后恢复正常。"""
+    engine, _clock, hooks = _hooked()
+    async with remote(engine, hooks=hooks) as r:
+        await _armed(
+            r,
+            {"code": "DPE_RATE_LIMITED", "probe": "p-429", "count": 2, "retry_after": 5},
+        )
+        # 不带探针头：照常走引擎（capabilities 200）
+        untouched = await r.raw("GET", "capabilities", contract=None)
+        assert untouched.status_code == 200
+        # 探针不同：同样不受影响
+        other = await r.raw("GET", "capabilities", contract=None, headers={PROBE_HEADER: "p-other"})
+        assert other.status_code == 200
+        # 命中探针的两次请求：429 全形（documents 之外的路径不带 Vary）
+        for _ in range(2):
+            response = await r.raw(
+                "GET", "capabilities", contract=None, headers={PROBE_HEADER: "p-429"}
+            )
+            body = problem(response)
+            assert (response.status_code, body["code"]) == (429, "DPE_RATE_LIMITED")
+            assert body["retryable"] is True
+            assert response.headers["retry-after"] == "5"
+            assert "vary" not in response.headers
+        # 计数耗尽：恢复
+        again = await r.raw("GET", "capabilities", contract=None, headers={PROBE_HEADER: "p-429"})
+        assert again.status_code == 200
+
+
+async def test_inject_error_hook_503_defaults_retry_after_to_one() -> None:
+    """503 注入不给 ``retry_after``：服务端给缺省值 ``1``（HTTP 绑定 §5）。"""
+    engine, _clock, hooks = _hooked()
+    async with remote(engine, hooks=hooks) as r:
+        await _armed(r, {"code": "DPE_UNAVAILABLE", "probe": "p-503"})
+        response = await r.raw(
+            "HEAD", TARGET, headers={PROBE_HEADER: "p-503"}
+        )  # HEAD：错误只在码头
+        assert response.status_code == 503
+        assert response.headers["dpe-error-code"] == "DPE_UNAVAILABLE"
+        assert response.headers["retry-after"] == "1"
+
+
+async def test_inject_error_hook_intercepts_before_engine_and_vary_follows_path() -> None:
+    """拦截在路由之后、引擎之前：不存在的文档也得到注入的错误（而非 404）；
+    ``documents`` 路径的注入响应照常带 ``Vary``（HTTP §3.1），钩子通道与未知路径不受影响。"""
+    engine, _clock, hooks = _hooked()
+    async with remote(engine, hooks=hooks) as r:
+        await _armed(r, {"code": "DPE_RATE_LIMITED", "probe": "p-doc", "count": 3})
+        response = await r.raw(
+            "GET",
+            "documents?uri=test%3A%2F%2Fdocs%2Fabsent",
+            headers={PROBE_HEADER: "p-doc"},
+        )
+        body = problem(response)
+        assert (response.status_code, body["code"]) == (429, "DPE_RATE_LIMITED")
+        assert response.headers["vary"] == "DPE-Hash-Contract"
+        # 未知路径与钩子通道不受注入影响（路由先于拦截）
+        missing = await r.raw("GET", "nope", headers={PROBE_HEADER: "p-doc"})
+        assert missing.status_code == 404
+        hook_call = await _hook(
+            r, f"{HOOKS}/inject-error", {"code": "DPE_UNAVAILABLE", "probe": "p-doc"}
+        )
+        assert hook_call.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"code": "DPE_VALIDATION", "probe": "p"},  # 非可重试码
+        {"code": "DPE_RATE_LIMITED"},  # 缺 probe
+        {"code": "DPE_RATE_LIMITED", "probe": ""},  # 空 probe
+        {"code": "DPE_RATE_LIMITED", "probe": "   "},  # 纯空白 probe（头值读取时会 strip）
+        {"code": "DPE_RATE_LIMITED", "probe": " p "},  # 带首尾空白的 probe
+        {"code": "DPE_RATE_LIMITED", "probe": "p", "count": 0},
+        {"code": "DPE_RATE_LIMITED", "probe": "p", "count": -1},
+        {"code": "DPE_RATE_LIMITED", "probe": "p", "count": "2"},
+        {"code": "DPE_RATE_LIMITED", "probe": "p", "count": True},
+        {"code": "DPE_RATE_LIMITED", "probe": "p", "retry_after": -1},
+        {"code": "DPE_RATE_LIMITED", "probe": "p", "retry_after": "5"},
+        {"code": "DPE_RATE_LIMITED", "probe": "p", "extra": 1},
+    ],
+    ids=[
+        "non-retryable-code",
+        "missing-probe",
+        "empty-probe",
+        "blank-probe",
+        "padded-probe",
+        "count-zero",
+        "count-negative",
+        "count-string",
+        "count-bool",
+        "retry-after-negative",
+        "retry-after-string",
+        "unknown-member",
+    ],
+)
+async def test_inject_error_hook_validation(payload: dict[str, Any]) -> None:
+    """钩子载荷按封闭成员与取值校验：违例一律 400 + ``DPE_VALIDATION``。"""
+    engine, _clock, hooks = _hooked()
+    async with remote(engine, hooks=hooks) as r:
+        response = await _hook(r, f"{HOOKS}/inject-error", payload)
+        assert response.status_code == 400, response.text
+        assert problem(response)["code"] == "DPE_VALIDATION"
+
+
+async def test_inject_error_hook_rearming_replaces_the_previous_injection() -> None:
+    """同一探针重复注入以最后一次为准（count 覆盖，不累加）。"""
+    engine, _clock, hooks = _hooked()
+    async with remote(engine, hooks=hooks) as r:
+        await _armed(r, {"code": "DPE_RATE_LIMITED", "probe": "p", "count": 5})
+        await _armed(r, {"code": "DPE_UNAVAILABLE", "probe": "p", "count": 1})
+        first = await r.raw("GET", "capabilities", contract=None, headers={PROBE_HEADER: "p"})
+        assert first.status_code == 503
+        second = await r.raw("GET", "capabilities", contract=None, headers={PROBE_HEADER: "p"})
+        assert second.status_code == 200
+
+
+async def test_inject_error_hook_is_ignored_when_hooks_are_off() -> None:
+    """钩子未启用：探针头被完全忽略，请求照常走引擎（行为与不带该头一致）。"""
+    engine = make_engine()
+    async with remote(engine) as r:  # 无 hooks
+        with_probe = await r.raw("GET", "capabilities", contract=None, headers={PROBE_HEADER: "p"})
+        without = await r.raw("GET", "capabilities", contract=None)
+        assert with_probe.status_code == without.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 顺带受益（#123）：传输层的可重试错误重发对真参考服务端端到端
+
+
+class _ProbeTransport(httpx.AsyncBaseTransport):
+    """给经过的每个请求加探针头：让真实参考服务端的错误注入命中 SDK 的传输层。"""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, probe: str) -> None:
+        self._inner = inner
+        self._probe = probe
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request.headers[PROBE_HEADER] = self._probe
+        return await self._inner.handle_async_request(request)
+
+
+async def test_injected_rate_limit_is_retried_with_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#13 传输层「可重试错误按 ``Retry-After`` 等待后原样重发」对真参考服务端端到端：
+    注入一次 429 + ``Retry-After: 2``，客户端等待 2 秒（测试替换等待函数）后重发成功。"""
+    from dpe_sdk.transport import AsyncDpeClient
+
+    engine, _clock, hooks = _hooked()
+    waits: list[float] = []
+
+    async def fake_asleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr("dpe_sdk.transport._asleep", fake_asleep)
+    app = create_app(engine, prefix=PREFIX, hooks=hooks)
+    async with AsyncDpeClient(
+        REMOTE, transport=_ProbeTransport(httpx.ASGITransport(app=app), "e2e")
+    ) as client:
+        assert (await client.capabilities()).protocol == "dpe/1"  # 能力协商先完成
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as http:
+            armed = await http.post(
+                f"{ORIGIN}{HOOKS}/inject-error",
+                json={
+                    "code": "DPE_RATE_LIMITED",
+                    "probe": "e2e",
+                    "count": 1,
+                    "retry_after": 2,
+                },
+            )
+            assert armed.status_code == 200, armed.text
+        # 这次 head 的第一次尝试被注入 429 挡下：传输层按 Retry-After 等待后重发，
+        # 重发命中引擎（文档不存在 → None）
+        assert await client.head(URI) is None
+    assert waits == [2.0], "传输层应按注入的 Retry-After 等待恰好 2 秒（本次替换了等待函数）"

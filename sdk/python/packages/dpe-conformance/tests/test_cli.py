@@ -61,6 +61,7 @@ authorization = "Bearer no-force-auth"
         text += (
             f'\n[hooks.self-write]\nhttp = "{hooks}/self-write"\n'
             f'\n[hooks.clock-advance]\nhttp = "{hooks}/clock/advance"\n'
+            f'\n[hooks.inject-error]\nhttp = "{hooks}/inject-error"\n'
         )
     path = tmp_path / "dpe-conformance.toml"
     path.write_text(text, encoding="utf-8")
@@ -75,7 +76,7 @@ def _testsuite(path: Path) -> ET.Element:
 
 
 def test_full_run_against_reference_server(tmp_path: Path) -> None:
-    """有配置：全部章节 113 条检查执行、2 条无构造手段显式 skip；JUnit 与计数一致。"""
+    """有配置：全部章节 116 条检查执行（含经错误注入钩子构造的 429 / 503）；JUnit 与计数一致。"""
     with reference_server(*_SERVER_ARGS) as server:
         config = _write_config(tmp_path, server.hooks)
         junit = tmp_path / "junit.xml"
@@ -93,25 +94,27 @@ def test_full_run_against_reference_server(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     data = json.loads(counts.read_text(encoding="utf-8"))
     totals = data["totals"]
-    assert (totals["executed"], totals["passed"], totals["skipped"]) == (113, 113, 2)
+    assert (totals["executed"], totals["passed"], totals["skipped"]) == (116, 116, 0)
     assert data["sections"]["smoke"]["executed"] == 3
+    assert data["sections"]["large"]["executed"] == 13
+    assert data["sections"]["staging"]["executed"] == 11
     assert data["sections"]["write_ops"]["executed"] == 20
     assert data["sections"]["http_binding"] == {
-        "executed": 19,
-        "passed": 19,
+        "executed": 22,
+        "passed": 22,
         "failed": 0,
         "errors": 0,
-        "skipped": 2,
+        "skipped": 0,
     }
     suite = _testsuite(junit)
-    assert suite.get("tests") == "115"
-    assert int(suite.get("skipped", "0")) == 2
+    assert suite.get("tests") == "116"
+    assert int(suite.get("skipped", "0")) == 0
     assert int(suite.get("failures", "0")) == 0
-    assert "执行 113" in completed.stdout
+    assert "执行 116" in completed.stdout
 
 
 def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
-    """无配置：不依赖身份/钩子的检查执行（7 条）；其余显式 skip（108 条），
+    """无配置：不依赖身份/钩子的检查执行（7 条）；其余显式 skip（109 条），
     JUnit 与计数都有 skip。"""
     with reference_server() as server:
         junit = tmp_path / "junit.xml"
@@ -126,15 +129,15 @@ def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
         )
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (7, 108)
+    assert (totals["executed"], totals["skipped"]) == (7, 109)
     suite = _testsuite(junit)
-    assert suite.get("tests") == "115"
-    assert int(suite.get("skipped", "0")) == 108
+    assert suite.get("tests") == "116"
+    assert int(suite.get("skipped", "0")) == 109
 
 
 def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
-    """CWD 下的 dpe-conformance.toml 自动生效：给出 full 身份后执行 103、skip 12
-    （仅余钩子、scoped/时钟依赖、无构造手段与超预算的检查）。"""
+    """CWD 下的 dpe-conformance.toml 自动生效：给出 full 身份后 skip 数从 109
+    变 13（仅余钩子、scoped 与预算/无构造依赖的检查）。"""
     with reference_server() as server:
         (tmp_path / "dpe-conformance.toml").write_text(
             'schema = 1\n[identities.full]\nauthorization = "Bearer full-auth"\n',
@@ -144,7 +147,7 @@ def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
         completed = run_cli(server.url, "--counts-json", str(counts), cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (103, 12)
+    assert (totals["executed"], totals["skipped"]) == (103, 13)
 
 
 def test_budget_skips_are_counted(tmp_path: Path) -> None:
@@ -182,7 +185,7 @@ def test_remote_with_path_prefix(tmp_path: Path) -> None:
         completed = run_cli(server.url, "--counts-json", str(counts), cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (7, 108)
+    assert (totals["executed"], totals["skipped"]) == (7, 109)
 
 
 def test_unknown_section_is_rejected(tmp_path: Path) -> None:

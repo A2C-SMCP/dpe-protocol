@@ -8,7 +8,11 @@
   ``base_hash`` / ``if_absent`` / ``contract``）；
 - ``expire-session``：载荷 ``{"session_id": …}``，成功响应体给 ``{"expired": bool}``；
 - ``clock-advance``：载荷 ``{"advance_seconds": N}``（正整数）——把服务端时钟推进 N 秒，
-  **会话 TTL 按推进后的时间判定**；成功响应体给 ``{"now": "<RFC 3339>"}``。
+  **会话 TTL 按推进后的时间判定**；成功响应体给 ``{"now": "<RFC 3339>"}``；
+- ``inject-error``（#123）：载荷 ``{"code", "probe", "count"?, "retry_after"?}``——让带请求头
+  ``DPE-Conformance-Probe: <probe>`` 的请求接下来 ``count`` 次（缺省 1）直接得到该错误
+  （``code`` 只接受 ``DPE_RATE_LIMITED`` / ``DPE_UNAVAILABLE``）；``retry_after`` 缺省时由服务端
+  给缺省值（``1``，HTTP 绑定 §5）。成功响应体给 ``{"armed": true, "count": N}``。
 
 命令入口从 stdin 收一行 JSON 载荷，退出码 0 即成功（stdout 若为 JSON 对象则作为响应体）；
 HTTP 入口以 ``POST`` 发送同一载荷，2xx 即成功。
@@ -25,6 +29,9 @@ from typing import Any
 import httpx
 
 from dpe_conformance.config import HookEndpoint
+
+#: 错误注入（#123）的探针请求头：探针值随载荷给出，服务端只拦截带同一头值的请求
+PROBE_HEADER = "DPE-Conformance-Probe"
 
 #: 单次钩子调用的缺省超时（秒）
 DEFAULT_HOOK_TIMEOUT = 30.0
@@ -140,3 +147,23 @@ def _maybe_json_text(text: str) -> Any | None:
         return json.loads(stripped)
     except json.JSONDecodeError:
         return None
+
+
+def inject_error_payload(
+    *,
+    code: str,
+    probe: str,
+    count: int | None = None,
+    retry_after: float | None = None,
+) -> dict[str, Any]:
+    """组装 ``inject-error`` 载荷（#123）：``probe`` 是本次检查一次性生成的随机值，服务端据此
+    只拦截带同一 ``DPE-Conformance-Probe`` 请求头的请求——不绑定身份、不携带凭证，两种入口同构。
+
+    ``count`` 缺省交给服务端（1）；``retry_after`` 不给时验证服务端自己的缺省值。
+    """
+    payload: dict[str, Any] = {"code": code, "probe": probe}
+    if count is not None:
+        payload["count"] = count
+    if retry_after is not None:
+        payload["retry_after"] = retry_after
+    return payload

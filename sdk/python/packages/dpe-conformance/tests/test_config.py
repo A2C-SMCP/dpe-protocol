@@ -42,6 +42,9 @@ def test_full_config(tmp_path: Path) -> None:
 [hooks.expire-session]
 command = ["my-server", "expire-session"]
 
+[hooks.inject-error]
+http = "http://127.0.0.1:1/__hooks__/inject-error"
+
 [session]
 staging-ttl-seconds = 30
 """,
@@ -52,6 +55,7 @@ staging-ttl-seconds = 30
     assert config.self_write is not None and config.self_write.http is not None
     assert config.expire_session is not None
     assert config.expire_session.command == ("my-server", "expire-session")
+    assert config.inject_error is not None and config.inject_error.http is not None
     assert config.staging_ttl_seconds == 30
     assert config.uri_prefix == "dpe://conf/"
 
@@ -60,6 +64,7 @@ def test_empty_config_defaults() -> None:
     config = ConformanceConfig.empty()
     assert not config.identities
     assert config.self_write is None and config.expire_session is None
+    assert config.inject_error is None
     assert config.staging_ttl_seconds is None
     assert config.uri_prefix == DEFAULT_URI_PREFIX
 

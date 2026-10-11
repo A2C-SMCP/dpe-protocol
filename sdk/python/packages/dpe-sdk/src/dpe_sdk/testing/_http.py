@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 import zlib
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
@@ -38,6 +39,8 @@ from dpe_sdk.errors import (
     MissingContentError,
     NotFoundError,
     PayloadTooLargeError,
+    RateLimitedError,
+    UnavailableError,
     ValidationError,
 )
 from dpe_sdk.protocol import (
@@ -190,6 +193,18 @@ _METHODS: dict[_Route, tuple[str, ...]] = {
 _SELF_WRITE_MEMBERS = _SERVER_WRITE_MEMBERS | {"file_uri", "base_hash", "if_absent", "contract"}
 _EXPIRE_SESSION_MEMBERS = frozenset({"session_id"})
 _CLOCK_ADVANCE_MEMBERS = frozenset({"advance_seconds"})
+#: 错误注入（#123）的请求体成员与探针头（规范外：只在钩子启用时被识别）
+_INJECT_ERROR_MEMBERS = frozenset({"code", "probe", "count", "retry_after"})
+_PROBE_HEADER = "dpe-conformance-probe"  # 规范写法 DPE-Conformance-Probe（头字段名不区分大小写）
+
+
+@dataclass
+class _Injection:
+    """一次错误注入（#123）：探针命中时让接下来 ``remaining`` 个请求直接得到 ``code``。"""
+
+    code: str
+    remaining: int
+    retry_after: float | None
 
 
 def _hook_str(env: Mapping[str, Any], member: str) -> str | None:
@@ -311,6 +326,9 @@ class _App:
         self.public_url = public_url
         self.www_authenticate = www_authenticate
         self.hooks = hooks
+        #: 错误注入（#123）：探针 → 待生效的注入；只在钩子启用时被读取/写入
+        self._injections: dict[str, _Injection] = {}
+        self._injections_lock = threading.Lock()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
@@ -335,14 +353,20 @@ class _App:
             if method not in _METHODS[route]:
                 raise _NotDpe(405, [("Allow", ", ".join(_METHODS[route]))])
             headers = _headers(scope)
-            # 认证器可插拔（可能慢或回调本应用），与引擎调用一样不在事件循环上执行
-            caller = await self._run(self.authenticate, headers.get("authorization"))
-            if caller is None:
-                raise _NotDpe(401, [("WWW-Authenticate", self.www_authenticate)])
-            # 只有文档资源有查询参数（§4.3、§4.4）；其他端点的查询串一律忽略
-            query = _query(scope) if route == "documents" else {}
-            request = _Request(method, segments, query, headers, scope, receive)
-            response = await self._dispatch(route, request, caller)
+            # 错误注入（#123）：命中探针的合法路由请求直接以注入的错误应答，不进入引擎；
+            # 位置在路由与方法判定之后、认证与请求体之前（限流/不可用按规范可在任何时刻发生）
+            injected = self._injected_error(headers) if self.hooks is not None else None
+            if injected is not None:
+                response = _problem(injected, route, if_match=False)
+            else:
+                # 认证器可插拔（可能慢或回调本应用），与引擎调用一样不在事件循环上执行
+                caller = await self._run(self.authenticate, headers.get("authorization"))
+                if caller is None:
+                    raise _NotDpe(401, [("WWW-Authenticate", self.www_authenticate)])
+                # 只有文档资源有查询参数（§4.3、§4.4）；其他端点的查询串一律忽略
+                query = _query(scope) if route == "documents" else {}
+                request = _Request(method, segments, query, headers, scope, receive)
+                response = await self._dispatch(route, request, caller)
         except _NotDpe as exc:
             response = exc.response
         except DpeError as exc:
@@ -357,6 +381,29 @@ class _App:
         if self._limiter is None:
             self._limiter = anyio.CapacityLimiter(self._max_threads)
         return await anyio.to_thread.run_sync(partial(func, *args), limiter=self._limiter)
+
+    def _injected_error(self, headers: Mapping[str, str]) -> DpeError | None:
+        """错误注入（#123）：带探针头 ``DPE-Conformance-Probe`` 的请求按注入状态返回 429 / 503。
+
+        只在钩子启用时被调用；未注入、计数耗尽或探针不同的请求返回 ``None``（照常走引擎）。
+        探针头是规范外的测试侧信道词汇：钩子关闭时本应用完全不读它。
+        """
+        probe = headers.get(_PROBE_HEADER)
+        if not probe:
+            return None
+        with self._injections_lock:
+            injection = self._injections.get(probe)
+            if injection is None:
+                return None
+            injection.remaining -= 1
+            if injection.remaining <= 0:
+                del self._injections[probe]
+            code = injection.code
+            retry_after = injection.retry_after
+        message = "错误注入（一致性测试钩子）"
+        if code == "DPE_RATE_LIMITED":
+            return RateLimitedError(message, retry_after=retry_after)
+        return UnavailableError(message, retry_after=retry_after)
 
     def _app_path(self, scope: Scope) -> str:
         """应用内路径：按段边界剥离挂载路径（``/api`` 不得吃掉 ``/apix`` 的前缀）。"""
@@ -418,7 +465,49 @@ class _App:
             return await self._hook_expire_session(request)
         if segments == ("clock", "advance"):
             return await self._hook_clock_advance(request)
+        if segments == ("inject-error",):
+            return await self._hook_inject_error(request)
         raise _NotDpe(404)
+
+    async def _hook_inject_error(self, request: _Request) -> _Response:
+        """错误注入（#123，测试侧信道）：让带探针头 ``DPE-Conformance-Probe: <probe>`` 的请求
+        接下来 ``count`` 次（缺省 1 次）直接以 ``code`` 应答，不进入引擎。
+
+        载荷 ``{"code", "probe", "count"?, "retry_after"?}``：``code`` 只接受两个可重试码
+        （``DPE_RATE_LIMITED`` / ``DPE_UNAVAILABLE``），其余一律拒绝；``retry_after`` 缺省时走
+        服务端自己的缺省值（``1``，HTTP 绑定 §5）。同一探针重复注入以最后一次为准，计数耗尽即
+        失效。拦截位置在路由与方法判定之后、认证与请求体之前；未知路径、方法不符与钩子通道
+        自身不受影响。
+        """
+        env = _envelope(
+            _parse_body(await self._body(request), self.engine.config.max_payload_bytes),
+            _INJECT_ERROR_MEMBERS,
+        )
+        code = _hook_required_str(env, "code")
+        if code not in ("DPE_RATE_LIMITED", "DPE_UNAVAILABLE"):
+            raise ValidationError(
+                f"只能注入可重试的错误码（DPE_RATE_LIMITED / DPE_UNAVAILABLE），实际为 {code!r}"
+            )
+        probe = _hook_required_str(env, "probe")
+        if not probe or probe != probe.strip():
+            # 空或带首尾空白的探针永远不会与请求头匹配（头值在读取时被 strip），
+            # 注入必然无效——如实拒绝而不是静默 armed
+            raise ValidationError("probe 必须是非空、无首尾空白的字符串")
+        count = env.get("count", 1)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise ValidationError(f"count 必须是正整数，实际为 {count!r}")
+        retry_after = env.get("retry_after")
+        if retry_after is not None and (
+            isinstance(retry_after, bool)
+            or not isinstance(retry_after, (int, float))
+            or retry_after < 0
+        ):
+            raise ValidationError(f"retry_after 必须是非负数字，实际为 {retry_after!r}")
+        with self._injections_lock:
+            self._injections[probe] = _Injection(
+                code, count, None if retry_after is None else float(retry_after)
+            )
+        return _json(200, {"armed": True, "count": count})
 
     async def _hook_self_write(self, request: _Request) -> _Response:
         """服务端自身写入（core §2.4）：请求体是 commit 请求体加 ``file_uri`` / 前置条件 / 契约。
