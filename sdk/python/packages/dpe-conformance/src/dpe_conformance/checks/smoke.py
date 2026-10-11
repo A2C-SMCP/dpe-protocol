@@ -16,7 +16,8 @@ from dpe_conformance.plugin import Target
 
 
 def test_remote_reachable(conformance_target: Target) -> None:
-    """GET capabilities：200、JSON 与协议标记（字段深检在各专章）。"""
+    """HTTP §4.1（浅层）：GET capabilities 可达、JSON 媒体类型与协议标记
+    （字段深检在 capabilities 章）。"""
     response = conformance_target.send("GET", "capabilities", contract=None)
     assert response.status_code == 200, f"capabilities 返回 {response.status_code}"
     content_type = response.headers.get("content-type", "")
@@ -31,7 +32,8 @@ def test_remote_reachable(conformance_target: Target) -> None:
 def test_identities_are_accepted(
     conformance_target: Target, identities: Mapping[str, Identity]
 ) -> None:
-    """每个已配置身份都对不存在的文档得到 DPE 错误（而非 401/403）：凭证被服务端接受。"""
+    """HTTP §6 + §3.3 + §5：每个已配置身份都对不存在的文档得到 DPE 错误（而非 401/403）——
+    凭证被服务端接受；HEAD 的错误只以 DPE-Error-Code 头呈现。"""
     uri = conformance_target.uri("smoke/absent")
     for role, identity in identities.items():
         response = conformance_target.send(
@@ -48,7 +50,8 @@ def test_identities_are_accepted(
 def test_self_write_hook_is_usable(
     conformance_target: Target, full_identity: Identity, self_write_hook: HookDriver
 ) -> None:
-    """self-write 钩子写得进一份最小文档，且 doc_hash 与按 dpe-hash 的期望值一致。"""
+    """钩子（测试侧信道，不属 DPE 协议面）：self-write 写得进一份最小文档；
+    写后以 HTTP §3.3 的权威 DPE-Doc-Hash 与按契约 1（经 dpe-hash）的期望值比对。"""
     uri = conformance_target.uri("smoke/self-write")
     result = self_write_hook.call(
         self_write_payload(

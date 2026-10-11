@@ -16,8 +16,8 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 {
   "schema": 1,
   "target": "https://host/r/1",
-  "totals": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0, "collection_errors": 0},
-  "sections": {"smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}}
+  "totals": {"executed": 46, "passed": 46, "failed": 0, "errors": 0, "skipped": 0, "collection_errors": 0},
+  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 14, "passed": 14, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}}
 }
 ```
 
