@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 from typing import Any
 
 import dpe_hash
@@ -426,14 +427,21 @@ class _Down(Engine):
         raise errors.UnavailableError("维护中", retry_after=5.5)
 
 
+class _DownForever(Engine):
+    """retry_after 非有限值（无法用秒数表达的等待）：不能退化成缺头或非法值（#45 交接）。"""
+
+    def capabilities(self) -> Capabilities:
+        raise errors.UnavailableError("无限期维护", retry_after=math.inf)
+
+
 @pytest.mark.parametrize(
     ("engine", "status", "retry_after"),
-    [(_Limited(), 429, "1"), (_Down(), 503, None)],
+    [(_Limited(), 429, "1"), (_Down(), 503, None), (_DownForever(), 503, "1")],
 )
 async def test_retry_after_is_never_omitted(
     engine: Engine, status: int, retry_after: str | None
 ) -> None:
-    """429 / 503 MUST 带 ``Retry-After``，不可缺省；实现无提示值时给 1（§5）。
+    """429 / 503 MUST 带 ``Retry-After``，不可缺省；无提示值与提示值非有限时都给 1（§5）。
 
     有提示值时规范只要求它是个可用的秒数，取整方式未定义，故只断言形态。
     """
@@ -615,6 +623,114 @@ async def test_gzip_member_limit_alignment_is_payload_too_large() -> None:
         chunks=[payload],
     )  # fmt: skip
     assert (response.status_code, problem(response)["code"]) == (413, "DPE_PAYLOAD_TOO_LARGE")
+
+
+async def test_gzip_expansion_bomb_within_one_message_is_bounded() -> None:
+    """压缩炸弹的一半：一条消息里解压远超上限——压缩体远小于原始字节上限，也必须立刻 413。
+
+    这条路径靠 ``decompress`` 的 ``max_length`` 截断触发（未消费的尾部输入），与「原始（压缩）
+    字节跨消息累计上限」是两条不同分支。
+    """
+    app = create_app(make_engine(max_payload_bytes=4096), prefix="/r/1")
+    bomb = gzip.compress(b"a" * (1024 * 1024))  # 解压 1 MiB、压缩后约 1 KiB
+    assert len(bomb) < 2 * 4096 + 1024  # 远未触到原始字节上限
+    response = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fa",
+        headers=[
+            (b"content-encoding", b"gzip"),
+            (b"if-none-match", b"*"),
+            (b"dpe-hash-contract", b"dpe1"),
+        ],
+        chunks=[bomb],
+    )
+    assert (response.status_code, problem(response)["code"]) == (413, "DPE_PAYLOAD_TOO_LARGE")
+
+
+async def test_gzip_compressed_bytes_cap_counts_across_messages() -> None:
+    """压缩炸弹的另一半：原始（压缩）字节的上限 ``2 * limit + 1024`` 跨消息累计。
+
+    一串解压为零的空 member 只涨原始字节：上限内的（哪怕后面才是正文）照常接受，越限即 413。
+    """
+    limit = 4096
+    app = create_app(make_engine(max_payload_bytes=limit), prefix="/r/1")
+    headers = [
+        (b"content-encoding", b"gzip"),
+        (b"if-none-match", b"*"),
+        (b"dpe-hash-contract", b"dpe1"),
+    ]
+    empty = gzip.compress(b"")  # 20 字节的合法 member，解压产出 0
+    accepted = empty * 100 + gzip.compress(_body("x"))
+    assert len(accepted) <= 2 * limit + 1024
+    response = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fa",
+        headers=headers,
+        chunks=[accepted],
+    )
+    assert response.status_code == 201
+    flood = empty * ((2 * limit + 1024) // len(empty) + 2)  # 解压仍为 0，原始字节越限
+    flood_response = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fb",
+        headers=headers,
+        chunks=[flood[: len(flood) // 2], flood[len(flood) // 2 :]],  # 跨消息累计
+    )
+    assert (flood_response.status_code, problem(flood_response)["code"]) == (
+        413,
+        "DPE_PAYLOAD_TOO_LARGE",
+    )
+
+
+async def test_gzip_members_exactly_filling_the_decoded_limit() -> None:
+    """多个 gzip member 之间恰好把解压上限吃满：总量 == limit 接受；此后还有成员、或总量
+    limit + 1，都拒绝（413）。
+
+    「恰好吃满后还有成员」时下一 member 的剩余额度只剩 1 字节——旧缺陷是把它当成 0（不设上限）
+    或负值（``max_length`` 抛 ``ValueError`` 变 500）；两种越界形态都在这里钉住。
+    """
+    limit = 4096
+    app = create_app(make_engine(max_payload_bytes=limit), prefix="/r/1")
+    headers = [
+        (b"content-encoding", b"gzip"),
+        (b"if-none-match", b"*"),
+        (b"dpe-hash-contract", b"dpe1"),
+    ]
+    # ① 两个 member 合计恰好 limit：接受
+    body = _body("x" * (limit - len(_body(""))))
+    assert len(body) == limit
+    half = len(body) // 2
+    response = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fa",
+        headers=headers,
+        chunks=[gzip.compress(body[:half]), gzip.compress(body[half:])],
+    )
+    assert response.status_code == 201
+    # ② 一个 member 恰好吃满 limit 后还有成员：下一 member 只剩 1 字节额度，产出越界即 413
+    over = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fb",
+        headers=headers,
+        chunks=[gzip.compress(b"a" * limit), gzip.compress(b"x")],
+    )
+    assert (over.status_code, problem(over)["code"]) == (413, "DPE_PAYLOAD_TOO_LARGE")
+    # ③ 单个 member 解压 limit + 1：413
+    longer = _body("x" * (limit - len(_body("")) + 1))
+    assert len(longer) == limit + 1
+    rejected = await _asgi_request(
+        app,
+        path="/r/1/documents",
+        query=b"uri=feishu%3A%2F%2Fdoc%2Fc",
+        headers=headers,
+        chunks=[gzip.compress(longer)],
+    )
+    assert (rejected.status_code, problem(rejected)["code"]) == (413, "DPE_PAYLOAD_TOO_LARGE")
 
 
 async def test_remote_without_host_header_brackets_ipv6_authority() -> None:
