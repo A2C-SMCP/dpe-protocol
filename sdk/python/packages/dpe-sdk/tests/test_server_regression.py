@@ -13,7 +13,7 @@
 - ASGI 应用可进程内挂载：``http_helpers.remote``；
 - 可注入时钟与会话 id 生成器：
   ``test_hooks.test_clock_advance_hook_renews_and_expires``、``test_engine_session``；
-- 限额全部可配：``test_protocol_staging_http.small_engine`` 等；
+- 限额全部可配：``http_helpers.small_engine`` 等；
 - 可插拔授权器：``test_engine_uri``（``PrefixAuthorizer``）、``test_http_server``；
 - 模拟服务端自身写入（core §2.4）：
   ``test_hooks.test_self_write_hook_runs_the_commit_path``、``test_engine_server_write``；

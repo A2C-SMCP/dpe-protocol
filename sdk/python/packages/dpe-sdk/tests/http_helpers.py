@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, BinaryIO, cast
 
 import httpx
 from dpe_sdk.protocol import Operation, ProtocolCore, Request, Response, adrive, fetch_capabilities
@@ -140,3 +140,56 @@ def session_ids(requests: list[Request]) -> set[str]:
         for request in requests
         if request.target.startswith("staging/")
     }
+
+
+def small_engine(**overrides: Any) -> Engine:
+    """小限额的参考服务端：``max_payload_bytes=200``、``blob_chunk_bytes=100``。"""
+    limits: dict[str, Any] = {
+        "max_payload_bytes": 200,
+        "blob_chunk_bytes": 100,
+        "page_max_bytes": 4096,
+        "blob_max_bytes": 4096,
+    }
+    limits.update(overrides)
+    return make_engine(**limits)
+
+
+# ----------------------------------------------------------------------
+# 文件读取的计数包装（断言来源适配从未整读）
+# ----------------------------------------------------------------------
+
+
+class RecordingReader:
+    """记录每次 ``read`` 的请求长度、其余原样代理的二进制读取器。"""
+
+    def __init__(self, inner: BinaryIO) -> None:
+        self._inner = inner
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return self._inner.read(size)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._inner.seek(offset, whence)
+
+    def __enter__(self) -> RecordingReader:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._inner.close()
+
+
+def recording_open(readers: list[RecordingReader]) -> Callable[..., RecordingReader]:
+    """替换 ``dpe_sdk.media`` 看到的 ``open``：每次打开都记进 ``readers``（写入顺序）。
+
+    用法：``monkeypatch.setattr("dpe_sdk.media.open", recording_open(readers), raising=False)``。
+    """
+    real_open = open
+
+    def wrapper(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> RecordingReader:
+        reader = RecordingReader(cast(BinaryIO, real_open(file, mode, *args, **kwargs)))
+        readers.append(reader)
+        return reader
+
+    return wrapper
