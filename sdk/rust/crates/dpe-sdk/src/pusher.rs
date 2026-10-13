@@ -1056,6 +1056,7 @@ impl fmt::Display for PushStatus {
 
 #[cfg(feature = "http")]
 mod driver {
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1068,12 +1069,21 @@ mod driver {
     use crate::errors::{Error, ErrorKind};
     use crate::http::DpeClient;
     use crate::models::ExpandedDocument;
-    use crate::protocol::Precondition;
+    use crate::protocol::{BlobProvider, Precondition};
 
     /// 本批是否有发写的计划（收尾保存失败时据此置 `outcome_unknown`）。
     fn has_writes(plans: &[Plan<'_>]) -> bool {
         plans.iter().any(|plan| plan.action == Action::Write)
     }
+
+    /// `push` 的 blob 来源在本批并发投递之间共享。
+    ///
+    /// **借用不变式**：provider 只在核心操作的同步 `poll` 步骤里被调用，而 `run_all` 的并发
+    /// 在同一个任务内、只在 await 点交错，因此任何时刻至多一处借用——`RefCell` 不会冲突。
+    /// `RefCell` 不是 `Sync`，持有它的 future 也就不是 `Send`：#131 给 `BlobProvider` 加
+    /// `Send` 时，这里须同时换成线程安全的容器（如 `std::sync::Mutex`），`push` 的 future 才能
+    /// 随之成为 `Send`。
+    type SharedBlobs<'p> = RefCell<Option<BlobProvider<'p>>>;
 
     /// 写操作的缺省并发度（同 Python 侧的 `concurrency=4`）。
     pub const DEFAULT_CONCURRENCY: usize = 4;
@@ -1085,7 +1095,8 @@ mod driver {
     ///   推送器不在支持范围（每个 remote 一个实例）。三个操作都取 `&mut self`，同一实例上的
     ///   操作天然串行；
     /// - 写操作在**调用方的任务内**并发执行（至多 `concurrency` 条），不经 `tokio::spawn`——
-    ///   `deliver` 的 future 在 #131 之前不是 `Send`；
+    ///   `deliver` 的 future 在 #131 之前不是 `Send`（`push` 共享 blob 来源的容器也须随 #131
+    ///   换成线程安全的，见 `SharedBlobs`）；
     /// - 批级失败（输入校验、`batch_head`、store 读写）以 `Err` 返回、不产生逐条回报；store 的
     ///   错误包装为 [`ErrorKind::StateStore`]，原错误经 `source()` 取回：
     ///   - 构造时载入失败：未发任何请求（`outcome_unknown()` 为假）；
@@ -1118,7 +1129,7 @@ mod driver {
     ///     CONTRACT,
     /// )?;
     /// let results = pusher
-    ///     .push(&[("s3://bucket/a.md".to_owned(), document)], &HashMap::new())
+    ///     .push(&[("s3://bucket/a.md".to_owned(), document)], &HashMap::new(), None)
     ///     .await?;
     /// println!("{}", results[0].status);
     /// pusher
@@ -1180,6 +1191,22 @@ mod driver {
             })
         }
 
+        /// 推送器所用的客户端（构造时传入的同一实例）：运行器在轮首经它取得 remote 能力
+        /// （#137），不另建客户端。
+        pub fn client(&self) -> &'c DpeClient {
+            self.client
+        }
+
+        /// 把内存中的同步状态与意图整批写入 store（补存入口，connector §7.2 / #137）。
+        ///
+        /// 任何一次保存失败后 store 都可能与内存不一致（见类型说明）；调用方（如运行器）在结束
+        /// 使用前用**同一实例**调用它补存，成功后两者重新一致。本身不发写请求：失败为
+        /// [`ErrorKind::StateStore`]、`outcome_unknown()` 为假（同收尾保存「按本批是否发写置位」
+        /// 的口径）。
+        pub fn flush(&self) -> Result<(), Error> {
+            self.save(false)
+        }
+
         /// 绑定的 remote（即 store 的命名空间）。
         pub fn remote(&self) -> &str {
             self.client.remote()
@@ -1194,10 +1221,16 @@ mod driver {
         ///
         /// `expected_base` 覆盖同步状态中的 L（值为 `None` 即调用方确认「不存在」）；上层可在
         /// 冲突后以重读到的 remote 值重提（source_wins 等策略归上层，本方法不自动重提）。
+        ///
+        /// `blobs` 原样交给每条写入的 `deliver`：按 `sha256:` 引用给出服务端缺少的 blob 字节
+        /// （可用 [`crate::media`] 的来源适配构造）；不发写的条目（如 R == N 已达成）不会调用它。
+        /// 为 `None` 时服务端缺字节由核心如实报 `DPE_MISSING_CONTENT`，推送器不自行解引用任何
+        /// 来源。本批并发投递共享同一个回调（同一任务内交错，不并行调用）。
         pub async fn push(
             &mut self,
             documents: &[(String, ExpandedDocument)],
             expected_base: &HashMap<String, Option<String>>,
+            blobs: Option<BlobProvider<'_>>,
         ) -> Result<Vec<PushResult>, Error> {
             let contract = self.client.core().await?.contract().to_owned();
             let (entries, expected) = PusherState::prepare(documents, expected_base, &contract)?;
@@ -1211,7 +1244,7 @@ mod driver {
                 .plan_commit(entries, &heads, &expected, &contract);
             self.persist(PusherState::commit_intents(&plans))?;
             let wrote = has_writes(&plans);
-            let outcomes = self.run_all(&plans).await;
+            let outcomes = self.run_all(&plans, Some(&RefCell::new(blobs))).await;
             let results = self.state.finish_commit(plans, outcomes);
             self.save(wrote)?;
             Ok(results)
@@ -1239,7 +1272,7 @@ mod driver {
                 .plan_delete(&normalized, &heads, &expected, &contract);
             self.persist(PusherState::delete_intents(&plans))?;
             let wrote = has_writes(&plans);
-            let outcomes = self.run_all(&plans).await;
+            let outcomes = self.run_all(&plans, None).await;
             let results = self.state.finish_delete(plans, outcomes);
             self.save(wrote)?;
             Ok(results)
@@ -1278,7 +1311,7 @@ mod driver {
                 .plan_move(&pairs, &heads, &to_heads, &expected, &contract);
             self.persist(PusherState::move_intents(&plans))?;
             let wrote = has_writes(&plans);
-            let outcomes = self.run_all(&plans).await;
+            let outcomes = self.run_all(&plans, None).await;
             let results = self.state.finish_move(plans, outcomes);
             self.save(wrote)?;
             Ok(results)
@@ -1308,7 +1341,11 @@ mod driver {
         }
 
         /// 对全部 write 计划按 `concurrency` 有界并发地执行（同一任务内），结果按序回填。
-        async fn run_all(&self, plans: &[Plan<'_>]) -> Vec<Option<Outcome>> {
+        async fn run_all(
+            &self,
+            plans: &[Plan<'_>],
+            blobs: Option<&SharedBlobs<'_>>,
+        ) -> Vec<Option<Outcome>> {
             let mut outcomes: Vec<Option<Outcome>> = plans.iter().map(|_| None).collect();
             let indexes: Vec<usize> = plans
                 .iter()
@@ -1317,7 +1354,7 @@ mod driver {
                 .map(|(index, _)| index)
                 .collect();
             let mut running = stream::iter(indexes)
-                .map(|index| async move { (index, self.run_one(&plans[index]).await) })
+                .map(|index| async move { (index, self.run_one(&plans[index], blobs).await) })
                 .buffer_unordered(self.concurrency);
             while let Some((index, outcome)) = running.next().await {
                 outcomes[index] = Some(outcome);
@@ -1325,20 +1362,31 @@ mod driver {
             outcomes
         }
 
-        async fn run_one(&self, plan: &Plan<'_>) -> Outcome {
+        /// `blobs` 只有 commit 用到（delete / move 传 `None`）。
+        async fn run_one(&self, plan: &Plan<'_>, blobs: Option<&SharedBlobs<'_>>) -> Outcome {
             match plan.op {
-                super::PushOp::Commit => self.commit_one(plan).await,
+                super::PushOp::Commit => self.commit_one(plan, blobs).await,
                 super::PushOp::Delete => self.delete_one(plan).await,
                 super::PushOp::Move => self.move_one(plan).await,
             }
         }
 
-        async fn commit_one(&self, plan: &Plan<'_>) -> Outcome {
+        async fn commit_one(&self, plan: &Plan<'_>, blobs: Option<&SharedBlobs<'_>>) -> Outcome {
             let precondition = plan.precondition.clone().expect("write 计划必有前置条件");
             let document = plan.document.expect("commit 的 write 计划必有文档");
+            // 每条 deliver 拿一个转发到共享 provider 的局部闭包（见 `SharedBlobs` 的借用不变式）；
+            // 调用方没给 provider 时仍传 None，保持核心「无来源即如实报缺失」的语义
+            let shared = blobs.filter(|cell| cell.borrow().is_some());
+            let mut lookup = |reference: &str| {
+                shared.and_then(|cell| cell.borrow_mut().as_mut().and_then(|f| f(reference)))
+            };
+            let provider: Option<BlobProvider<'_>> = shared.map(|_| {
+                let lookup: BlobProvider<'_> = &mut lookup;
+                lookup
+            });
             match self
                 .client
-                .deliver(&plan.uri, document, precondition, None, None)
+                .deliver(&plan.uri, document, precondition, provider, None)
                 .await
             {
                 Ok(result) => Outcome::ok(Some(result)),

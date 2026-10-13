@@ -247,6 +247,11 @@ pub struct Session {
 
 /// 缺失 blob 的字节来源回调（`deliver` 的参数）：`sha256:…` 引用 → 字节来源；没有对应
 /// 来源时返回 `None`（`deliver` 会如实失败并给出缺失清单）。
+///
+/// **调用约束（规范性）**：核心只在 [`Operation::poll`] 中同步调用它，取得的 [`BlobSource`]
+/// 自带读取器，字节读取（[`Request::body_bytes`]）不再经过回调；不在 `send` 期间或跨 await
+/// 调用。增量推送器据此在单任务并发的多条 `deliver` 之间共享同一个回调（`pusher` 的
+/// `SharedBlobs`），改动这一点须同步那里。
 pub type BlobProvider<'a> = &'a mut dyn FnMut(&str) -> Option<BlobSource>;
 
 /// blob 字节的读取器：按任意偏移给出字节（可 seek 的二进制流或内存字节都能适配）。
@@ -3334,6 +3339,7 @@ impl<'a> DeliverOp<'a> {
                 }
             }
             let blob = self.queue.blobs.pop_front().expect("上面已判非空");
+            // 同步调用来源回调（见 `BlobProvider` 的调用约束：只在 poll 中、不跨 await）
             let source = (self.blobs.as_mut().expect("上面已判有来源"))(&blob);
             let Some(source) = source else {
                 return Err(Error::invalid_argument(format!(
