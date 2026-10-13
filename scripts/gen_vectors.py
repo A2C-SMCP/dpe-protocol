@@ -34,6 +34,17 @@ from pattern_subset import (  # noqa: E402
 )
 
 VECTORS_DIR = Path(__file__).resolve().parent.parent / "vectors"
+#: 随包分发的向量副本（逐字节等于 vectors/ 下的同名文件）：一致性跑分器从 wheel 安装后读不到
+#: 仓库的 vectors/，经 HTTP 消费的拒绝类向量须随包携带（#56）。副本同样只由本生成器写出，
+#: ``--check`` 一并校验，不得手改。
+BUNDLES: dict[Path, tuple[str, ...]] = {
+    VECTORS_DIR.parent
+    / "sdk/python/packages/dpe-conformance/src/dpe_conformance/vectors": (
+        "invalid_objects.json",
+        "manifest.json",
+        "nesting_depth.json",
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # hash 契约 1（spec/hash-contract-1.md §3–§5）：三层同构的 tree，唯一原语 SHA-256(JCS(对象))
@@ -3564,13 +3575,20 @@ def main() -> int:
         for name, content in files.items():
             path = VECTORS_DIR / name
             if not path.exists() or path.read_text(encoding="utf-8") != content:
-                stale.append(name)
-        extra = {p.name for p in VECTORS_DIR.glob("*.json")} - set(files)
+                stale.append(f"vectors/{name}")
+        extra = [f"vectors/{p.name}" for p in VECTORS_DIR.glob("*.json") if p.name not in files]
+        for directory, names in BUNDLES.items():
+            where = directory.relative_to(VECTORS_DIR.parent)
+            for name in names:
+                path = directory / name
+                if not path.exists() or path.read_text(encoding="utf-8") != files[name]:
+                    stale.append(f"{where}/{name}")
+            extra += [f"{where}/{p.name}" for p in directory.glob("*.json") if p.name not in names]
         if stale or extra:
             for name in stale:
-                print(f"stale: vectors/{name}", file=sys.stderr)
+                print(f"stale: {name}", file=sys.stderr)
             for name in sorted(extra):
-                print(f"unexpected: vectors/{name}", file=sys.stderr)
+                print(f"unexpected: {name}", file=sys.stderr)
             print("run: python3 scripts/gen_vectors.py", file=sys.stderr)
             return 1
         print(f"vectors ok ({len(files)} files)")
@@ -3581,6 +3599,14 @@ def main() -> int:
     for name, content in files.items():
         (VECTORS_DIR / name).write_text(content, encoding="utf-8")
     print(f"wrote {len(files)} files to {VECTORS_DIR}")
+    for directory, names in BUNDLES.items():
+        directory.mkdir(parents=True, exist_ok=True)
+        for path in directory.glob("*.json"):
+            if path.name not in names:
+                path.unlink()
+        for name in names:
+            (directory / name).write_text(files[name], encoding="utf-8")
+        print(f"wrote {len(names)} bundled copies to {directory}")
     return 0
 
 

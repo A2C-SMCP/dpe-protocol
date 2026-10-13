@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from typing import Any, cast
 
 import dpe_hash
 import httpx
+import pytest
 from dpe_hash import DocumentFields, ElementObject, PageFields
 
 from dpe_conformance.config import Identity
@@ -268,7 +270,9 @@ __all__ = [
     "move",
     "negotiate",
     "optional_identity",
+    "outside_scoped",
     "parse_rfc3339",
+    "payload_limit_within_budget",
     "session_of",
     "stage_all",
     "text_element",
@@ -440,3 +444,30 @@ def assert_staging_head_error(response: httpx.Response, *, status: int, code: st
         f"{where}：DPE-Error-Code 是 {response.headers.get('DPE-Error-Code')!r}，期望 {code!r}"
     )
     assert not has_dpe_vary(response), "staging 路径不带 Vary: DPE-Hash-Contract（HTTP §3.1）"
+
+
+# ------------------------------------------------- 越权 URI 与越界载荷（#56 追加；只追加）
+
+#: 越界载荷检查的预算：合法服务端的 max_payload_bytes 更大时这类检查超预算 skip（不判红）
+PAYLOAD_BUDGET = 64 * 1024 * 1024
+
+
+def outside_scoped(target: Target, scoped: Identity, name: str) -> str:
+    """scoped 身份**无写授权**的 URI：取测试命名空间下的 URI，与 scoped 前缀的写法无关。
+
+    测试命名空间（``uri-prefix``）与 scoped 可写前缀都由操作者配置且无互斥约束：命名空间落在
+    scoped 前缀内时无法构造越权写，显式 skip 并计入计数（合规配置不得被判失败）。不用「在 scoped
+    前缀后拼接后缀」的写法：前缀不以 ``/`` 结尾时，拼出的 URI 仍按字符串前缀落在授权范围内。
+    """
+    assert scoped.prefix is not None, "scoped 身份必须声明 prefix"
+    if target.uri_prefix.startswith(scoped.prefix):
+        pytest.skip("测试命名空间落在 scoped 可写前缀内，无法构造越权写")
+    return target.uri(f"outside/{uuid.uuid4().hex}/{name}")
+
+
+def payload_limit_within_budget(target: Target, identity: Identity) -> int:
+    """``max_payload_bytes``；超过 ``PAYLOAD_BUDGET`` 时显式 skip（不构造越界请求）。"""
+    limit = limits_of(target, identity=identity)["max_payload_bytes"]
+    if limit > PAYLOAD_BUDGET:
+        pytest.skip(f"max_payload_bytes={limit} 超过本检查预算 {PAYLOAD_BUDGET}，不构造越界请求")
+    return limit

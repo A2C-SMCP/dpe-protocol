@@ -46,6 +46,8 @@ from dpe_conformance.support import (
     has_dpe_vary,
     move,
     optional_identity,
+    outside_scoped,
+    payload_limit_within_budget,
     text_element,
 )
 
@@ -53,8 +55,6 @@ _WRONG_HASH = "dpe1:" + "0" * 64
 #: 百分号编码：只保留 unreserved（RFC 3986 §2.3：ALPHA / DIGIT / ``-`` / ``.`` / ``_`` / ``~``）
 #: 或合法的 %XX（HTTP §4.9）
 _PERCENT_ENCODED = re.compile(r"(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+")
-#: 越界载荷检查的预算：合法服务端的 max_payload_bytes 更大时本检查超预算 skip（不判红）
-_PAYLOAD_BUDGET = 64 * 1024 * 1024
 
 
 def _document() -> WireDocument:
@@ -324,10 +324,7 @@ def test_code_status_forbidden(conformance_target: Target, scoped_identity: Iden
     测试命名空间（``uri-prefix``）与 scoped 可写前缀都由操作者配置且无互斥约束：命名空间
     落在 scoped 前缀内时无法构造越权写，显式 skip 并计入计数（合规配置不得被判失败）。
     """
-    assert scoped_identity.prefix is not None, "scoped 身份必须带可写前缀"
-    if conformance_target.uri_prefix.startswith(scoped_identity.prefix):
-        pytest.skip("测试命名空间落在 scoped 可写前缀内，无法构造越权写")
-    uri = conformance_target.uri("http/code-forbidden")
+    uri = outside_scoped(conformance_target, scoped_identity, "http/code-forbidden")
     response = commit(
         conformance_target, uri, _document(), identity=scoped_identity, if_none_match_star=True
     )
@@ -374,12 +371,7 @@ def test_code_status_already_exists(conformance_target: Target, full_identity: I
 def test_code_status_payload_too_large(conformance_target: Target, full_identity: Identity) -> None:
     """HTTP §5 + §3.1 第 4 步：``DPE_PAYLOAD_TOO_LARGE`` → ``413``（请求体超过
     ``max_payload_bytes``，按解码后计算）。服务端声明的上限超过预算时显式 skip 并计入计数。"""
-    limits = conformance_target.send(
-        "GET", "capabilities", contract=None, identity=full_identity
-    ).json()["limits"]
-    limit = limits["max_payload_bytes"]
-    if limit > _PAYLOAD_BUDGET:
-        pytest.skip(f"max_payload_bytes={limit} 超过本检查预算 {_PAYLOAD_BUDGET}，不构造越界请求")
+    limit = payload_limit_within_budget(conformance_target, full_identity)
     response = conformance_target.send(
         "PUT",
         "documents",

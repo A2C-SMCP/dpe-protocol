@@ -32,6 +32,7 @@ from dpe_conformance.support import (
     expires_at_header,
     limits_of,
     negotiate,
+    outside_scoped,
     session_of,
     stage_all,
     text_element,
@@ -65,8 +66,7 @@ def test_negotiate_forbidden_without_write_access(
 ) -> None:
     """HTTP §4.5 + CORE §3.4：对 ``file_uri`` 无写授权 → 403 + ``DPE_FORBIDDEN``，
     且 MUST NOT 获得会话与缺失清单。"""
-    assert scoped_identity.prefix is not None, "scoped 身份必须声明 prefix"
-    outside = f"{scoped_identity.prefix.rstrip('/')}-outside/overreach"
+    outside = outside_scoped(conformance_target, scoped_identity, "staging/overreach")
     document = build_document([[text_element("f")]])
     response = negotiate(conformance_target, outside, document, identity=scoped_identity)
     body = assert_problem(response, status=403, code="DPE_FORBIDDEN", documents_path=False)

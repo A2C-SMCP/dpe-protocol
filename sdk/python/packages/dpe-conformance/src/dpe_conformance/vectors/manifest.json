@@ -1,0 +1,245 @@
+{
+  "contract": "dpe1",
+  "spec": "spec/hash-contract-1.md",
+  "status": "draft",
+  "file_types": [
+    "bmp",
+    "csv",
+    "doc",
+    "docx",
+    "eml",
+    "epub",
+    "heic",
+    "html",
+    "jpg",
+    "json",
+    "md",
+    "msg",
+    "ndjson",
+    "odt",
+    "org",
+    "pdf",
+    "png",
+    "ppt",
+    "pptx",
+    "rst",
+    "rtf",
+    "tiff",
+    "tsv",
+    "txt",
+    "wav",
+    "xls",
+    "xlsx",
+    "xml",
+    "zip",
+    "git_repo",
+    "java_repo",
+    "python_repo",
+    "javascript_repo",
+    "typescript_repo",
+    "unk",
+    "empty",
+    "jira_project",
+    "jira_issue"
+  ],
+  "category_content_fields": {
+    "Address": [
+      "text"
+    ],
+    "CheckBox": [
+      "text"
+    ],
+    "CodeSnippet": [
+      "text"
+    ],
+    "CompositeElement": [
+      "text"
+    ],
+    "EmailAddress": [
+      "text"
+    ],
+    "FigureCaption": [
+      "text"
+    ],
+    "Footer": [
+      "text"
+    ],
+    "FormKeysValues": [
+      "text"
+    ],
+    "Formula": [
+      "text",
+      "text_as_html"
+    ],
+    "Header": [
+      "text"
+    ],
+    "Image": [
+      "text",
+      "blob",
+      "mime_type"
+    ],
+    "ListItem": [
+      "text"
+    ],
+    "NarrativeText": [
+      "text"
+    ],
+    "PageBreak": [
+      "text"
+    ],
+    "PageNumber": [
+      "text"
+    ],
+    "Table": [
+      "text",
+      "text_as_html"
+    ],
+    "TableChunk": [
+      "text"
+    ],
+    "Title": [
+      "text"
+    ],
+    "UncategorizedText": [
+      "text"
+    ],
+    "tfchat": [
+      "text"
+    ]
+  },
+  "provenance": {
+    "generator": "scripts/gen_vectors.py",
+    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项）"
+  },
+  "files": [
+    {
+      "name": "all_text_categories.json",
+      "sha256": "e5befd384e2e4612e107eb73e85726a5654b4e54c97ec67ae02346334ff8649d"
+    },
+    {
+      "name": "blob_ref.json",
+      "sha256": "5273e9c930942cc703f5659d3b2a4193b2c18a26cab2278937256a0da951edbf"
+    },
+    {
+      "name": "config_schema_patterns.json",
+      "sha256": "b0e357b017b055e0ea59e3e833062f045b22d1b0a1ee5ebc12956874bbf08cce"
+    },
+    {
+      "name": "cross_page_move.json",
+      "sha256": "a346ecb11d9221942ccd883cc5a0743353f988b8a8ddab9eeae7079c826a4fb5"
+    },
+    {
+      "name": "doc_title.json",
+      "sha256": "da4a675ffe52a67548ce7680dac765ef9d17396655e745bbb2d3fd0d26b98b33"
+    },
+    {
+      "name": "duplicate_different_coordinates.json",
+      "sha256": "d923604d3c0d117ed68b8e5fb0f64b354516ec9b6666e05b50d5c1a71ed4203c"
+    },
+    {
+      "name": "duplicate_elements.json",
+      "sha256": "22f5ecb94250e8bc5ea793f973cddc74c3c20085c53a977e9fc8e43b1fadc75a"
+    },
+    {
+      "name": "duplicate_pages.json",
+      "sha256": "23e5ee393e2c0d7e27876ba2eec3264a1cd2ac0a466f2836456de95297b3ec23"
+    },
+    {
+      "name": "element_reorder.json",
+      "sha256": "a408f3af4ecb7f08410a7e1d5f51e0a2c86dc0dbf37691aeee3f37d933f18864"
+    },
+    {
+      "name": "element_text_basic.json",
+      "sha256": "c3a07ab8edcd737e278ee9248cdf41de3f7449a90751b186591b233ab7625e4a"
+    },
+    {
+      "name": "empty_document.json",
+      "sha256": "e54acccd8860e596de4efbd9afd340f33991eac834550ecd0d96ad3857a50082"
+    },
+    {
+      "name": "file_type_identity.json",
+      "sha256": "37d597688ca1bf9dec5ebdb237c69dc9806a357e1a852ba08ff6294265ae4443"
+    },
+    {
+      "name": "file_type_open_values.json",
+      "sha256": "f3ffcfb31473e5ec4bd7a3b17cd35dafd874ae087d392528fa9723883488f01f"
+    },
+    {
+      "name": "file_uri_normalization.json",
+      "sha256": "66d0bd5815253604108542fd33d96ba701ca11fe9695be1ab661d765d4ec7688"
+    },
+    {
+      "name": "image_placeholder_null.json",
+      "sha256": "7d17b6dc003aa45451224fd01c6c0d37f735c52573f4cb83f909515f848f2a9f"
+    },
+    {
+      "name": "image_url_is_content.json",
+      "sha256": "87469605371385219cc4a00a77ecfff7a424ec3875596e595a9e3241902e3c29"
+    },
+    {
+      "name": "invalid_objects.json",
+      "sha256": "d512416017cdc503a5abe727b0286aee31c6f1d19d62f5b8523dbe6a0298659f"
+    },
+    {
+      "name": "jcs_basic.json",
+      "sha256": "3ab99251be0d884558ff17238a687deb76c6aafc4cb327e63896f4ba8cc4da43"
+    },
+    {
+      "name": "jcs_numbers.json",
+      "sha256": "0f60a95d7758b0ff3eeed0569b21774e3c1671329348806334575f5271079fb1"
+    },
+    {
+      "name": "metadata_all_content.json",
+      "sha256": "4ec812d9f31dda38e3689d1aaf9f5ff6dddc3b88d975241993c33ba8cb274566"
+    },
+    {
+      "name": "metadata_empty_equivalence.json",
+      "sha256": "66c82e27c1dd7eca700ed8535f9a2d908ce35b7d18da90ad4db58d87d612c75e"
+    },
+    {
+      "name": "metadata_identity.json",
+      "sha256": "57f78dfa1e3167c7adb5c4a24036343c6de5de6fb28a54881a84a1df8471abe2"
+    },
+    {
+      "name": "metadata_null_equivalence.json",
+      "sha256": "afa91822f603d24ea555a155dd2602b6522feb5f9c0f2d45b5c2f325eea60f7a"
+    },
+    {
+      "name": "metadata_null_nested.json",
+      "sha256": "afc7d67a24b518baa0a278b63021aefdda8326e026e75ded639d32c1531a507c"
+    },
+    {
+      "name": "nesting_depth.json",
+      "sha256": "027876a6fe67103c3480823c00ad9d20b4f8b9fb4e2192d6329d6b71c0e2743d"
+    },
+    {
+      "name": "null_vs_empty_distinct.json",
+      "sha256": "e18f44245bdc7bd83ff8e8d158677057bc4e5a66debbeaf825a2bab605e68cb7"
+    },
+    {
+      "name": "page_insert_reuse.json",
+      "sha256": "4f6cf8b3ac3f938cf553320c04e27328c7cd923602651f8bedcce8a110426b19"
+    },
+    {
+      "name": "page_reorder.json",
+      "sha256": "115e89cb108d6da50eb0a59bbb1fe3923b848a4a2a56a0d19c26e1bb2a1c4716"
+    },
+    {
+      "name": "preimage_basic.json",
+      "sha256": "7c48bc3a1b65e0c4132bfbbf2c81409950b6e39efc3d07f122d6ef9d313f4f07"
+    },
+    {
+      "name": "table_formula_html.json",
+      "sha256": "8a354ed0f358ac3dd35c703eb40f3a6c28000c7b3904d0ee8a9707d2b1bf3da7"
+    },
+    {
+      "name": "unicode_text.json",
+      "sha256": "5bad2760ddcb639260383a8fc0e796b277f55c3f1a562e4e84b0c0f89b75dbdb"
+    },
+    {
+      "name": "upgrade_drill.json",
+      "sha256": "c7feefa580f434c28c31b6c522b550b19e9d4f17066931a6c834107157856cef"
+    }
+  ]
+}
