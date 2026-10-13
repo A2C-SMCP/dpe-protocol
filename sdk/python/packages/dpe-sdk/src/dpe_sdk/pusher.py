@@ -53,11 +53,17 @@
     §7.2 列为不可由策略重判定）、源被改写（413 前置条件不符）→ **冲突**（``side="from"``）。
 - 比较 MUST 在同一 hash 契约下进行：同步状态中与当前契约不一致的条目按缺失处理。
 
+**写后冲突的重读先套用「已达成」行**（§7.2 冲突处置表，与策略无关，#140）：写入得到 CAS
+冲突后推送器重读该 URI——commit 重读值等于本次内容 N 记 ``achieved``（确认 L = N、清意图），
+delete 重读不存在记 ``deleted``（删条目、清意图），二者都带重读值与原 CAS 错误、不重提；重读
+本身失败时仍回报 ``conflict``（不臆测）。move 不在此列：源被改写时源仍存在。
+
 判定表判出的冲突（未发写）不产生新意图、也**不清除**既有待定意图：那条待定写入的结果仍然
 未知（R ≠ 意图值既兼容「未落地」也兼容「落地后被覆盖」），按 §7.2 只有结果确定才清除。
 
 **状态词表**（``PushResult.status``）：``created`` / ``updated`` / ``unchanged``（commit，
-``unchanged`` 为服务端转述）/ ``achieved``（commit 的 R == N 跳过）/ ``deleted`` /
+``unchanged`` 为服务端转述）/ ``achieved``（commit 的 R == N 跳过，或写后冲突重读等于 N）/
+``deleted``（含写后服务端报不存在、写后冲突重读不存在）/
 ``moved``（含按 core §5.2 视为已达成的情形）/ ``conflict`` / ``failed``。``PushResult.side``
 标明 move 的问题发生在源侧还是目标侧（``side="to"`` 的目标被占按 §7.2 记 ``failed``，
 仍带 side 供上层处置）。**冲突与失败的 ``error`` 保留服务端原样的错误对象（含 ``code``）**，
@@ -177,26 +183,30 @@ class PushResult:
 
     - ``precondition``：本次写入使用的前置条件（commit 的 ``BaseHash`` / ``IfAbsent``，
       delete / move 的 ``BaseHash``）；未发写时为 ``None``；
-    - ``remote``：判定表读到的（冲突时重读到的）remote 状态；``None`` 表示未读到（正常写入
-      成功、未发写的判定不重读、或重读本身失败）；move 为源侧；
+    - ``remote``：判定表读到的（写后 CAS 冲突时重读到的）remote 状态——重读即已达成的
+      ``achieved`` / ``deleted`` 同样带重读值；``None`` 表示未读到（正常写入成功、未发写的
+      判定不重读、或重读本身失败）；move 为源侧；
     - ``delta``：commit 成功时服务端给出的元素级差值；
     - ``to_uri``：move 专用——归一化后的目标 URI（其余操作为 ``None``）；
     - ``side``：move 专用——问题发生在源侧（``"from"``）还是目标侧（``"to"``，如目标已被占用
       的条目失败）；非侧向问题为 ``None``；
     - ``error``：失败/冲突时的异常（``DpeError`` 或传输层异常，按其类型区分；冲突时为裁决它
-      的 CAS 错误，其 ``code`` 可原样上报，§7.1）。delete 的「服务端报文档不存在」计
-      ``deleted``（已达成）时同样携带该服务端错误对象，供运行器归因；
+      的 CAS 错误，其 ``code`` 可原样上报，§7.1）。**已达成也可能携带**：delete 的「服务端报
+      文档不存在」、写后 CAS 冲突而重读即目标状态的 ``achieved`` / ``deleted``，都带原服务端
+      错误对象供归因——**成败一律看 ``status``，不看 ``error`` 是否为空**；
     - ``remote_error``：冲突后重读失败的异常（此时 ``remote`` 为 ``None``、``error`` 仍是
       CAS 错误）；
     - ``unknown``：结果未确定（响应丢失、请求可能已发出的传输失败等）——对应的待定意图被
       保留，下一轮按意图对账恢复；为 ``False`` 的失败都是已确定的（服务端已裁决、确定未发出、
       或本地校验未发出）。
 
-    ``status`` 的来源：``achieved``＝commit 判定表初判 R == N（推送器自己判定，跳过写入）；
+    ``status`` 的来源：``achieved``＝commit 判定表初判 R == N（推送器自己判定，跳过写入），
+    或写后 CAS 冲突、重读值等于本次内容（带重读值与原 CAS 错误）；
     ``unchanged``＝如实转述服务端 commit 的结果（本模块不自行产出）；``created`` /
     ``updated`` 同；``deleted`` / ``moved``＝delete / move 成功，或目标状态已达成（含写后
-    服务端报「不存在」的 delete，§7.2）；``conflict``＝判定表判定或服务端 CAS 裁决（后者带
-    重读到的 ``remote``）；``failed``＝不可重试的失败（``unknown`` 见上）。
+    服务端报「不存在」的 delete、写后 CAS 冲突且重读不存在的 delete，§7.2）；``conflict``＝
+    判定表判定或服务端 CAS 裁决且重读不是目标状态（后者带重读到的 ``remote``）；
+    ``failed``＝不可重试的失败（``unknown`` 见上）。
     """
 
     op: PushOp
@@ -702,6 +712,26 @@ class _PusherBase:
                 results.append(PushResult("commit", uri, "conflict", remote=plan.remote))
                 continue
             assert outcome is not None  # write 计划必有执行结果
+            if (
+                outcome.kind == "conflict"
+                and outcome.remote is not None
+                and outcome.remote.doc_hash == plan.new_hash
+            ):
+                # §7.2 冲突处置表 commit 行：重读值等于本次内容＝已达成（与策略无关）；
+                # 确认 L = N、清意图，原 CAS 错误一并带上供归因
+                assert plan.new_hash is not None
+                self._confirm(uri, plan.new_hash)
+                results.append(
+                    PushResult(
+                        "commit",
+                        uri,
+                        "achieved",
+                        plan.precondition,
+                        remote=outcome.remote,
+                        error=outcome.error,
+                    )
+                )
+                continue
             if outcome.error is not None:
                 results.append(self._outcome_failure(plan, outcome))
                 continue
@@ -716,7 +746,8 @@ class _PusherBase:
     def _finish_delete(
         self, plans: Sequence[_Plan], outcomes: Sequence[_Outcome | None]
     ) -> list[PushResult]:
-        """delete 的收尾：成功与「文档不存在」（服务端裁决）都计 ``deleted``（已达成）。"""
+        """delete 的收尾：成功、「文档不存在」（服务端裁决）与写后 CAS 冲突而重读不存在都计
+        ``deleted``（已达成）。"""
         results: list[PushResult] = []
         for plan, outcome in zip(plans, outcomes, strict=True):
             uri = plan.uri
@@ -729,12 +760,24 @@ class _PusherBase:
                 continue
             assert outcome is not None
             if outcome.error is not None:
-                if outcome.kind == "achieved":
-                    # 服务端裁决「文档不存在」＝目标状态已达成（§7.2 冲突处置表 delete 行）；
-                    # 原错误对象一并带上（含 code），供运行器按 §7.1 归因
+                reread_absent = (
+                    outcome.kind == "conflict"
+                    and outcome.remote is not None
+                    and outcome.remote.doc_hash is None
+                )
+                if outcome.kind == "achieved" or reread_absent:
+                    # 服务端裁决「文档不存在」、或 CAS 冲突后重读不存在＝目标状态已达成（§7.2
+                    # 冲突处置表 delete 行，与策略无关）；原错误对象一并带上（含 code）供归因
                     self._confirm(uri, None)
                     results.append(
-                        PushResult("delete", uri, "deleted", plan.precondition, error=outcome.error)
+                        PushResult(
+                            "delete",
+                            uri,
+                            "deleted",
+                            plan.precondition,
+                            remote=outcome.remote,
+                            error=outcome.error,
+                        )
                     )
                 else:
                     results.append(self._outcome_failure(plan, outcome))
