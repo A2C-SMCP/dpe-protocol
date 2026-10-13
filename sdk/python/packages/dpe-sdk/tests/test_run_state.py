@@ -154,14 +154,41 @@ def test_held_since_keeps_the_first_failed_round_until_success(tmp_path: Path) -
     assert store.finish_round(succeeded=True, cursor=None, started_at="t3") is None
 
 
-def test_unrecognizable_state_is_a_cache_loss(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "content",
+    [b"garbage", b"\xff\xfe garbage", b'{"version": 99}', b'{"version": 1, "identity": 3}'],
+)
+def test_corrupt_state_is_not_a_cache_loss(tmp_path: Path, content: bytes) -> None:
+    """§4.4：读取成功但无法解析或结构不符即内容损坏——state_unavailable、不可重试，不降级为
+    全量轮，也不覆盖损坏的内容。"""
     directory = StateDirectory(tmp_path)
     directory.open_instance("a", identity()).finish_round(
         succeeded=True, cursor="c1", started_at="t"
     )
-    (tmp_path / "instances" / "a" / "state.json").write_text("garbage", encoding="utf-8")
-    store = directory.open_instance("a", identity())
-    assert store.reset and store.cursor is None
+    path = tmp_path / "instances" / "a" / "state.json"
+    path.write_bytes(content)
+    with pytest.raises(RoundFailure) as corrupt:
+        directory.open_instance("a", identity())
+    assert corrupt.value.code == "state_unavailable" and corrupt.value.retryable is False
+    assert path.read_bytes() == content
+
+
+def test_identity_fingerprint_is_committed_before_use(tmp_path: Path) -> None:
+    """§4.4：指纹缺失或变化时先落盘（与丢弃旧状态原子完成）；未变时不写。"""
+    directory = StateDirectory(tmp_path)
+    path = tmp_path / "instances" / "a" / "state.json"
+    first = directory.open_instance("a", identity())
+    first.commit_identity()
+    assert path.exists() and not first.reset
+    first.finish_round(succeeded=True, cursor="c1", started_at="t")
+    before = path.read_bytes()
+    directory.open_instance("a", identity()).commit_identity()  # 未变：不写
+    assert path.read_bytes() == before
+    changed = directory.open_instance("a", identity(config={"repo": "y"}))
+    assert changed.reset
+    changed.commit_identity()
+    reopened = directory.open_instance("a", identity(config={"repo": "y"}))
+    assert not reopened.reset and reopened.cursor is None  # 旧游标已随切换丢弃
 
 
 @pytest.mark.skipif(
@@ -192,13 +219,11 @@ def test_non_utf8_state_files(tmp_path: Path) -> None:
     directory.open_instance("a", identity()).finish_round(
         succeeded=True, cursor="c1", started_at="t"
     )
-    (tmp_path / "instances" / "a" / "state.json").write_bytes(b"\xff\xfe garbage")
-    assert directory.open_instance("a", identity()).reset  # 缓存丢失
     directory.register("a", remote_url=REMOTE, uri_prefix="dpe://src/")
     (tmp_path / "registry.json").write_bytes(b"\xff\xfe")
     with pytest.raises(RoundFailure) as broken:
         directory.register("b", remote_url=REMOTE, uri_prefix="dpe://other/")
-    assert broken.value.code == "state_unavailable"
+    assert broken.value.code == "state_unavailable" and broken.value.retryable is False
 
 
 def test_lock_errors_other_than_busy_are_state_unavailable(
@@ -225,3 +250,18 @@ def test_failed_atomic_write_leaves_no_temporary_file(
     with pytest.raises(RoundFailure):
         store.finish_round(succeeded=True, cursor="c1", started_at="t")
     assert list((tmp_path / "instances" / "a").glob("*.tmp")) == []
+
+
+def test_crash_before_the_identity_switch_is_retried_on_next_start(tmp_path: Path) -> None:
+    """丢弃旧状态与写入新指纹是同一次原子写入：在它之前崩溃（这里即不调用 commit_identity），
+    下次以新身份启动时重新切换，旧游标不会在新内容身份下生效；旧状态原样保留在磁盘上。"""
+    directory = StateDirectory(tmp_path)
+    old = directory.open_instance("a", identity())
+    old.commit_identity()
+    old.finish_round(succeeded=True, cursor="old-cursor", started_at="t")
+
+    directory.open_instance("a", identity(config={"repo": "y"}))  # 切换前「崩溃」：未落盘
+
+    retried = directory.open_instance("a", identity(config={"repo": "y"}))
+    assert retried.reset and retried.cursor is None  # 重新切换，旧游标不生效
+    assert directory.open_instance("a", identity()).cursor == "old-cursor"  # 磁盘未被改动

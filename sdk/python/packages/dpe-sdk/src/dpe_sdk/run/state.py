@@ -224,27 +224,42 @@ class InstanceStore:
 
     @classmethod
     def open(cls, path: Path, identity: str) -> InstanceStore:
-        """读回状态；内容不可识别或内容身份不同即丢弃游标、同步状态与意图（§4.4）。
+        """读回状态（§4.4）。
 
-        文件不存在是首次运行；其余读失败（权限、IO 错误）抛 ``state_unavailable``，不当作缓存
-        丢失静默放行。``held_since`` 记录的是同一实例 ``id`` 的游标被扣住的时刻，与内容身份
-        无关，予以保留。
+        - 文件不存在：首次运行（或已按 §5.1 删除），即缓存丢失；
+        - 读取失败（权限、I/O）：``state_unavailable``，``retryable: true``；
+        - 内容损坏（非 UTF-8、非 JSON、结构或版本不符）：``state_unavailable``，
+          ``retryable: false``——二者都 MUST NOT 当作缓存丢失，损坏的内容原样保留；
+        - 内容身份不同：缓存丢失，丢弃游标、同步状态与意图（落盘由 ``commit_identity`` 完成）。
+
+        ``held_since`` 记录的是同一实例 ``id`` 的游标被扣住的时刻，与内容身份无关，予以保留。
         """
-        loaded: InstanceState | None = None
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
-            raw = None
+            return cls(path, InstanceState(identity), reset=True)
         except OSError as exc:
             raise _unavailable(f"读取实例状态失败：{exc}") from None
-        if raw is not None:
-            # 非 UTF-8、非 JSON（ValueError，含 UnicodeDecodeError）与形状不对都按缓存丢失
-            with contextlib.suppress(ValueError):
-                loaded = InstanceState.from_json(json.loads(raw.decode("utf-8")))
-        if loaded is not None and loaded.identity == identity:
+        try:
+            loaded = InstanceState.from_json(json.loads(raw.decode("utf-8")))
+        except ValueError:  # 含 UnicodeDecodeError 与 JSON 解析失败
+            loaded = None
+        if loaded is None:
+            raise _corrupt(f"实例状态内容损坏，无法解析：{path}")
+        if loaded.identity == identity:
             return cls(path, loaded, reset=False)
-        held = loaded.held_since if loaded is not None else None
-        return cls(path, InstanceState(identity, held_since=held), reset=True)
+        return cls(path, InstanceState(identity, held_since=loaded.held_since), reset=True)
+
+    def commit_identity(self) -> None:
+        """在启动插件之前持久化内容身份指纹（§4.4）。
+
+        指纹缺失或与当前内容身份不同（``reset``）时，把重置后的状态——空的游标、同步状态与意图，
+        加上新指纹——一次原子写入：丢弃旧状态与写入新指纹同时完成，中途失败时下次启动仍会重新
+        切换。指纹未变时不写。
+        """
+        if self.reset:
+            self._commit(self._state)
+            self.reset = False
 
     @property
     def cursor(self) -> str | None:
@@ -291,7 +306,14 @@ class InstanceStore:
 
 
 def _unavailable(message: str) -> RoundFailure:
+    """本地状态读写的 I/O 失败（§4.4「读取失败」）：重跑可能成功。"""
     return RoundFailure("state_unavailable", message, retryable=True)
+
+
+def _corrupt(message: str) -> RoundFailure:
+    """本地状态内容损坏（§4.4：读取成功但无法解析或结构不符）：重跑不会自愈，由使用者按 §5.1
+    删除该实例的状态后以全量轮重建。MUST NOT 当作缓存丢失，也不覆盖损坏的内容。"""
+    return RoundFailure("state_unavailable", message, retryable=False)
 
 
 # ---------------------------------------------------------------------- 状态目录
@@ -353,8 +375,8 @@ class StateDirectory:
                 for entry in instances.values()
             )
         ):
-            # 登记是前缀不重叠检查的依据，损坏时不能当作空登记放行
-            raise _unavailable(f"状态目录登记文件不可识别：{path}")
+            # 登记是前缀不重叠检查的依据，损坏时不能当作空登记放行（§4.4 内容损坏）
+            raise _corrupt(f"状态目录登记文件不可识别：{path}")
         return instances
 
     # TODO(#52 Part 2): 接入 CLI 之前，按 #112 的 remote.url 文法比较（当前按 §3 的字面相同），
