@@ -23,8 +23,9 @@ remote 值作 ``expected_base`` 重提（文档已不存在即 ``if_absent`` 复
 **远端失败分层**（§7.1）：401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级
 ``remote_incompatible``；结果未知、可重试 DPE 错误重试耗尽、网络失败 → 轮级 ``remote_unavailable``
 （本轮作废）；写入、``batch_head`` 与冲突后重读得到的其余确定 DPE 错误 → 条目级（source
-``remote``，``code`` 与 ``retryable`` 原样）。能力获取在轮首、推送器调用之外完成，它与条目无关：
-其余确定错误**暂归轮级、code 原样、不可重试**（规范未明确，已提请补正）。
+``remote``，``code`` 原样；只有不可重试的错误落到条目级，``retryable`` 即 false）。能力获取在
+轮首、推送器调用之外完成，它与条目无关：其余确定错误归轮级、code 原样、不可重试（§7.1、
+§7.4，#137）。
 
 **本地状态**（#137）：状态目录读写失败是轮级 ``state_unavailable``。本次调用内只要推送器有过
 一次保存失败（写前或收尾的 ``save``），本轮即失败、游标不推进（此前没有其他终止失败时，
@@ -35,9 +36,12 @@ fail-closed 的代价只是重跑一轮（commit 由内容幂等、意图可对�
 内存未变，无需补存。补存成功前进程退出（崩溃或补存耗尽）时，磁盘上可能残留过期意图，下一次
 调用会读回——风险与 §7.2 接受的崩溃窗口相同。
 
-**读失败**：``batch_head`` 与冲突后重读得到确定、不可重试的错误时，按条目落账（本次调用涉及的
-每个条目各一条，本轮继续）。``batch_head`` 一次覆盖整波：服务端若因其中一个 URI 拒绝整个请求，
-同波其余条目也会一并失败——成败可能取决于波次划分（已登记，待规范明确读错误的归属）。
+**读失败**（§7.1，#137）：``batch_head`` 与冲突后重读得到确定、不可重试的错误时归条目级
+（code 原样），本轮继续。``batch_head`` 一次覆盖整波：被确定拒绝时逐条 ``head`` 定位，只给读被
+拒的条目记失败，其余条目再以一次推送器调用照常落地；每波至多定位一次，定位不了或收窄后
+再次被拒才各记一条原错误。每波首次多条目批量读被拒、定位完成后发出一次
+``remote.batch_read_rejected``（warn）事件，只带 ``code`` / ``entries`` / ``probes``（实际发出的
+``head`` 次数）/ ``localized``，不带远端文本；收窄后的子集再次被拒不再发。
 
 **游标 fail-closed**（§6.8）：收到结束批、全部条目成功落地才 ``succeeded`` 并持久化新游标
 （同步状态与意图由推送器先行落盘，游标最后写，不会先于同步状态前进）；有条目失败为
@@ -51,7 +55,8 @@ import copy
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from functools import partial
+from typing import Any, Literal, TypeVar
 
 import dpe_hash
 import httpx
@@ -267,6 +272,20 @@ class _Retry:
     base: str | None
 
 
+def _file_uri(uri: str) -> dict[str, str | None]:
+    return {"file_uri": uri}
+
+
+def _move_uris(pair: tuple[str, str]) -> dict[str, str | None]:
+    return {"from_uri": pair[0], "to_uri": pair[1]}
+
+
+#: 批量读被拒后逐条定位的并发上限
+_PROBE_CONCURRENCY = 8
+
+#: 一次推送器调用的条目键：commit / delete 为 file_uri，move 为 (from_uri, to_uri)
+_K = TypeVar("_K", str, tuple[str, str])
+
 #: ``settle`` 的结论：``None`` 为已入账（成功或条目失败）；``RunFailure`` 为终止本轮的失败
 _Settled = _Retry | RunFailure | None
 
@@ -428,34 +447,137 @@ class _Round:
             await self.flush_wave(wave)
 
     async def call(
-        self, operation: Awaitable[list[PushResult]], targets: list[dict[str, str | None]]
+        self,
+        run: Callable[[list[_K]], Awaitable[list[PushResult]]],
+        keys: list[_K],
+        uris: Callable[[_K], dict[str, str | None]],
+        *,
+        localize: bool = True,
     ) -> list[PushResult]:
-        """调用推送器。写入的失败都在回报里；能力已在轮首取得，推送器只会因 ``batch_head`` 或
-        状态保存而抛出，所以按读来归类（``unknown=False``——「写入结果未知」对读没有意义）：
-        网络失败与可重试错误耗尽终止本轮（轮级），确定、不可重试的错误给本次调用涉及的每个
-        条目各记一条条目级失败（``targets`` 为各条目的 URI 字段），本轮继续。
+        """以 ``run(keys)`` 调用推送器。写入的失败都在回报里；能力已在轮首取得，推送器只会因
+        ``batch_head`` 或状态保存而抛出，所以按读来归类（``unknown=False``——「写入结果未知」
+        对读没有意义）：网络失败与可重试错误耗尽终止本轮（轮级）。
+
+        批量读被确定、不可重试地拒绝时**逐条定位**（§7.1，#137）：对每个条目涉及的 URI 各
+        ``head`` 一次（有界并发），只给读被拒的条目记条目级失败，其余条目再以**一次**推送器调用
+        照常落地。每波至多定位一次：逐条读都通过（拒绝与具体 URI 无关、定位不了）或收窄后的
+        子集再次被拒时，每个条目各记一条原错误。定位只发生在失败路径上，且在任何写入之前完成，
+        不会丢失已落地的结果。定位后发 ``remote.batch_read_rejected`` 事件（只带码与计数，
+        不带远端文本）。
         """
         try:
-            return await operation
+            return await run(keys)
         except RunFailure as failure:
             if failure.code == "state_unavailable":
                 self.save_failed = True
             raise
         except Exception as exc:
-            classified = _classify_remote(exc, unknown=False)
-            if not isinstance(classified, ItemFailure):
-                raise classified from None
-            for uris in targets:
-                self.record(
-                    ItemFailure(
-                        classified.code,
-                        classified.message,
-                        source=classified.source,
-                        retryable=classified.retryable,
-                        **uris,
-                    )
-                )
-            return []
+            rejected = _classify_remote(exc, unknown=False)
+        if not isinstance(rejected, ItemFailure):
+            raise rejected
+        # TODO(逐条定位下沉到推送器，后续 Issue 待开): 推送器在 batch_head 被确定拒绝时自行逐 URI
+        # head、把读被拒的条目作为 failed 结果返回（两个 SDK 一起改）之后，删除这里的运行器层
+        # 定位（_probe / _record_item 的降级分支），call 随之简化为只处理状态保存与轮级失败。
+        if len(keys) > 1 and localize:
+            denials, probes = await self._probe_all([uris(key) for key in keys])
+            readable = [key for key, denied in zip(keys, denials, strict=True) if denied is None]
+            self.emit(
+                "remote.batch_read_rejected",
+                "warn",
+                {
+                    "code": rejected.code,
+                    "entries": len(keys),
+                    "probes": probes,
+                    "localized": len(keys) - len(readable),
+                },
+            )
+            if 0 < len(readable) < len(keys):
+                for key, denied in zip(keys, denials, strict=True):
+                    if denied is not None:
+                        self._record_item(denied, uris(key))
+                return await self.call(run, readable, uris, localize=False)
+            if not readable:
+                for key, denied in zip(keys, denials, strict=True):
+                    assert denied is not None
+                    self._record_item(denied, uris(key))
+                return []
+        for key in keys:  # 单个条目，或拒绝与具体 URI 无关、定位不了：各记一条原错误
+            self._record_item(rejected, uris(key))
+        return []
+
+    async def _probe_all(
+        self, targets: list[dict[str, str | None]]
+    ) -> tuple[list[ItemFailure | None], int]:
+        """有界并发地探测每个条目，返回各条目的结论与实际发出的 ``head`` 次数。
+
+        网络类失败终止本轮（此时尚未写入）：第一个失败出现即取消其余探测（``TaskGroup``），
+        不留未等待的任务，也不再向不可用的 remote 发请求。探测的结论本身可能是
+        ``ItemFailure``（它也是异常类型），所以结论作为返回值、与探测中抛出的异常区分开。
+        """
+        limit = asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+        async def one(uris: dict[str, str | None]) -> tuple[ItemFailure | None, int]:
+            async with limit:
+                return await self._probe(uris)
+
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks = [group.create_task(one(uris)) for uris in targets]
+        except* Exception as failures:
+            raise failures.exceptions[0] from None
+        outcomes = [task.result() for task in tasks]
+        return [denied for denied, _ in outcomes], sum(count for _, count in outcomes)
+
+    async def _probe(self, uris: dict[str, str | None]) -> tuple[ItemFailure | None, int]:
+        """逐个 ``head`` 条目涉及的 URI：返回（读被确定拒绝的失败或 ``None``，实际 head 次数）；
+        网络类失败上抛。"""
+        sent = 0
+        for uri in uris.values():
+            if uri is None:
+                continue
+            sent += 1
+            try:
+                await self.pusher.client.head(uri)
+            except Exception as exc:
+                failure = _classify_remote(exc, unknown=False)
+                if not isinstance(failure, ItemFailure):
+                    raise failure from None
+                return failure, sent
+        return None, sent
+
+    def _record_item(self, failure: ItemFailure, uris: dict[str, str | None]) -> None:
+        self.record(
+            ItemFailure(
+                failure.code,
+                failure.message,
+                source=failure.source,
+                retryable=failure.retryable,
+                **uris,
+            )
+        )
+
+    def _push_subset(
+        self, documents: dict[str, Document], bases: dict[str, str | None], subset: list[str]
+    ) -> Awaitable[list[PushResult]]:
+        return self.pusher.push(
+            {uri: documents[uri] for uri in subset},
+            expected_base={uri: bases[uri] for uri in subset if uri in bases},
+            blobs=self.stage.lookup,
+        )
+
+    def _delete_subset(
+        self, bases: dict[str, str | None], subset: list[str]
+    ) -> Awaitable[list[PushResult]]:
+        return self.pusher.delete(
+            subset, expected_base={uri: bases[uri] for uri in subset if uri in bases}
+        )
+
+    def _move_subset(
+        self, bases: dict[str, str | None], subset: list[tuple[str, str]]
+    ) -> Awaitable[list[PushResult]]:
+        return self.pusher.move(
+            subset, expected_base={src: bases[src] for src, _ in subset if src in bases}
+        )
 
     async def flush_wave(self, wave: _Wave) -> None:
         """落地一波；冲突按策略重提，直到全部有结论。本波出现的终止性失败在全部结果入账后抛出。"""
@@ -474,8 +596,9 @@ class _Round:
             next_move: dict[str, str | None] = {}
             if commits:
                 for result in await self.call(
-                    self.pusher.push(commits, expected_base=commit_base, blobs=self.stage.lookup),
-                    [{"file_uri": uri} for uri in commits],
+                    partial(self._push_subset, commits, commit_base),
+                    list(commits),
+                    _file_uri,
                 ):
                     achieved = _achieved_on_reread(result, commits[result.file_uri])
                     settled = self.settle(result, self.policy.commit, attempts, achieved=achieved)
@@ -486,8 +609,7 @@ class _Round:
                         next_commit[result.file_uri] = settled.base
             if deletes:
                 for result in await self.call(
-                    self.pusher.delete(deletes, expected_base=delete_base),
-                    [{"file_uri": uri} for uri in deletes],
+                    partial(self._delete_subset, delete_base), list(deletes), _file_uri
                 ):
                     achieved = _achieved_on_reread(result, None)
                     settled = self.settle(result, self.policy.delete, attempts, achieved=achieved)
@@ -498,8 +620,7 @@ class _Round:
                         next_delete[result.file_uri] = settled.base
             if moves:
                 for result in await self.call(
-                    self.pusher.move(moves, expected_base=move_base),
-                    [{"from_uri": source, "to_uri": target} for source, target in moves],
+                    partial(self._move_subset, move_base), list(moves), _move_uris
                 ):
                     settled = self.settle(result, self.policy.commit, attempts)
                     if isinstance(settled, RunFailure):

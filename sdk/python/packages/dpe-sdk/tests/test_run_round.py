@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import dpe_hash
 import httpx
@@ -896,7 +897,8 @@ async def test_definite_write_error_is_an_item_failure(tmp_path: Path) -> None:
 
 
 async def test_definite_read_error_fails_each_entry_of_the_call(tmp_path: Path) -> None:
-    """读（batch_head）得到确定错误：不是可重试的轮级故障，本次调用涉及的条目各记一条。"""
+    """读（batch_head）得到确定错误：不是可重试的轮级故障，归条目级、本轮继续（这里每个条目
+    的读都被拒，逐条定位后仍是各记一条）。"""
     made, wrap = _hooks()
     async with harness(tmp_path, wrap) as h:
         heads = _problem(403, "DPE_FORBIDDEN")
@@ -1124,3 +1126,189 @@ async def test_failed_open_segment_does_not_swallow_a_later_document_or_other_ur
         assert await h.foreign.head(P + "x.md") == expected("again")
         assert await h.foreign.head(P + "z.md") == expected("Z")
         assert await h.foreign.head(P + "y.md") is None
+
+
+def _reject_reads_of(
+    forbidden_uris: set[str], respond: Callable[[httpx.Request], httpx.Response]
+) -> Callable[[httpx.Request], httpx.Response | None]:
+    """服务端拒绝读这些 URI：含其中任一 URI 的批量读整体被拒，单篇读该 URI 同样被拒。"""
+
+    def reject(request: httpx.Request) -> httpx.Response | None:
+        if _is_heads(request) and any(u.encode() in request.content for u in forbidden_uris):
+            return respond(request)
+        if request.method == "HEAD" and unquote(str(request.url)).split("uri=")[-1] in (
+            forbidden_uris
+        ):
+            return respond(request)
+        return None
+
+    return reject
+
+
+async def test_batch_read_rejection_is_localized_to_the_offending_entry(tmp_path: Path) -> None:
+    """服务端因其中一个 URI 拒绝整个 batch_head：逐条 head 定位，只有该条目失败，其余以一次
+    推送器调用照常落地，并发出 remote.batch_read_rejected 事件。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        made[0].fail = _reject_reads_of({P + "bad.md"}, _problem(403, "DPE_FORBIDDEN"))
+        result = await h.round(
+            {
+                "batches": [
+                    [doc_item("good.md", "G"), doc_item("bad.md", "B"), doc_item("ok.md", "O")]
+                ]
+            }
+        )
+        rejected = [
+            fields for event, _, fields in h.events if event == "remote.batch_read_rejected"
+        ]
+    assert result.outcome == "partial"
+    assert codes(result) == ["DPE_FORBIDDEN"]
+    assert result.failures[0].to_report()["file_uri"] == P + "bad.md"
+    assert result.counts.created == 2
+    # 定位后发一次事件，只带码与计数，不带远端文本（§4.3 不外泄）
+    assert rejected == [{"code": "DPE_FORBIDDEN", "entries": 3, "probes": 3, "localized": 1}]
+
+
+async def test_delete_and_move_read_rejection_is_localized(tmp_path: Path) -> None:
+    """delete 与 move 同样逐条定位；move 的任一侧被拒都归到该 move（带两侧 URI）。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item(n, n) for n in ("d1.md", "d2.md", "m1.md", "m2.md")]]})
+        made[0].fail = _reject_reads_of(
+            {P + "d2.md", P + "secret.md"}, _problem(403, "DPE_FORBIDDEN")
+        )
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        {"kind": "delete", "file_uri": P + "d1.md"},
+                        {"kind": "delete", "file_uri": P + "d2.md"},
+                        {"kind": "move", "from_uri": P + "m1.md", "to_uri": P + "secret.md"},
+                        {"kind": "move", "from_uri": P + "m2.md", "to_uri": P + "n2.md"},
+                    ]
+                ]
+            }
+        )
+        reports = [f.to_report() for f in result.failures]
+        assert [r.get("file_uri") or r.get("from_uri") for r in reports] == [
+            P + "d2.md",
+            P + "m1.md",
+        ]
+        assert reports[1]["to_uri"] == P + "secret.md"
+        assert (result.counts.deleted, result.counts.moved) == (1, 1)
+        assert await h.foreign.head(P + "d1.md") is None
+        assert await h.foreign.head(P + "n2.md") == expected("m2.md")
+
+
+async def test_unlocalizable_batch_rejection_fails_each_entry(tmp_path: Path) -> None:
+    """批量读被拒但逐条读都通过（拒绝与具体 URI 无关）：定位不了，各记一条原错误。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+        made[0].fail = lambda request: forbidden(request) if _is_heads(request) else None
+        result = await h.round({"batches": [[doc_item("a.md", "A"), doc_item("b.md", "B")]]})
+    assert codes(result) == ["DPE_FORBIDDEN", "DPE_FORBIDDEN"]
+    assert result.counts.created == 0
+
+
+async def test_network_failure_while_localizing_aborts_without_writes(tmp_path: Path) -> None:
+    """定位期间网络失败：本轮作废（轮级），此时尚未发出任何写入，不会丢失已落地的结果。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+
+        def reject_then_cut(request: httpx.Request) -> httpx.Response | None:
+            if _is_heads(request):
+                return forbidden(request)
+            if request.method == "HEAD":
+                raise httpx.ConnectError("断网", request=request)
+            return None
+
+        made[0].fail = reject_then_cut
+        result = await h.round({"batches": [[doc_item("a.md", "A"), doc_item("b.md", "B")]]})
+        assert result.outcome == "failed"
+        assert result.fatal is not None and result.fatal.code == "remote_unavailable"
+        assert result.counts.created == 0
+        assert await h.foreign.head(P + "a.md") is None
+
+
+async def test_subset_rejected_again_is_not_probed_twice(tmp_path: Path) -> None:
+    """每波至多定位一次：收窄后的子集再次被拒（拒绝与条目组合有关），各记一条原错误。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+        heads_seen = {"n": 0}
+
+        def reject(request: httpx.Request) -> httpx.Response | None:
+            if _is_heads(request):
+                heads_seen["n"] += 1
+                if b"," in request.content:  # 多于一个 URI 的批量读一律被拒
+                    return forbidden(request)
+            if request.method == "HEAD" and "bad.md" in unquote(str(request.url)):
+                return forbidden(request)
+            return None
+
+        made[0].fail = reject
+        result = await h.round(
+            {"batches": [[doc_item("g1.md", "1"), doc_item("bad.md", "B"), doc_item("g2.md", "2")]]}
+        )
+        events = [event for event, _, _ in h.events if event == "remote.batch_read_rejected"]
+    assert codes(result) == ["DPE_FORBIDDEN", "DPE_FORBIDDEN", "DPE_FORBIDDEN"]
+    uris = [f.to_report()["file_uri"] for f in result.failures]
+    assert uris == [P + "bad.md", P + "g1.md", P + "g2.md"]
+    assert len(events) == 1 and heads_seen["n"] == 2  # 原批量 + 收窄后的一次
+
+
+async def test_read_rejection_during_conflict_resubmission_is_localized(tmp_path: Path) -> None:
+    """冲突重提那一轮（带 expected_base）里批量读被拒：子集的 expected_base 过滤正确，
+    读被拒的条目失败，其余以重读值重提成功。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "v1"), doc_item("b.md", "v1")]]})
+        for name in ("a.md", "b.md"):
+            await h.foreign.commit(P + name, _doc_of("theirs"), BaseHash(expected("v1")))
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+        heads_seen = {"n": 0}
+
+        def reject_b_after_first_read(request: httpx.Request) -> httpx.Response | None:
+            if _is_heads(request):
+                heads_seen["n"] += 1
+                if heads_seen["n"] > 1 and (P + "b.md").encode() in request.content:
+                    return forbidden(request)
+            if (
+                request.method == "HEAD"
+                and heads_seen["n"] > 1
+                and unquote(str(request.url)).endswith(P + "b.md")
+            ):
+                return forbidden(request)
+            return None
+
+        made[0].fail = reject_b_after_first_read
+        result = await h.round({"batches": [[doc_item("a.md", "v2"), doc_item("b.md", "v2")]]})
+        assert codes(result) == ["DPE_FORBIDDEN"]
+        assert result.failures[0].to_report()["file_uri"] == P + "b.md"
+        assert result.counts.updated == 1
+        assert await h.foreign.head(P + "a.md") == expected("v2")
+
+
+async def test_mixed_probe_outcomes_abort_the_round_without_writes(tmp_path: Path) -> None:
+    """定位时一部分读被拒、一部分断网：读被拒的结论不被当作异常，本轮按网络失败作废、不写入。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+
+        def mixed(request: httpx.Request) -> httpx.Response | None:
+            if _is_heads(request):
+                return forbidden(request)
+            if request.method == "HEAD":
+                if "bad.md" in unquote(str(request.url)):
+                    return forbidden(request)
+                raise httpx.ConnectError("断网", request=request)
+            return None
+
+        made[0].fail = mixed
+        result = await h.round({"batches": [[doc_item("bad.md", "B"), doc_item("ok.md", "O")]]})
+        assert result.outcome == "failed"
+        assert result.fatal is not None and result.fatal.code == "remote_unavailable"
+        assert codes(result) == ["remote_unavailable"]  # 读被拒的结论未提前入账
+        assert result.counts.created == 0
