@@ -87,7 +87,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from functools import partial
+from typing import Literal, Protocol, TypeAlias
 
 import anyio
 import dpe_hash
@@ -99,12 +100,13 @@ from dpe_sdk.errors import (
     PreconditionFailedError,
 )
 from dpe_sdk.models import Document
-from dpe_sdk.protocol import BaseHash, IfAbsent, outcome_unknown
+from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent, outcome_unknown
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
 from dpe_sdk.wire import CommitResult, Delta
 
 __all__ = [
     "AsyncStatefulPusher",
+    "BlobLookup",
     "MemoryStateStore",
     "PushResult",
     "PushStatus",
@@ -118,6 +120,9 @@ __all__ = [
 PushStatus = Literal[
     "created", "updated", "unchanged", "achieved", "deleted", "moved", "conflict", "failed"
 ]
+
+#: 按 ``sha256:`` 引用给出 blob 字节（同核心 ``deliver`` 的 ``blobs``）
+BlobLookup: TypeAlias = Callable[[str], BlobSource | bytes]
 
 #: 一条回报对应的操作
 PushOp = Literal["commit", "delete", "move"]
@@ -608,6 +613,14 @@ class _PusherBase:
         self._save(pending)
         self._intents = pending
 
+    def flush(self) -> None:
+        """把内存中的同步状态与意图整批写入 ``StateStore``（store 的异常原样抛出）。
+
+        某次 ``save`` 失败后 store 可能与内存不一致；调用方（如运行器）用同一实例调用它补存，
+        成功后两者重新一致。
+        """
+        self._save()
+
     def _save(self, intents: Mapping[str, str | None] | None = None) -> None:
         """整批保存同步状态与意图；``intents`` 缺省为内存中的意图（快照只在这里构造）。"""
         self._store.save(
@@ -843,16 +856,24 @@ class StatefulPusher(_PusherBase):
         super().__init__(client.remote, state=state, concurrency=concurrency)
         self._client = client
 
+    @property
+    def client(self) -> DpeClient:
+        """推送器所用的客户端（只读）：上层用同一个客户端做能力获取等前置读取，共用一份缓存。"""
+        return self._client
+
     def push(
         self,
         documents: Mapping[str, Document],
         *,
         expected_base: Mapping[str, str | None] | None = None,
+        blobs: BlobLookup | None = None,
     ) -> list[PushResult]:
         """推送一批文档（file_uri → 展开文档）：只推变化的部分，返回与输入同序的逐条回报。
 
         ``expected_base`` 覆盖同步状态中的 L（值为 ``None`` 即调用方确认「不存在」）；上层可在
         冲突后以重读到的 remote 值重提（source_wins 等策略归上层，本方法不自动重提）。
+        ``blobs`` 原样交给每条 ``deliver``：按 ``sha256:`` 引用给出服务端缺少的 blob 字节
+        （``BlobSource`` 或内存字节），缺省时缺字节由核心如实报错（不自行解引用任何来源）。
         """
         contract = self._client.core().contract
         entries, expected = self._prepare(documents, expected_base, contract)
@@ -861,7 +882,7 @@ class StatefulPusher(_PusherBase):
         heads = self._client.batch_head([entry.uri for entry in entries])
         plans = self._plan_commit(entries, heads, expected, contract)
         self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
-        outcomes = self._run_all(plans, self._commit_one)
+        outcomes = self._run_all(plans, partial(self._commit_one, blobs=blobs))
         results = self._finish_commit(plans, outcomes)
         self._save()
         return results
@@ -944,10 +965,10 @@ class StatefulPusher(_PusherBase):
                 outcomes[index] = outcome
         return outcomes
 
-    def _commit_one(self, plan: _Plan) -> _Outcome:
+    def _commit_one(self, plan: _Plan, *, blobs: BlobLookup | None) -> _Outcome:
         assert plan.precondition is not None and plan.document is not None  # write 计划必有
         try:
-            result = self._client.deliver(plan.uri, plan.document, plan.precondition)
+            result = self._client.deliver(plan.uri, plan.document, plan.precondition, blobs=blobs)
         except (PreconditionFailedError, AlreadyExistsError, NotFoundError) as exc:
             remote, re_error = self._re_read(plan.uri)
             return _Outcome(error=exc, kind="conflict", remote=remote, remote_error=re_error)
@@ -1009,11 +1030,17 @@ class AsyncStatefulPusher(_PusherBase):
         super().__init__(client.remote, state=state, concurrency=concurrency)
         self._client = client
 
+    @property
+    def client(self) -> AsyncDpeClient:
+        """推送器所用的客户端（只读）：上层用同一个客户端做能力获取等前置读取，共用一份缓存。"""
+        return self._client
+
     async def push(
         self,
         documents: Mapping[str, Document],
         *,
         expected_base: Mapping[str, str | None] | None = None,
+        blobs: BlobLookup | None = None,
     ) -> list[PushResult]:
         """``StatefulPusher.push`` 的异步版本：语义完全相同。"""
         contract = (await self._client.core()).contract
@@ -1023,7 +1050,7 @@ class AsyncStatefulPusher(_PusherBase):
         heads = await self._client.batch_head([entry.uri for entry in entries])
         plans = self._plan_commit(entries, heads, expected, contract)
         self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
-        outcomes = await self._run_all(plans, self._commit_one)
+        outcomes = await self._run_all(plans, partial(self._commit_one, blobs=blobs))
         results = self._finish_commit(plans, outcomes)
         self._save()
         return results
@@ -1092,10 +1119,12 @@ class AsyncStatefulPusher(_PusherBase):
                 group.start_soon(run, index)
         return outcomes
 
-    async def _commit_one(self, plan: _Plan) -> _Outcome:
+    async def _commit_one(self, plan: _Plan, *, blobs: BlobLookup | None) -> _Outcome:
         assert plan.precondition is not None and plan.document is not None  # write 计划必有
         try:
-            result = await self._client.deliver(plan.uri, plan.document, plan.precondition)
+            result = await self._client.deliver(
+                plan.uri, plan.document, plan.precondition, blobs=blobs
+            )
         except (PreconditionFailedError, AlreadyExistsError, NotFoundError) as exc:
             remote, re_error = await self._re_read(plan.uri)
             return _Outcome(error=exc, kind="conflict", remote=remote, remote_error=re_error)
