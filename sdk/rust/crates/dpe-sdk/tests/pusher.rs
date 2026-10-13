@@ -1239,6 +1239,124 @@ async fn empty_batches_return_empty_without_reading() {
     assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
 }
 
+// ---------------------------------------------------------------------- 写后冲突重读即已达成（#140）
+//
+// 服务端对内容相同的提交本就判成功（core §5.2），所以 commit 的「冲突后已达成」只出现在竞态里：
+// 他人先写入不同内容致我方冲突，在我方重读之前他人又写下了与我方相同的内容。推送器只看冲突裁决
+// 与重读值：假服务端直接给出冲突应答，并把视图置为重读时的状态（中间的「他人内容」不经视图）。
+
+#[tokio::test]
+async fn commit_conflict_whose_reread_equals_the_content_is_achieved() {
+    // 三种写后冲突裁决：412（有 L，他人改写）、409（无 L → if_absent，他人先建）、404（有 L，
+    // 他人删除——不属于已达成）；重读之前他人都已写下与我方相同的 v2
+    for (code, status, has_l) in [
+        ("DPE_PRECONDITION_FAILED", 412, true),
+        ("DPE_ALREADY_EXISTS", 409, false),
+        ("DPE_NOT_FOUND", 404, true),
+    ] {
+        let fake = Fake::new();
+        let server = fake.server();
+        let client = client(&server);
+        let store = Arc::new(MemoryStateStore::new());
+        let (v1, v2) = (text("v1"), text("v2"));
+        if has_l {
+            fake.set(A, Some(doc_hash(&v1)));
+            store
+                .save(
+                    &server.remote(),
+                    &StateSnapshot::new(synced(&[(A, doc_hash(&v1))]), BTreeMap::new()),
+                )
+                .unwrap();
+        }
+        fake.script(
+            Route::Commit(A.into()),
+            vec![reply_then(problem(code, status), A, Some(doc_hash(&v2)))],
+        );
+
+        let results = pusher(&client, &store)
+            .push(&docs(&[(A, &v2)]), &none())
+            .await
+            .unwrap();
+
+        assert_eq!(statuses(&results), [PushStatus::Achieved], "{code}");
+        assert_eq!(
+            results[0].error.as_ref().and_then(|error| error.code()),
+            Some(code)
+        );
+        assert_eq!(
+            results[0].remote.as_ref().unwrap().doc_hash,
+            Some(doc_hash(&v2))
+        );
+        assert!(
+            results[0].precondition.is_some(),
+            "发过写（写前判定的已达成为 None）"
+        );
+        assert!(!results[0].unknown);
+        assert_eq!(fake.write_count.load(Ordering::SeqCst), 1, "没有重提");
+        let snapshot = state(&store, &server);
+        assert_eq!(snapshot.synced, synced(&[(A, doc_hash(&v2))]), "{code}");
+        assert_eq!(snapshot.intents, BTreeMap::new());
+    }
+}
+
+/// 已推 v1 的状态，delete 写请求先得到 412、重读时视图为 `reread`。
+async fn delete_race(
+    reread: Option<String>,
+    cut_reads: bool,
+) -> (Vec<PushResult>, Arc<Fake>, StateSnapshot) {
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    after_v1(&fake, &client, &store).await;
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(
+            problem("DPE_PRECONDITION_FAILED", 412),
+            A,
+            reread,
+        )],
+    );
+    if cut_reads {
+        *fake.head_override.lock().unwrap() = Some(Reply::Close);
+    }
+    let results = pusher(&client, &store)
+        .delete(&[A.to_owned()], &none())
+        .await
+        .unwrap();
+    let snapshot = state(&store, &server);
+    (results, fake, snapshot)
+}
+
+#[tokio::test]
+async fn delete_conflict_whose_reread_is_absent_is_deleted() {
+    // 他人先改写（我方 412），重读之前又删除了它：目标状态已达成
+    let (results, fake, snapshot) = delete_race(None, false).await;
+
+    assert_eq!(statuses(&results), [PushStatus::Deleted]);
+    assert_eq!(
+        results[0].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_PRECONDITION_FAILED")
+    );
+    assert_eq!(results[0].remote.as_ref().unwrap().doc_hash, None);
+    assert_eq!(
+        fake.write_count.load(Ordering::SeqCst),
+        2,
+        "v1 的 commit 与一次 delete，没有重提"
+    );
+    assert_eq!(snapshot, StateSnapshot::default(), "删条目、清意图");
+}
+
+#[tokio::test]
+async fn delete_conflict_with_failed_reread_stays_a_conflict() {
+    // 重读本身失败：不臆测，仍回报 conflict，条目保留
+    let (results, _, snapshot) = delete_race(None, true).await;
+
+    assert_eq!(statuses(&results), [PushStatus::Conflict]);
+    assert!(results[0].remote.is_none() && results[0].remote_error.is_some());
+    assert_eq!(snapshot.synced, synced(&[(A, doc_hash(&text("v1")))]));
+}
+
 // ---------------------------------------------------------------------- delete
 
 #[tokio::test]
