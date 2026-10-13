@@ -41,14 +41,19 @@ def _dist(
     sdk_version: str | None = None,
     hash_requires: tuple[str, ...] = (),
     sdk_requires: tuple[str, ...] | None = None,
+    conformance_version: str | None = None,
+    conformance_requires: tuple[str, ...] | None = None,
     hash_source: str = '"""骨架。"""\n',
     sdk_source: str = '"""骨架。"""\n',
     tag: str = "py3-none-any",
     license_file: bool = True,
 ) -> Path:
     sdk_version = sdk_version or version
+    conformance_version = conformance_version or version
     if sdk_requires is None:
         sdk_requires = (f"dpe-hash=={version}", "pydantic<3,>=2.7", "httpx<1,>=0.27")
+    if conformance_requires is None:
+        conformance_requires = (f"dpe-hash=={version}", "httpx<1,>=0.27", "pytest<10,>=8.3")
     _wheel(
         tmp_path,
         "dpe_hash",
@@ -59,6 +64,7 @@ def _dist(
         license_file=license_file,
     )
     _wheel(tmp_path, "dpe_sdk", sdk_version, requires=sdk_requires, source=sdk_source)
+    _wheel(tmp_path, "dpe_conformance", conformance_version, requires=conformance_requires)
     return tmp_path
 
 
@@ -145,7 +151,12 @@ def test_rejects_runtime_import_in_type_checking_else_branch(tmp_path: Path) -> 
 
 def test_rejects_version_mismatch(tmp_path: Path) -> None:
     errors = check(_dist(tmp_path, sdk_version="0.1.5-dev"), None)
-    _assert_fails(errors, "两包版本不一致")
+    _assert_fails(errors, "版本不一致：dpe-hash 0.1.4-dev，dpe-sdk 0.1.5-dev")
+
+
+def test_rejects_conformance_version_mismatch(tmp_path: Path) -> None:
+    errors = check(_dist(tmp_path, conformance_version="0.1.5-dev"), None)
+    _assert_fails(errors, "版本不一致：dpe-hash 0.1.4-dev，dpe-conformance 0.1.5-dev")
 
 
 @pytest.mark.parametrize(
@@ -162,9 +173,31 @@ def test_rejects_missing_or_loose_pin(tmp_path: Path, requires: tuple[str, ...])
     _assert_fails(errors, "dpe-sdk：必须精确依赖 dpe-hash==")
 
 
+@pytest.mark.parametrize(
+    "requires",
+    [
+        ("httpx<1,>=0.27",),
+        ("dpe-hash>=0.1.4.dev0", "httpx<1,>=0.27"),
+        ("dpe-hash==0.1.3", "httpx<1,>=0.27"),
+    ],
+)
+def test_rejects_missing_or_loose_conformance_pin(
+    tmp_path: Path, requires: tuple[str, ...]
+) -> None:
+    errors = check(_dist(tmp_path, conformance_requires=requires), None)
+    _assert_fails(errors, "dpe-conformance：必须精确依赖 dpe-hash==")
+
+
+def test_rejects_conformance_depending_on_dpe_sdk(tmp_path: Path) -> None:
+    requires = ("dpe-hash==0.1.4-dev", "dpe-sdk==0.1.4-dev", "httpx<1,>=0.27")
+    errors = check(_dist(tmp_path, conformance_requires=requires), None)
+    _assert_fails(errors, "dpe-conformance：不得依赖 dpe-sdk")
+
+
 def test_rejects_release_tag_mismatch(tmp_path: Path) -> None:
     errors = check(_dist(tmp_path, version="0.1.4"), "0.1.5")
-    _assert_fails(errors, "与发布标签 0.1.5 不一致")
+    for package in ("dpe-hash", "dpe-sdk", "dpe-conformance"):
+        _assert_fails(errors, f"{package}：版本 0.1.4 与发布标签 0.1.5 不一致")
 
 
 def test_rejects_publishing_dev_version(tmp_path: Path) -> None:
@@ -187,7 +220,7 @@ def test_rejects_missing_artifacts(tmp_path: Path) -> None:
     _assert_fails(errors, "需要恰好一个 wheel 和一个 sdist")
 
 
-@pytest.mark.parametrize("package", ["dpe-hash", "dpe-sdk"])
+@pytest.mark.parametrize("package", ["dpe-hash", "dpe-sdk", "dpe-conformance"])
 def test_package_license_matches_repository(package: str) -> None:
     repository_license = (WORKSPACE.parents[1] / "LICENSE").read_text(encoding="utf-8")
     package_license = (WORKSPACE / "packages" / package / "LICENSE").read_text(encoding="utf-8")

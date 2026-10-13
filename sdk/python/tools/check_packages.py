@@ -8,7 +8,9 @@
 1. 每个包恰好有一个 wheel 和一个 sdist，wheel 标签为 ``py3-none-any``（纯 Python），
    并随附许可证文件（``.dist-info/licenses/LICENSE``）；
 2. dpe-hash 没有任何运行时依赖（内核直接依赖它）；
-3. dpe-sdk 精确依赖同版本的 dpe-hash，两包版本相同；
+3. 三包版本相同；dpe-sdk 与 dpe-conformance 都精确依赖同版本的 dpe-hash；
+   dpe-conformance 不依赖 dpe-sdk（#26：跑分器只经 dpe-hash 算期望 hash，不经 SDK
+   绑定任何客户端或服务端实现）；
 4. 给出 ``--expect-version`` 时（发布），版本等于标签版本且不是开发版；
    版本一律按 PEP 440 规范化后比较（``0.1.4-dev`` 与 ``0.1.4.dev0`` 相同），
    不依赖构建后端是否规范化 METADATA；
@@ -33,7 +35,13 @@ from email.parser import Parser
 from pathlib import Path
 
 # 发布名 → import 名
-PACKAGES = {"dpe-hash": "dpe_hash", "dpe-sdk": "dpe_sdk"}
+PACKAGES = {
+    "dpe-hash": "dpe_hash",
+    "dpe-sdk": "dpe_sdk",
+    "dpe-conformance": "dpe_conformance",
+}
+# 精确依赖同版本 dpe-hash 的包（与它同一标签发布，hash 行为必须一致）
+PINNED_TO_HASH = ("dpe-sdk", "dpe-conformance")
 
 _REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 _PIN = re.compile(r"^\s*[A-Za-z0-9._-]+\s*==\s*([^\s;,]+)\s*$")
@@ -124,6 +132,25 @@ def _imported_roots(source: str, filename: str) -> tuple[set[str], set[str]]:
     return eager, lazy
 
 
+def _check_hash_pin(dist_name: str, wheel: Wheel, hash_wheel: Wheel) -> list[str]:
+    """``wheel`` 与 dpe-hash 同版本，且恰好一条 ``dpe-hash==<同版本>`` 依赖。"""
+    errors: list[str] = []
+    if _canon_version(wheel.version) != _canon_version(hash_wheel.version):
+        errors.append(
+            f"版本不一致：dpe-hash {hash_wheel.version}，{dist_name} {wheel.version}"
+            "（各包必须同版本）"
+        )
+    hash_reqs = [r for r in wheel.requires if _import_name(r) == "dpe_hash"]
+    pins = [m.group(1) for r in hash_reqs if (m := _PIN.match(r))]
+    if (
+        len(hash_reqs) != 1
+        or len(pins) != 1
+        or (_canon_version(pins[0]) != _canon_version(hash_wheel.version))
+    ):
+        errors.append(f"{dist_name}：必须精确依赖 dpe-hash=={hash_wheel.version}，实际 {hash_reqs}")
+    return errors
+
+
 def check(dist: Path, expect_version: str | None) -> list[str]:
     errors: list[str] = []
     wheels: dict[str, Wheel] = {}
@@ -161,22 +188,18 @@ def check(dist: Path, expect_version: str | None) -> list[str]:
                     errors.append(f"{dist_name}：{filename} import 了未声明的模块 {root!r}")
 
     hash_wheel = wheels.get("dpe-hash")
-    sdk_wheel = wheels.get("dpe-sdk")
     if hash_wheel is not None and hash_wheel.requires:
         errors.append(f"dpe-hash：必须零运行时依赖，实际 {hash_wheel.requires}")
-    if hash_wheel is not None and sdk_wheel is not None:
-        if _canon_version(hash_wheel.version) != _canon_version(sdk_wheel.version):
-            errors.append(
-                f"两包版本不一致：dpe-hash {hash_wheel.version}，dpe-sdk {sdk_wheel.version}"
-            )
-        hash_reqs = [r for r in sdk_wheel.requires if _import_name(r) == "dpe_hash"]
-        pins = [m.group(1) for r in hash_reqs if (m := _PIN.match(r))]
-        if (
-            len(hash_reqs) != 1
-            or len(pins) != 1
-            or (_canon_version(pins[0]) != _canon_version(hash_wheel.version))
-        ):
-            errors.append(f"dpe-sdk：必须精确依赖 dpe-hash=={hash_wheel.version}，实际 {hash_reqs}")
+    if hash_wheel is not None:
+        for dist_name in PINNED_TO_HASH:
+            dependent = wheels.get(dist_name)
+            if dependent is not None:
+                errors.extend(_check_hash_pin(dist_name, dependent, hash_wheel))
+    conformance_wheel = wheels.get("dpe-conformance")
+    if conformance_wheel is not None:
+        sdk_reqs = [r for r in conformance_wheel.requires if _import_name(r) == "dpe_sdk"]
+        if sdk_reqs:
+            errors.append(f"dpe-conformance：不得依赖 dpe-sdk，实际 {sdk_reqs}")
 
     if expect_version is not None:
         for dist_name, wheel in wheels.items():

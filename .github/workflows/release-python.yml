@@ -1,6 +1,7 @@
 # Python 包发布（PyPI Trusted Publishing / OIDC，不使用 API token）。
 # 推送 py-vX.Y.Z 标签触发（由 sdk/python/ 下的 bump-my-version 生成）；开发版标签 py-v*-dev 不触发。
-# 每个包一个 GitHub environment（pypi-dpe-<pkg>），需维护者审批；登记约定见 Issue #10 评论。
+# 三个包（dpe-hash / dpe-sdk / dpe-conformance）同版本发布，每个包一个 GitHub environment
+# （pypi-dpe-<pkg>），需维护者审批；登记约定见 Issue #10 评论（dpe-conformance 见 #40）。
 # 文件名、environment 名与 PyPI 侧登记逐字一致，改动前先改 PyPI 配置。
 name: release-python
 
@@ -48,6 +49,11 @@ jobs:
           name: dist-dpe-sdk
           path: sdk/python/dist/dpe_sdk-*
           if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-dpe-conformance
+          path: sdk/python/dist/dpe_conformance-*
+          if-no-files-found: error
 
   publish-dpe-hash:
     needs: build
@@ -77,5 +83,21 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: dist-dpe-sdk
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # dpe-conformance 只精确依赖同版本 dpe-hash（不依赖 dpe-sdk，#26），在 dpe-hash 之后发布
+  publish-dpe-conformance:
+    needs: publish-dpe-hash
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-dpe-conformance
+      url: https://pypi.org/project/dpe-conformance/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-dpe-conformance
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
