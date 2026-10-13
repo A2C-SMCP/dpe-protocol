@@ -61,6 +61,7 @@ fn local_kinds_have_no_code() {
         ErrorKind::ForceNotConfirmed,
         ErrorKind::InvalidArgument,
         ErrorKind::Transport,
+        ErrorKind::StateStore,
     ] {
         assert_eq!(kind.code(), None, "{kind:?}");
         assert!(!kind.retryable(), "{kind:?}");

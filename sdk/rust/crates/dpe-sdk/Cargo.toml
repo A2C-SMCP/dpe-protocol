@@ -14,7 +14,7 @@ readme = "README.md"
 [features]
 # 默认提供 HTTP 传输适配；协议核心不依赖任何异步运行时，关掉默认 feature 也能编译（CI 有断言）
 default = ["http"]
-http = ["dep:reqwest", "dep:tokio", "dep:flate2"]
+http = ["dep:reqwest", "dep:tokio", "dep:flate2", "dep:futures-util"]
 
 [dependencies]
 # 与 dpe-hash 锁步发布、精确同版本（版本串由 bump-my-version 与工作区版本一并维护）
@@ -52,6 +52,10 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 tokio = { version = "1", optional = true, features = ["rt", "time", "sync"] }
 # 请求体 gzip（HTTP 绑定 §7）：确定性压缩（mtime=0），重发各轮复用同一份字节
 flate2 = { version = "1", optional = true }
+# 增量推送器（#23）的写操作并发：在调用方的同一个任务内有界并发（buffer_unordered），不经
+# tokio::spawn——deliver 的 future 在 BlobProvider 加 Send（#131）之前不是 Send。只取组合器
+# 本身（alloc），不开 std / async-await 宏等默认特性；reqwest 已间接依赖同一版本
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 # 测试驱动：宏（#[tokio::test]）、多线程 flavor（并发首发只协商一次的用例）与暂停时钟

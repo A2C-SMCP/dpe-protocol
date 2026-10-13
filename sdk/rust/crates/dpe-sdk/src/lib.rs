@@ -9,7 +9,9 @@
 //! 只读操作、写操作（commit / delete / move）与暂存路径（negotiate / upload / deliver）、
 //! CAS 前置条件与重试规则）、[`errors`]、[`wire`]、[`run`]（connector 契约的清单、实例
 //! 配置与实例定义校验，§4.1–§4.4）与 [`http`]（reqwest / tokio 传输适配：异步客户端
-//! [`http::DpeClient`]、[`credentials::CredentialProvider`]）。
+//! [`http::DpeClient`]、[`credentials::CredentialProvider`]）与 [`pusher`]（增量推送器：
+//! 同步状态与意图日志只作缓存，connector 契约 §7.2 的判定表与按操作回报；判定逻辑无 feature
+//! 门控，异步驱动 `pusher::StatefulPusher` 随 `http`）。
 
 #![forbid(unsafe_code)]
 
@@ -23,6 +25,7 @@ pub use models::{DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, 
 
 pub mod errors;
 pub mod protocol;
+pub mod pusher;
 pub mod wire;
 
 pub use errors::{Error, ErrorKind};

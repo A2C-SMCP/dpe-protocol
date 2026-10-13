@@ -132,11 +132,30 @@ impl MockServer {
         MockServer::start_with(script, Some(close_after))
     }
 
+    /// 按请求路由应答：每个请求交给 `responder` 决定回复（多步、并发场景用——应答取决于请求
+    /// 本身而不是到达顺序）。仍只模拟网络层：应答由用例逐条给出，不实现服务端语义。
+    pub fn start_fn(responder: impl Fn(&Recorded) -> Reply + Send + Sync + 'static) -> MockServer {
+        MockServer::start_source(Source::Respond(Box::new(responder)), None)
+    }
+
+    /// 同 [`start_fn`](MockServer::start_fn)，但服务满 `close_after` 个请求后关闭监听（其后的
+    /// 连接是建连失败）。
+    pub fn start_fn_closing_after(
+        responder: impl Fn(&Recorded) -> Reply + Send + Sync + 'static,
+        close_after: usize,
+    ) -> MockServer {
+        MockServer::start_source(Source::Respond(Box::new(responder)), Some(close_after))
+    }
+
     fn start_with(script: Vec<Reply>, close_after: Option<usize>) -> MockServer {
+        MockServer::start_source(Source::Script(Mutex::new(script)), close_after)
+    }
+
+    fn start_source(source: Source, close_after: Option<usize>) -> MockServer {
         let listener = bind_outside_ephemeral();
         let addr = listener.local_addr().expect("取本地地址");
         listener.set_nonblocking(true).expect("非阻塞 accept");
-        let script = Arc::new(Mutex::new(script));
+        let script = Arc::new(source);
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
@@ -239,14 +258,16 @@ fn bind_outside_ephemeral() -> TcpListener {
     panic!("21000–21199 段没有空闲端口");
 }
 
+/// 应答来源：按到达顺序消耗的脚本，或按请求路由的应答函数。
+enum Source {
+    Script(Mutex<Vec<Reply>>),
+    Respond(Box<dyn Fn(&Recorded) -> Reply + Send + Sync>),
+}
+
 /// 处理一个连接：读一个请求、记录、按脚本应答，然后关闭。
 ///
 /// 脚本条目在这里（读到请求之后）消耗：空连接不占脚本条目，也不记入请求列表。
-fn handle(
-    mut stream: TcpStream,
-    script: Arc<Mutex<Vec<Reply>>>,
-    requests: Arc<Mutex<Vec<Recorded>>>,
-) {
+fn handle(mut stream: TcpStream, script: Arc<Source>, requests: Arc<Mutex<Vec<Recorded>>>) {
     // macOS 上 `accept` 出的套接字**继承**监听套接字的非阻塞标志（实测：立刻 read 会返回
     // WouldBlock 而不是等待）。不显式切回阻塞模式，读一个还没到达的请求会立刻失败、处理器
     // 提前关掉还带着未读数据的连接——内核改用 RST 收尾，客户端看到随机的「连接被重置」。
@@ -255,13 +276,16 @@ fn handle(
         return;
     };
     let head_only = request.method == "HEAD";
-    let reply = {
-        let mut script = script.lock().expect("脚本锁");
-        if script.len() > 1 {
-            script.remove(0)
-        } else {
-            script[0].clone() // 脚本耗尽后重复最后一条（与 Python 侧 `_scripted` 相同）
+    let reply = match script.as_ref() {
+        Source::Script(script) => {
+            let mut script = script.lock().expect("脚本锁");
+            if script.len() > 1 {
+                script.remove(0)
+            } else {
+                script[0].clone() // 脚本耗尽后重复最后一条（与 Python 侧 `_scripted` 相同）
+            }
         }
+        Source::Respond(responder) => responder(&request),
     };
     requests.lock().expect("请求记录锁").push(request);
     match reply {
@@ -446,13 +470,13 @@ pub fn committed(
     )
 }
 
-/// `batch_head` 的 200 应答（与入参一一对应，`None` 为不存在）。
+/// `batch_head` 的 200 应答（与入参一一对应，`None` 为不存在，线上是 `null`）。
 pub fn heads_reply(heads: &[Option<String>]) -> Reply {
     let items: Vec<Value> = heads
         .iter()
         .map(|head| match head {
             Some(hash) => json!({"doc_hash": hash}),
-            None => json!({}),
+            None => Value::Null,
         })
         .collect();
     Reply::json(200, json!({"heads": items}))
