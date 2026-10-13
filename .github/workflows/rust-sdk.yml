@@ -12,6 +12,18 @@ on:
       - "scripts/pattern_subset.py"
       - "Makefile"
       - ".github/workflows/rust-sdk.yml"
+      # 集成测试的对手（#25）：Python 参考服务端变化时也要重跑 Rust 的 reference job
+      - "sdk/python/packages/dpe-sdk/src/dpe_sdk/**"
+      - "sdk/python/packages/dpe-hash/src/**"
+      - "sdk/python/uv.lock"
+      - "sdk/python/pyproject.toml"
+      - "sdk/python/packages/*/pyproject.toml"
+      # 对等场景的 Python 定义（#25）：一侧场景变了，另一侧要重跑以免悄悄漂移
+      - "sdk/python/packages/dpe-sdk/tests/test_protocol_write_http.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_protocol_staging_http.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_media_http.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_transport_server.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_pusher.py"
   pull_request:
     paths:
       - "sdk/rust/**"
@@ -20,6 +32,18 @@ on:
       - "scripts/pattern_subset.py"
       - "Makefile"
       - ".github/workflows/rust-sdk.yml"
+      # 集成测试的对手（#25）：Python 参考服务端变化时也要重跑 Rust 的 reference job
+      - "sdk/python/packages/dpe-sdk/src/dpe_sdk/**"
+      - "sdk/python/packages/dpe-hash/src/**"
+      - "sdk/python/uv.lock"
+      - "sdk/python/pyproject.toml"
+      - "sdk/python/packages/*/pyproject.toml"
+      # 对等场景的 Python 定义（#25）：一侧场景变了，另一侧要重跑以免悄悄漂移
+      - "sdk/python/packages/dpe-sdk/tests/test_protocol_write_http.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_protocol_staging_http.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_media_http.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_transport_server.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_pusher.py"
   workflow_call:
 
 permissions:
@@ -99,6 +123,34 @@ jobs:
       # 之后（#19），发布顺序由 release-rust.yml 保证（先 dpe-hash 后 dpe-sdk）。
       - name: dpe-sdk 打包面检查（依赖发布前可用）
         run: cargo package --list -p dpe-sdk
+
+  # 对 Python 参考服务端跑同一场景集（#25，北极星重点 2「两个对等 SDK 对同一参考服务端运行
+  # 同一场景集」）：子进程 `python -m dpe_sdk.testing` 由 DPE_REFERENCE_SERVER 给出；
+  # DPE_REFERENCE_REQUIRED=1 让缺命令时直接失败，CI 里不会静默跳过
+  reference:
+    needs: vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+      - uses: astral-sh/setup-uv@v10.2.0  # 与 python-sdk.yml 同版本
+        with:
+          python-version: "3.12"
+      - name: 参考服务端环境
+        working-directory: sdk/python
+        run: uv sync --locked
+      - name: 对参考服务端的集成场景
+        working-directory: sdk/rust
+        env:
+          DPE_REFERENCE_SERVER: uv run --project ../python --frozen python -m dpe_sdk.testing
+          DPE_REFERENCE_REQUIRED: "1"
+        run: >-
+          cargo test --locked -p dpe-sdk
+          --test reference_write --test reference_staging
+          --test reference_media --test reference_transport
+          --test reference_pusher
 
   # 原位重算基准（#19，对等 Python 的 bench job）：只报告、不设门槛，结果写进 job summary
   bench:
