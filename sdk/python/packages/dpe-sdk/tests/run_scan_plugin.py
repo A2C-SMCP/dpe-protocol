@@ -11,14 +11,21 @@
   ``hang`` 中的句柄首次读取挂起，收到 ``cancel`` 后以 -32001 响应；不在 ``blobs`` 中的句柄以
   -32002 拒绝；
 - ``scan_error``：轮首 ``scan`` 以该 JSON-RPC 错误（``{code, message, data?}``）响应；
-- ``record``：文件路径；每个请求的 ``method`` 与 ``params`` 以 JSON 行追加写入，供用例断言。
+- ``record``：文件路径；每个请求的 ``method`` 与 ``params`` 以 JSON 行追加写入，供用例断言；
+- ``stderr``：initialize 时逐行写到 stderr 的文本（可用 ``$NAME`` 引用环境变量，验证脱敏）；
+- ``crash_on_scan``：收到轮首 ``scan`` 时以退出码 3 退出；
+- ``scan_delay``：轮首 ``scan`` 前等待的秒数；
+- ``script``：文件路径；给出时上述配置从该 JSON 文件读取（与 ``script`` 之外的键合并）。命令行
+  测试用它让实例配置保持不变（配置属于内容身份，变化即全量轮）。
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
+import time
 from typing import Any
 
 
@@ -41,6 +48,12 @@ def main() -> None:
                 fh.write(json.dumps({"method": method, "params": params}) + "\n")
         if method == "initialize":
             config = params["instance"]["config"]
+            if "script" in config:
+                with open(config["script"], encoding="utf-8") as fh:
+                    config = {**json.load(fh), **config}
+            for line in config.get("stderr", []):
+                sys.stderr.write(os.path.expandvars(line) + "\n")
+            sys.stderr.flush()
             send(
                 {
                     "jsonrpc": "2.0",
@@ -53,6 +66,10 @@ def main() -> None:
                 }
             )
         elif method == "scan":
+            if "next" not in params and config.get("crash_on_scan"):
+                sys.exit(3)
+            if "next" not in params and config.get("scan_delay"):
+                time.sleep(config["scan_delay"])
             if "next" not in params and config.get("scan_error"):
                 send({"jsonrpc": "2.0", "id": id_, "error": config["scan_error"]})
                 continue

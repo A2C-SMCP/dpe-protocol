@@ -38,6 +38,7 @@ __all__ = [
     "RemoteSpec",
     "check_against_manifest",
     "load_definition",
+    "load_definition_id",
     "parse_definition",
     "resolve_command",
 ]
@@ -212,6 +213,27 @@ def load_definition(path: Path) -> InstanceDefinition:
     except ValueError as exc:
         raise _invalid(str(exc)) from None
     return parse_definition(data, path.absolute().parent)
+
+
+def load_definition_id(path: Path) -> str:
+    """删除（§5.1）只需从实例定义得到 ``id``：仅校验它是嵌套深度不超过上界的 I-JSON 对象、
+    ``definition_version`` 受支持、``id`` 存在且符合文法；其余成员一律不校验（清单丢失、前缀
+    非法或凭证配错的实例也必须能删除）。不满足即 ``definition_invalid``。"""
+    try:
+        data = load_json_file(path)
+    except ValueError as exc:
+        raise _invalid(str(exc)) from None
+    if not isinstance(data, dict):
+        raise _invalid("实例定义必须是 JSON 对象")
+    if dpe_hash.nesting_depth(data) > dpe_hash.MAX_NESTING_DEPTH:
+        raise _invalid(f"实例定义的 JSON 嵌套深度超过 {dpe_hash.MAX_NESTING_DEPTH}（§4.4）")
+    version = data.get("definition_version")
+    if type(version) is not int or version != 1:  # 与完整解析同为严格整数（1.0 不受支持）
+        raise _invalid(f"不支持的 definition_version：{version!r}")
+    instance_id = data.get("id")
+    if not isinstance(instance_id, str) or not _ID.fullmatch(instance_id):
+        raise _invalid(f"id 不合法：{instance_id!r}")
+    return instance_id
 
 
 def check_against_manifest(definition: InstanceDefinition, manifest: Manifest) -> None:

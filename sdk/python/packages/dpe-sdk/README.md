@@ -248,4 +248,20 @@ python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
 - **一轮**（`run_round`，§6.4–§6.8）：按批 `scan`、逐条校验（封闭 schema、前缀、元素线格式、分段）、读取 blob（分块 `read_blob` 落本地暂存后上传）、按流中顺序分波次落地（波内 URI 两两不同，链式 move 自动拆开）；冲突按 `conflict_policy` 重读重提，本轮至多 2 次，绝不 force；结果为 `succeeded` / `partial` / `failed` 三态并带 `incremental`，只有整轮全部落地才持久化游标（fail-closed）。
 - **保存失败**（#137）：本次调用内只要推送器有过一次保存失败，本轮即失败、游标不推进（无更早的终止失败时为 `state_unavailable`）；结束前照常用同一推送器实例补存（有限次、短退避），补存只为让磁盘与内存一致、成败都不改变本轮结果，补存失败单独记一条。补存成功前进程退出时磁盘上可能残留过期意图，下一次调用会读回——风险与 §7.2 接受的崩溃窗口相同。
 
-> `dpe-run` 命令行（实例级校验流、轮报告、结构化日志与退出码，§7.4–§7.6）与示例插件尚在开发中（#52 Part 2、#53）。
+### 命令行 `dpe-run`（#52 Part 2）
+
+```bash
+dpe-run [--state-dir DIR] instance.json            # 同步一轮（每次调用至多一轮，§5.2）
+dpe-run [--state-dir DIR] --delete instance.json   # 删除实例：注销登记、丢弃本地状态，不碰 remote（§5.1）
+python -m dpe_sdk.run ...                           # 等价入口
+```
+
+- **同步一轮**：解析实例定义 → 取实例锁（取不到退出 4）→ 本地可判定的实例级校验（清单、配置 schema、`runner` 调优参数、remote 凭证引用、插件凭证与命令）→ 读实例状态 → 前缀登记（重叠检查先于任何网络请求）→ 写入内容身份指纹 → 取 remote 能力（401、不兼容为已登记实例的实例级失败）→ 按 §4.3 构造的环境启动插件并握手 → 跑一轮。stdout 恰好输出一行 §7.4 轮报告；stderr 输出 §7.5 NDJSON 日志（`item.failed` 的失败元素嵌套在 `failure` 里）；凭证值在报告与日志中一律脱敏。
+- **退出码**（§7.6）：`succeeded` 0、`partial` 1、轮级或协议级 `failed`（含 `state_unavailable`）2、实例级 `failed` 3、`instance_busy` 4、用法错误 64（不输出报告）；运行器自身的未预期异常为 70（仍尽力输出 failed 报告）；轮报告本身写不出时为 74。
+- **删除**（#147）：只从定义取 `id`（校验 I-JSON、`definition_version` 与 `id` 文法，其余成员一律不查——清单丢失、前缀已重叠或状态内容损坏的实例也能删）；先取锁；不解析状态内容，移除状态后最后移除登记；幂等（无可删除的状态同样退出 0，`instance.deleted` 的 `found` 为 `false`）；不读写 remote；不输出轮报告，退出码 0 / 2 / 3 / 4 / 70。删除一个从未运行过的 `id` 时会留下它的排他锁文件（`instances/<id>/lock`，规范允许保留）。
+- **实例级校验与登记顺序**（§5.2）：清单、配置、调优参数与凭证都通过之后才读实例状态、登记前缀并写入内容身份指纹，未通过校验的新实例不留下任何状态；取锁后、读到状态前就结束的调用 `cursor_held_since` 为 `null`。
+- **`runner` 调优键**：`max_items`、`scan_timeout`、`blob_timeout`、`max_message_bytes`、`conflict_retries`（0–2）、`state_retries`；不认识的键忽略。
+- `remote.url` 目前按字面比较（§3），可判定文法待 #112。
+- **规范依据**：删除、`item.failed` 的 `failure` 嵌套与 `runner_internal_error` 见 #147（PR #150，已合入）。
+
+> 示例插件与端到端收敛测试尚在开发中（#53）。
