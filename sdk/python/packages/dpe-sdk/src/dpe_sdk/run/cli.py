@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import os
 import sys
 import traceback
@@ -121,8 +122,8 @@ def main(
     environ: Mapping[str, str] | None = None,
 ) -> int:
     """命令行入口；返回退出码（§7.6）。"""
-    out = stdout or sys.stdout
-    err = stderr or sys.stderr
+    out = stdout or _utf8_lf(sys.stdout)
+    err = stderr or _utf8_lf(sys.stderr)
     env = os.environ if environ is None else environ
     parser = _parser()
     try:
@@ -139,12 +140,23 @@ def main(
     except _ReportUnwritable:
         return EXIT_REPORT_UNWRITABLE
     except Exception as exc:
-        # 锁外的缺陷：traceback 只进日志（脱敏、单行）；同步一轮仍尽力输出 failed 报告（§7.4
-        # 「每次调用恰好一个报告」不因缺陷豁免，#147），删除不输出报告
+        # 进入 _sync 之前（状态目录定位）或其收尾本身的缺陷，以及删除流程的缺陷：traceback 只进
+        # 日志（单行）；同步一轮仍尽力输出 failed 报告（§7.4「每次调用恰好一个报告」不因缺陷
+        # 豁免，#147），删除不输出报告。定义解析之后的缺陷由 _sync 自己收尾（带实例信息与脱敏器）
         _log_crash(NdjsonLog(err), exc)
         if not args.delete and not _report_crash(out, exc):
             return EXIT_REPORT_UNWRITABLE
         return EXIT_SOFTWARE
+
+
+def _utf8_lf(stream: IO[str]) -> IO[str]:
+    """把标准流固定为 UTF-8、LF 换行（§7.4 报告「UTF-8，LF 结尾」，§7.5 日志同样逐行解析）：
+    不随平台 locale、``PYTHONIOENCODING`` 改变编码，Windows 文本模式也不把 ``\n`` 转成
+    ``\r\n``。无法编码的字符（如文件名里的孤立代理项）转为反斜杠转义——输出仍是合法 UTF-8 与
+    合法 JSON，报告不会因此写不出。"""
+    if isinstance(stream, io.TextIOWrapper):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace", newline="\n")
+    return stream
 
 
 # ---------------------------------------------------------------------- 运行器调优参数
@@ -239,30 +251,54 @@ def _finish(result: _Outcome, out: IO[str]) -> int:
     return exit_code(result.outcome, result.fatal)
 
 
+def _failed(result: _Outcome, log: NdjsonLog, failure: RunFailure) -> None:
+    log.failure(failure)
+    result.failures.append(failure)
+    result.fatal = failure
+    result.outcome = "failed"
+
+
 async def _sync(
     path: Path, directory: StateDirectory, environ: Mapping[str, str], out: IO[str], err: IO[str]
 ) -> int:
+    """同步一轮，并自己收尾：运行器缺陷（含锁外的，如取锁时的未预期异常）同样带着已解析的
+    实例信息、经已扩展凭证的脱敏器记日志，输出 failed 报告后以 70 退出。"""
     result = _Outcome(started_at=utc_now())
     log = NdjsonLog(err)
+    try:
+        crashed = await _sync_steps(path, directory, environ, result, log)
+    except Exception as exc:
+        crashed = True
+        _log_crash(log, exc)
+        _failed(result, log, _internal_error(exc))
+    code = _finish(result, out)
+    return EXIT_SOFTWARE if crashed else code
+
+
+async def _sync_steps(
+    path: Path,
+    directory: StateDirectory,
+    environ: Mapping[str, str],
+    result: _Outcome,
+    log: NdjsonLog,
+) -> bool:
+    """同步一轮的各步，结果记在 ``result`` 上；返回锁内是否发生过运行器缺陷。"""
 
     def failed(failure: RunFailure) -> None:
-        log.failure(failure)
-        result.failures.append(failure)
-        result.fatal = failure
-        result.outcome = "failed"
+        _failed(result, log, failure)
 
     try:
         definition = load_definition(path)
     except InstanceFailure as failure:
         failed(failure)
-        return _finish(result, out)
+        return False
     result.definition = definition
     log.instance = definition.id
     try:
         lock = directory.lock_instance(definition.id)
     except RoundFailure as failure:
         failed(failure)  # instance_busy 或状态目录故障：未取得锁，不读写 held 记录
-        return _finish(result, out)
+        return False
     crashed = False
     with lock:
         try:
@@ -292,8 +328,7 @@ async def _sync(
                     "counts": result.counts.as_dict(),
                 },
             )
-    code = _finish(result, out)
-    return EXIT_SOFTWARE if crashed else code
+    return crashed
 
 
 def _report_crash(out: IO[str], exc: BaseException) -> bool:
@@ -445,7 +480,10 @@ async def _run_locked(
                 counts=result.counts,
                 failures=result.failures,
             )
-            # 一返回就入账：此后关闭插件或客户端时的失败不得抹掉本轮已落盘的结果
+            # 一返回就入账。此后关闭插件或客户端时才出的缺陷（W1，口径待规范澄清 #155）：
+            # outcome 改记 failed、退出 70，但本轮已落盘的事实照实报告——counts、
+            # cursor_persisted（游标确已持久化）与 run_round 算出的 cursor_held_since 都保留，
+            # 不再改写 held 记录；日志里 run_round 已发出的 round.finished 也不补发第二条
             result.round_finished = True
             result.started_at = round_result.started_at
             result.outcome = round_result.outcome

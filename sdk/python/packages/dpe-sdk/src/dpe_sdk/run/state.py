@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import errno
 import hashlib
 import json
 import os
@@ -96,8 +97,11 @@ def _try_lock(handle: IO[bytes]) -> bool:
 
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            return False
+        except OSError as exc:
+            # 只有这两个码表示「已被他人持有」；其余 I/O 错误交给调用方归为 state_unavailable
+            if exc.errno in (errno.EACCES, errno.EDEADLK):
+                return False
+            raise
         return True
     import fcntl
 

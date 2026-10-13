@@ -470,6 +470,9 @@ class _Round:
             return await run(keys)
         except RunFailure as failure:
             if failure.code == "state_unavailable":
+                # 因持久化失败而中止的这次调用：推送器整批报错，其涉及的全部条目（含判定阶段已
+                # 得出结论的）都不计入 counts、也不列入 failures；此前已完成的调用照常计入
+                # （§7.2 修订口径，TODO(#155)：规范修订合入后改为引用正文）
                 self.save_failed = True
             raise
         except Exception as exc:
@@ -826,6 +829,7 @@ async def run_round(
             # failures，只记日志（§7.2）
             failure.redact(state.redact)
             state.emit("state.held_write_failed", "warn", {"failure": failure.to_report()})
+    # 新游标与已持久化的值相同（未重写）同样算已持久化：磁盘上本来就是它（§7.4 澄清，#155）
     cursor_persisted = outcome == "succeeded" and new_cursor is not None
 
     level: LogLevel = "info"

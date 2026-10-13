@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from dpe_sdk.models import Document
@@ -598,7 +598,9 @@ def test_failed_validation_does_not_register_the_prefix(instance: Instance) -> N
 def test_crash_after_the_round_keeps_its_results(
     instance: Instance, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """一轮已正常收尾、关闭插件时才出缺陷：报告保留本轮计数与已持久化的游标，不改写 held。"""
+    """一轮已正常收尾、关闭插件时才出缺陷：outcome 记 failed、退出 70，但已落盘的事实照实报告——
+    counts、cursor_persisted: true、run_round 算出的 cursor_held_since（null）——不改写 held，
+    round.finished 不补发第二条。这组取值是有意的（规范未覆盖的边界，口径待规范澄清）。"""
     from dpe_sdk.run import PluginHost
 
     async def broken_exit(self: PluginHost, *exc: object) -> None:
@@ -608,9 +610,11 @@ def test_crash_after_the_round_keeps_its_results(
     instance.script({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
     run = _main_in_process(instance)
     assert run.code == 70
+    assert run.report["outcome"] == "failed" and run.codes() == ["runner_internal_error"]
     assert run.report["counts"]["created"] == 1 and run.report["cursor_persisted"] is True
     assert run.report["cursor_held_since"] is None
-    assert "runner_internal_error" in run.codes()
+    finished = run.events("round.finished")
+    assert [entry["outcome"] for entry in finished] == ["succeeded"]  # 轮本身确已成功收尾
     assert StateDirectory(instance.state).open_instance("inst", _identity(instance)).cursor == "c1"
 
 
@@ -708,3 +712,137 @@ def test_crash_mid_round_reports_what_already_happened(
 def test_delete_requires_an_integer_definition_version(instance: Instance) -> None:
     run = _delete_with(instance, {"definition_version": 1.0, "id": "inst"})
     assert run.code == 3
+
+
+# ---------------------------------------------------------------------- 输出编码（§7.4）
+
+
+def test_report_and_logs_are_utf8_lf_regardless_of_locale(instance: Instance) -> None:
+    """标准流的编码被设成 latin-1（模拟 Windows / 非 UTF-8 locale）：中文 message 的失败轮仍输出
+    UTF-8、LF 结尾的单行报告，不因编码失败退出 74；stderr 的日志同样是 UTF-8 NDJSON。"""
+    error = {"kind": "error", "code": "internal", "message": "源端读取失败", "retryable": False}
+    instance.script({"batches": [[error]]})
+    proc = subprocess.run(
+        instance.command(),
+        capture_output=True,
+        env={**instance.environ, "PYTHONIOENCODING": "latin-1"},
+        timeout=60,
+    )
+    assert proc.returncode == 1, proc.stderr
+    assert proc.stdout.endswith(b"\n") and b"\r" not in proc.stdout
+    run = Run(proc.returncode, proc.stdout.decode("utf-8"), proc.stderr.decode("utf-8"))
+    assert run.report["failures"][0]["message"] == "源端读取失败"
+    assert b"\r" not in proc.stderr
+    assert run.events("item.failed")[0]["failure"]["message"] == "源端读取失败"
+
+
+# ---------------------------------------------------------------------- 审查补充（#153）
+
+
+def test_crash_outside_the_lock_keeps_the_instance_details(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """定义已解析、取锁时出运行器缺陷：由同步流程自己收尾，报告带实例与 remote 信息。"""
+
+    def broken(self: StateDirectory, instance_id: str) -> Any:
+        raise RuntimeError("取锁时的缺陷")
+
+    monkeypatch.setattr(StateDirectory, "lock_instance", broken)
+    run = _main_in_process(instance)
+    assert run.code == 70 and run.codes() == ["runner_internal_error"]
+    assert run.report["instance"] == {"id": "inst", "uri_prefix": P}
+    assert run.report["remote_url"] == instance.definition["remote"]["url"]
+    assert run.report["cursor_held_since"] is None  # 未取得锁：不读写 held 记录
+    crashed = run.events("runner.crashed")
+    assert len(crashed) == 1 and crashed[0]["instance"] == "inst"
+
+
+def test_new_instance_rejected_for_overlap_leaves_nothing_behind(
+    tmp_path: Path, server: dict[str, Any]
+) -> None:
+    """全新实例因前缀重叠被拒：cursor_held_since 为 null，不写 state.json，登记里没有它。"""
+    state = tmp_path / "state"
+    assert Instance(tmp_path, server["url"], state, "first").run({"batches": [[]]}).code == 0
+    second = Instance(tmp_path, server["url"], state, "second")
+    second.definition["uri_prefix"] = P + "sub/"
+    run = second.run({"batches": [[]]})
+    assert run.code == 3 and run.codes() == ["definition_invalid"]
+    assert run.report["cursor_held_since"] is None
+    assert not (state / "instances" / "second" / "state.json").exists()
+    assert "second" not in json.loads((state / "registry.json").read_text())["instances"]
+
+
+def test_runner_internal_error_takes_precedence_over_round_level(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一调用里既有轮级失败（插件崩溃）又有运行器缺陷：退出 70（§7.6），两条失败都列出。"""
+    from dpe_sdk.run import PluginHost
+
+    async def broken_exit(self: PluginHost, *exc: object) -> None:
+        raise RuntimeError("关闭插件时的缺陷")
+
+    monkeypatch.setattr(PluginHost, "__aexit__", broken_exit)
+    instance.script({"batches": [[]], "crash_on_scan": True})
+    run = _main_in_process(instance)
+    assert run.code == 70
+    assert run.codes() == ["plugin_crashed", "runner_internal_error"]
+
+
+def test_delete_with_a_corrupt_registry_is_state_unavailable(instance: Instance) -> None:
+    assert instance.run({"batches": [[]]}).code == 0
+    (instance.state / "registry.json").write_text("{broken", encoding="utf-8")
+    run = instance.run(None, "--delete")
+    assert run.code == 2 and run.stdout == ""
+    failure = run.events("item.failed")[0]["failure"]
+    assert failure["code"] == "state_unavailable" and failure["retryable"] is False
+
+
+class _Recording(BaseHTTPRequestHandler):
+    """记录收到的每个请求（删除不得读写 remote）。"""
+
+    seen: ClassVar[list[str]] = []
+
+    def _record(self) -> None:
+        type(self).seen.append(f"{self.command} {self.path}")
+        self.send_response(500)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = do_PUT = do_HEAD = do_DELETE = _record
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+def test_delete_never_contacts_the_remote(tmp_path: Path, server: dict[str, Any]) -> None:
+    instance = Instance(tmp_path, server["url"], tmp_path / "state")
+    assert instance.run({"batches": [[doc_item("a.md", "A")]]}).code == 0
+    _Recording.seen = []
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Recording)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+    worker.start()
+    try:
+        instance.definition["remote"]["url"] = f"http://127.0.0.1:{httpd.server_address[1]}/r/1"
+        run = instance.run(None, "--delete")
+    finally:
+        httpd.shutdown()
+    assert run.code == 0 and run.events("instance.deleted")[0]["found"] is True
+    assert _Recording.seen == []
+
+
+def test_lock_io_error_is_state_unavailable(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """取锁的 I/O 错误（不是被占用）：state_unavailable、退出 2，不当作 instance_busy（§5.2）。"""
+    import errno
+
+    from dpe_sdk.run import state as state_module
+
+    def no_locks(handle: object) -> bool:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(state_module, "_try_lock", no_locks)
+    instance.script({"batches": [[]]})
+    run = _main_in_process(instance)
+    assert run.code == 2 and run.codes() == ["state_unavailable"]
+    assert run.report["cursor_held_since"] is None
