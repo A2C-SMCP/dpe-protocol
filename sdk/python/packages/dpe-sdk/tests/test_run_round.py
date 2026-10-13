@@ -1312,3 +1312,103 @@ async def test_mixed_probe_outcomes_abort_the_round_without_writes(tmp_path: Pat
         assert result.fatal is not None and result.fatal.code == "remote_unavailable"
         assert codes(result) == ["remote_unavailable"]  # 读被拒的结论未提前入账
         assert result.counts.created == 0
+
+
+# ---------------------------------------------------------------------- 响应不是 DPE 报文（#137）
+
+
+def _bare(status: int, **headers: str) -> Callable[[httpx.Request], httpx.Response]:
+    """无 problem 体、无 DPE-Error-Code 的响应（网关、代理、错配的 remote）。"""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, headers=headers, text="<html>gateway</html>", request=request)
+
+    return respond
+
+
+@pytest.mark.parametrize(
+    ("target", "respond", "retryable"),
+    [
+        ("capabilities", _bare(404), False),
+        ("heads", _bare(302, location="http://elsewhere.test/"), False),  # 不跟随重定向
+        ("heads", _bare(502), True),
+    ],
+)
+async def test_non_dpe_responses_are_round_level_protocol_errors(
+    tmp_path: Path,
+    target: str,
+    respond: Callable[[httpx.Request], httpx.Response],
+    retryable: bool,
+) -> None:
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        made[0].fail = lambda request: (
+            respond(request) if request.url.path.endswith(f"/{target}") else None
+        )
+        result = await h.round({"batches": [[doc_item("a.md", "A"), doc_item("b.md", "B")]]})
+    assert result.outcome == "failed" and result.counts.failed == 0  # 不落到条目级
+    assert result.fatal is not None
+    assert (result.fatal.level, result.fatal.code, result.fatal.source) == (
+        "round",
+        "remote_protocol_error",
+        "remote",
+    )
+    assert result.fatal.retryable is retryable
+    assert "HTTP" in result.fatal.message
+
+
+async def test_non_dpe_write_response_keeps_the_intent(tmp_path: Path) -> None:
+    """写请求得到 2xx 却不是 DPE 报文：结果未知，意图保留；本轮 remote_protocol_error、不可重试。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        html = _bare(200, **{"content-type": "text/html"})
+        made[0].fail = lambda request: html(request) if _is_commit(request) else None
+        result = await h.round({"batches": [[doc_item("a.md", "A")]]})
+        assert result.fatal is not None and result.fatal.code == "remote_protocol_error"
+        assert result.fatal.retryable is False
+        assert h.store is not None
+        snapshot = h.store.load(REMOTE)
+        assert snapshot is not None and snapshot.intents == {P + "a.md": expected("A")}
+
+
+async def test_non_dpe_response_while_localizing_is_round_level(tmp_path: Path) -> None:
+    """批量读被确定拒绝后逐条定位，单篇 head 得到裸 404：轮级 remote_protocol_error，不落到条目。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        forbidden, bare = _problem(403, "DPE_FORBIDDEN"), _bare(404)
+
+        def respond(request: httpx.Request) -> httpx.Response | None:
+            if _is_heads(request):
+                return forbidden(request)
+            if request.method == "HEAD":
+                return bare(request)
+            return None
+
+        made[0].fail = respond
+        result = await h.round({"batches": [[doc_item("a.md", "A"), doc_item("b.md", "B")]]})
+    assert result.fatal is not None and result.fatal.code == "remote_protocol_error"
+    assert result.counts.failed == 0 and result.counts.created == 0
+
+
+async def test_bare_5xx_on_a_write_is_retryable_and_keeps_the_intent(tmp_path: Path) -> None:
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        gateway = _bare(502)
+        made[0].fail = lambda request: gateway(request) if _is_commit(request) else None
+        result = await h.round({"batches": [[doc_item("a.md", "A")]]})
+        assert result.fatal is not None and result.fatal.code == "remote_protocol_error"
+        assert result.fatal.retryable is True and "502" in result.fatal.message
+        assert h.store is not None
+        snapshot = h.store.load(REMOTE)
+        assert snapshot is not None and snapshot.intents == {P + "a.md": expected("A")}
+
+
+async def test_bare_response_on_a_delete_is_round_level(tmp_path: Path) -> None:
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("d.md", "D")]]})
+        bare = _bare(404)
+        made[0].fail = lambda request: bare(request) if _is_delete(request) else None
+        result = await h.round({"batches": [[{"kind": "delete", "file_uri": P + "d.md"}]]})
+    assert result.fatal is not None and result.fatal.code == "remote_protocol_error"
+    assert result.fatal.retryable is False and result.counts.failed == 0

@@ -20,12 +20,15 @@ remote 值作 ``expected_base`` 重提（文档已不存在即 ``if_absent`` 复
 冲突、move 的目标被占与源已不存在为条目失败（``retryable: false``）。**绝不 force**，失败的 move
 不退化为「在目标上 commit、再删除源」。
 
-**远端失败分层**（§7.1）：401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级
-``remote_incompatible``；结果未知、可重试 DPE 错误重试耗尽、网络失败 → 轮级 ``remote_unavailable``
-（本轮作废）；写入、``batch_head`` 与冲突后重读得到的其余确定 DPE 错误 → 条目级（source
-``remote``，``code`` 原样；只有不可重试的错误落到条目级，``retryable`` 即 false）。能力获取在
-轮首、推送器调用之外完成，它与条目无关：其余确定错误归轮级、code 原样、不可重试（§7.1、
-§7.4，#137）。
+**远端失败分层**（§7.1）：
+- 401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级 ``remote_incompatible``；
+- 响应不是 DPE 报文（无 problem 体也无 ``DPE-Error-Code`` 的非 2xx，含 3xx；或 2xx 报文
+  不合规）→ 轮级 ``remote_protocol_error``（只有 5xx 可重试）；
+- 结果未知、可重试 DPE 错误重试耗尽、网络失败 → 轮级 ``remote_unavailable``（本轮作废）；
+- 写入、``batch_head`` 与冲突后重读得到的其余确定 DPE 错误 → 条目级（source ``remote``，
+  ``code`` 原样；只有不可重试的错误落到条目级，``retryable`` 即 false）；
+- 能力获取在轮首、推送器调用之外完成，它与条目无关：其余确定错误归轮级、code 原样、不可重试
+  （§7.1、§7.4，#137）。
 
 **本地状态**（#137）：状态目录读写失败是轮级 ``state_unavailable``。本次调用内只要推送器有过
 一次保存失败（写前或收尾的 ``save``），本轮即失败、游标不推进（此前没有其他终止失败时，
@@ -189,9 +192,20 @@ def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
     if isinstance(exc, IncompatibleServerError | ContractUnsupportedError):
         # remote 不支持运行器可用的协议或 hash 契约：不改动实例就无法恢复（§7.1 实例级）
         return InstanceFailure("remote_incompatible", f"remote 不兼容：{exc}", source="remote")
-    if isinstance(exc, UnexpectedResponseError) and exc.status == 401:
-        return InstanceFailure(
-            "remote_unauthorized", "remote 拒绝凭证（HTTP 401）", source="remote"
+    if isinstance(exc, UnexpectedResponseError):
+        if exc.status == 401:
+            return InstanceFailure(
+                "remote_unauthorized", "remote 拒绝凭证（HTTP 401）", source="remote"
+            )
+        # 响应不是 DPE 报文（§7.1、§7.4，#137）：非 2xx 且既无 problem 体也无 DPE-Error-Code
+        # 头（含不跟随的 3xx 重定向），或 2xx 报文不合规。只有 5xx 可重试。写请求遇到它时结果
+        # 未知，推送器已按 outcome_unknown 保留意图；这里只决定本轮如何终止
+        return RoundFailure(
+            "remote_protocol_error",
+            # 只带状态码：SDK 的说明里可能内嵌远端响应体片段（如校验回显），不进报告与日志
+            f"remote 的响应不是 DPE 报文（HTTP {exc.status}）",
+            source="remote",
+            retryable=500 <= exc.status < 600,
         )
     if isinstance(exc, DpeError) and not unknown and not exc.retryable:
         return ItemFailure(exc.code, str(exc), source="remote", retryable=False)
@@ -201,8 +215,9 @@ def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
 
 
 async def _negotiate(client: AsyncDpeClient) -> None:
-    """取得 remote 能力（§7.1）：401 / 不兼容为实例级，网络失败与可重试错误耗尽为轮级可重试；
-    其余确定错误（如凭证缺权限得 403）与任何条目无关，归轮级、code 原样、不可重试。"""
+    """取得 remote 能力（§7.1）：401 / 不兼容为实例级；响应不是 DPE 报文为轮级
+    ``remote_protocol_error``；网络失败与可重试错误耗尽为轮级可重试；其余确定错误（如凭证缺权限
+    得 403）与任何条目无关，归轮级、code 原样、不可重试。"""
     try:
         await client.core()
     except Exception as exc:
@@ -438,7 +453,7 @@ class _Round:
     ) -> list[PushResult]:
         """以 ``run(keys)`` 调用推送器。写入的失败都在回报里；能力已在轮首取得，推送器只会因
         ``batch_head`` 或状态保存而抛出，所以按读来归类（``unknown=False``——「写入结果未知」
-        对读没有意义）：网络失败与可重试错误耗尽终止本轮（轮级）。
+        对读没有意义）：网络失败、可重试错误耗尽与响应不是 DPE 报文都终止本轮（轮级）。
 
         批量读被确定、不可重试地拒绝时**逐条定位**（§7.1，#137）：对每个条目涉及的 URI 各
         ``head`` 一次（有界并发），只给读被拒的条目记条目级失败，其余条目再以**一次**推送器调用
@@ -512,7 +527,7 @@ class _Round:
 
     async def _probe(self, uris: dict[str, str | None]) -> tuple[ItemFailure | None, int]:
         """逐个 ``head`` 条目涉及的 URI：返回（读被确定拒绝的失败或 ``None``，实际 head 次数）；
-        网络类失败上抛。"""
+        网络类失败与响应不是 DPE 报文（轮级）上抛。"""
         sent = 0
         for uri in uris.values():
             if uri is None:
@@ -648,7 +663,8 @@ class _Round:
             if result.remote is None:
                 # 冲突后重读失败：无从按策略重判定
                 assert result.remote_error is not None
-                # 重读是读操作：确定错误落到该条目，网络失败与可重试错误耗尽才是轮级
+                # 重读是读操作：确定错误落到该条目；网络失败、可重试错误耗尽与响应不是 DPE 报文
+                # 才是轮级
                 return self.fail(_classify_remote(result.remote_error, unknown=False), uris)
             code = _cas_code(result, "DPE_PRECONDITION_FAILED")
             if policy == "report":
