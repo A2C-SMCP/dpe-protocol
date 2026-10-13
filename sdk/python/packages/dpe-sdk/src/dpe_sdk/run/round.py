@@ -58,7 +58,6 @@ from datetime import UTC, datetime
 from functools import partial
 from typing import Any, Literal, TypeVar
 
-import dpe_hash
 import httpx
 from dpe_hash import DpeHashError
 
@@ -219,23 +218,6 @@ def _cas_code(result: PushResult, fallback: str) -> str:
     """冲突与 move 条目失败的码：有服务端裁决取其原码，写前判定取同义的 DPE 码。"""
     error = result.error
     return error.code if isinstance(error, DpeError) else fallback
-
-
-def _achieved_on_reread(result: PushResult, document: Document | None) -> bool:
-    """冲突后的重读是否已是目标状态（§7.2 冲突处置表，与策略无关）：commit 的重读值等于本次
-    提交内容、delete 的重读为「不存在」。"""
-    remote = result.remote
-    if result.status != "conflict" or remote is None:
-        return False
-    if result.op == "delete":
-        return remote.doc_hash is None
-    if result.op != "commit" or remote.doc_hash is None or document is None:
-        return False
-    try:
-        contract, _ = dpe_hash.parse_hash(remote.doc_hash)
-    except DpeHashError:
-        return False
-    return document.doc_hash(contract) == remote.doc_hash
 
 
 # ---------------------------------------------------------------------- 落地波次
@@ -475,7 +457,7 @@ class _Round:
             rejected = _classify_remote(exc, unknown=False)
         if not isinstance(rejected, ItemFailure):
             raise rejected
-        # TODO(逐条定位下沉到推送器，后续 Issue 待开): 推送器在 batch_head 被确定拒绝时自行逐 URI
+        # TODO(#145): 推送器在 batch_head 被确定拒绝时自行逐 URI
         # head、把读被拒的条目作为 failed 结果返回（两个 SDK 一起改）之后，删除这里的运行器层
         # 定位（_probe / _record_item 的降级分支），call 随之简化为只处理状态保存与轮级失败。
         if len(keys) > 1 and localize:
@@ -600,8 +582,7 @@ class _Round:
                     list(commits),
                     _file_uri,
                 ):
-                    achieved = _achieved_on_reread(result, commits[result.file_uri])
-                    settled = self.settle(result, self.policy.commit, attempts, achieved=achieved)
+                    settled = self.settle(result, self.policy.commit, attempts)
                     if isinstance(settled, RunFailure):
                         fatal = fatal or settled
                     elif settled is not None:
@@ -611,8 +592,7 @@ class _Round:
                 for result in await self.call(
                     partial(self._delete_subset, delete_base), list(deletes), _file_uri
                 ):
-                    achieved = _achieved_on_reread(result, None)
-                    settled = self.settle(result, self.policy.delete, attempts, achieved=achieved)
+                    settled = self.settle(result, self.policy.delete, attempts)
                     if isinstance(settled, RunFailure):
                         fatal = fatal or settled
                     elif settled is not None:
@@ -639,15 +619,12 @@ class _Round:
         result: PushResult,
         policy: Literal["source_wins", "report"],
         attempts: dict[str, int],
-        *,
-        achieved: bool = False,
     ) -> _Settled:
         """一条推送结果入账：已入账返回 ``None``；需要重提时返回 ``_Retry``；终止本轮的失败作为
         返回值交给调用方，在本波全部结果入账后抛出。
 
-        ``achieved``：冲突后的重读已是目标状态（§7.2 的「已达成」行，先于策略）。此时以重读值
-        经推送器重提——推送器判定表判已达成、确认同步状态、不发写；期间若又被改写则回到冲突
-        路径，同样受重提上限约束。
+        §7.2 冲突处置表中与策略无关的「已达成」行（commit 重读等于本次内容、delete 重读不存在）
+        由推送器在写后冲突重读时判定（#140），这里收到的 ``conflict`` 都是真正的冲突。
         """
         uris: dict[str, str | None] = {"file_uri": result.file_uri}
         if result.op == "move":
@@ -674,15 +651,13 @@ class _Round:
                 # 重读是读操作：确定错误落到该条目，网络失败与可重试错误耗尽才是轮级
                 return self.fail(_classify_remote(result.remote_error, unknown=False), uris)
             code = _cas_code(result, "DPE_PRECONDITION_FAILED")
-            if policy == "report" and not achieved:
+            if policy == "report":
                 return self.fail(
                     ItemFailure(code, "写入冲突（conflict_policy 为 report）", source="remote"),
                     uris,
                 )
             used = attempts.get(result.file_uri, 0)
-            # 已达成只需一次不发写的确认，可越过重提上限一次（仍有界：确认期间又被改写则失败）
-            limit = self.options.conflict_retries + (1 if achieved else 0)
-            if used >= limit:
+            if used >= self.options.conflict_retries:
                 return self.fail(
                     ItemFailure(
                         code,
