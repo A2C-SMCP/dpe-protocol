@@ -1,6 +1,6 @@
 # DPE Connector 契约
 
-> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点，经 Issue #105 补充 §6.3 的插件进程组清理），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集，经 Issue #95 同步 §6.6 的 `file_type` 语法措辞，经 Issue #94 将 §4.1 / §4.4 的 JSON 嵌套深度统一为 core.md §2.8 的计数口径，经 Issue #137 补充 §4.4 / §5.2 / §6.8 / §7.1–§7.4 / §7.6 / §8 的运行器本地状态故障）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
+> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点，经 Issue #105 补充 §6.3 的插件进程组清理），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集，经 Issue #95 同步 §6.6 的 `file_type` 语法措辞，经 Issue #94 将 §4.1 / §4.4 的 JSON 嵌套深度统一为 core.md §2.8 的计数口径，经 Issue #137 补充 §4.4 / §5.2 / §6.8 / §7.1–§7.4 / §7.6 / §8 的运行器本地状态故障，经 Issue #147 补充 §5.1 / §7.4–§7.6 / §8.4 的删除操作、`item.failed` 的嵌套与运行器内部缺陷）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
 > 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §11。
 > 这是独立的中立规范，**不属于 Core**：核心投递协议完全不知道 connector 的存在（类比 git 与 remote-helper）。
 > Issue #2 已关闭：平台不引入 connector 运行环境，connector 由用户自行开发、自行部署；托管运行若将来需要，另立独立产品。v1 官方 connector 只有 Git connector（本仓 `connectors/git/`）。
@@ -237,9 +237,9 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 - **状态目录**：独立运行器 MUST 把每个实例的本地状态（游标缓存、同步状态与意图日志（§7.2）、内容身份指纹与排他锁）按 `id` 存放在一个状态目录中；状态目录的位置由运行器实现决定，SHOULD 可由调用方指定。同一状态目录中登记过的实例就是该独立运行器「管理的实例」：`id` 在其中唯一，§3 的前缀不重叠也在其中检查——启动实例时，运行器 MUST 把它的 `remote.url` 与 `uri_prefix` 同状态目录中其余实例的登记比较，重叠即拒绝（`definition_invalid`）。登记与重叠检查 MUST 原子完成（如在状态目录级的锁内进行），以免两个前缀重叠的新实例同时首次启动时都通过检查。**状态目录故障**（本条是状态读写失败的分类依据，其余章节引用本条）：
   - **原子写入**：状态的每次写入 MUST 原子替换（如先写临时文件再改名），使任何一次写入失败或进程崩溃后，状态目录中留下的都是某次完整写入的结果。
   - **缺失**：状态中某一项不存在（首次运行、已按 §5.1 删除，或尚未写入过，如 `partial` 轮之后没有游标）即该项缓存丢失，按其各自的规则处理：无游标以全量轮开始（§6.8），同步状态中无条目即无 L（§7.2），无内容身份指纹见下条。
-  - **读取失败与内容损坏**：读取状态（含取锁、其他实例的登记）时发生 I/O 错误（如权限不足、目录不可达），MUST 以 `state_unavailable` 结束，`retryable: true`；读取成功但内容无法解析或不符合该项的预期结构，即内容损坏，MUST 以 `state_unavailable` 结束，`retryable: false`。二者都 MUST NOT 当作缓存丢失——否则一次故障会被静默降级为全量轮，以空状态覆盖既有的同步状态与意图日志，或让前缀重叠检查（§3）失效。内容损坏重跑不会自愈：由使用者检查后按 §5.1 删除损坏内容所属实例的状态，以全量轮重建。
+  - **读取失败与内容损坏**：读取状态（含取锁、其他实例的登记）时发生 I/O 错误（如权限不足、目录不可达），MUST 以 `state_unavailable` 结束，`retryable: true`；读取成功但内容无法解析或不符合该项的预期结构，即内容损坏，MUST 以 `state_unavailable` 结束，`retryable: false`。二者都 MUST NOT 当作缓存丢失——否则一次故障会被静默降级为全量轮，以空状态覆盖既有的同步状态与意图日志，或让前缀重叠检查（§3）失效。内容损坏重跑不会自愈：由使用者检查后按 §5.1 删除损坏内容所属实例的状态，以全量轮重建；损坏的是不属于单个实例的共享内容（如共享存放的登记）时，§5.1 删除同样无法完成，由使用者按运行器实现提供的方式修复或清空状态目录，再以全量轮重建各实例。
   - **写入失败**：启动阶段（启动插件之前）的写入——取锁、登记、内容身份切换时丢弃游标与同步状态、内容身份指纹——失败时 MUST NOT 启动插件，以 `state_unavailable` 结束（`retryable: true`）；轮中与收尾的写入失败何时使本轮失败、何时须补存，由 §7.2 规定。
-- **内容身份指纹**：运行器 MUST 按实例持久化实例内容身份（§1），与是否缓存游标无关，并在启动插件之前完成（指纹缺失或与当前内容身份不同时写入）。启动时内容身份与已存的不同（如沿用同一 `id` 改了 `config` 或 `uri_prefix`），或游标、同步状态存在而内容身份指纹缺失，MUST 视为缓存丢失：丢弃游标与同步状态（含意图日志），以全量轮开始（§6.8），并更新登记（即上条与重叠检查原子完成的那次登记）。切换 SHOULD 在实例级校验（清单、配置、凭证、前缀登记检查，§5.2）通过之后进行。丢弃与更新登记 MUST 在写入新指纹之前完成，或与之原子地一并完成——指纹写入成功即切换完成；中途失败或崩溃后，下次启动时指纹仍不一致，切换重新执行，旧游标不会在新内容身份下生效。
+- **内容身份指纹**：运行器 MUST 按实例持久化实例内容身份（§1），与是否缓存游标无关，并在启动插件之前完成（指纹缺失或与当前内容身份不同时写入）；新实例的首个指纹同样 MUST 在实例级校验通过之后写入（§5.2）。启动时内容身份与已存的不同（如沿用同一 `id` 改了 `config` 或 `uri_prefix`），或游标、同步状态存在而内容身份指纹缺失，MUST 视为缓存丢失：丢弃游标与同步状态（含意图日志），以全量轮开始（§6.8），并更新登记（即上条与重叠检查原子完成的那次登记）。切换 SHOULD 在实例级校验（清单、配置、凭证、前缀登记检查，§5.2）通过之后进行。丢弃与更新登记 MUST 在写入新指纹之前完成，或与之原子地一并完成——指纹写入成功即切换完成；中途失败或崩溃后，下次启动时指纹仍不一致，切换重新执行，旧游标不会在新内容身份下生效。
 
 ## 5. 生命周期与调度
 
@@ -251,12 +251,20 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 | 校验 | 启动插件、完成 initialize 与身份核对（§4.1），获取 remote 的 capabilities（http.md §4.1），随后 `shutdown`（§6.3）。MUST NOT 发出 `scan`，不产生任何写入 |
 | 同步一轮 | §6.4–§6.8 |
 | 暂停 | 不再开始新的一轮；进行中的轮 MAY 完成或中止（中止在提交前无副作用，§6.4） |
-| 删除 | 丢弃本地游标缓存（独立运行器：从状态目录中移除该实例的状态与登记，§4.4）。MUST NOT 隐式删除或迁移 remote 上已投递的文档——清理是使用者的显式操作（core.md §4） |
+| 删除 | 丢弃本地游标缓存（独立运行器：从状态目录中移除该实例的状态与登记，§4.4）。MUST NOT 隐式删除或迁移 remote 上已投递的文档——清理是使用者的显式操作（core.md §4）。独立运行器的删除见表后 |
+
+**删除（独立运行器规范档）**：
+
+- 只需从实例定义得到 `id`：对定义仅做以下校验（封闭列举）：是嵌套深度不超过上界的 I-JSON 对象，`definition_version` 受支持，`id` 存在且符合文法（§4.4），不满足即 `definition_invalid`；其余成员一律不校验——不要求齐全，不检查未定义的成员、类型与取值，也不做前缀、remote URL、插件、凭证引用、清单、配置等任何校验——删除不需要它们，清单丢失、前缀非法或已与他人重叠、凭证配错的实例也必须能删除；不启动插件，MUST NOT 读写 remote；
+- MUST 先取得该实例的排他锁（§5.2），锁被占用时以 `instance_busy` 结束；MUST NOT 解析该实例的状态内容，直接移除——状态内容损坏不影响删除（§4.4 的恢复路径正依赖于此）；取锁或移除时的 I/O 失败，以及移除登记时须读写的共享登记损坏，按 §4.4「状态目录故障」以 `state_unavailable` 结束；
+- 登记 MUST 最后移除（或与状态原子地一并移除），且 MUST 与 §4.4 的登记与重叠检查互斥（如同一把状态目录级的锁）：中途失败或崩溃时实例仍处于登记状态，重跑删除即可完成；排他锁本身 MAY 保留，MUST NOT 在持有它时移除它；
+- 幂等：实例从未登记或状态已不存在时 MUST 视为成功，日志写明无可删除的状态（§7.5 `instance.deleted`）；排他锁不计入可删除的状态；
+- MUST NOT 写出轮报告，stdout MUST 为空，结果以退出码（§7.6）与结构化日志（§7.5）表达，见 §7.4
 
 ### 5.2 调度、并发与重试
 
 - **调度不属于本契约**：何时开始一轮由运行器（宿主）决定。独立运行器每次调用至多执行一轮后退出；周期性或事件驱动的触发（CI、版本库钩子、webhook 处理器、外部定时器）由调用方承担。
-- **单轮约束跨进程成立**（§6.4）：独立运行器（独立运行器规范档）解析实例定义得到 `id` 后，MUST 先取得该实例的排他锁，再做其余实例级校验（清单、配置、凭证、前缀登记）与启动插件，并持有至本轮结束（含游标持久化）；锁被其他持有者占用时 MUST NOT 启动插件，以 `instance_busy` 结束（§7.6）——这是暂时状态而非实例级失败，调用方稍后重试即可；获取锁时发生 I/O 错误（如状态目录不可写、锁文件无法创建）属于状态目录故障，同样 MUST NOT 启动插件，以 `state_unavailable` 结束（§4.4「状态目录故障」）。锁 MUST 在持有进程异常退出时自动释放（如操作系统提供的文件锁），以免残留锁永久阻塞实例。
+- **单轮约束跨进程成立**（§6.4）：独立运行器（独立运行器规范档）解析实例定义得到 `id` 后，MUST 先取得该实例的排他锁，再做其余实例级校验（清单、配置、凭证、前缀登记；前缀登记 MUST 在其余校验通过之后进行，使未通过校验的新实例不留下登记）与启动插件，并持有至本轮结束（含游标持久化）；锁被其他持有者占用时 MUST NOT 启动插件，以 `instance_busy` 结束（§7.6）——这是暂时状态而非实例级失败，调用方稍后重试即可；获取锁时发生 I/O 错误（如状态目录不可写、锁文件无法创建）属于状态目录故障，同样 MUST NOT 启动插件，以 `state_unavailable` 结束（§4.4「状态目录故障」）。锁 MUST 在持有进程异常退出时自动释放（如操作系统提供的文件锁），以免残留锁永久阻塞实例。
 - **重试**：轮失败后的重试 SHOULD 采用有上限、带抖动的指数退避；remote 返回 `Retry-After` 时 MUST 遵守（core.md §6）。实例级失败（§7.1）不改动实例定义、清单或凭证就无法恢复，MUST NOT 自动重试。独立运行器 MAY 在单次调用内有限次重试，也 MAY 直接以非零退出码返回、交给调用方重试。永久失败不得空转（§6.8）。
 
 ## 6. 运行边界
@@ -543,7 +551,7 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 | --- | --- | --- | --- |
 | 协议级 | 分帧或 JSON-RPC 违例、消息超限、未知 method、initialize 错误响应（实例级，见下行）之外的握手违例（如 initialize 结果缺少必填字段、握手完成前发来响应以外的消息）（§6.2、§6.3、§6.5） | 终止实例，本轮作废 | 不推进 |
 | 实例级 | 清单不合法、实例定义不合法（含前缀非法或重叠）、配置未通过 schema、必填凭证缺失、无共同协议版本（`-32004`）、插件拒绝配置（`-32005`）、选定版本不在运行器列表中、插件身份与清单不符（§3、§4、§6.3）；remote 拒绝凭证（HTTP 401，http.md §6）、remote 不支持运行器可用的任何 hash 契约（capabilities，http.md §4.1） | 不启动插件或终止插件，不开始轮；MUST NOT 自动重试（§5.2） | 不推进 |
-| 轮级 | 实例已有轮在进行（`instance_busy`，未启动插件，§5.2）；`scan` 的 `error` 响应、未知或过期的 `next`（§6.4）、插件异常退出（§6.3）；`scan` 超时，或任何请求超时后插件不响应 `cancel`（§6.7）；remote 不可用：网络失败，或可重试的 DPE 错误（`DPE_UNAVAILABLE` / `DPE_RATE_LIMITED`）按 `Retry-After` 重试耗尽；运行器本地状态故障（`state_unavailable`）：读取失败、内容损坏与启动阶段的写入失败（§4.4「状态目录故障」），轮中与收尾的写入失败按 §7.2 使本轮失败的情形；能力获取（http.md §4.1）返回 401 与契约不兼容（见上行）以外的不可重试 DPE 错误（`source: remote`，code 原样，`retryable: false`）；能力获取或任何读写请求得到的响应不是 DPE 报文（`remote_protocol_error`：非 2xx、含重定向 3xx 的非协议错误，401 与条件读取的 `304` 除外，http.md §3.3、§5；带条件头的写入收到无 problem 体的 412 时，先按 http.md §3.2 判定，判定后仍为非协议错误才归此类；或 2xx 响应的报文不合规） | 本轮作废并上报，退避后重试（§5.2）；`retryable: false` 的轮级失败（状态内容损坏、能力获取的不可重试错误、非 5xx 的 `remote_protocol_error`）不会自愈，按 §6.8「永久失败不得空转」处理，由使用者处置后再重跑 | 不推进 |
+| 轮级 | 实例已有轮在进行（`instance_busy`，未启动插件，§5.2）；`scan` 的 `error` 响应、未知或过期的 `next`（§6.4）、插件异常退出（§6.3）；`scan` 超时，或任何请求超时后插件不响应 `cancel`（§6.7）；remote 不可用：网络失败，或可重试的 DPE 错误（`DPE_UNAVAILABLE` / `DPE_RATE_LIMITED`）按 `Retry-After` 重试耗尽；运行器本地状态故障（`state_unavailable`）：读取失败、内容损坏与启动阶段的写入失败（§4.4「状态目录故障」），轮中与收尾的写入失败按 §7.2 使本轮失败的情形；能力获取（http.md §4.1）返回 401 与契约不兼容（见上行）以外的不可重试 DPE 错误（`source: remote`，code 原样，`retryable: false`）；运行器内部缺陷（`runner_internal_error`，退出码 70，§7.6）；能力获取或任何读写请求得到的响应不是 DPE 报文（`remote_protocol_error`：非 2xx、含重定向 3xx 的非协议错误，401 与条件读取的 `304` 除外，http.md §3.3、§5；带条件头的写入收到无 problem 体的 412 时，先按 http.md §3.2 判定，判定后仍为非协议错误才归此类；或 2xx 响应的报文不合规） | 本轮作废并上报，退避后重试（§5.2）；`retryable: false` 的轮级失败（状态内容损坏、能力获取的不可重试错误、非 5xx 的 `remote_protocol_error`、`runner_internal_error`）不会自愈，按 §6.8「永久失败不得空转」处理，由使用者处置后再重跑 | 不推进 |
 | 条目级 | 见下表 | 该条目失败，本轮继续处理其余条目（§6.5） | 不推进（§6.8） |
 
 条目级失败按来源区分（§6.5 要求报告区分来源）：
@@ -618,7 +626,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 
 ### 7.4 轮报告（独立运行器规范档）
 
-每次调用结束时，独立运行器 MUST 向 stdout 写出恰好一个轮报告——单行紧凑 JSON 对象（UTF-8，LF 结尾）——stdout 不输出其他内容。未能开始轮（实例级失败、`instance_busy`、未启动插件即结束的 `state_unavailable`，见 §4.4「状态目录故障」）时同样输出报告，`outcome` 为 `failed`、`incremental` 为 `null`、`counts` 各项为 0。唯一的例外是命令行用法错误：此时以退出码 64 结束、不输出报告（§7.6）。
+每次同步一轮的调用结束时，独立运行器 MUST 向 stdout 写出恰好一个轮报告——单行紧凑 JSON 对象（UTF-8，LF 结尾）——stdout 不输出其他内容。未能开始轮（实例级失败、`instance_busy`、未启动插件即结束的 `state_unavailable`，见 §4.4「状态目录故障」）时同样输出报告，`outcome` 为 `failed`、`incremental` 为 `null`、`counts` 各项为 0。命令行用法错误时以退出码 64 结束、不输出报告（§7.6）。运行器内部缺陷（`runner_internal_error`）时同样 MUST 输出 `failed` 报告——发生在取得锁之前时 `incremental` 为 `null`、`counts` 各项为 0、`cursor_held_since` 为 `null`，只有报告本身无法写出时才不输出（traceback 等细节只进 §7.5 日志，按 §4.3 脱敏）。删除（§5.1）MUST NOT 写出轮报告，stdout MUST 为空，结果以退出码（§7.6）与结构化日志（§7.5）表达。
 
 ```json
 { "report_version": 1,
@@ -646,7 +654,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `started_at` / `ended_at` | RFC 3339 UTC 时间戳 |
 | `outcome` / `incremental` | §7.3 |
 | `cursor_persisted` | 布尔：本轮是否持久化了新游标 |
-| `cursor_held_since` | 游标被扣住的起始时刻：自该实例上一次 `succeeded` 的轮以来，第一个已取得排他锁（§5.2）、已读到状态且结果不是 `succeeded` 的轮的 `started_at`（RFC 3339 UTC，记录于状态目录，§4.4）。本轮为 `succeeded`、此前没有这样的轮，或状态目录中尚无该实例时为 `null`；未取得锁的调用（`instance_busy`）不读写该记录，报告中取 `null`；启动时读取状态失败（`state_unavailable`，含该记录本身读取失败）的轮不计入、不读写该记录，报告中取 `null`——调用方应同时以退出码 2 与 `failures` 中的 `state_unavailable` 告警；已读到记录而本轮写入失败（含 `succeeded` 轮的清除）时，报告照常取本轮计算出的值，不要求补记，此后报告的起始时刻可能偏晚，或早于上一次 `succeeded`。`supports_cursor: false` 的实例以同一定义计算（只看 outcome，不看是否有游标）。供调用方对长期卡住的实例告警 |
+| `cursor_held_since` | 游标被扣住的起始时刻：自该实例上一次 `succeeded` 的轮以来，第一个已取得排他锁（§5.2）、已读到状态且结果不是 `succeeded` 的轮的 `started_at`（RFC 3339 UTC，记录于状态目录，§4.4）。本轮为 `succeeded`、此前没有这样的轮，或状态目录中尚无该实例时为 `null`——状态目录中尚未登记的实例（新实例）在本次调用的登记（§4.4）之前就以实例级失败结束时（如清单写错、实例定义不合法）同样取 `null`，且 MUST NOT 为它写入登记、内容身份指纹与该记录（排他锁不在此列）；取得锁之后、读到该实例的状态之前就结束的调用（不分失败类型，如已登记实例的清单校验先于读状态失败），报告同样取 `null`，不读写该记录；其余已读到状态的调用按本格主定义记录；未取得锁的调用（`instance_busy`）不读写该记录，报告中取 `null`；启动时读取状态失败（`state_unavailable`，含该记录本身读取失败）的轮不计入、不读写该记录，报告中取 `null`——调用方应同时以退出码 2 与 `failures` 中的 `state_unavailable` 告警；已读到记录而本轮写入失败（含 `succeeded` 轮的清除）时，报告照常取本轮计算出的值，不要求补记，此后报告的起始时刻可能偏晚，或早于上一次 `succeeded`。`supports_cursor: false` 的实例以同一定义计算（只看 outcome，不看是否有游标）。供调用方对长期卡住的实例告警 |
 | `counts` | 各项计数（整数，均必填）：`created` / `updated` / `unchanged` 为 commit 结果（core.md §3.3）；`deleted` / `moved` 含按 core.md §5.2 视为已达成的情形；`failed` 为条目级失败的条目数 |
 | `failures` | 失败数组，元素见下；无失败时为 `[]` |
 | `failures_truncated` | 可缺省：失败过多时运行器 MAY 截断 `failures`，此字段为被省略的条数 |
@@ -676,6 +684,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `plugin_crashed` | round | 插件异常退出（§6.3） |
 | `timeout` | round | `scan` 超时，或请求超时后插件不响应 `cancel`（§6.7） |
 | `remote_unavailable` | round | remote 整体不可用（§7.1） |
+| `runner_internal_error` | round | 运行器自身的缺陷（未预期的异常），`source: runner`；`retryable: false`（重跑不保证自愈，重复出现应作为缺陷上报）。不用 `internal_error`：它已是插件 JSON-RPC 标准码的记法 |
 | `remote_protocol_error` | round | remote 的响应不是 DPE 报文：非 2xx 的响应既无 problem 体、也无 `DPE-Error-Code` 头（非协议错误，http.md §5；含重定向 3xx——运行器 MUST NOT 跟随重定向，以免把 `Authorization` 头发往别处；条件读取命中的 `304` 是正常响应，http.md §3.3，不在此列），或 2xx 响应的报文不符合 HTTP 绑定规定的报文（如 remote URL 配错后返回的 HTML 页）；401 除外（`remote_unauthorized`），按 http.md §3.2 先判定的情形以判定结果为准。`message` SHOULD 含 HTTP 状态码。`retryable`：5xx 为 true，其余为 false |
 | `state_unavailable` | round | 运行器本地状态故障：读取失败、内容损坏与启动阶段的写入失败（§4.4「状态目录故障」），以及按 §7.2 使本轮失败的写入失败；`retryable: true`，内容损坏时为 `false` |
 | `out_of_prefix` | item | 越界条目（§6.5） |
@@ -694,13 +703,15 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `plugin.started` | `pid` | 插件进程启动后 |
 | `plugin.exited` | `exit_code`、`signal`（可为 `null`） | 插件进程退出后 |
 | `round.started` | `cursor_given`（布尔：轮首 `scan` 是否带了游标） | 发出轮首 `scan` 前 |
-| `item.failed` | 同 §7.4 `failures` 元素的字段 | 每个失败发生时（任何层级） |
+| `item.failed` | `failure`：§7.4 `failures` 元素，字段原样 | 每个失败发生时（任何层级） |
+| `instance.deleted` | `found`（布尔：是否存在可删除的状态或登记，排他锁不计入，§5.1） | 删除（§5.1）完成时，`round` 为 `null` |
 | `round.finished` | `outcome`、`incremental`、`cursor_persisted`、`cursor_held_since`、`counts` | 轮结束时 |
 | `plugin.stderr` | `line`、`truncated`（布尔） | 插件 stderr 每输出一行 |
 
 - 运行器给出了游标而插件回退为全量轮（`incremental: false`，§6.8）时，`round.finished` MUST 为 `warn` 级；`outcome` 为 `partial` 或 `failed` 时 MUST 为 `warn` 或 `error` 级。
 - `plugin.stderr`：插件 stderr 按行转发；单行超过运行器的长度上限（SHOULD 不小于 8 KiB）时截断并标 `truncated: true`；非 UTF-8 字节以 U+FFFD 替换。转发前按 §4.3 脱敏。
 - 日志 MUST NOT 含凭证值与 `Authorization` 头（§4.3），SHOULD NOT 含 blob 字节与完整的元素内容。
+- 日志行顶层的 `level` 只表示日志级别；`item.failed` 的失败层级在 `failure.level`（§7.4），消费方可把 `failure` 原样当作报告元素处理。删除等非轮操作中的失败同样以 `item.failed` 记录，`round` 为 `null`。
 - 实现 MAY 增加事件与字段；日志的消费者 MUST 忽略不认识的事件与字段。
 
 ### 7.6 退出码（独立运行器规范档）
@@ -709,11 +720,13 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | --- | --- |
 | 0 | `succeeded`（含全量轮；需要区分时读报告的 `incremental`） |
 | 1 | `partial` |
-| 2 | `failed`：轮级（`instance_busy` 除外，含 `state_unavailable`）或协议级失败，重跑可能成功；`retryable: false` 的轮级失败（状态内容损坏 §4.4、能力获取的不可重试错误与非 5xx 的 `remote_protocol_error` §7.1）须先由使用者处置 |
+| 2 | `failed`：轮级（`instance_busy` 与 `runner_internal_error` 除外，含 `state_unavailable`）或协议级失败，重跑可能成功；`retryable: false` 的轮级失败（状态内容损坏 §4.4、能力获取的不可重试错误与非 5xx 的 `remote_protocol_error` §7.1）须先由使用者处置 |
 | 3 | `failed`：实例级失败，不修改实例定义、清单或凭证就无法恢复 |
 | 4 | `failed`：`instance_busy`，稍后重试即可 |
+| 70 | `failed`：运行器内部缺陷（`runner_internal_error`，同 BSD `EX_SOFTWARE`），同步一轮的调用中伴随轮报告；报告本身无法写出时不用 70，归下文「其他非零退出码」 |
 
-- 命令行用法错误（如未给出实例定义）MUST 返回 64（同 BSD `EX_USAGE`），且不输出轮报告（§7.4）；其余退出码都伴随一个轮报告。其他非零退出码表示运行器自身异常（如被信号终止），调用方 SHOULD 按 2 处理。
+- 命令行用法错误（如未给出实例定义）MUST 返回 64（同 BSD `EX_USAGE`），且不输出轮报告（§7.4）；同步一轮的调用中，其余退出码都伴随一个轮报告。其他非零退出码表示运行器自身异常且没有报告（如被信号终止），调用方 SHOULD 按 2 处理。
+- 删除（§5.1）沿用同一组退出码，不伴随轮报告：0 成功（含无可删除的状态）、2 `state_unavailable`、3 实例定义不合法、4 `instance_busy`、70 运行器内部缺陷。
 
 ## 8. 一致性要求
 
@@ -791,7 +804,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `no_cursor` | `supports_cursor: false` | 不缓存游标，下一轮不带游标 |
 | `env_probe` | 声明一个必填凭证；把自身环境变量的**名字**（不含值）作为文档内容产出 | 环境恰为 §4.3 的三部分；凭证缺失时 `secret_missing`，退出码 3 |
 
-另有不依赖插件行为的运行器用例：同一实例并发运行两次，其一以 `instance_busy`（退出码 4）结束；清单或实例定义违例得到 `manifest_invalid` / `definition_invalid`，配置未通过 schema 得到 `config_schema_violation`；清单的 `pattern` / `patternProperties` 键超出 §4.1.1 的子集或结构上界（如 lookaround、反向引用、`\p{…}`、超展开规模）得到 `manifest_invalid`；同一状态目录中前缀重叠的第二个实例被拒绝（`definition_invalid`）；沿用同一 `id` 修改 `config` 后，下一轮不带游标（全量轮）；remote 上他人改写某文档、源端随后也修改该文档（使插件再次产出它）后，commit 冲突按 `source_wins` 重新提交、`report` 下判条目失败（`retryable: false`，`cursor_held_since` 非 `null`）；同步状态与意图日志：写入生效后、确认前终止运行器进程，重跑不得报告冲突（含 delete 后源端重建同一 URI、move 后向原 URI 写入）；move 目标被占用时为 `partial`，`cursor_held_since` 保持为首次失败轮的开始时刻；以下状态故障用例依赖各运行器自身的状态格式与故障注入，由运行器自带测试覆盖、不属于共享夹具：状态目录不可读写（含取锁时的 I/O 错误，如锁文件无法创建；以非 root 身份运行）时以 `state_unavailable`（退出码 2）结束、游标不推进，且不降级为全量轮；状态内容损坏（以可正常读取、但无法解析的内容构造，而非改权限）时同样以 `state_unavailable` 结束（`retryable: false`），不覆盖损坏的内容；对一个已成功同步的文档（同步状态中有 L），注入写前意图持久化失败（commit 意图 `file_uri → N`）时不发出对应写请求、以 `state_unavailable` 结束；补存成功后，他人在 remote 上写下 N、源随后把该文档改为 N′，在 `conflict_policy.commit: "report"` 下下一次调用判该条目失败（`retryable: false`），不把 N 认作自身写入。
+另有不依赖插件行为的运行器用例：同一实例并发运行两次，其一以 `instance_busy`（退出码 4）结束；清单或实例定义违例得到 `manifest_invalid` / `definition_invalid`，配置未通过 schema 得到 `config_schema_violation`；清单的 `pattern` / `patternProperties` 键超出 §4.1.1 的子集或结构上界（如 lookaround、反向引用、`\p{…}`、超展开规模）得到 `manifest_invalid`；同一状态目录中前缀重叠的第二个实例被拒绝（`definition_invalid`）；沿用同一 `id` 修改 `config` 后，下一轮不带游标（全量轮）；remote 上他人改写某文档、源端随后也修改该文档（使插件再次产出它）后，commit 冲突按 `source_wins` 重新提交、`report` 下判条目失败（`retryable: false`，`cursor_held_since` 非 `null`）；同步状态与意图日志：写入生效后、确认前终止运行器进程，重跑不得报告冲突（含 delete 后源端重建同一 URI、move 后向原 URI 写入）；move 目标被占用时为 `partial`，`cursor_held_since` 保持为首次失败轮的开始时刻；以下状态故障用例依赖各运行器自身的状态格式与故障注入，由运行器自带测试覆盖、不属于共享夹具：状态目录不可读写（含取锁时的 I/O 错误，如锁文件无法创建；以非 root 身份运行）时以 `state_unavailable`（退出码 2）结束、游标不推进，且不降级为全量轮；状态内容损坏（以可正常读取、但无法解析的内容构造，而非改权限）时同样以 `state_unavailable` 结束（`retryable: false`），不覆盖损坏的内容；对一个已成功同步的文档（同步状态中有 L），注入写前意图持久化失败（commit 意图 `file_uri → N`）时不发出对应写请求、以 `state_unavailable` 结束；补存成功后，他人在 remote 上写下 N、源随后把该文档改为 N′，在 `conflict_policy.commit: "report"` 下下一次调用判该条目失败（`retryable: false`），不把 N 认作自身写入。删除（§5.1）：锁被占用时以退出码 4 结束；实例未登记时以退出码 0 结束，`instance.deleted` 的 `found` 为 `false`；删除成功后 stdout 为空、不发出任何 remote 请求，同一前缀的新实例可以登记；清单缺失或前缀已与他人重叠的已登记实例，删除仍以退出码 0 结束；清单写错的新实例首次调用以退出码 3 结束，`cursor_held_since` 为 `null`。以下两项依赖运行器自身的状态格式，由运行器自带测试覆盖：状态内容损坏的已登记实例，删除仍以退出码 0 结束，之后可重新创建并以全量轮重建；清单写错的新实例首次调用后，状态目录中不留下该实例的登记、内容身份指纹与扣住记录。
 
 **插件测试驱动**（验证插件）：驱动插件进程并检查 §8.1——分帧与握手、条目的封闭 schema、句柄的快照一致性（同一句柄在不同偏移重复读取）、`shutdown` / stdin EOF 后按时退出、`cancel` 的响应，以及确定性（判据 1）。
 
