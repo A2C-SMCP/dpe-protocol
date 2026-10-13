@@ -35,7 +35,18 @@ cargo check -p dpe-sdk --no-default-features --locked   # sans-IO 核心：不�
 cargo run --release -p dpe-hash --example bench_hash    # 可选：10 万元素原位重算基准，参数 --pages / --per-page / --repeat
 ```
 
-CI（`.github/workflows/rust-sdk.yml`）先跑 `make check-vectors`，再跑 lint（stable）、测试（1.80.0 + stable 矩阵，`--locked`）、打包检查与原位重算基准（只报告、不设门槛，写进 job summary）；toolchain 由 `actions-rust-lang/setup-rust-toolchain` 提供。
+CI（`.github/workflows/rust-sdk.yml`）先跑 `make check-vectors`，再跑 lint（stable）、测试（1.80.0 + stable 矩阵，`--locked`）、打包检查、原位重算基准（只报告、不设门槛，写进 job summary），以及对 Python 参考服务端的集成场景（reference job，见下）；toolchain 由 `actions-rust-lang/setup-rust-toolchain` 提供。
+
+### 对参考服务端的集成场景（#25）
+
+`dpe-sdk/tests/reference_*.rs` 以 Python 参考服务端子进程（`python -m dpe_sdk.testing`）为对手，跑与 Python 侧相同的场景集（写操作与 CAS、暂存与续传、媒体来源、传输与多身份、增量推送器）。启动命令取自环境变量 `DPE_REFERENCE_SERVER`（按空白切分、不支持引号，工作目录为本目录）；未设置时这些用例打印提示后跳过，CI 的 reference job 以 `DPE_REFERENCE_REQUIRED=1` 强制要求：
+
+```bash
+(cd ../python && uv sync)
+DPE_REFERENCE_SERVER="uv run --project ../python --frozen python -m dpe_sdk.testing" \
+  cargo test --locked -p dpe-sdk --test reference_write --test reference_staging \
+  --test reference_media --test reference_transport --test reference_pusher
+```
 
 打包与发布面：
 
