@@ -7,7 +7,7 @@
 ## 通用检查面
 
 - capabilities 协商与限额如实声明（`staging_ttl_seconds` ≥ 3600）；
-- 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出（必带，RFC 3339 UTC，以 `Z` 结尾）；`now ≥ expires_at` 即过期（服务端义务，不作为精确时刻的跑分项）；断点查询（`HEAD`）带 `DPE-Session-Expires` 但不续期；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
+- 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出（必带，RFC 3339 UTC，以 `Z` 结尾）；`now ≥ expires_at` 即过期（配置了 `clock-advance` 钩子时，把服务端时钟推进到恰好 `expires_at` 断言得到 `DPE_SESSION_EXPIRED`；未配置时该项显式 skip）；断点查询（`HEAD`）带 `DPE-Session-Expires` 但不续期；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
 - 去重范围固定为本文档：只靠该文档当前状态（或本次暂存会话）即可得的对象不出现在缺失清单中；其他文档持有的对象一律视为缺失（不因它存在于别处而变化）；
 - 快路径 / 暂存路径的 commit 语义与原子性（分批期间读接口不可见中间态）；
 - delta 与 `get_skeleton` 读回结果互相印证（不制造伪变更）；
