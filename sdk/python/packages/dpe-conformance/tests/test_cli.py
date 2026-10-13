@@ -40,6 +40,7 @@ _LIMIT_ARGS = (
     "16384",
 )
 
+#: 与 .github/workflows/python-sdk.yml 的 conformance job 同一套参数与配置（改动须两处同步）
 _SERVER_ARGS = _HOOK_ARGS + _LIMIT_ARGS
 
 

@@ -95,6 +95,83 @@ jobs:
       - run: uv build --all-packages -o dist
       - run: uv run --no-project python tools/check_packages.py dist
 
+  # 一致性跑分器自检（#40）：与 test_cli 的全量用例不同，这里从**构建出的 wheel** 安装，跑分器
+  # 与参考服务端各占一个 venv（跑分器单独安装即可用，漏声明的依赖不会被服务端的依赖掩盖），
+  # 按 conformance/ci.md 描述的方式（CLI、JUnit、counts.json 断言）对参考服务端跑全部章节，
+  # 拦下打包回归（套件、入口脚本、依赖声明）。全配置下不允许任何 skip：skip 被计为假绿。
+  # 第三方依赖故意不按 uv.lock 锁定：模拟服务端仓库 pip install 时的真实解析。
+  conformance:
+    needs: vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0  # 上游自 v8 起不再提供浮动主版本标签
+        with:
+          python-version: "3.12"
+      - run: uv build --all-packages -o dist
+      - name: 从 wheel 安装（不经 workspace，跑分器与参考服务端分开）
+        run: |
+          uv venv "$RUNNER_TEMP/conf"
+          uv pip install --python "$RUNNER_TEMP/conf/bin/python" \
+            dist/dpe_hash-*.whl dist/dpe_conformance-*.whl
+          uv venv "$RUNNER_TEMP/server"
+          uv pip install --python "$RUNNER_TEMP/server/bin/python" \
+            dist/dpe_hash-*.whl "$(echo dist/dpe_sdk-*.whl)[server]"
+      # 显式 shell: bash 才带 -o pipefail；参考服务端的身份、钩子与收小限额与 test_cli 一致
+      # （改动须两处同步：dpe-conformance/tests/test_cli.py 的 _SERVER_ARGS 与 _write_config）
+      - name: 对参考服务端运行 dpe-conformance
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          coproc SERVER { "$RUNNER_TEMP/server/bin/python" -m dpe_sdk.testing --port 0 \
+            --hooks /__hooks__ \
+            --grant "Bearer full-auth" "*" --force "Bearer full-auth" \
+            --grant "Bearer scoped-auth" "dpe://conf/scoped/" \
+            --grant "Bearer no-force-auth" "*" \
+            --max-payload-bytes 65536 --page-max-bytes 262144 \
+            --blob-max-bytes 131072 --blob-chunk-bytes 16384; }
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          # 阻塞读公告行（{"url", "hooks"}），超时即启动失败
+          read -r -t 30 announce <&"${SERVER[0]}"
+          url=$(jq -er .url <<<"$announce")
+          hooks=$(jq -er .hooks <<<"$announce")
+          cat > dpe-conformance.toml <<EOF
+          schema = 1
+
+          [identities.full]
+          authorization = "Bearer full-auth"
+
+          [identities.scoped]
+          authorization = "Bearer scoped-auth"
+          prefix = "dpe://conf/scoped/"
+
+          [identities.no-force]
+          authorization = "Bearer no-force-auth"
+
+          [hooks.self-write]
+          http = "$hooks/self-write"
+
+          [hooks.clock-advance]
+          http = "$hooks/clock/advance"
+
+          [hooks.inject-error]
+          http = "$hooks/inject-error"
+          EOF
+          "$RUNNER_TEMP/conf/bin/dpe-conformance" "$url" --junit-xml junit.xml --counts-json counts.json
+          jq '.totals' counts.json | tee -a "$GITHUB_STEP_SUMMARY"
+          jq -e '.totals | .skipped == 0 and .errors == 0 and .collection_errors == 0 and .executed > 0' counts.json
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: conformance-report
+          path: |
+            ${{ runner.temp }}/junit.xml
+            ${{ runner.temp }}/counts.json
+          if-no-files-found: ignore
+
   # 原位重算基准（#7）：只报告、不设门槛，结果写进 job summary
   bench:
     needs: vectors

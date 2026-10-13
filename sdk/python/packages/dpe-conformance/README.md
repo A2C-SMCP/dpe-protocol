@@ -1,10 +1,11 @@
 # dpe-conformance
 
-[DPE](https://doc.turingfocus.cn/dpe/) **服务端一致性跑分器**：黑盒对任意实现了 [core.md](https://doc.turingfocus.cn/dpe/latest/spec/core/) + [HTTP 绑定](https://doc.turingfocus.cn/dpe/latest/spec/bindings/http/) 的 remote 运行协议检查（检查面见仓库 [`conformance/README.md`](../../../conformance/README.md)）。跑分器本体只依赖 `dpe-hash`（期望 hash）与 HTTP，不依赖任何服务端实现。
+[DPE](https://doc.turingfocus.cn/dpe/) **服务端一致性跑分器**：黑盒对任意实现了 [core.md](https://doc.turingfocus.cn/dpe/latest/spec/core/) + [HTTP 绑定](https://doc.turingfocus.cn/dpe/latest/spec/bindings/http/) 的 remote 运行协议检查（检查面见仓库 [`conformance/README.md`](https://github.com/A2C-SMCP/dpe-protocol/blob/main/conformance/README.md)）。跑分器本体只依赖 `dpe-hash`（期望 hash）与 HTTP，不依赖任何服务端实现。
 
 ## 用法
 
 ```console
+$ pip install dpe-conformance==X.Y.Z   # X.Y.* 对应规范文档 X.Y.*
 $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.json
 ```
 
@@ -20,6 +21,8 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
   "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "large": {"executed": 13, "passed": 13, "failed": 0, "errors": 0, "skipped": 0}, "staging": {"executed": 11, "passed": 11, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}, "write_ops": {"executed": 20, "passed": 20, "failed": 0, "errors": 0, "skipped": 0}, "http_binding": {"executed": 22, "passed": 22, "failed": 0, "errors": 0, "skipped": 0}}
 }
 ```
+
+在服务端仓库 CI 中的接入步骤与最小 GitHub Actions 示例见 [在 CI 中运行跑分器](https://github.com/A2C-SMCP/dpe-protocol/blob/main/conformance/ci.md)。
 
 `executed` = 取得通过/失败结论的用例（即 `passed + failed`）；`errors` 与 `collection_errors` 单列。退出码：`0` 全部通过（skip 不算失败），`1` 有失败，`2` 用法/配置/运行故障（含「没有任何检查被执行」）。
 
@@ -71,4 +74,4 @@ staging-ttl-seconds = 30                   # 服务端以短 TTL 运行时的声
 
 套件以 pytest 实现，一节一章：`src/dpe_conformance/checks/` 下每个一级模块或包是一章（`--section` 的粒度）。新增章节即新增一个 pytest 模块/包，用例通过 `dpe_conformance.plugin` 的夹具取得被测 remote、身份与钩子；需要而未配置的依赖用对应夹具使用例显式 skip。
 
-自测对手是 [参考服务端](../dpe-sdk/src/dpe_sdk/testing/)（`dpe_sdk.testing`，`python -m dpe_sdk.testing`），仅出现在本包测试里，跑分器本体不 import 它。
+自测对手是 [参考服务端](https://github.com/A2C-SMCP/dpe-protocol/tree/main/sdk/python/packages/dpe-sdk/src/dpe_sdk/testing)（`dpe_sdk.testing`，`python -m dpe_sdk.testing`），仅出现在本包测试里，跑分器本体不 import 它。
