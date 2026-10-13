@@ -49,7 +49,8 @@ assert_eq!(result.status.as_str(), "created");
 - 只接受 remote URL 与可插拔的 `CredentialProvider`（每个请求发送前取一次，轮换中的短时凭证在重发前会重新取）；
 - 传输层只做 I/O：拼 URL、注入凭证、按策略 gzip（请求体，HTTP 绑定 §7）、把响应还原给核心；协议判定与写操作的重试全在 sans-IO 核心；
 - 例外只有三类：`retry_safe` 的请求遇网络失败、任何请求遇「确定未发出」的建连失败、按 `code` 判定的可重试错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，等 `Retry-After` 后原样重发，等待超过 300 秒不吸收）；
-- 缺省超时 30 秒、不跟随重定向、大 blob 的源读取进工作线程；`send` / `drive` 是公开的驱动缝。
+- 缺省超时 30 秒、不跟随重定向、大 blob 的源读取进工作线程；`send` / `drive` 是公开的驱动缝；
+- 所有操作的 future 都是 `Send`，可以交给 `tokio::spawn`。**不兼容变更（自 0.3.x 之后的下一个次版本起）**：`deliver` 与推送器 `push` 的 `blobs` 回调（`BlobProvider`）须为 `Send`；捕获 `Rc`、`RefCell`、`Cell` 等非 `Send` 状态的闭包不再能编译，请改用 `Arc`、`Mutex`、原子类型，或直接捕获 `&mut` 局部变量（见下文「媒体来源」的示例）。
 
 ## 增量推送（`pusher`）
 
@@ -89,7 +90,7 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 - 任何一次保存失败后，store 都可能与内存不一致（收尾失败时落后、写前失败而落盘实现写完才报错时领先）：继续使用同一个实例直到下一次保存成功，在那之前不要用同一个 store 新建实例（跨实例的保证属于运行器）；
 - `StateStore` 在异步方法里被同步调用、调用期间占住当前 worker，实现应尽量缩短耗时；多线程运行时上重 I/O（`fsync` 等）可用 `tokio::task::block_in_place` 包住（current_thread 运行时上不可用）；
 - 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
-- 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`：`deliver` 的 future 在 `BlobProvider` 加 `Send`（#131）之前不是 `Send`，推送器共享 blob 来源的容器届时也一并换成线程安全的；
+- 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`；`push` / `delete` / `move_documents` 的 future 都是 `Send`，调用方可以把整次操作交给 `tokio::spawn`（推送器借用客户端，任务内持有 `Arc<DpeClient>` 再构造推送器即可满足 `'static`；`blobs` 回调须为 `Send`，见上文「传输适配」）；
 - `push` 的最后一个参数 `blobs` 原样交给每条 `deliver`，按 `sha256:` 引用给出服务端缺少的 blob 字节（可用下文 `media` 构造来源），未变文档不会调用它；
 - `flush()` 是补存入口：任何一次保存失败后、结束使用前，用同一个实例调用它，把内存状态整批写回 store；
 - `client()` 返回构造时传入的客户端，运行器经它取得 remote 能力，不另建客户端。

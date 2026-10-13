@@ -1665,6 +1665,51 @@ async fn delete_conflict_with_failed_reread_stays_a_conflict() {
     assert_eq!(snapshot.synced, synced(&[(A, doc_hash(&text("v1")))]));
 }
 
+#[test]
+fn pusher_operation_futures_are_send() {
+    // #131：blob 回调为 Send、共享回调用 Mutex，push / delete / move_documents 的 future 都是
+    // Send（并发仍在调用方的同一任务内，不经 tokio::spawn）
+    fn assert_send<T: Send>(_: T) {}
+    let client = DpeClient::new("http://127.0.0.1:1").expect("remote 合法");
+    let mut pusher = StatefulPusher::new(&client);
+    let documents = docs(&[(A, &text("v1"))]);
+    let expected = none();
+    let mut asked: Vec<String> = Vec::new();
+    let mut provider = |reference: &str| -> Option<BlobSource> {
+        asked.push(reference.to_owned());
+        None
+    };
+    assert_send(pusher.push(&documents, &expected, Some(&mut provider)));
+    let uris = [A.to_owned()];
+    assert_send(pusher.delete(&uris, &expected));
+    let pairs = [(A.to_owned(), B.to_owned())];
+    assert_send(pusher.move_documents(&pairs, &expected));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn push_runs_inside_tokio_spawn() {
+    // 整次操作交给 tokio::spawn：推送器借用客户端，'static 由任务内持有 Arc<DpeClient> 达成
+    let fake = Fake::new();
+    let server = fake.server();
+    let hello = text("hello");
+    fake.script(Route::Commit(A.into()), vec![created(A, &hello)]);
+    let client = Arc::new(client(&server));
+    let store = Arc::new(MemoryStateStore::new());
+    let task = tokio::spawn({
+        let client = Arc::clone(&client);
+        let store = Arc::clone(&store);
+        async move {
+            let mut pusher = pusher(&client, &store);
+            let mut provider = |_: &str| -> Option<BlobSource> { None };
+            pusher
+                .push(&docs(&[(A, &hello)]), &none(), Some(&mut provider))
+                .await
+        }
+    });
+    let results = task.await.expect("任务未 panic").expect("推送成功");
+    assert_eq!(statuses(&results), [PushStatus::Created]);
+}
+
 // ---------------------------------------------------------------------- delete
 
 #[tokio::test]

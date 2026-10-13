@@ -66,8 +66,8 @@
 //! 目标的生效依赖顺序，connector §6.5），保序拆批归调用方。
 //!
 //! **快/暂存分界**：完全复用核心 `deliver` 的判据，本模块不引入任何阈值；`concurrency` 只限制
-//! 并发度（写操作在**同一个任务内**并发执行，每条互不拖累——`deliver` 的 future 在 #131 之前
-//! 不是 `Send`，因此不经 `tokio::spawn`）。
+//! 并发度（写操作在**同一个任务内**并发执行，每条互不拖累，不经 `tokio::spawn`；三个操作的
+//! future 本身是 `Send`，调用方可以整体交给 `tokio::spawn`）。
 
 // 判定逻辑的唯一调用方是 `http` 下的驱动；关掉默认 feature 时它们照常编译（sans-IO 断言）
 #![cfg_attr(not(feature = "http"), allow(dead_code))]
@@ -1089,9 +1089,8 @@ impl fmt::Display for PushStatus {
 
 #[cfg(feature = "http")]
 mod driver {
-    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
     use futures_util::stream::{self, StreamExt};
 
@@ -1111,12 +1110,17 @@ mod driver {
 
     /// `push` 的 blob 来源在本批并发投递之间共享。
     ///
-    /// **借用不变式**：provider 只在核心操作的同步 `poll` 步骤里被调用，而 `run_all` 的并发
-    /// 在同一个任务内、只在 await 点交错，因此任何时刻至多一处借用——`RefCell` 不会冲突。
-    /// `RefCell` 不是 `Sync`，持有它的 future 也就不是 `Send`：#131 给 `BlobProvider` 加
-    /// `Send` 时，这里须同时换成线程安全的容器（如 `std::sync::Mutex`），`push` 的 future 才能
-    /// 随之成为 `Send`。
-    type SharedBlobs<'p> = RefCell<Option<BlobProvider<'p>>>;
+    /// **借用不变式**：provider 只在核心操作的同步 `poll` 步骤里被调用（`BlobProvider` 的调用
+    /// 约束），而 `run_all` 的并发在同一个任务内、只在 await 点交错——锁只在一次回调期间持有、
+    /// 从不跨 await，因此单任务内不会争锁、也不会自锁。用 `Mutex` 而不是 `RefCell`，是为了让
+    /// 持有它的 `push` future 是 `Send`（#131）。
+    type SharedBlobs<'p> = Mutex<Option<BlobProvider<'p>>>;
+
+    /// 取共享回调的锁。锁中毒只可能来自回调自身 panic：那次 `push` 已在展开，取回内部值即可、
+    /// 不再放大。
+    fn lock_blobs<'g, 'p>(cell: &'g SharedBlobs<'p>) -> MutexGuard<'g, Option<BlobProvider<'p>>> {
+        cell.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     /// 写操作的缺省并发度（同 Python 侧的 `concurrency=4`）。
     pub const DEFAULT_CONCURRENCY: usize = 4;
@@ -1127,9 +1131,9 @@ mod driver {
     /// - 状态在构造时从 store 载入一次、每次操作结束时整批保存回去；同一 store 上并发使用多个
     ///   推送器不在支持范围（每个 remote 一个实例）。三个操作都取 `&mut self`，同一实例上的
     ///   操作天然串行；
-    /// - 写操作在**调用方的任务内**并发执行（至多 `concurrency` 条），不经 `tokio::spawn`——
-    ///   `deliver` 的 future 在 #131 之前不是 `Send`（`push` 共享 blob 来源的容器也须随 #131
-    ///   换成线程安全的，见 `SharedBlobs`）；
+    /// - 写操作在**调用方的任务内**并发执行（至多 `concurrency` 条），不经 `tokio::spawn`；
+    ///   操作的 future 是 `Send`（`push` 经 `SharedBlobs` 的 `Mutex` 共享 blob 来源），调用方
+    ///   可以把整次操作交给 `tokio::spawn`；
     /// - 批级失败（输入校验、`batch_head`、store 读写）以 `Err` 返回、不产生逐条回报；store 的
     ///   错误包装为 [`ErrorKind::StateStore`]，原错误经 `source()` 取回：
     ///   - 构造时载入失败：未发任何请求（`outcome_unknown()` 为假）；
@@ -1277,7 +1281,7 @@ mod driver {
                 .plan_commit(entries, &heads, &expected, &contract);
             self.persist(PusherState::commit_intents(&plans))?;
             let wrote = has_writes(&plans);
-            let outcomes = self.run_all(&plans, Some(&RefCell::new(blobs))).await;
+            let outcomes = self.run_all(&plans, Some(&Mutex::new(blobs))).await;
             let results = self.state.finish_commit(plans, outcomes);
             self.save(wrote)?;
             Ok(results)
@@ -1409,9 +1413,9 @@ mod driver {
             let document = plan.document.expect("commit 的 write 计划必有文档");
             // 每条 deliver 拿一个转发到共享 provider 的局部闭包（见 `SharedBlobs` 的借用不变式）；
             // 调用方没给 provider 时仍传 None，保持核心「无来源即如实报缺失」的语义
-            let shared = blobs.filter(|cell| cell.borrow().is_some());
+            let shared = blobs.filter(|cell| lock_blobs(cell).is_some());
             let mut lookup = |reference: &str| {
-                shared.and_then(|cell| cell.borrow_mut().as_mut().and_then(|f| f(reference)))
+                shared.and_then(|cell| lock_blobs(cell).as_mut().and_then(|f| f(reference)))
             };
             let provider: Option<BlobProvider<'_>> = shared.map(|_| {
                 let lookup: BlobProvider<'_> = &mut lookup;
