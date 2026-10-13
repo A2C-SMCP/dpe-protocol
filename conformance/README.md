@@ -7,7 +7,7 @@
 ## 通用检查面
 
 - capabilities 协商与限额如实声明（`staging_ttl_seconds` ≥ 3600）；
-- 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出；断点查询（`HEAD`）带 `DPE-Session-Expires` 但不续期；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
+- 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出（必带，RFC 3339 UTC，以 `Z` 结尾）；`now ≥ expires_at` 即过期（配置了 `clock-advance` 钩子时，把服务端时钟推进到恰好 `expires_at` 断言得到 `DPE_SESSION_EXPIRED`；未配置时该项显式 skip）；断点查询（`HEAD`）带 `DPE-Session-Expires` 但不续期；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
 - 去重范围固定为本文档：只靠该文档当前状态（或本次暂存会话）即可得的对象不出现在缺失清单中；其他文档持有的对象一律视为缺失（不因它存在于别处而变化）；
 - 快路径 / 暂存路径的 commit 语义与原子性（分批期间读接口不可见中间态）；
 - delta 与 `get_skeleton` 读回结果互相印证（不制造伪变更）；
@@ -35,7 +35,7 @@
 - commit 缺少对象时，`DPE_MISSING_CONTENT` 的 problem 体按层列出缺失的 hash；补传到同一会话后重新 commit 成功。
 - 在中间插入一页后再次提交：`missing_pages` 只含新页，其余页对象不重传；doc_hash 变化。
 - 对调两页：`missing_pages` 为空，commit 返回 `updated`，delta 为零。
-- 页对象上传响应的 `missing_content_hashes`、元素对象上传响应的 `missing_blobs` 与实际缺失一致。
+- 元素对象上传响应的 `missing_blobs`、未分块页对象上传响应的 `missing_content_hashes` 与实际缺失一致（不截断）；分块上传的页对象：`missing_truncated` 为 `false` 时与实际缺失一致，为 `true` 时是实际缺失的非空子集，且未截断时的整个响应体按 JCS 序列化后的 UTF-8 字节数超过 `max_payload_bytes`（http §4.6）。
 - negotiate 对无写授权的 URI → `403` + `DPE_FORBIDDEN`，不返回会话与缺失清单；upload 不重复判定授权（会话可用即放行，commit 才重新授权，core.md §3.4、§5 总则）。
 - 分块违例的求值顺序（core.md §3.4、http §4.7）：会话不可用 → `410`（先于分块参数与请求体校验）；本会话内已完成的 hash 重复上传（含重发最后一块）→ `200` + 缺失清单，不校验 `Content-Range` 与请求体；`Content-Range` 非法 / 块长与范围不符 / `total` 与先前声明不一致 → `400` + `DPE_VALIDATION`；单块超过 `blob_chunk_bytes`、首块声明的 `total` 超过 `page_max_bytes` / `blob_max_bytes` → `413`（不接收字节）；偏移不连续 → `400` + `DPE_VALIDATION`，响应带 `DPE-Upload-Offset` 头；到齐校验失败（含 hash 不符）→ 对应错误码并丢弃该对象已收内容。
 - 断点查询的各状态（http §4.7）：本会话无进度的 hash → `200` + `DPE-Upload-Offset: 0`（不得 `404`）；已完成 → `200` + 该对象已收的总字节数；到齐后校验失败并被丢弃 → 偏移回到 `0`（据此黑盒验证「丢弃」）。
@@ -67,7 +67,7 @@
 ## 安全（#4 B9）
 
 - 调用者 A 提交的内容 X 已存于另一篇文档（无论 A 对该文档是否有写授权；去重范围固定为本文档）：
-  - 缺失清单必须把 X 列为缺失，按 X 所在的层核对：X 是页对象时，出现在 negotiate 的 `missing_pages` 中；X 是元素对象时，出现在附带了引用它的页的 negotiate 响应、或该页对象上传响应的 `missing_content_hashes` 中；X 是 blob 时，出现在引用它的元素对象上传响应的 `missing_blobs` 中；
+  - 缺失清单必须把 X 列为缺失，按 X 所在的层核对：X 是页对象时，出现在 negotiate 的 `missing_pages` 中；X 是元素对象时，出现在附带了引用它的页的 negotiate 响应、或该页对象上传响应的 `missing_content_hashes` 中（页对象分块上传时，仅当 `missing_truncated` 为 `false` 才作此断言，http §4.6）；X 是 blob 时，出现在引用它的元素对象上传响应的 `missing_blobs` 中；
   - A 在 commit 中引用 X 而不上传，必须返回 `DPE_MISSING_CONTENT`；
   - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于别处而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
 - 对无写授权的 URI 提交与其当前内容相同的 commit，必须返回 `403`，而不是 `unchanged`。

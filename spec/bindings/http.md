@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73、#81、#83、#97 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73、#81、#83、#97、#127 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -183,7 +183,8 @@
 - negotiate 不携带也不校验任何 CAS 前置条件（CAS 只在 commit 时裁决）；会话绑定 `(file_uri, 调用者身份)`（core.md §3.4）。
 - `missing_pages`：文档对象引用、既未附带也不在去重范围内的页对象。`missing_content_hashes`：附带的页对象中引用、而不可得的元素对象（未附带的页由 §4.6 的上传响应给出）。附带的页对象存入会话。
 - 请求体超过 `max_payload_bytes` 时，少附带页对象（只提交文档对象即可，文档对象只含页 hash 列表）。
-- 缺失清单按去重范围计算（core.md §3.3）。
+- 缺失清单按去重范围计算（core.md §3.3）。两份清单都是请求中对象的子集（文档对象引用的页、附带页引用的元素），响应规模受请求体约束，MUST NOT 截断。
+- 响应 MUST 带 `staging_session.expires_at`：会话的过期时间，RFC 3339 UTC 字符串，以 `Z` 结尾（同契约 1 §3.3），core.md §3.4。
 
 ### 4.6 `PUT {remote}/staging/{sid}/pages/{page_hash}` 与 `…/objects/{content_hash}`
 
@@ -205,14 +206,16 @@
 
 ```json
 // 页对象的响应
-{ "missing_content_hashes": ["dpe1:…"] }
+{ "missing_content_hashes": ["dpe1:…"], "missing_truncated": false }
 // 元素对象的响应
 { "missing_blobs": ["sha256:…"] }
 ```
 
 201 / 200 MUST 只按本会话已收到的内容判定，不反映服务端其他位置是否已存该对象；缺失清单按去重范围计算（core.md §3.3、§8）。
 
-会话的每个成功操作都会续期（core.md §3.4）：negotiate 响应的 `expires_at` 与 upload 各响应（含 `202` 中间块）的 `DPE-Session-Expires: <RFC 3339 UTC>` 头给出续期后的过期时间。
+**截断**：元素对象的响应与未分块上传的页对象的响应，其缺失清单是请求中对象引用的子集，规模受请求体约束，MUST NOT 截断。只有分块上传的页对象（总大小可达 `page_max_bytes`）到齐后的响应，及其在本会话内重复上传得到的 `200`，在未截断时的整个响应体按 JCS（契约 1 §3.3）序列化后的 UTF-8 字节数超过 `max_payload_bytes` 时 MAY 截断，其余情况 MUST NOT 截断。页对象的响应因此 MUST 带 `missing_truncated`（布尔），判据与 commit 的 `DPE_MISSING_CONTENT` 相同（§5、core.md §3.3）：截断时清单是实际缺失的非空子集，为 `true`；未截断时清单与实际缺失一致，为 `false`。元素对象的响应不带该成员。客户端不需要专门处理截断：按清单上传后，余下的缺失由 commit 的 `DPE_MISSING_CONTENT` 逐轮给出（core.md §3.3）。
+
+会话的每个成功操作都会续期（core.md §3.4）：negotiate 响应 MUST 带 `expires_at`（§4.5），upload 的各成功响应（页对象、元素对象与 blob 的 `201` / `200`，含分块上传的 `202` 中间块，§4.7）MUST 带 `DPE-Session-Expires: <RFC 3339 UTC，以 Z 结尾>` 头，给出续期后的过期时间；断点查询（§4.7）同样 MUST 带该头，给出当前的过期时间（不续期）。blob 的 `201` / `200` 没有下一层清单，响应体不作规定（客户端 MUST 忽略）。
 
 **页对象可分块**：单个页对象超过 `max_payload_bytes` 时，按 §4.7 的方式分块上传与断点续传（单块大小同样不超过 `blob_chunk_bytes`），总大小不超过 `page_max_bytes`。全部字节到齐后，服务端把它们解析为页对象，按契约 1 重算 page_hash 并与路径比较（不是对原始字节算 sha256）；最后一块的响应体为缺失清单。元素对象不分块，超限返回 `DPE_PAYLOAD_TOO_LARGE`（core.md §3.2）。
 
@@ -280,7 +283,7 @@
 - `type` 是规范中稳定的 URI：v1 使用 `urn:dpe:error:<code 去掉 DPE_ 前缀后转 kebab-case>`（如 `DPE_PRECONDITION_FAILED` → `urn:dpe:error:precondition-failed`），`title` 为对应的小写短语（同一个串，连接线换成空格，如 `precondition failed`）；规范将来若发布到固定域名，MAY 改为该域名下的 URL（plan §16）。
 - **`DPE-Error-Code` 响应头**：每个 DPE 错误响应 MUST 带 `DPE-Error-Code: <code>`，值等于 problem 体的 `code`。HEAD 响应不能带内容（RFC 9110 §9.3.2），HEAD 出错时只有这个头、没有 problem 体，客户端 MUST 按它分派；`retryable` 由 code 决定（core.md §6），不另设头。错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头时不是 DPE 错误（例如 remote URL 配错或网关返回的 404），客户端 MUST NOT 猜测 code，按非协议错误上报。
 - **非协议错误**（既无 problem 体、也无 `DPE-Error-Code` 头，客户端按上文如实上报，MUST NOT 猜测 code）：未知路由 → `404`；路径存在但方法不符 → `405` + `Allow`（列出该路径允许的方法）；未认证 → `401` + `WWW-Authenticate`（§6）；不支持的 `Content-Encoding` → `415` + `Accept-Encoding`（§7）。它们与「非 DPE 实现返回的错误」（remote URL 配错、网关返回的 404）在客户端侧不作区分；彼此的先后见 §3.1 的传输层顺序。`staging/{sid}` 下会话不存在、过期、已消费或不属于调用者，**仍是** DPE 错误 `410` + `DPE_SESSION_EXPIRED`（core.md §3.4），不在此列。
-- 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。`DPE_MISSING_CONTENT` 另带 `missing: {pages: […], content_hashes: […], blobs: […]}` 与 `missing_truncated: true|false`（core.md §3.3）。
+- 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。`DPE_MISSING_CONTENT` 另带 `missing: {pages: […], content_hashes: […], blobs: […]}` 与 `missing_truncated: true|false`（core.md §3.3）：截断时三层合计为实际缺失的非空子集，为 `true`；未截断时各层与实际缺失一致，为 `false`。
 - HTTP 状态映射（每个 code 在给定端点上只有一个状态码；客户端按 `code` 分派，§3.2）：
 
 | code | 状态码 |
