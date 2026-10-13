@@ -10,6 +10,8 @@
 - ``--hooks PATH``：启用钩子通道（保留路径，如 ``/__hooks__``；缺省关闭）；
 - ``--grant AUTH PREFIX…`` / ``--force AUTH``：多身份与按 URI 前缀的写授权（``AUTH`` 即
   ``Authorization`` 头原值，缺省放行一切）；
+- ``--require-auth``：只认 ``--grant`` 列出的凭证，其余（含不带 ``Authorization``）一律
+  ``401``——供一致性跑分器断言「认证先于一切报文校验」（HTTP 绑定 §3.1、§6），缺省关闭；
 - ``--contract NAME``：同时声明多个 hash 契约（第一个为主契约）；
 - ``--session-id-prefix P``：可预测的顺序会话 id（``P0``、``P1``…）。
 """
@@ -65,6 +67,11 @@ def _parser() -> argparse.ArgumentParser:
         "--force", action="append", metavar="AUTH", help="有 force 权限的凭证，可重复"
     )
     parser.add_argument(
+        "--require-auth",
+        action="store_true",
+        help="只认 --grant 列出的凭证，其余一律 401（缺省放行一切）",
+    )
+    parser.add_argument(
         "--contract",
         action="append",
         metavar="NAME",
@@ -94,6 +101,13 @@ def _authorizer(grants: list[list[str]], forces: list[str]) -> PrefixAuthorizer:
     if unknown:
         raise ValueError(f"--force 的凭证 {unknown[0]!r} 没有对应的 --grant（不会生效）")
     return PrefixAuthorizer(prefixes, frozenset(forces))
+
+
+def _known_credentials(grants: list[list[str]]) -> Callable[[str | None], str | None]:
+    """``--require-auth`` 的认证器：``--grant`` 列出的凭证即调用者身份（与 ``open_access``
+    同一口径：身份取 ``Authorization`` 头原值），其余返回 ``None``（401）。"""
+    known = frozenset(entry[0] for entry in grants)
+    return lambda authorization: authorization if authorization in known else None
 
 
 def _sequential_ids(prefix: str) -> Callable[[], str]:
@@ -170,8 +184,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             options["authorizer"] = _authorizer(args.grant, args.force or [])
         elif args.force:
             raise ValueError("--force 需要同时给出对应的 --grant")
+        elif args.require_auth:
+            raise ValueError("--require-auth 需要同时给出 --grant（否则没有凭证能通过认证）")
+        app_options: dict[str, Any] = {}
+        if args.require_auth:
+            app_options["authenticate"] = _known_credentials(args.grant)
         engine = Engine(EngineConfig(**options))
-        app = create_app(engine, prefix=args.prefix, public_url=args.public_url, hooks=hooks)
+        app = create_app(
+            engine, prefix=args.prefix, public_url=args.public_url, hooks=hooks, **app_options
+        )
     except ValueError as exc:
         parser.error(str(exc))
 

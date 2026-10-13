@@ -71,10 +71,12 @@ def test_sections_discovery() -> None:
         "commit",
         "http_binding",
         "large",
+        "order",
         "read",
         "smoke",
         "staging",
         "validation",
+        "vectors",
         "write_ops",
     )
 

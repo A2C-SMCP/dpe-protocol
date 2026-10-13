@@ -13,12 +13,16 @@ import dpe_hash
 from dpe_conformance.config import Identity
 from dpe_conformance.hooks import HookDriver, self_write_payload
 from dpe_conformance.plugin import Target
+from dpe_conformance.support import optional_identity
 
 
 def test_remote_reachable(conformance_target: Target) -> None:
     """HTTP §4.1（浅层）：GET capabilities 可达、JSON 媒体类型与协议标记
-    （字段深检在 capabilities 章）。"""
-    response = conformance_target.send("GET", "capabilities", contract=None)
+    （字段深检在 capabilities 章）。有 full 身份就带上：规范不豁免 capabilities 的认证
+    （HTTP §6），要求认证的服务端对匿名请求返回 401。"""
+    response = conformance_target.send(
+        "GET", "capabilities", contract=None, identity=optional_identity(conformance_target)
+    )
     assert response.status_code == 200, f"capabilities 返回 {response.status_code}"
     content_type = response.headers.get("content-type", "")
     assert content_type.startswith("application/json"), (

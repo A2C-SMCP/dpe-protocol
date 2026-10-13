@@ -227,8 +227,10 @@ curl -X POST http://127.0.0.1:8000/__hooks__/expire-session -d '{"session_id": "
 curl -X POST http://127.0.0.1:8000/__hooks__/clock/advance -d '{"advance_seconds": 3600}'
 ```
 
-独立监听时钩子同样由命令行开启（`--hooks`、`--grant` / `--force`、`--contract`、
-`--session-id-prefix`），公布的一行 JSON 会带上钩子通道的 base URL：
+独立监听时钩子同样由命令行开启（`--hooks`、`--grant` / `--force`、`--require-auth`、`--contract`、
+`--session-id-prefix`），公布的一行 JSON 会带上钩子通道的 base URL。`--require-auth` 只认 `--grant`
+列出的凭证，其余（含不带 `Authorization`）一律 `401` + `WWW-Authenticate`，供跑分器断言「认证先于
+一切报文校验」；缺省放行一切：
 
 ```bash
 python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \

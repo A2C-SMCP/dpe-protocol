@@ -208,6 +208,48 @@ def test_multi_identity_grants_over_tcp() -> None:
             assert same.status_code == 403
 
 
+def test_require_auth_rejects_unknown_credentials_before_any_validation() -> None:
+    """``--require-auth``：只认 ``--grant`` 列出的凭证；无凭证或未列出的凭证一律 401 +
+    ``WWW-Authenticate``，先于一切报文校验（HTTP 绑定 §3.1、§6），且不是 DPE 错误。"""
+    args = ("--grant", "Bearer full", "*", "--require-auth")
+    with _spawn(*args) as info:
+        server = info["url"]
+        with httpx.Client() as client:
+            # 缺契约头 + 非 JSON 体 + 重复 uri：仍是 401（路由之后、查询参数与请求体之前）
+            for authorization in (None, "Bearer nobody"):
+                headers = {} if authorization is None else {"Authorization": authorization}
+                rejected = client.put(
+                    f"{server}/documents?uri=test%3A%2F%2Fa&uri=test%3A%2F%2Fb",
+                    headers=headers,
+                    content=b"{",
+                )
+                assert rejected.status_code == 401
+                assert "www-authenticate" in rejected.headers
+                assert "dpe-error-code" not in rejected.headers
+            # 路由先于认证：未知路径无凭证也是 404
+            assert client.get(f"{server}/nowhere").status_code == 404
+            # 列出的凭证照常进入协议面
+            granted = _put(
+                client,
+                f"{server}/documents?uri=test%3A%2F%2Fa",
+                inline(text_doc(["x"])).body(),
+                headers={"Authorization": "Bearer full", "If-None-Match": "*"},
+            )
+            assert granted.status_code == 201
+
+
+def test_cli_rejects_require_auth_without_grant() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "dpe_sdk.testing", "--require-auth"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 2
+    assert "--require-auth" in proc.stderr
+    assert proc.stdout == ""
+
+
 def test_dual_contract_declaration_over_tcp() -> None:
     args = ("--prefix", "/r/1", "--contract", "dpe1", "--contract", "dpe2")  # fmt: skip
     with _spawn(*args) as info:

@@ -3,7 +3,10 @@
 - CORE §2.8：对象校验（封闭 schema：未定义字段、category 未允许的内容字段 → ``DPE_VALIDATION``；
   整数字面量超 2^53−1 → ``DPE_VALIDATION``，CORE §2.6）；
 - HTTP §3.1：校验顺序（传输层四步 → I-JSON → 契约 → 信封 → 对象；授权之前的校验链）；
-- HTTP §3.1：uri 的文法校验在契约声明之后（无体端点「契约 → uri（文法）」）。
+- HTTP §3.1：uri 的文法校验在契约声明之后（无体端点「契约 → uri（文法）」）；
+- 源即内容（plan §0.1 P2，#56）：只改元素 metadata 的一个键，三层 hash 都变化且读回新值。
+
+求值顺序的组合用例在 order 章，一致性向量（含嵌套深度上界）经 HTTP 消费在 vectors 章。
 """
 
 from __future__ import annotations
@@ -14,9 +17,11 @@ from typing import Any
 from dpe_conformance.config import Identity
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
+    assert_commit_success,
     assert_head_error,
     assert_problem,
     build_document,
+    commit,
     optional_identity,
     text_element,
 )
@@ -128,3 +133,43 @@ def test_body_must_be_json_object(conformance_target: Target, full_identity: Ide
         "PUT", "documents", identity=full_identity, params={"uri": uri}, content=json.dumps([])
     )
     assert_problem(response, status=400, code="DPE_VALIDATION")
+
+
+def test_metadata_only_change_is_content(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """plan §0.1 P2（源即内容）+ CORE §2.4：只改元素 metadata 中的一个键（如坐标），
+    content_hash、page_hash、doc_hash 都变化——commit 返回 ``updated``、``batch_head`` 报出新
+    doc_hash、``get_skeleton`` 读回的页对象引用新的 content_hash；服务端不得把 metadata 当作
+    可丢弃的附属字段。"""
+    uri = conformance_target.uri("validation/metadata-only")
+    before = build_document([[text_element("same", metadata={"coordinates": [1, 2]})]])
+    after = build_document([[text_element("same", metadata={"coordinates": [1, 3]})]])
+    assert before.doc_hash != after.doc_hash and before.page_hashes != after.page_hashes
+    first = commit(conformance_target, uri, before, identity=full_identity, if_none_match_star=True)
+    assert first.status_code == 201, f"首次提交失败：{first.status_code}"
+
+    heads = conformance_target.send("POST", "heads", identity=full_identity, json={"uris": [uri]})
+    assert heads.status_code == 200, f"heads 返回 {heads.status_code}"
+    assert heads.json()["heads"] == [{"doc_hash": before.doc_hash}]
+
+    response = commit(
+        conformance_target, uri, after, identity=full_identity, if_match=before.doc_hash
+    )
+    assert_commit_success(response, status=200, status_text="updated", doc_hash=after.doc_hash)
+    # batch_head 发现变化：更新后报的是新 doc_hash（来源据此判定无需重推）
+    heads = conformance_target.send("POST", "heads", identity=full_identity, json={"uris": [uri]})
+    assert heads.json()["heads"] == [{"doc_hash": after.doc_hash}], (
+        f"更新后 batch_head 必须报新 doc_hash：{heads.json()!r}"
+    )
+
+    readback = conformance_target.send(
+        "GET", "documents", identity=full_identity, params={"uri": uri}
+    )
+    assert readback.status_code == 200, f"读回失败：{readback.status_code}"
+    body = readback.json()
+    assert body["document"]["pages"] == after.page_hashes, "读回的页序列必须是新 page_hash"
+    # 骨架不含元素对象（HTTP §4.3）：新值体现为页对象引用的新 content_hash
+    assert [page["elements"] for page in body["pages"]] == [
+        page["elements"] for page in after.pages
+    ], "读回的页对象必须引用带新 metadata 值的元素（新 content_hash）"

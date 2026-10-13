@@ -120,25 +120,38 @@ jobs:
           uv venv "$RUNNER_TEMP/server"
           uv pip install --python "$RUNNER_TEMP/server/bin/python" \
             dist/dpe_hash-*.whl "$(echo dist/dpe_sdk-*.whl)[server]"
-      # 显式 shell: bash 才带 -o pipefail；参考服务端的身份、钩子与收小限额与 test_cli 一致
-      # （改动须两处同步：dpe-conformance/tests/test_cli.py 的 _SERVER_ARGS 与 _write_config）
+      # 显式 shell: bash 才带 -o pipefail；参考服务端的身份、钩子、认证、契约与收小限额与 test_cli
+      # 一致（改动须两处同步：dpe-conformance/tests/test_cli.py 的 _SERVER_ARGS /
+      # _SINGLE_CONTRACT_ARGS 与 _write_config）。两轮（#56）：
+      #   1. 全配置（--require-auth、同时声明 dpe1 与演练契约 dpe2）跑全部章节；
+      #   2. 只声明 dpe1 跑 vectors 章——前提为「服务端未声明 dpe2」的向量用例在这里执行。
+      # 零 skip 按两轮的并集判定：任一轮 skip 的用例必须在另一轮执行并通过。
       - name: 对参考服务端运行 dpe-conformance
         shell: bash
         working-directory: ${{ runner.temp }}
         run: |
-          coproc SERVER { "$RUNNER_TEMP/server/bin/python" -m dpe_sdk.testing --port 0 \
-            --hooks /__hooks__ \
-            --grant "Bearer full-auth" "*" --force "Bearer full-auth" \
-            --grant "Bearer scoped-auth" "dpe://conf/scoped/" \
-            --grant "Bearer no-force-auth" "*" \
-            --max-payload-bytes 65536 --page-max-bytes 262144 \
-            --blob-max-bytes 131072 --blob-chunk-bytes 16384; }
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
-          # 阻塞读公告行（{"url", "hooks"}），超时即启动失败
-          read -r -t 30 announce <&"${SERVER[0]}"
-          url=$(jq -er .url <<<"$announce")
-          hooks=$(jq -er .hooks <<<"$announce")
-          cat > dpe-conformance.toml <<EOF
+          trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+          run_pass() {  # $1 = 输出名；$2 = 额外的服务端参数（空格分隔）；其余 = 跑分器参数
+            local name=$1 extra=$2; shift 2
+            # 公告行经命名管道读取（阻塞读，超时即启动失败）；之后读端交给后台 cat 持续读走，
+            # 服务端日后即使写 stdout 也不会因管道断开而崩溃
+            rm -f "$name.fifo" && mkfifo "$name.fifo"
+            "$RUNNER_TEMP/server/bin/python" -m dpe_sdk.testing --port 0 \
+              --hooks /__hooks__ \
+              --grant "Bearer full-auth" "*" --force "Bearer full-auth" \
+              --grant "Bearer scoped-auth" "dpe://conf/scoped/" \
+              --grant "Bearer no-force-auth" "*" \
+              --require-auth $extra \
+              --max-payload-bytes 65536 --page-max-bytes 262144 \
+              --blob-max-bytes 131072 --blob-chunk-bytes 16384 > "$name.fifo" &
+            local pid=$!
+            exec 3< "$name.fifo"
+            read -r -t 30 announce <&3
+            cat <&3 > "$name.stdout" &
+            exec 3<&-
+            url=$(jq -er .url <<<"$announce")
+            hooks=$(jq -er .hooks <<<"$announce")
+            cat > dpe-conformance.toml <<EOF
           schema = 1
 
           [identities.full]
@@ -160,16 +173,52 @@ jobs:
           [hooks.inject-error]
           http = "$hooks/inject-error"
           EOF
-          "$RUNNER_TEMP/conf/bin/dpe-conformance" "$url" --junit-xml junit.xml --counts-json counts.json
-          jq '.totals' counts.json | tee -a "$GITHUB_STEP_SUMMARY"
-          jq -e '.totals | .skipped == 0 and .errors == 0 and .collection_errors == 0 and .executed > 0' counts.json
+            local status=0
+            "$RUNNER_TEMP/conf/bin/dpe-conformance" "$url" "$@" \
+              --junit-xml "$name.xml" --counts-json "$name.json" || status=$?
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            jq '.totals' "$name.json" | tee -a "$GITHUB_STEP_SUMMARY"
+            jq -e '.totals | .failed == 0 and .errors == 0 and .collection_errors == 0 and .executed > 0' "$name.json"
+            return $status
+          }
+          run_pass full "--contract dpe1 --contract dpe2"
+          run_pass vectors-dpe1 "" --section vectors
+          # 两轮并集零 skip：任一轮 skip 的用例必须在另一轮通过
+          python3 - full.xml vectors-dpe1.xml <<'EOF'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          def outcomes(path):
+              # 以 (classname, name) 为键：不同章节的同名用例不得互相覆盖
+              result = {}
+              for case in ET.parse(path).iter("testcase"):
+                  tags = {child.tag for child in case} & {"skipped", "failure", "error"}
+                  key = f"{case.get('classname')}::{case.get('name')}"
+                  assert key not in result, f"JUnit 中有重复用例：{key}"
+                  result[key] = next(iter(tags), "passed")
+              return result
+
+          first, second = (outcomes(path) for path in sys.argv[1:])
+          uncovered = sorted({
+              name
+              for a, b in ((first, second), (second, first))
+              for name, outcome in a.items()
+              if outcome == "skipped" and b.get(name) != "passed"
+          })
+          if uncovered:
+              sys.exit(f"两轮都未执行的用例：{uncovered}")
+          print("两轮并集零 skip")
+          EOF
       - if: always()
         uses: actions/upload-artifact@v7
         with:
           name: conformance-report
           path: |
-            ${{ runner.temp }}/junit.xml
-            ${{ runner.temp }}/counts.json
+            ${{ runner.temp }}/full.xml
+            ${{ runner.temp }}/full.json
+            ${{ runner.temp }}/vectors-dpe1.xml
+            ${{ runner.temp }}/vectors-dpe1.json
           if-no-files-found: ignore
 
   # 原位重算基准（#7）：只报告、不设门槛，结果写进 job summary
