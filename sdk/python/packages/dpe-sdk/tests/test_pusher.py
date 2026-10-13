@@ -747,6 +747,14 @@ async def test_local_validation() -> None:
             await pusher.delete([URI, "DPE://DOCS/a.md"])
         with pytest.raises(ValueError, match="同一篇"):
             await pusher.move([(URI, "DPE://DOCS/a.md")])
+        b, c = "dpe://docs/b.md", "dpe://docs/c.md"
+        for overlapping in (
+            [(URI, b), ("DPE://DOCS/b.md", c)],  # 链式（归一化后 b 同时是目标与源）
+            [(URI, c), (b, c)],  # 共用目标
+            [(URI, b), ("dpe://DOCS/a.md", c)],  # 重复源
+        ):
+            with pytest.raises(ValueError, match="保序拆批"):
+                await pusher.move(overlapping)
         with pytest.raises(TypeError, match="二元组"):
             await pusher.move([(URI, "dpe://docs/b.md", "extra")])  # type: ignore[list-item]
         with pytest.raises(ValueError, match="expected_base"):
@@ -1002,6 +1010,29 @@ async def test_move_success_migrates_the_entry() -> None:
     assert [r.status for r in achieved] == ["achieved"]
 
 
+async def test_move_replay_after_own_success_is_achieved() -> None:
+    """自己的 move 成功后重放（同一推送器、同一 store 的新推送器）：迁移后的条目即本实例完成过的
+    move，判已达成记 ``moved``，不发写——否则 §6.8 整轮重跑会把它变成永久失败、扣住游标。"""
+    store = MemoryStateStore()
+    target = "dpe://docs/moved.md"
+    async with in_process_client() as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({URI: _doc("v1")})
+        assert [r.status for r in await pusher.move([(URI, target)])] == ["moved"]
+
+        for replayer in (pusher, AsyncStatefulPusher(client, state=store)):
+            before = len(recorder.requests)
+
+            replayed = await replayer.move([(URI, target)])
+
+            assert [r.status for r in replayed] == ["moved"]
+            assert replayed[0].precondition is None  # 未发写
+            assert all(not _is_move(r) for r in recorder.requests[before:])
+            state = await _state(store)
+            assert state.synced == {target: _doc("v1").doc_hash()}
+            assert state.intents == {}
+
+
 async def test_move_already_achieved_without_writes() -> None:
     """源已不存在而目标等于 base：已达成，记 ``moved``、迁条目、零写入。"""
     store = MemoryStateStore()
@@ -1226,13 +1257,14 @@ async def test_move_post_write_not_found_is_failed_side_from() -> None:
     assert state.intents == {}  # 结果确定 → 清除
 
 
-async def test_move_does_not_borrow_foreign_pending_intents() -> None:
-    """源无 L 且未带着自身的待定意图：绝不把 to 侧的残留意图当作本次 base（两种污染时序）。"""
+async def test_move_target_pending_intents_count_only_after_reconcile() -> None:
+    """to 侧的残留意图只有经对账确认（R == 意图值）并入 L 后才参与判定：不进入写入路径，
+    未对上的不当 base；对上的即为目标侧 L，源不存在且无 L 时据此判已达成。"""
     store = MemoryStateStore()
     target = "dpe://docs/b.md"
     app = create_app(make_engine(), prefix=PREFIX)
     async with (
-        in_process_client(transport=httpx.ASGITransport(app=app)) as (client, _),
+        in_process_client(transport=httpx.ASGITransport(app=app)) as (client, recorder),
         AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign,
     ):
         # 场景一（假冲突）：源 A 未被本推送器追踪但有远端内容；target 有他次 move 的残留意图
@@ -1252,25 +1284,36 @@ async def test_move_does_not_borrow_foreign_pending_intents() -> None:
         assert isinstance(results[0].precondition, BaseHash)
         assert results[0].precondition.value == _doc("v1").doc_hash()
 
-        # 场景二（假 moved）：源不存在且无自身意图，target 的残留意图值恰等于 R(target)。
+        # 场景二（假 moved）：源不存在且无 L，target 的 L 与残留意图都不等于 R(target)——
+        # 回退取到的目标侧 L 与 R(target) 不等、未对上的残留意图不当 base，即判失败。
         # 另放一条本轮读不到的待定意图，验证写前判定失败不触碰既有意图。
         ghost = "dpe://docs/ghost.md"
         unrelated = "dpe://docs/unrelated.md"
+        stale = {target: _doc("older").doc_hash()}
         store.save(
             REMOTE,
-            StateSnapshot(
-                synced={},
-                intents={target: _doc("v1").doc_hash(), unrelated: None},
-            ),
+            StateSnapshot(synced=stale, intents={target: residual, unrelated: None}),
         )
         second = await AsyncStatefulPusher(client, state=store).move([(ghost, target)])
 
-        assert [r.status for r in second] == ["failed"]  # base 不可知：不得报 moved
+        assert [r.status for r in second] == ["failed"]  # 目标未达成：不得报 moved
         assert second[0].side == "from"
         assert isinstance(second[0].error, NotFoundError)
         status = await _state(store)
-        assert status.intents == {unrelated: None}  # 未读到的待定意图不被触碰
-        # target 的残留意图值与 R(target) 相同：按 §7.2 对账为「自身已生效」确认（与本次 move 无关）
+        assert status.intents == {target: residual, unrelated: None}  # 未对上的意图原样保留
+        assert status.synced == stale
+
+        # 场景三：target 的残留意图恰等于 R(target) → 按 §7.2 对账确认为本实例已生效的写入、并入 L；
+        # 源不存在且无 L，回退以它作 base → 已达成（moved），不发写，条目落在 target
+        store.save(REMOTE, StateSnapshot(synced={}, intents={target: _doc("v1").doc_hash()}))
+        before = len(recorder.requests)
+        third = await AsyncStatefulPusher(client, state=store).move([(ghost, target)])
+
+        assert [r.status for r in third] == ["moved"]
+        assert third[0].precondition is None
+        assert all(not _is_move(r) for r in recorder.requests[before:])
+        status = await _state(store)
+        assert status.intents == {}
         assert status.synced == {target: _doc("v1").doc_hash()}
 
 
@@ -1359,6 +1402,9 @@ async def _scenario(
     # move：成功（迁条目）→ 目标已存在时再 push 同内容应 achieved（证明条目已迁移）
     moved_uri = f"{base}/moved.md"
     out.append([_view(r, base) for r in await driver.move([(uri, moved_uri)])])
+    replayed = await driver.move([(uri, moved_uri)])  # 重放自己的 move：已达成、不发写
+    assert [(r.status, r.precondition) for r in replayed] == [("moved", None)]
+    out.append([_view(r, base) for r in replayed])
     out.append([_view(r, base) for r in await driver.push({moved_uri: _doc("three")})])
     # 目标被占（源未变、目标内容不同）→ 条目失败 side=to
     occupied = f"{base}/occupied.md"

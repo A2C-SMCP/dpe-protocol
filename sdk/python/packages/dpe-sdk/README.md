@@ -107,7 +107,7 @@ with DpeClient("https://example.com/anything/r/42") as client:
 ```
 
 - **只推变化**：本地算 doc_hash（N）与 `batch_head` 读到的 remote 值（R）比较；R == N 记 `achieved` 并跳过写入。快路径 / 逐层协商的分界完全复用核心 `deliver`（inline 请求体 ≤ `capabilities.limits.max_payload_bytes`），本模块不引入任何阈值；`concurrency` 只限制并发度（各条独立）；
-- **删除与移动**（§7.2 同一张判定表，move 取 `from_uri` 的 L 与 R）：delete 的 R 不存在＝目标状态已达成（`deleted`，不发写）；move 的源不存在时查 `head(to)`——等于 base 即已达成（`moved`，迁条目），否则条目失败（`side="from"`）；目标被占（`DPE_ALREADY_EXISTS`）为条目失败（`side="to"`），源被改写为冲突（`side="from"`）；成功与已达成都维护同步状态条目（delete 删、move 迁）；
+- **删除与移动**（§7.2 同一张判定表，move 取 `from_uri` 的 L 与 R）：delete 的 R 不存在＝目标状态已达成（`deleted`，不发写）；move 的源不存在时查 `head(to)`——等于 base 即已达成（`moved`，迁条目），否则条目失败（`side="from"`）；源不存在且源无 L 时以目标侧的 L 作 base，因此重放自己已成功的 move 判已达成（「已达成」只表示目标状态成立，不担保移动由本实例发生）；目标被占（`DPE_ALREADY_EXISTS`）为条目失败（`side="to"`），源被改写为冲突（`side="from"`）；成功与已达成都维护同步状态条目（delete 删、move 迁）；同一批 move 中，任何 URI 在 from 与 to 合集里出现两次（链式 a→b、b→c，共用目标 a→c、b→c）即整批抛 `ValueError`——这类输入的生效依赖顺序（connector §6.5），保序拆批归调用方；
 - **同步状态 + 意图日志**（§7.2）：同步状态（L）是每篇文档最近一次确认的 remote doc_hash，决定写入的前置条件（`if_absent` / `base_hash`）；写入前先把意图持久化到 `StateStore`（commit 记内容 hash、delete 记「不存在」、move **两侧一起**记），`save` 返回后才发写请求；结果确定即清除、只有结果未知（`unknown=True`）才保留，下一轮按意图对账恢复。缺省 `MemoryStateStore` 只在进程内、**不保证崩溃持久**；落盘实现属运行器的状态目录（契约 §4.4）；
 - **冲突如实上报**：`status == "conflict"`，带读到的（或冲突后重读的）remote 状态；**绝不自动 force、不自动重提**——`source_wins` / `report` 等策略与轮内重试上限归调用方（推送器不设 `retryable`、不在内部重试冲突，§7.1 的「超过重试上限取 true」由运行器计数），重提用 `expected_base` 覆盖前置条件（值为 `None` 表示确认「不存在」；move 以 `from_uri` 为键）；
 - **错误与凭证**：复用 `DpeClient` 的传输层（gzip、`Retry-After`、`CredentialProvider` 全部适用）；失败按异常原类型如实回报（含服务端错误对象的 `code`），`unknown=True` 表示结果未确定——由核心的 `outcome_unknown` 判据给出（写请求任何一次尝试可能已到达服务端即未知，含「首发丢响应后重发得到 DPE 错误或建连失败」等序列），此时意图保留、下一轮对账恢复。

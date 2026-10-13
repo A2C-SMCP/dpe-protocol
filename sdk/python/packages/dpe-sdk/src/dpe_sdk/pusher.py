@@ -336,10 +336,16 @@ class _PusherBase:
         expected_base: Mapping[str, str | None] | None,
         contract: str,
     ) -> tuple[list[tuple[str, str]], dict[str, str | None]]:
-        """move 的输入校验与归一化；``expected_base`` 以 from_uri 为键（§7.2 取源的 L）。"""
+        """move 的输入校验与归一化；``expected_base`` 以 from_uri 为键（§7.2 取源的 L）。
+
+        同一 URI 在本批的 from 与 to 合集中至多出现一次：链式（a→b、b→c）或共用目标（a→c、b→c）
+        的生效依赖顺序（connector §6.5），而一批内的写请求并发执行，因此整批拒绝；
+        保序拆批归调用方（#52 运行器）。
+        """
         if isinstance(moves, (str, bytes)) or not isinstance(moves, Sequence):
             raise TypeError(f"moves 必须是 (from_uri, to_uri) 元组的序列：{moves!r}")
         pairs: list[tuple[str, str]] = []
+        sources: set[str] = set()
         seen: dict[str, str] = {}
         for item in moves:
             if not isinstance(item, tuple) or len(item) != 2:
@@ -349,11 +355,16 @@ class _PusherBase:
             target = dpe_hash.normalize_file_uri(to_uri)
             if source == target:
                 raise ValueError(f"move 的源与目标是同一篇文档：{source!r}")
-            if source in seen:
-                raise ValueError(f"归一化后重复的 from_uri：{seen[source]!r} 与 {from_uri!r}")
-            seen[source] = from_uri
+            for normalized, raw in ((source, from_uri), (target, to_uri)):
+                if normalized in seen:
+                    raise ValueError(
+                        f"同一批 move 中重复的 URI（归一化后）：{seen[normalized]!r} 与 {raw!r}；"
+                        "链式或共用目标须由调用方保序拆批"
+                    )
+                seen[normalized] = raw
+            sources.add(source)
             pairs.append((source, target))
-        return pairs, self._prepare_expected(expected_base, set(seen), contract)
+        return pairs, self._prepare_expected(expected_base, sources, contract)
 
     def _prepare_expected(
         self,
@@ -497,20 +508,20 @@ class _PusherBase:
         源已不存在而目标未达成／base 不可知 → 判定失败（条目失败，§7.2 列为不可由策略重判定）；
         调用方确认源「不存在」而实际存在 → 与确认矛盾，判冲突（同 commit / delete 的表口径）；
         源被改写 → 冲突（``side="from"``）。
+
+        源不存在且源无 L 时，以目标侧的 L 作 base 候选：迁移后的条目就是本实例完成过的 move
+        （成功后条目已从源迁到目标；未确认的 to 侧意图也已由上面的对账并入），重放据此判已达成，
+        与服务端对同一请求的裁决一致（core §5.2）。回退只在源无 L 时生效，
+        同 §7.2「无 L」的退化口径。因此「已达成」只表示「源不存在、目标内容等于本实例确认过的值」，
+        不担保这次移动由本实例发生（与 core §5.2 第 4 步只保证状态同义）。
         """
         plans: list[_Plan] = []
         for (from_uri, to_uri), from_head, to_head in zip(moves, from_heads, to_heads, strict=True):
-            # 上一轮未确认的自身 move（意图 {from: None, to: base}）：源侧条目会被对账清掉，
-            # 「目标已达成」的判定需要从 to 侧待定意图取回 base。**仅在源侧确实带着本 move 的
-            # 未确认意图（值为「不存在」）时取用**，且只作用于「源已不存在」的判定分支——
-            # 不进入写入路径，避免把他人/他次操作的残留意图当作本次的 base
-            own_move = from_uri in self._intents and self._intents[from_uri] is None
-            pending_base = self._intents.get(to_uri) if own_move else None
             self._reconcile(from_uri, from_head)
             self._reconcile(to_uri, to_head)
             base, known_absent = self._base_of(from_uri, expected, contract)
             if from_head is None and base is None and not known_absent:
-                base = pending_base
+                base, _ = self._base_of(to_uri, {}, contract)
             remote = RemoteState(from_head)
             if known_absent and from_head is not None:
                 # 调用方确认「不存在」而源实际存在：与确认矛盾，判冲突（不静默覆盖）
@@ -831,6 +842,7 @@ class StatefulPusher(_PusherBase):
           为条目失败（``side="from"``）；
         - 成功与已达成都把同步状态条目从源迁到目标；
         - ``expected_base`` 以 ``from_uri`` 为键（值为 ``None`` 即确认源「不存在」）；
+        - 同一 URI 在本批 from 与 to 中至多出现一次（链式、共用目标整批拒绝，保序拆批归调用方）；
         - 目标被占（``DPE_ALREADY_EXISTS``）为条目失败（``side="to"``），源被改写为冲突
           （``side="from"``），都如实回报、绝不自动退化。
         """
@@ -849,16 +861,9 @@ class StatefulPusher(_PusherBase):
     def _read_move_sides(
         self, pairs: Sequence[tuple[str, str]]
     ) -> tuple[list[str | None], list[str | None]]:
-        """一次 ``batch_head`` 读全部 move 的两侧（去重保序），再按 move 拆回。"""
-        wanted: dict[str, None] = {}
-        for from_uri, to_uri in pairs:
-            wanted.setdefault(from_uri, None)
-            wanted.setdefault(to_uri, None)
-        heads = dict(zip(wanted, self._client.batch_head(list(wanted)), strict=True))
-        return (
-            [heads[from_uri] for from_uri, _ in pairs],
-            [heads[to_uri] for _, to_uri in pairs],
-        )
+        """一次 ``batch_head`` 读全部 move 的两侧：先全部源、再全部目标（本批 URI 两两不同）。"""
+        heads = self._client.batch_head([f for f, _ in pairs] + [t for _, t in pairs])
+        return heads[: len(pairs)], heads[len(pairs) :]
 
     def _run_all(
         self, plans: Sequence[_Plan], worker: Callable[[_Plan], _Outcome]
@@ -1004,15 +1009,8 @@ class AsyncStatefulPusher(_PusherBase):
         self, pairs: Sequence[tuple[str, str]]
     ) -> tuple[list[str | None], list[str | None]]:
         """``StatefulPusher._read_move_sides`` 的异步版本。"""
-        wanted: dict[str, None] = {}
-        for from_uri, to_uri in pairs:
-            wanted.setdefault(from_uri, None)
-            wanted.setdefault(to_uri, None)
-        heads = dict(zip(wanted, await self._client.batch_head(list(wanted)), strict=True))
-        return (
-            [heads[from_uri] for from_uri, _ in pairs],
-            [heads[to_uri] for _, to_uri in pairs],
-        )
+        heads = await self._client.batch_head([f for f, _ in pairs] + [t for _, t in pairs])
+        return heads[: len(pairs)], heads[len(pairs) :]
 
     async def _run_all(
         self, plans: Sequence[_Plan], worker: Callable[[_Plan], Awaitable[_Outcome]]
