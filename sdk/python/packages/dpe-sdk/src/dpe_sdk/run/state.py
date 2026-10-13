@@ -39,7 +39,7 @@ from typing import IO, Any
 import dpe_hash
 
 from dpe_sdk.pusher import StateSnapshot
-from dpe_sdk.run.errors import InstanceFailure, RoundFailure
+from dpe_sdk.run.errors import InstanceFailure, RoundFailure, RunFailure
 
 __all__ = [
     "InstanceLock",
@@ -220,9 +220,24 @@ class InstanceStore:
     ``save`` 的 ``remote`` 参数因此不再区分命名空间。
     """
 
-    def __init__(self, path: Path, state: InstanceState, *, reset: bool) -> None:
+    def __init__(
+        self,
+        path: Path,
+        state: InstanceState,
+        *,
+        reset: bool,
+        previous: InstanceState | None = None,
+    ) -> None:
         self._path = path
         self._state = state
+        #: 内容身份变化前读到的状态（切换尚未落盘时，失败轮的 cursor_held_since 记在它上面）
+        self._previous = previous
+        self._round_closed = False
+        #: 本轮报告应给出的 cursor_held_since（收尾或 hold 时先算出、写盘前即保存；写失败时
+        #: 报告照常取它，§7.4）
+        self._reported_held_since: str | None = None
+        #: 收尾写失败时，这次写是否承载了一个不同于已存值的游标（是即游标未落盘，fail-closed）
+        self._cursor_lost = False
         #: 打开时是否按缓存丢失处理（首次、内容不可识别或内容身份变化）——本轮必为全量轮
         self.reset = reset
 
@@ -241,7 +256,7 @@ class InstanceStore:
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
-            return cls(path, InstanceState(identity), reset=True)
+            return cls(path, InstanceState(identity), reset=True)  # 状态目录中尚无该实例
         except OSError as exc:
             raise _unavailable(f"读取实例状态失败：{exc}") from None
         try:
@@ -252,7 +267,17 @@ class InstanceStore:
             raise _corrupt(f"实例状态内容损坏，无法解析：{path}")
         if loaded.identity == identity:
             return cls(path, loaded, reset=False)
-        return cls(path, InstanceState(identity, held_since=loaded.held_since), reset=True)
+        return cls(
+            path,
+            InstanceState(identity, held_since=loaded.held_since),
+            reset=True,
+            previous=loaded,
+        )
+
+    @property
+    def fresh(self) -> bool:
+        """状态目录中尚无该实例的状态（新实例，或已按 §5.1 删除）。"""
+        return self.reset and self._previous is None
 
     def commit_identity(self) -> None:
         """在启动插件之前持久化内容身份指纹（§4.4）。
@@ -283,6 +308,11 @@ class InstanceStore:
             )
         )
 
+    @property
+    def round_closed(self) -> bool:
+        """本轮的收尾落盘（``finish_round``）是否已执行过——此后不再以 ``hold`` 改写记录。"""
+        return self._round_closed
+
     def finish_round(self, *, succeeded: bool, cursor: str | None, started_at: str) -> str | None:
         """一轮收尾的唯一一次落盘：游标与 ``cursor_held_since`` 一并写入，返回报告应给出的
         ``cursor_held_since``。
@@ -291,6 +321,11 @@ class InstanceStore:
           ``held_since``；否则游标保持不变，``held_since`` 没有时以本轮 ``started_at`` 为起点
           （§7.4）。只在已取得实例锁的轮上调用（``instance_busy`` 不读写该记录）。
         - 同步状态与意图由推送器在本轮内逐次保存，早于这次写入：游标不会先于同步状态前进。
+        - 内容没有变化时不写。写失败抛 ``state_unavailable``，并由本方法区分两种情形（§7.2）：
+          这次写承载了不同于已存值的游标（``cursor_lost`` 为真）——游标未落盘，调用方使本轮
+          失败（§6.8 fail-closed），报告的记录按失败轮取值；否则只是游标扣住记录（含
+          ``succeeded`` 轮的清除）写不进去——不影响轮结果。两种情形下报告都取
+          ``reported_held_since``。
         """
         if succeeded:
             state = dataclasses.replace(self._state, cursor=cursor, held_since=None)
@@ -298,8 +333,55 @@ class InstanceStore:
             state = dataclasses.replace(self._state, held_since=started_at)
         else:
             state = self._state
-        self._commit(state)
+        cursor_changes = succeeded and cursor != self._state.cursor
+        self._reported_held_since = state.held_since
+        self._cursor_lost = False
+        self._round_closed = True
+        if state != self._state:
+            try:
+                self._commit(state)
+            except RunFailure:
+                if cursor_changes:
+                    # 游标没落盘：本轮按失败轮计，记录取既有起点或本轮起点
+                    self._cursor_lost = True
+                    self._reported_held_since = self._state.held_since or started_at
+                raise
         return state.held_since
+
+    @property
+    def cursor_lost(self) -> bool:
+        """最近一次收尾写失败时，是否有一个新游标没能落盘。"""
+        return self._cursor_lost
+
+    @property
+    def reported_held_since(self) -> str | None:
+        """本轮报告应给出的 ``cursor_held_since``（未必已落盘，§7.4）。"""
+        return self._reported_held_since
+
+    def hold(self, started_at: str) -> str | None:
+        """已读到状态而本轮未正常收尾（未开始或中途失败）时维护 ``cursor_held_since``（§7.4）。
+
+        - 状态目录中尚无该实例（``fresh``）：取 ``None``，不写任何内容（#147）；
+        - 内容身份已变而切换尚未落盘：只更新旧状态上的记录，保留旧的游标、同步状态与意图
+          （本轮一条都没执行，不以空状态覆盖它们）；
+        - 其余：游标不变，记录为空时以本轮起点为准。
+        写失败抛 ``state_unavailable``（调用方照常取本轮计算出的值）。
+        """
+        if self.fresh:
+            self._reported_held_since = None
+            return None
+        if self.reset and self._previous is not None:
+            previous = self._previous
+            held = self._reported_held_since = previous.held_since or started_at
+            if previous.held_since is None:
+                try:
+                    _write_atomic(
+                        self._path, dataclasses.replace(previous, held_since=held).to_json()
+                    )
+                except OSError as exc:
+                    raise _unavailable(f"写入实例状态失败：{exc}") from None
+            return held
+        return self.finish_round(succeeded=False, cursor=None, started_at=started_at)
 
     def _commit(self, state: InstanceState) -> None:
         try:
@@ -383,8 +465,7 @@ class StateDirectory:
             raise _corrupt(f"状态目录登记文件不可识别：{path}")
         return instances
 
-    # TODO(#52 Part 2): 接入 CLI 之前，按 #112 的 remote.url 文法比较（当前按 §3 的字面相同），
-    # 并提供注销路径（§5.1「删除」），否则已删除的实例会永久占住前缀
+    # remote.url 按 §3 的字面相同比较；可判定文法待 #112（调用处留有 TODO）。注销见 unregister
     def register(self, instance_id: str, *, remote_url: str, uri_prefix: str) -> None:
         """登记实例并检查前缀不重叠（§3、§4.4）：同一 ``remote.url`` 下任意两个实例的前缀不得
         互为前缀（含相等）；重叠即 ``definition_invalid``。读登记、检查、写回在目录级锁内完成；
@@ -416,3 +497,33 @@ class StateDirectory:
     def open_instance(self, instance_id: str, identity: str) -> InstanceStore:
         """打开实例状态（须已持有该实例的锁）。"""
         return InstanceStore.open(self._instance_dir(instance_id) / "state.json", identity)
+
+    def unregister(self, instance_id: str) -> bool:
+        """注销登记（§5.1 删除）：在目录级锁内移除登记项，释放其前缀；从未登记返回 False。"""
+        try:
+            with self._registry_lock():
+                instances = self._read_registry()
+                if instance_id not in instances:
+                    return False
+                del instances[instance_id]
+                _write_atomic(
+                    self.path / "registry.json",
+                    {"version": _REGISTRY_VERSION, "instances": instances},
+                )
+                return True
+        except OSError as exc:
+            raise _unavailable(f"读写状态目录登记失败：{exc}") from None
+
+    def discard(self, instance_id: str) -> bool:
+        """丢弃实例的本地状态（§5.1 删除；须已持有该实例的锁，锁文件本身保留）。
+
+        状态本就不存在返回 False（删除是幂等的）。不触碰 remote 上已投递的文档。
+        """
+        path = self._instance_dir(instance_id) / "state.json"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise _unavailable(f"删除实例状态失败：{exc}") from None
+        return True

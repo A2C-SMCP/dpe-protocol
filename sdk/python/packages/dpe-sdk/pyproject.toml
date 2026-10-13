@@ -34,6 +34,10 @@ dependencies = [
 # 参考服务端独立监听（python -m dpe_sdk.testing，#44）：Rust SDK 集成测试与 conformance 的对手
 server = ["uvicorn>=0.30,<1"]
 
+[project.scripts]
+# connector 契约的独立运行器（§4.4、§5.2、§7.4–§7.6）
+dpe-run = "dpe_sdk.run.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/A2C-SMCP/dpe-protocol"
 Documentation = "https://doc.turingfocus.cn/dpe/"

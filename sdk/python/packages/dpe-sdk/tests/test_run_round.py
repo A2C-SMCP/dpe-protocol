@@ -786,6 +786,8 @@ async def test_cursor_write_failure_is_fail_closed(
         result = await h.round({"batches": [[]], "cursor": "c2"})  # 无条目：唯一的写是收尾
         failing["on"] = False
         assert result.outcome == "failed" and not result.cursor_persisted
+        assert result.cursor_held_since == result.started_at  # 失败轮的记录
+        assert "state.held_write_failed" not in [e for e, _, _ in h.events]
         assert result.fatal is not None and result.fatal.code == "state_unavailable"
         assert h.dir.open_instance("inst", "identity-1").cursor == "c1"
 
@@ -1412,3 +1414,95 @@ async def test_bare_response_on_a_delete_is_round_level(tmp_path: Path) -> None:
         result = await h.round({"batches": [[{"kind": "delete", "file_uri": P + "d.md"}]]})
     assert result.fatal is not None and result.fatal.code == "remote_protocol_error"
     assert result.fatal.retryable is False and result.counts.failed == 0
+
+
+async def test_held_record_write_failure_does_not_change_a_partial_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§7.2：游标扣住记录写入失败不影响轮结果、不计入 failures，只记日志。"""
+    real = state_module._write_atomic
+    failing = {"on": False}
+
+    def flaky(path: Path, data: Any) -> None:
+        if failing["on"] and path.name == "state.json" and data.get("held_since"):
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "_write_atomic", flaky)
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[]], "cursor": "c1"})
+        failing["on"] = True
+        error = {"kind": "error", "code": "internal", "message": "x", "retryable": False}
+        result = await h.round({"batches": [[error]], "cursor": "c2"})
+    assert result.outcome == "partial" and codes(result) == ["internal"]
+    assert result.cursor_held_since == result.started_at
+    assert [e for e, _, _ in h.events].count("state.held_write_failed") == 1
+
+
+async def test_clearing_the_held_record_failing_keeps_a_succeeded_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§7.2：succeeded 轮在游标不变时（不支持游标），收尾只是清除扣住记录；写失败不影响轮结果。"""
+    real = state_module._write_atomic
+    failing = {"on": False}
+
+    def flaky(path: Path, data: Any) -> None:
+        if failing["on"] and path.name == "state.json" and data.get("held_since") is None:
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "_write_atomic", flaky)
+    async with harness(tmp_path) as h:
+        error = {"kind": "error", "code": "internal", "message": "x", "retryable": False}
+        held = await h.round({"batches": [[error]], "supports_cursor": False})
+        assert held.outcome == "partial"
+        failing["on"] = True
+        result = await h.round({"batches": [[]], "supports_cursor": False})
+    assert result.outcome == "succeeded" and result.failures == []
+    assert result.cursor_held_since is None
+    assert [e for e, _, _ in h.events].count("state.held_write_failed") == 1
+
+
+async def test_unchanged_round_record_is_not_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """持续被扣住的轮：记录不变即不重写（磁盘只读时也不产生误导性的告警）。"""
+    real = state_module._write_atomic
+    failing = {"on": False}
+
+    def flaky(path: Path, data: Any) -> None:
+        if failing["on"] and path.name == "state.json":
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "_write_atomic", flaky)
+    async with harness(tmp_path) as h:
+        error = {"kind": "error", "code": "internal", "message": "x", "retryable": False}
+        first = await h.round({"batches": [[error]], "supports_cursor": False})
+        failing["on"] = True
+        again = await h.round({"batches": [[error]], "supports_cursor": False})
+    assert again.outcome == "partial" and again.cursor_held_since == first.started_at
+    assert "state.held_write_failed" not in [e for e, _, _ in h.events]
+
+
+async def test_clearing_a_stored_cursor_that_fails_to_persist_fails_the_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已存游标被清为 None（插件改为不支持游标）也是游标的变化：写不进去即本轮 failed、游标
+    未落盘（§6.8 fail-closed，保守口径）；报告的记录按失败轮取本轮起点，不发扣住记录告警。"""
+    real = state_module._write_atomic
+    failing = {"on": False}
+
+    def flaky(path: Path, data: Any) -> None:
+        if failing["on"] and path.name == "state.json":
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "_write_atomic", flaky)
+    async with harness(tmp_path) as h:
+        assert (await h.round({"batches": [[]], "cursor": "c1"})).outcome == "succeeded"
+        failing["on"] = True
+        result = await h.round({"batches": [[]], "supports_cursor": False})
+    assert result.outcome == "failed" and codes(result) == ["state_unavailable"]
+    assert result.cursor_held_since == result.started_at
+    assert "state.held_write_failed" not in [e for e, _, _ in h.events]

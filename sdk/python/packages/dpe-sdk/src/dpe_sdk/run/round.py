@@ -104,6 +104,7 @@ __all__ = [
     "RoundCounts",
     "RoundOptions",
     "RoundResult",
+    "negotiate_capabilities",
     "run_round",
     "utc_now",
 ]
@@ -214,7 +215,7 @@ def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
     )
 
 
-async def _negotiate(client: AsyncDpeClient) -> None:
+async def negotiate_capabilities(client: AsyncDpeClient) -> None:
     """取得 remote 能力（§7.1）：401 / 不兼容为实例级；响应不是 DPE 报文为轮级
     ``remote_protocol_error``；网络失败与可重试错误耗尽为轮级可重试；其余确定错误（如凭证缺权限
     得 403）与任何条目无关，归轮级、code 原样、不可重试。"""
@@ -299,6 +300,8 @@ class _Round:
         options: RoundOptions,
         on_event: EventSink | None,
         redact: Callable[[str], str],
+        counts: RoundCounts | None = None,
+        failures: list[RunFailure] | None = None,
     ) -> None:
         self.host = host
         self.pusher = pusher
@@ -309,8 +312,9 @@ class _Round:
         self.redact = redact
         self.stage = BlobStage(host, blob_max_bytes=blob_max_bytes, timeout=options.blob_timeout)
         self.assembler = SegmentAssembler()
-        self.counts = RoundCounts()
-        self.failures: list[RunFailure] = []
+        # 计数与失败可由调用方提供：本轮中途因运行器缺陷中断时，调用方仍能报告已发生的部分
+        self.counts = RoundCounts() if counts is None else counts
+        self.failures: list[RunFailure] = [] if failures is None else failures
         self.item_failed = False
         #: 本次调用内是否有过保存失败（退出前须补存，见模块说明）
         self.save_failed = False
@@ -327,9 +331,9 @@ class _Round:
         if isinstance(failure, ItemFailure):
             self.item_failed = True
             self.counts.failed += 1
-            self.emit("item.failed", "warn", failure.to_report())
+            self.emit("item.failed", "warn", {"failure": failure.to_report()})
         else:
-            self.emit("item.failed", "error", failure.to_report())
+            self.emit("item.failed", "error", {"failure": failure.to_report()})
 
     def item_failure(self, failure: RunFailure, **uris: str | None) -> None:
         """记录一条条目级失败；``failure`` 不是条目级（如结果未知）时向上抛出、终止本轮。"""
@@ -737,6 +741,8 @@ async def run_round(
     on_event: EventSink | None = None,
     redact: Callable[[str], str] = lambda text: text,
     clock: Callable[[], str] = utc_now,
+    counts: RoundCounts | None = None,
+    failures: list[RunFailure] | None = None,
 ) -> RoundResult:
     """执行一轮（§6.4–§6.8）：``host`` 已完成 initialize，``pusher`` 以 ``store`` 为状态存储。
 
@@ -745,7 +751,13 @@ async def run_round(
     来自 ``batch_head`` 或状态保存。
 
     本函数不抛出契约内的失败：一切失败都体现在 ``RoundResult``（``fatal`` 为终止本轮的那一个）。
+    ``counts`` / ``failures`` 可由调用方传入（必须为空）并就地累计——运行器自身缺陷使本函数
+    中途抛出时，调用方据此报告已发生的计数与失败。
     """
+    if counts is not None and counts != RoundCounts():
+        raise ValueError("counts 必须是空的 RoundCounts（就地累计本轮）")
+    if failures:
+        raise ValueError("failures 必须是空列表（就地累计本轮）")
     options = options or RoundOptions()
     started_at = clock()
     state = _Round(
@@ -757,13 +769,15 @@ async def run_round(
         options=options,
         on_event=on_event,
         redact=redact,
+        counts=counts,
+        failures=failures,
     )
     cursor = store.cursor if supports_cursor else None
     state.emit("round.started", "info", {"cursor_given": cursor is not None})
     fatal: RunFailure | None = None
     final: ScanBatch | None = None
     try:
-        await _negotiate(pusher.client)
+        await negotiate_capabilities(pusher.client)
         final = await state.run(cursor)
         if final.cursor is not None and not supports_cursor:
             raise ProtocolFailure("插件声明不支持游标，却在结束批给出了游标（§6.8）")
@@ -801,11 +815,17 @@ async def run_round(
             succeeded=outcome == "succeeded", cursor=new_cursor, started_at=started_at
         )
     except RunFailure as failure:
-        # 游标与收尾记录写不进去：游标不推进，本轮 failed（§6.8 fail-closed）
-        state.record(failure)
-        fatal = fatal or failure
-        outcome = "failed"
-        held_since = store.held_since or started_at
+        held_since = store.reported_held_since  # 报告照常取本轮计算出的值（§7.4）
+        if store.cursor_lost:
+            # 新游标随这次写入持久化：写不进去即游标不推进，本轮 failed（§6.8 fail-closed）
+            state.record(failure)
+            fatal = fatal or failure
+            outcome = "failed"
+        else:
+            # 只是游标扣住记录（§7.4，含 succeeded 轮的清除）写不进去：不影响轮结果、不计入
+            # failures，只记日志（§7.2）
+            failure.redact(state.redact)
+            state.emit("state.held_write_failed", "warn", {"failure": failure.to_report()})
     cursor_persisted = outcome == "succeeded" and new_cursor is not None
 
     level: LogLevel = "info"
