@@ -6,15 +6,18 @@
   （POSIX ``flock``、Windows ``msvcrt.locking``），持有进程异常退出时自动释放。
 - ``state.json``：游标、同步状态与意图日志（§7.2）、内容身份指纹（§4.4）与游标被扣住的
   起始时刻（§7.4 ``cursor_held_since``）。整份写临时文件后 ``os.replace``，``fsync`` 后才返回——
-  对进程崩溃持久（§7.2 只要求到这个强度）。读不回（缺失、损坏、版本不认识）按缓存丢失处理：
-  它只作缓存，丢失时结果仍正确，只是退化为全量轮、冲突保护退化（§6.8、§7.2）。
+  对进程崩溃持久（§7.2 只要求到这个强度）。文件不存在即缓存丢失（首次运行或已按 §5.1 删除），
+  以全量轮开始（§6.8）；读取失败与内容损坏（非 UTF-8、非 JSON、结构或版本不认识）都 MUST NOT
+  当作缓存丢失（§4.4「状态目录故障」），见下。
 
 ``<状态目录>/registry.json`` 是「本运行器管理的实例」的登记（§3、§4.4）：启动实例时在目录级锁
 （``.registry.lock``）内读登记、做前缀不重叠检查、写回，三步原子完成。登记与检查不能退化——
 登记文件损坏时不当作空登记放行。
 
-本地状态目录的读写失败（含登记、锁文件与 ``state.json``）一律是轮级 ``state_unavailable``
-（可重试）：坏的是本地状态目录，不是 remote。实例状态先写、写成功才生效（``InstanceStore``）。
+本地状态目录的故障（含登记、锁文件与 ``state.json``）一律是轮级 ``state_unavailable``——坏的是
+本地状态目录，不是 remote：I/O 读写失败 ``retryable: true``；内容损坏 ``retryable: false``（重跑
+不会自愈，由使用者按 §5.1 删除后以全量轮重建），且不覆盖损坏的内容。实例状态先写、写成功才生效
+（``InstanceStore``）。
 
 内容身份（§1：remote URL、URI 前缀、实例配置（JCS）、插件 name / version）变化时，游标、同步
 状态与意图一并丢弃（§4.4「视为缓存丢失」）。
@@ -181,7 +184,8 @@ class InstanceState:
 
     @classmethod
     def from_json(cls, data: Any) -> InstanceState | None:
-        """形状不对即返回 ``None``（按缓存丢失处理），不做部分恢复。"""
+        """形状或版本不对即返回 ``None``，由调用方按内容损坏处理（§4.4，不当作缓存丢失），
+        不做部分恢复。"""
         if not isinstance(data, dict) or data.get("version") != _STATE_VERSION:
             return None
         identity, cursor, synced, intents, held = (
