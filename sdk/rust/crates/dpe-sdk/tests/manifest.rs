@@ -503,3 +503,146 @@ fn config_semantics() {
         assert!(validate_config(&manifest, &bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn failure_messages_do_not_echo_input_values() {
+    // §4.3「不外泄」（#114）：消息会进入日志与 §7.4 轮报告，只写成员名 / 位置 / 类型，不回显
+    // 取值（同 tests/definition.rs 的 #100 口径）。Python 侧清单解析目前仍有取值回显，两侧统一
+    // 收口见 #156。每个用例既断言哨兵串不出现，也断言消息含预期片段——确认走到了目标
+    // 分支，避免日后被更早的校验拦下而同义反复地通过
+    const SENTINEL: &str = "s3cret-sentinel";
+    let base_schema = || {
+        json!({
+            "type": "object",
+            "properties": {"repo": {"type": "string"}},
+        })
+    };
+    let with_schema_member = |key: &str, value: Value| {
+        let mut schema = base_schema();
+        schema["properties"]["repo"][key] = value;
+        with_config_schema(schema)
+    };
+    let with_member = |key: &str, value: Value| {
+        let key = key.to_owned();
+        mutated(move |map| {
+            map.insert(key, value);
+        })
+    };
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            with_member("description", json!({"token": SENTINEL})),
+            "description 必须是字符串（实得 object）",
+        ),
+        (
+            with_member("name", json!([SENTINEL])),
+            "name 必须是字符串（实得 array）",
+        ),
+        (
+            with_member("protocol_versions", json!(SENTINEL)),
+            "protocol_versions 必须是非空字符串数组（实得 string）",
+        ),
+        (
+            with_member(
+                "protocol_versions",
+                json!(["dpe-connector/1", {"v": SENTINEL}]),
+            ),
+            "protocol_versions[1] 必须是字符串（实得 object）",
+        ),
+        (
+            with_member("manifest_version", json!(SENTINEL)),
+            "manifest_version 必须是整数 1（实得 string）",
+        ),
+        (
+            with_member("secrets", json!(SENTINEL)),
+            "secrets 必须是数组（实得 string）",
+        ),
+        (
+            with_member("secrets", json!([SENTINEL])),
+            "secrets 的每一项必须是对象（实得 string）",
+        ),
+        (
+            with_member("secrets", json!([{"name": "A", "description": [SENTINEL]}])),
+            "secrets 项的 description 必须是字符串（实得 array）",
+        ),
+        (
+            with_member("secrets", json!([{"name": "A", "required": SENTINEL}])),
+            "secrets 项的 required 必须是布尔值（实得 string）",
+        ),
+        // 最常见的误写：把令牌本身填进 name——未通过校验的串不当作名字写出，按下标定位
+        (
+            with_member(
+                "secrets",
+                json!([{"name": "A"}, {"name": format!("ghp_{SENTINEL}")}]),
+            ),
+            "secrets[1].name 须匹配",
+        ),
+        (
+            with_member("config_schema", json!(SENTINEL)),
+            "config_schema 必须是对象（实得 string）",
+        ),
+        (
+            {
+                let mut schema = base_schema();
+                schema["$schema"] = json!(format!("https://example.com/{SENTINEL}"));
+                with_config_schema(schema)
+            },
+            "$schema 必须缺省或为",
+        ),
+        (
+            with_schema_member("$ref", json!(format!("#/{SENTINEL}"))),
+            "$ref 形式不合法",
+        ),
+        (
+            with_schema_member("$ref", json!(format!("#/$defs/{SENTINEL}"))),
+            "$ref 的目标不存在",
+        ),
+        (
+            with_schema_member("pattern", json!(format!("{SENTINEL}(?=x)"))),
+            "pattern 超出 §4.1.1 子集（",
+        ),
+        (
+            with_schema_member("type", json!(SENTINEL)),
+            "type 取值不是 2020-12 的已知类型",
+        ),
+        (
+            with_schema_member("type", json!(["string", SENTINEL])),
+            "type[1] 不是 2020-12 的已知类型",
+        ),
+    ];
+    for (data, expected) in cases {
+        let failure = parse_manifest(&data).expect_err(expected);
+        assert_eq!(failure.code(), "manifest_invalid", "{expected}");
+        let message = failure.message();
+        assert!(
+            message.contains(expected),
+            "走到了别的分支：{message}（期望含 {expected}）"
+        );
+        assert!(!message.contains("s3cret"), "回显了输入值：{message}");
+    }
+
+    // patternProperties 的键属于成员名（位置，口径「键名即位置」），整串写出；超出子集时只报
+    // 原因标记——与 pattern 分支同一格式、消息稳定（说明文字随实现措辞变化，不进消息）
+    let mut schema = base_schema();
+    schema["patternProperties"] = json!({r"^a\q": {"type": "string"}});
+    let failure = parse_manifest(&with_config_schema(schema)).expect_err("不允许的转义");
+    let message = failure.message();
+    assert!(message.contains("patternProperties: 键"), "{message}");
+    assert!(
+        message.contains("unknown_escape"),
+        "只报原因标记：{message}"
+    );
+    assert!(
+        !message.contains("不允许的转义"),
+        "只报原因标记、不报说明文字：{message}"
+    );
+
+    // manifest_version 是其他数字：不回显取值，也不自相矛盾地说「实得 number」
+    let failure = parse_manifest(&with_member("manifest_version", json!(2))).expect_err("版本 2");
+    assert_eq!(
+        failure.message(),
+        "manifest_version 只能为 1（本规范只定义 1）"
+    );
+    // 空的 protocol_versions 单独说明
+    let failure = parse_manifest(&with_member("protocol_versions", json!([]))).expect_err("空数组");
+    assert_eq!(failure.message(), "protocol_versions 不得为空");
+}

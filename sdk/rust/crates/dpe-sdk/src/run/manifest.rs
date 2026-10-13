@@ -218,9 +218,13 @@ pub fn parse_manifest(data: &Value) -> Result<Manifest, InstanceFailure> {
 
     let manifest_version = match map.get("manifest_version") {
         Some(Value::Number(number)) if number.as_u64() == Some(1) => 1,
+        Some(Value::Number(_)) => {
+            return Err(invalid("manifest_version 只能为 1（本规范只定义 1）"));
+        }
         Some(other) => {
             return Err(invalid(format!(
-                "不认识的 manifest_version {other}（本规范定义 1）"
+                "manifest_version 必须是整数 1（实得 {}）",
+                json_type(other)
             )));
         }
         None => return Err(invalid("清单缺少必填成员 \"manifest_version\"")),
@@ -229,27 +233,37 @@ pub fn parse_manifest(data: &Value) -> Result<Manifest, InstanceFailure> {
     let version = required_nonempty_string(map, "version")?;
     let description = match map.get("description") {
         Some(Value::String(text)) => Some(text.clone()),
-        Some(other) => return Err(invalid(format!("description 必须是字符串（实得 {other}）"))),
+        Some(other) => {
+            return Err(invalid(format!(
+                "description 必须是字符串（实得 {}）",
+                json_type(other)
+            )))
+        }
         None => None,
     };
     let protocol_versions = match map.get("protocol_versions") {
         Some(Value::Array(items)) if !items.is_empty() => {
             let mut versions = Vec::with_capacity(items.len());
-            for item in items {
+            for (index, item) in items.iter().enumerate() {
                 match item {
                     Value::String(text) => versions.push(text.clone()),
                     other => {
                         return Err(invalid(format!(
-                            "protocol_versions 的成员必须是字符串（实得 {other}）"
+                            "protocol_versions[{index}] 必须是字符串（实得 {}）",
+                            json_type(other)
                         )));
                     }
                 }
             }
             versions
         }
+        Some(Value::Array(_)) => {
+            return Err(invalid("protocol_versions 不得为空"));
+        }
         Some(other) => {
             return Err(invalid(format!(
-                "protocol_versions 必须是非空字符串数组（实得 {other}）"
+                "protocol_versions 必须是非空字符串数组（实得 {}）",
+                json_type(other)
             )));
         }
         None => return Err(invalid("清单缺少必填成员 \"protocol_versions\"")),
@@ -258,8 +272,8 @@ pub fn parse_manifest(data: &Value) -> Result<Manifest, InstanceFailure> {
         None => Vec::new(),
         Some(Value::Array(items)) => {
             let mut secrets = Vec::with_capacity(items.len());
-            for item in items {
-                secrets.push(parse_secret(item)?);
+            for (index, item) in items.iter().enumerate() {
+                secrets.push(parse_secret(index, item)?);
             }
             let names: BTreeSet<&str> = secrets.iter().map(|s| s.name.as_str()).collect();
             if names.len() != secrets.len() {
@@ -267,13 +281,21 @@ pub fn parse_manifest(data: &Value) -> Result<Manifest, InstanceFailure> {
             }
             secrets
         }
-        Some(other) => return Err(invalid(format!("secrets 必须是数组（实得 {other}）"))),
+        Some(other) => {
+            return Err(invalid(format!(
+                "secrets 必须是数组（实得 {}）",
+                json_type(other)
+            )))
+        }
     };
 
     let config_schema = match map.get("config_schema") {
         Some(schema @ Value::Object(_)) => schema,
         Some(other) => {
-            return Err(invalid(format!("config_schema 必须是对象（实得 {other}）")));
+            return Err(invalid(format!(
+                "config_schema 必须是对象（实得 {}）",
+                json_type(other)
+            )));
         }
         None => return Err(invalid("清单缺少必填成员 \"config_schema\"")),
     };
@@ -319,6 +341,18 @@ pub fn validate_config(manifest: &Manifest, config: &Value) -> Result<(), Instan
     })
 }
 
+/// 取值的 JSON 类型名：失败消息只报类型、不回显取值（§4.3「不外泄」，#114）。
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 fn invalid(message: impl Into<String>) -> InstanceFailure {
     InstanceFailure::manifest_invalid(message)
 }
@@ -330,15 +364,23 @@ fn required_nonempty_string(
     match map.get(member) {
         Some(Value::String(text)) if !text.is_empty() => Ok(text.clone()),
         Some(Value::String(_)) => Err(invalid(format!("{member} 必须是非空字符串"))),
-        Some(other) => Err(invalid(format!("{member} 必须是字符串（实得 {other}）"))),
+        Some(other) => Err(invalid(format!(
+            "{member} 必须是字符串（实得 {}）",
+            json_type(other)
+        ))),
         None => Err(invalid(format!("清单缺少必填成员 {member:?}"))),
     }
 }
 
-fn parse_secret(item: &Value) -> Result<SecretDeclaration, InstanceFailure> {
-    let map = item
-        .as_object()
-        .ok_or_else(|| invalid(format!("secrets 的每一项必须是对象（实得 {item}）")))?;
+/// 解析 `secrets[index]`：消息按下标定位（名字未通过校验前不回显它——最常见的误写正是把令牌
+/// 本身填进 `name`，§4.3「不外泄」）。
+fn parse_secret(index: usize, item: &Value) -> Result<SecretDeclaration, InstanceFailure> {
+    let map = item.as_object().ok_or_else(|| {
+        invalid(format!(
+            "secrets 的每一项必须是对象（实得 {}）",
+            json_type(item)
+        ))
+    })?;
     for (member, value) in map {
         if !SECRET_MEMBERS.contains(&member.as_str()) {
             return Err(invalid(format!("secrets 项出现了未定义的成员 {member:?}")));
@@ -350,7 +392,9 @@ fn parse_secret(item: &Value) -> Result<SecretDeclaration, InstanceFailure> {
     let name = required_nonempty_string(map, "name")?;
     // §4.1：^[A-Z][A-Z0-9_]*$；不得以 DPE_ 开头（保留给运行器）；不得与基础环境变量同名
     if !is_secret_name(&name) {
-        return Err(invalid(format!("凭证名 {name:?} 须匹配 ^[A-Z][A-Z0-9_]*$")));
+        return Err(invalid(format!(
+            "secrets[{index}].name 须匹配 ^[A-Z][A-Z0-9_]*$"
+        )));
     }
     if name.starts_with("DPE_") {
         return Err(invalid(format!(
@@ -364,7 +408,8 @@ fn parse_secret(item: &Value) -> Result<SecretDeclaration, InstanceFailure> {
         Some(Value::String(text)) => Some(text.clone()),
         Some(other) => {
             return Err(invalid(format!(
-                "secrets 项的 description 必须是字符串（实得 {other}）"
+                "secrets 项的 description 必须是字符串（实得 {}）",
+                json_type(other)
             )));
         }
         None => None,
@@ -373,7 +418,8 @@ fn parse_secret(item: &Value) -> Result<SecretDeclaration, InstanceFailure> {
         Some(Value::Bool(flag)) => *flag,
         Some(other) => {
             return Err(invalid(format!(
-                "secrets 项的 required 必须是布尔值（实得 {other}）"
+                "secrets 项的 required 必须是布尔值（实得 {}）",
+                json_type(other)
             )));
         }
         None => true,
@@ -458,7 +504,7 @@ impl<'a> SchemaChecker<'a> {
             if !matches!(dialect, Value::String(text) if text == DRAFT_2020_12 || text == &format!("{DRAFT_2020_12}#"))
             {
                 return Err(invalid(format!(
-                    "{position}: $schema {dialect} 必须缺省或为 {DRAFT_2020_12}"
+                    "{position}: $schema 必须缺省或为 {DRAFT_2020_12}"
                 )));
             }
         }
@@ -468,13 +514,11 @@ impl<'a> SchemaChecker<'a> {
             };
             let Some(name) = parse_defs_ref(reference) else {
                 return Err(invalid(format!(
-                    "{position}: $ref {reference:?} 形式不合法"
+                    "{position}: $ref 形式不合法（只允许 #/$defs/<名字>）"
                 )));
             };
             if !self.names.contains(name.as_str()) {
-                return Err(invalid(format!(
-                    "{position}: $ref {reference:?} 的目标不存在"
-                )));
+                return Err(invalid(format!("{position}: $ref 的目标不存在")));
             }
             if let Some(owner) = owner {
                 self.edges.entry(owner).or_default().insert(name);
@@ -491,7 +535,8 @@ impl<'a> SchemaChecker<'a> {
             };
             if let Err(error) = check_pattern(pattern) {
                 return Err(invalid(format!(
-                    "{position}: pattern {pattern:?} 超出 §4.1.1 子集：{error}"
+                    "{position}: pattern 超出 §4.1.1 子集（{}）",
+                    error.reason()
                 )));
             }
         }
@@ -504,7 +549,8 @@ impl<'a> SchemaChecker<'a> {
             for key in properties.keys() {
                 if let Err(error) = check_pattern(key) {
                     return Err(invalid(format!(
-                        "{position}/patternProperties: 键 {key:?} 超出 §4.1.1 子集：{error}"
+                        "{position}/patternProperties: 键 {key:?} 超出 §4.1.1 子集（{}）",
+                        error.reason()
                     )));
                 }
             }
@@ -692,7 +738,7 @@ fn check_types(types: &Value, position: &str) -> Result<(), InstanceFailure> {
         Value::String(text) => {
             if !is_known_type(text) {
                 return Err(invalid(format!(
-                    "{position}: type 取值 {text:?} 不是 2020-12 的已知类型"
+                    "{position}: type 取值不是 2020-12 的已知类型"
                 )));
             }
         }
@@ -701,12 +747,14 @@ fn check_types(types: &Value, position: &str) -> Result<(), InstanceFailure> {
                 return Err(invalid(format!("{position}: type 数组不得为空")));
             }
             let mut seen: BTreeSet<&str> = BTreeSet::new();
-            for item in items {
+            for (index, item) in items.iter().enumerate() {
                 let Some(text) = item.as_str() else {
-                    return Err(invalid(format!("{position}: type 数组成员必须是字符串")));
+                    return Err(invalid(format!("{position}: type[{index}] 必须是字符串")));
                 };
                 if !is_known_type(text) {
-                    return Err(invalid(format!("{position}: type 数组含未知类型 {text:?}")));
+                    return Err(invalid(format!(
+                        "{position}: type[{index}] 不是 2020-12 的已知类型"
+                    )));
                 }
                 if !seen.insert(text) {
                     return Err(invalid(format!("{position}: type 数组成员必须唯一")));
