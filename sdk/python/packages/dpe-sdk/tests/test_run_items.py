@@ -108,7 +108,9 @@ def test_delete_and_move_are_normalized_and_prefix_checked() -> None:
     ],
 )
 def test_closed_schema_violations_are_validation_failures(raw: Any) -> None:
-    result = failure(parse_item(raw, P))
+    parsed = parse_item(raw, P)
+    # document 信封违例而 file_uri 可识别时，作为带 error 的分段交给 SegmentAssembler
+    result = failure(parsed.error if isinstance(parsed, DocumentSegment) else parsed)
     assert (result.code, result.source, result.retryable) == ("DPE_VALIDATION", "validation", False)
 
 

@@ -126,11 +126,16 @@ def _write_atomic(path: Path, data: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    with tmp.open("w", encoding="utf-8") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, path)
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):  # 失败不留半成品；清理失败不掩盖原始异常
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 class InstanceLock:
@@ -352,6 +357,8 @@ class StateDirectory:
             raise _unavailable(f"状态目录登记文件不可识别：{path}")
         return instances
 
+    # TODO(#52 Part 2): 接入 CLI 之前，按 #112 的 remote.url 文法比较（当前按 §3 的字面相同），
+    # 并提供注销路径（§5.1「删除」），否则已删除的实例会永久占住前缀
     def register(self, instance_id: str, *, remote_url: str, uri_prefix: str) -> None:
         """登记实例并检查前缀不重叠（§3、§4.4）：同一 ``remote.url`` 下任意两个实例的前缀不得
         互为前缀（含相等）；重叠即 ``definition_invalid``。读登记、检查、写回在目录级锁内完成；

@@ -856,6 +856,11 @@ class StatefulPusher(_PusherBase):
         super().__init__(client.remote, state=state, concurrency=concurrency)
         self._client = client
 
+    @property
+    def client(self) -> DpeClient:
+        """推送器所用的客户端（只读）：上层用同一个客户端做能力获取等前置读取，共用一份缓存。"""
+        return self._client
+
     def push(
         self,
         documents: Mapping[str, Document],
@@ -1024,6 +1029,11 @@ class AsyncStatefulPusher(_PusherBase):
     ) -> None:
         super().__init__(client.remote, state=state, concurrency=concurrency)
         self._client = client
+
+    @property
+    def client(self) -> AsyncDpeClient:
+        """推送器所用的客户端（只读）：上层用同一个客户端做能力获取等前置读取，共用一份缓存。"""
+        return self._client
 
     async def push(
         self,

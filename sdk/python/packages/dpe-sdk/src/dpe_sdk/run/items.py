@@ -281,12 +281,26 @@ def _parse_document(raw: dict[str, Any], uri_prefix: str) -> DocumentSegment | I
     continued = raw.get("continued", False)
     if problem is None and not isinstance(continued, bool):
         problem = "continued 必须是布尔"
+    # 只要 file_uri 可识别（可规范化），信封违例与越界都作为带 error 的分段交给
+    # SegmentAssembler：同一篇分段文档的后续段被吞掉，整篇只报一次
+    identity: str | None = None
+    if uri_raw is not None:
+        with contextlib.suppress(DpeHashError):
+            identity = dpe_hash.normalize_file_uri(uri_raw)
+    # continued 非法时保守视为「可能还有续段」：同一文档随后的段被吞掉，整篇只报一次
+    is_continued = continued if isinstance(continued, bool) else True
     if problem is not None:
-        # 信封不可识别：无法据此判断分段边界，按独立条目失败处理
-        return _invalid(problem, file_uri=uri_raw)
+        if identity is None:
+            return _invalid(problem, file_uri=uri_raw)
+        return DocumentSegment(
+            identity, is_continued, None, [], [], _invalid(problem, file_uri=identity)
+        )
     uri = _check_uri(raw["file_uri"], "file_uri", uri_prefix)
     if isinstance(uri, ItemFailure):
-        return _with_uri(uri, file_uri=uri_raw)
+        failure = _with_uri(uri, file_uri=identity or uri_raw)
+        if identity is None:
+            return failure
+        return DocumentSegment(identity, is_continued, None, [], [], failure)
     segment = DocumentSegment(uri, continued, None, [], [])
     document = raw.get("document")
     if document is not None:
@@ -432,6 +446,10 @@ class SegmentAssembler:
         current = self._open
         if current is not None and current.file_uri != segment.file_uri:
             events.extend(self.interrupt())
+            current = None
+        elif current is not None and current.failed and segment.document is not None:
+            # 已判失败的文档仍打开（continued 为真或非法），而同一 URI 又以首段标记（带 document）
+            # 出现：按同 URI 的新文档处理（§6.4 后写覆盖），不把它当续段吞掉
             current = None
         if current is None:
             current = _Open(segment.file_uri, None, [], [])

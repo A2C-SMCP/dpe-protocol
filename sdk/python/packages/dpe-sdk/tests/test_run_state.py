@@ -211,3 +211,17 @@ def test_lock_errors_other_than_busy_are_state_unavailable(
     with pytest.raises(RoundFailure) as failed:
         StateDirectory(tmp_path).lock_instance("a")
     assert failed.value.code == "state_unavailable"
+
+
+def test_failed_atomic_write_leaves_no_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = StateDirectory(tmp_path).open_instance("a", identity())
+
+    def broken_fsync(fd: int) -> None:
+        raise OSError(errno.EIO, "I/O error")
+
+    monkeypatch.setattr(os, "fsync", broken_fsync)
+    with pytest.raises(RoundFailure):
+        store.finish_round(succeeded=True, cursor="c1", started_at="t")
+    assert list((tmp_path / "instances" / "a").glob("*.tmp")) == []

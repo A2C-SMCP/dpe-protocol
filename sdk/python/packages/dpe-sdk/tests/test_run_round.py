@@ -20,6 +20,7 @@ import dpe_hash
 import httpx
 import pytest
 from client_helpers import PREFIX, REMOTE, in_process_client
+from dpe_sdk.credentials import CredentialProvider, StaticCredentialProvider
 from dpe_sdk.models import Document
 from dpe_sdk.protocol import BaseHash, IfAbsent
 from dpe_sdk.pusher import AsyncStatefulPusher
@@ -35,7 +36,7 @@ from dpe_sdk.run import (
 from dpe_sdk.run import state as state_module
 from dpe_sdk.run.definition import ConflictPolicy
 from dpe_sdk.run.manifest import parse_manifest
-from dpe_sdk.testing import create_app
+from dpe_sdk.testing import Engine, PrefixAuthorizer, create_app
 from dpe_sdk.transport import AsyncDpeClient
 from engine_helpers import make_engine
 
@@ -138,11 +139,16 @@ class Harness:
 async def harness(
     tmp_path: Path,
     transport: Callable[[httpx.AsyncBaseTransport], httpx.AsyncBaseTransport] | None = None,
+    *,
+    engine: Engine | None = None,
+    credential: CredentialProvider | None = None,
 ) -> AsyncIterator[Harness]:
-    app = create_app(make_engine(), prefix=PREFIX)
+    app = create_app(engine or make_engine(), prefix=PREFIX)
     inner: httpx.AsyncBaseTransport = httpx.ASGITransport(app=app)
     async with (
-        in_process_client(transport=transport(inner) if transport else inner) as (client, _),
+        in_process_client(
+            transport=transport(inner) if transport else inner, credential=credential
+        ) as (client, _),
         AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign,
     ):
         yield Harness(tmp_path, client, foreign)
@@ -851,3 +857,270 @@ def test_local_defects_are_not_disguised_as_remote_failures() -> None:
     with pytest.raises(KeyError):
         _classify_remote(KeyError("sha256:missing"), unknown=True)
     assert _classify_remote(httpx.ConnectError("down"), unknown=True).code == "remote_unavailable"
+
+
+# ---------------------------------------------------------------------- 远端失败分层（读与写）
+
+
+def _problem(status: int, code: str, **headers: str) -> Callable[[httpx.Request], httpx.Response]:
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status,
+            headers={"content-type": "application/problem+json", **headers},
+            json={"type": "about:blank", "title": code, "status": status, "code": code},
+            request=request,
+        )
+
+    return respond
+
+
+def _is_heads(request: httpx.Request) -> bool:
+    return request.method == "POST" and request.url.path.endswith("/heads")
+
+
+async def test_definite_write_error_is_an_item_failure(tmp_path: Path) -> None:
+    """写入得到确定、不可重试的 DPE 错误：条目级、source remote、code 原样，本轮继续。"""
+    engine = make_engine(authorizer=PrefixAuthorizer({"Bearer t": (P + "ok/",)}))
+    async with harness(
+        tmp_path, engine=engine, credential=StaticCredentialProvider("Bearer t")
+    ) as h:
+        result = await h.round(
+            {"batches": [[doc_item("denied.md", "x"), doc_item("ok/b.md", "b")]]}
+        )
+    assert result.outcome == "partial"
+    assert codes(result) == ["DPE_FORBIDDEN"]
+    failure = result.failures[0]
+    assert (failure.level, failure.source, failure.retryable) == ("item", "remote", False)
+    assert failure.to_report()["file_uri"] == P + "denied.md"
+    assert result.counts.created == 1
+
+
+async def test_definite_read_error_fails_each_entry_of_the_call(tmp_path: Path) -> None:
+    """读（batch_head）得到确定错误：不是可重试的轮级故障，本次调用涉及的条目各记一条。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        heads = _problem(403, "DPE_FORBIDDEN")
+        made[0].fail = lambda request: heads(request) if _is_heads(request) else None
+        result = await h.round({"batches": [[doc_item("a.md", "A"), doc_item("b.md", "B")]]})
+    assert result.outcome == "partial" and result.fatal is None
+    assert codes(result) == ["DPE_FORBIDDEN", "DPE_FORBIDDEN"]
+    assert [f.to_report()["file_uri"] for f in result.failures] == [P + "a.md", P + "b.md"]
+    assert all(f.retryable is False for f in result.failures)
+
+
+async def test_definite_reread_error_after_conflict_is_an_item_failure(tmp_path: Path) -> None:
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        hooks = made[0]
+        await h.round({"batches": [[doc_item("a.md", "v1")]]})
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+
+        async def rewrite_then_forbid_reads() -> None:
+            await h.foreign.commit(P + "a.md", _doc_of("theirs"), BaseHash(expected("v1")))
+            hooks.fail = lambda request: forbidden(request) if request.method == "HEAD" else None
+
+        hooks.before.append((_is_commit, rewrite_then_forbid_reads))
+        result = await h.round({"batches": [[doc_item("a.md", "v2")]]})
+    assert result.outcome == "partial" and result.fatal is None
+    assert codes(result) == ["DPE_FORBIDDEN"]
+    assert result.failures[0].to_report()["file_uri"] == P + "a.md"
+
+
+async def test_retryable_error_exhausted_aborts_the_round(tmp_path: Path) -> None:
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        unavailable = _problem(503, "DPE_UNAVAILABLE", **{"retry-after": "0"})
+        made[0].fail = lambda request: unavailable(request) if _is_heads(request) else None
+        result = await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+    assert result.outcome == "failed"
+    assert result.fatal is not None
+    assert (result.fatal.level, result.fatal.code, result.fatal.retryable) == (
+        "round",
+        "remote_unavailable",
+        True,
+    )
+
+
+# ---------------------------------------------------------------------- 收尾保存失败（#137）
+
+
+def _fail_state_writes(monkeypatch: pytest.MonkeyPatch, plan: list[bool]) -> Callable[[], None]:
+    """按顺序决定每一次 state.json 写入是否失败（``plan`` 用尽后不再失败）；返回重置函数。"""
+    real = state_module._write_atomic
+    queue = list(plan)
+
+    def flaky(path: Path, data: Any) -> None:
+        if path.name == "state.json" and queue and queue.pop(0):
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "_write_atomic", flaky)
+    return queue.clear
+
+
+async def test_final_save_failure_fails_the_round_even_if_resave_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """收尾那次 save 失败（写入已生效）、补存成功：本轮仍 failed、游标不推进（推送器整批报错，
+    拿不到逐条结果），磁盘上的状态已与内存一致——意图清空、同步状态含已确认的写入。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[]], "cursor": "c1"})
+        # 本轮 state.json 写入顺序：写前持久化意图（成功）→ 推送器收尾（失败）→ 补存（成功）
+        _fail_state_writes(monkeypatch, [False, True])
+        result = await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c2"})
+        assert result.outcome == "failed" and not result.cursor_persisted
+        assert codes(result) == ["state_unavailable"]  # 补存成功：不另记
+        assert result.fatal is not None and result.fatal.code == "state_unavailable"
+        assert result.cursor_held_since == result.started_at
+        assert await h.foreign.head(P + "a.md") == expected("A")  # 写入已生效
+        reloaded = h.dir.open_instance("inst", "identity-1")
+        assert reloaded.cursor == "c1"
+        assert reloaded.held_since == result.started_at  # 收尾记录照常落盘
+        snapshot = reloaded.load(REMOTE)
+        assert snapshot is not None
+        assert snapshot.intents == {} and snapshot.synced == {P + "a.md": expected("A")}
+
+
+async def test_failed_resave_is_recorded_separately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[]], "cursor": "c1"})
+        reset = _fail_state_writes(monkeypatch, [False] + [True] * 20)
+        result = await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c2"})
+        reset()
+        assert result.outcome == "failed"
+        assert result.fatal is not None and result.fatal.code == "state_unavailable"
+        assert result.failures[0] is result.fatal  # 终止失败在前，补存失败单独一条在后
+        assert "补存" in result.failures[1].message and result.failures[1].code == (
+            "state_unavailable"
+        )
+        assert result.cursor_held_since == result.started_at  # 收尾写入也失败：回退到本轮起点
+        assert h.dir.open_instance("inst", "identity-1").cursor == "c1"
+
+
+async def test_continuation_out_of_prefix_is_reported_once(tmp_path: Path) -> None:
+    """可识别 file_uri 的分段文档越界：整篇只记一条，续段不重复上报。"""
+    outside = "dpe://other/x.md"
+    async with harness(tmp_path) as h:
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        {**doc_item("x", "1", continued=True), "file_uri": outside},
+                        {
+                            "kind": "document",
+                            "file_uri": outside,
+                            "pages": [{"elements": _text("2")}],
+                        },
+                    ]
+                ]
+            }
+        )
+    assert codes(result) == ["out_of_prefix"]
+
+
+async def test_capability_errors_are_round_level_not_per_entry(tmp_path: Path) -> None:
+    """能力获取与条目无关：确定错误是一条轮级失败（code 原样、不可重试），不拆成条目失败。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+        made[0].fail = lambda request: (
+            forbidden(request) if request.url.path.endswith("/capabilities") else None
+        )
+        result = await h.round({"batches": [[doc_item("a.md", "A"), doc_item("b.md", "B")]]})
+    assert result.outcome == "failed" and result.counts.failed == 0
+    assert result.fatal is not None
+    assert (result.fatal.level, result.fatal.code, result.fatal.retryable) == (
+        "round",
+        "DPE_FORBIDDEN",
+        False,
+    )
+
+
+async def test_read_error_fails_its_wave_and_later_waves_continue(tmp_path: Path) -> None:
+    """一波的 batch_head 确定错误只让该波条目失败（move 带两侧 URI），后续波次照常落地。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("b.md", "B")]]})
+        forbidden = _problem(403, "DPE_FORBIDDEN")
+        left = {"n": 2}  # 第一波的 commit 与 move 各读一次 heads
+
+        def first_wave_heads(request: httpx.Request) -> httpx.Response | None:
+            if _is_heads(request) and left["n"]:
+                left["n"] -= 1
+                return forbidden(request)
+            return None
+
+        made[0].fail = first_wave_heads
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        doc_item("a.md", "v1"),
+                        {"kind": "move", "from_uri": P + "b.md", "to_uri": P + "c.md"},
+                        doc_item("a.md", "v2"),  # 同 URI：开第二波
+                    ]
+                ]
+            }
+        )
+        assert result.outcome == "partial"
+        reports = [f.to_report() for f in result.failures]
+        assert [r["code"] for r in reports] == ["DPE_FORBIDDEN", "DPE_FORBIDDEN"]
+        assert reports[0]["file_uri"] == P + "a.md"
+        assert (reports[1]["from_uri"], reports[1]["to_uri"]) == (P + "b.md", P + "c.md")
+        assert result.counts.created == 1
+        assert await h.foreign.head(P + "a.md") == expected("v2")
+        assert await h.foreign.head(P + "b.md") == expected("B")  # move 未执行
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        # 首段信封违例（未定义字段），file_uri 可识别、continued 为 true：后续续段被吞掉
+        [{**doc_item("x.md", "1", continued=True), "extra": 1}, "tail"],
+        # 首段 continued 非布尔：保守视为未闭合，后续续段被吞掉
+        [{**doc_item("x.md", "1"), "continued": "yes"}, "tail"],
+        # 已打开的文档收到信封违例的续段
+        [doc_item("x.md", "1", continued=True), "bad-tail"],
+    ],
+)
+async def test_segment_envelope_violations_are_reported_once(
+    tmp_path: Path, segments: list[Any]
+) -> None:
+    tail = {"kind": "document", "file_uri": P + "x.md", "pages": [{"elements": _text("2")}]}
+    items = [
+        {**tail}
+        if segment == "tail"
+        else {**tail, "unknown": True}
+        if segment == "bad-tail"
+        else segment
+        for segment in segments
+    ]
+    async with harness(tmp_path) as h:
+        result = await h.round({"batches": [items]})
+        assert codes(result) == ["DPE_VALIDATION"]
+        assert await h.foreign.head(P + "x.md") is None
+
+
+async def test_failed_open_segment_does_not_swallow_a_later_document_or_other_uri(
+    tmp_path: Path,
+) -> None:
+    """失败后仍打开的分段文档：之后同 URI 带 document 的新文档照常落地；换 URI 时不重复上报。"""
+    async with harness(tmp_path) as h:
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        {**doc_item("x.md", "bad"), "continued": "no"},  # 非法 continued
+                        doc_item("x.md", "again"),  # 同 URI 的新文档（后写覆盖）
+                        {**doc_item("y.md", "bad"), "continued": "no"},
+                        doc_item("z.md", "Z"),  # 换 URI：y 不重复上报
+                    ]
+                ]
+            }
+        )
+        assert codes(result) == ["DPE_VALIDATION", "DPE_VALIDATION"]
+        assert await h.foreign.head(P + "x.md") == expected("again")
+        assert await h.foreign.head(P + "z.md") == expected("Z")
+        assert await h.foreign.head(P + "y.md") is None

@@ -246,6 +246,6 @@ python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
 
 - **状态目录**（`StateDirectory`，§4.4）：缺省 `$XDG_STATE_HOME/dpe-run`（`~/.local/state/dpe-run`；Windows `%LOCALAPPDATA%\dpe-run`）。每个实例一把操作系统文件锁（取不到即 `instance_busy`，持有进程退出即释放）；同一 `remote.url` 下的前缀不重叠检查与登记在目录级锁内原子完成；`state.json` 存游标、同步状态与意图、内容身份指纹与 `cursor_held_since`，先写临时文件再 `os.replace`、写成功才生效；内容身份变化即丢弃缓存（全量轮）。本地状态读写失败为轮级 `state_unavailable`（#137）。
 - **一轮**（`run_round`，§6.4–§6.8）：按批 `scan`、逐条校验（封闭 schema、前缀、元素线格式、分段）、读取 blob（分块 `read_blob` 落本地暂存后上传）、按流中顺序分波次落地（波内 URI 两两不同，链式 move 自动拆开）；冲突按 `conflict_policy` 重读重提，本轮至多 2 次，绝不 force；结果为 `succeeded` / `partial` / `failed` 三态并带 `incremental`，只有整轮全部落地才持久化游标（fail-closed）。
-- **保存失败**：本次调用内只要有过一次保存失败，退出前都用同一推送器实例补存（有限次、短退避）；仍失败即本轮 `failed`、游标不推进。补存成功前进程退出时磁盘上可能残留过期意图，下一次调用会读回——风险与 §7.2 接受的崩溃窗口相同。
+- **保存失败**（#137）：本次调用内只要推送器有过一次保存失败，本轮即失败、游标不推进（无更早的终止失败时为 `state_unavailable`）；结束前照常用同一推送器实例补存（有限次、短退避），补存只为让磁盘与内存一致、成败都不改变本轮结果，补存失败单独记一条。补存成功前进程退出时磁盘上可能残留过期意图，下一次调用会读回——风险与 §7.2 接受的崩溃窗口相同。
 
 > `dpe-run` 命令行（实例级校验流、轮报告、结构化日志与退出码，§7.4–§7.6）与示例插件尚在开发中（#52 Part 2、#53）。

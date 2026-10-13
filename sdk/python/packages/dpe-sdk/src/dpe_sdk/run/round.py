@@ -20,14 +20,24 @@ remote 值作 ``expected_base`` 重提（文档已不存在即 ``if_absent`` 复
 冲突、move 的目标被占与源已不存在为条目失败（``retryable: false``）。**绝不 force**，失败的 move
 不退化为「在目标上 commit、再删除源」。
 
-**远端失败分层**（§7.1）：401 → 实例级 ``remote_unauthorized``；结果未知、可重试 DPE 错误重试
-耗尽、网络失败 → 轮级 ``remote_unavailable``（本轮作废）；其余已确定的 DPE 错误 → 条目级
-（source ``remote``，``code`` 与 ``retryable`` 原样）。
+**远端失败分层**（§7.1）：401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级
+``remote_incompatible``；结果未知、可重试 DPE 错误重试耗尽、网络失败 → 轮级 ``remote_unavailable``
+（本轮作废）；写入、``batch_head`` 与冲突后重读得到的其余确定 DPE 错误 → 条目级（source
+``remote``，``code`` 与 ``retryable`` 原样）。能力获取在轮首、推送器调用之外完成，它与条目无关：
+其余确定错误**暂归轮级、code 原样、不可重试**（规范未明确，已提请补正）。
 
-**本地状态**：状态目录读写失败是轮级 ``state_unavailable``。本次调用内只要有过一次保存失败
-（推送器写前或收尾的 ``save``），退出前都用同一推送器实例有限次补存（``state_retries``，短
-退避）；补存仍失败即本轮 ``failed``、游标不推进。补存成功前进程退出（崩溃或补存耗尽）时，
-磁盘上可能残留过期意图，下一次调用会读回——风险与 §7.2 接受的崩溃窗口相同。
+**本地状态**（#137）：状态目录读写失败是轮级 ``state_unavailable``。本次调用内只要推送器有过
+一次保存失败（写前或收尾的 ``save``），本轮即失败、游标不推进（此前没有其他终止失败时，
+``fatal`` 即 ``state_unavailable``）——收尾失败时推送器整批报错，运行器拿不到该批的逐条结果，
+fail-closed 的代价只是重跑一轮（commit 由内容幂等、意图可对账）。结束前照常用同一推送器实例
+有限次补存（``state_retries``，短退避），**补存只为让磁盘与内存一致，成败都不改变本轮结果**；
+补存失败单独记一条供观测。游标与收尾记录的写入失败同样使本轮 ``failed``，但它写成功才生效、
+内存未变，无需补存。补存成功前进程退出（崩溃或补存耗尽）时，磁盘上可能残留过期意图，下一次
+调用会读回——风险与 §7.2 接受的崩溃窗口相同。
+
+**读失败**：``batch_head`` 与冲突后重读得到确定、不可重试的错误时，按条目落账（本次调用涉及的
+每个条目各一条，本轮继续）。``batch_head`` 一次覆盖整波：服务端若因其中一个 URI 拒绝整个请求，
+同波其余条目也会一并失败——成败可能取决于波次划分（已登记，待规范明确读错误的归属）。
 
 **游标 fail-closed**（§6.8）：收到结束批、全部条目成功落地才 ``succeeded`` 并持久化新游标
 （同步状态与意图由推送器先行落盘，游标最后写，不会先于同步状态前进）；有条目失败为
@@ -78,6 +88,7 @@ from dpe_sdk.run.items import (
     parse_scan_result,
 )
 from dpe_sdk.run.state import InstanceStore
+from dpe_sdk.transport import AsyncDpeClient
 
 __all__ = [
     "EventSink",
@@ -185,6 +196,20 @@ def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
     )
 
 
+async def _negotiate(client: AsyncDpeClient) -> None:
+    """取得 remote 能力（§7.1）：401 / 不兼容为实例级，网络失败与可重试错误耗尽为轮级可重试；
+    其余确定错误（如凭证缺权限得 403）与任何条目无关，归轮级、code 原样、不可重试。"""
+    try:
+        await client.core()
+    except Exception as exc:
+        failure = _classify_remote(exc, unknown=False)
+        if isinstance(failure, ItemFailure):
+            raise RoundFailure(
+                failure.code, failure.message, source="remote", retryable=False
+            ) from None
+        raise failure from None
+
+
 def _cas_code(result: PushResult, fallback: str) -> str:
     """冲突与 move 条目失败的码：有服务端裁决取其原码，写前判定取同义的 DPE 码。"""
     error = result.error
@@ -252,10 +277,8 @@ class _Round:
         *,
         host: PluginHost,
         pusher: AsyncStatefulPusher,
-        store: InstanceStore,
         uri_prefix: str,
         policy: ConflictPolicy,
-        supports_cursor: bool,
         blob_max_bytes: int | None,
         options: RoundOptions,
         on_event: EventSink | None,
@@ -263,10 +286,8 @@ class _Round:
     ) -> None:
         self.host = host
         self.pusher = pusher
-        self.store = store
         self.prefix = uri_prefix
         self.policy = policy
-        self.supports_cursor = supports_cursor
         self.options = options
         self.on_event = on_event
         self.redact = redact
@@ -406,8 +427,14 @@ class _Round:
         if wave:
             await self.flush_wave(wave)
 
-    async def call(self, operation: Awaitable[list[PushResult]]) -> list[PushResult]:
-        """调用推送器；它抛出的异常（读 remote 失败、状态保存失败）按 §7.1 归类后终止本轮。"""
+    async def call(
+        self, operation: Awaitable[list[PushResult]], targets: list[dict[str, str | None]]
+    ) -> list[PushResult]:
+        """调用推送器。写入的失败都在回报里；能力已在轮首取得，推送器只会因 ``batch_head`` 或
+        状态保存而抛出，所以按读来归类（``unknown=False``——「写入结果未知」对读没有意义）：
+        网络失败与可重试错误耗尽终止本轮（轮级），确定、不可重试的错误给本次调用涉及的每个
+        条目各记一条条目级失败（``targets`` 为各条目的 URI 字段），本轮继续。
+        """
         try:
             return await operation
         except RunFailure as failure:
@@ -415,7 +442,20 @@ class _Round:
                 self.save_failed = True
             raise
         except Exception as exc:
-            raise _classify_remote(exc, unknown=True) from None
+            classified = _classify_remote(exc, unknown=False)
+            if not isinstance(classified, ItemFailure):
+                raise classified from None
+            for uris in targets:
+                self.record(
+                    ItemFailure(
+                        classified.code,
+                        classified.message,
+                        source=classified.source,
+                        retryable=classified.retryable,
+                        **uris,
+                    )
+                )
+            return []
 
     async def flush_wave(self, wave: _Wave) -> None:
         """落地一波；冲突按策略重提，直到全部有结论。本波出现的终止性失败在全部结果入账后抛出。"""
@@ -434,7 +474,8 @@ class _Round:
             next_move: dict[str, str | None] = {}
             if commits:
                 for result in await self.call(
-                    self.pusher.push(commits, expected_base=commit_base, blobs=self.stage.lookup)
+                    self.pusher.push(commits, expected_base=commit_base, blobs=self.stage.lookup),
+                    [{"file_uri": uri} for uri in commits],
                 ):
                     achieved = _achieved_on_reread(result, commits[result.file_uri])
                     settled = self.settle(result, self.policy.commit, attempts, achieved=achieved)
@@ -445,7 +486,8 @@ class _Round:
                         next_commit[result.file_uri] = settled.base
             if deletes:
                 for result in await self.call(
-                    self.pusher.delete(deletes, expected_base=delete_base)
+                    self.pusher.delete(deletes, expected_base=delete_base),
+                    [{"file_uri": uri} for uri in deletes],
                 ):
                     achieved = _achieved_on_reread(result, None)
                     settled = self.settle(result, self.policy.delete, attempts, achieved=achieved)
@@ -455,7 +497,10 @@ class _Round:
                         retry_deletes.append(result.file_uri)
                         next_delete[result.file_uri] = settled.base
             if moves:
-                for result in await self.call(self.pusher.move(moves, expected_base=move_base)):
+                for result in await self.call(
+                    self.pusher.move(moves, expected_base=move_base),
+                    [{"from_uri": source, "to_uri": target} for source, target in moves],
+                ):
                     settled = self.settle(result, self.policy.commit, attempts)
                     if isinstance(settled, RunFailure):
                         fatal = fatal or settled
@@ -471,7 +516,7 @@ class _Round:
     def settle(
         self,
         result: PushResult,
-        policy: str,
+        policy: Literal["source_wins", "report"],
         attempts: dict[str, int],
         *,
         achieved: bool = False,
@@ -505,7 +550,8 @@ class _Round:
             if result.remote is None:
                 # 冲突后重读失败：无从按策略重判定
                 assert result.remote_error is not None
-                return self.fail(_classify_remote(result.remote_error, unknown=True), uris)
+                # 重读是读操作：确定错误落到该条目，网络失败与可重试错误耗尽才是轮级
+                return self.fail(_classify_remote(result.remote_error, unknown=False), uris)
             code = _cas_code(result, "DPE_PRECONDITION_FAILED")
             if policy == "report" and not achieved:
                 return self.fail(
@@ -582,6 +628,10 @@ async def run_round(
 ) -> RoundResult:
     """执行一轮（§6.4–§6.8）：``host`` 已完成 initialize，``pusher`` 以 ``store`` 为状态存储。
 
+    轮首先经推送器自己的客户端（``pusher.client``）取得 remote 能力（已缓存则不发请求）：
+    它与任何条目无关，失败按轮级 / 实例级归类、不拆成条目失败；此后推送器抛出的异常只可能
+    来自 ``batch_head`` 或状态保存。
+
     本函数不抛出契约内的失败：一切失败都体现在 ``RoundResult``（``fatal`` 为终止本轮的那一个）。
     """
     options = options or RoundOptions()
@@ -589,10 +639,8 @@ async def run_round(
     state = _Round(
         host=host,
         pusher=pusher,
-        store=store,
         uri_prefix=uri_prefix,
         policy=policy,
-        supports_cursor=supports_cursor,
         blob_max_bytes=blob_max_bytes,
         options=options,
         on_event=on_event,
@@ -603,6 +651,7 @@ async def run_round(
     fatal: RunFailure | None = None
     final: ScanBatch | None = None
     try:
+        await _negotiate(pusher.client)
         final = await state.run(cursor)
         if final.cursor is not None and not supports_cursor:
             raise ProtocolFailure("插件声明不支持游标，却在结束批给出了游标（§6.8）")
@@ -614,12 +663,20 @@ async def run_round(
             state.save_failed = True
     finally:
         state.stage.close()
-    if state.save_failed:
-        resave = await state.resave()
-        if resave is not None and fatal is None:
-            fatal = resave
     if fatal is not None:
         state.record(fatal)
+    if state.save_failed:
+        # 有过保存失败的轮已经以 state_unavailable 失败（游标不推进）；补存只为让磁盘与内存
+        # 一致，成败都不改变本轮结果。补存失败单独记一条，供观测
+        resave = await state.resave()
+        if resave is not None:
+            state.record(
+                RoundFailure(
+                    "state_unavailable",
+                    f"保存失败后的补存也失败：{resave.message}",
+                    retryable=True,
+                )
+            )
 
     # §7.3：取自结束批；未收到结束批为 null
     incremental = final.incremental if final is not None else None
