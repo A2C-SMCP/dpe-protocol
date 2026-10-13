@@ -508,7 +508,7 @@ fn config_semantics() {
 fn failure_messages_do_not_echo_input_values() {
     // §4.3「不外泄」（#114）：消息会进入日志与 §7.4 轮报告，只写成员名 / 位置 / 类型，不回显
     // 取值（同 tests/definition.rs 的 #100 口径）。Python 侧清单解析目前仍有取值回显，两侧统一
-    // 收口另见对等 Issue。每个用例既断言哨兵串不出现，也断言消息含预期片段——确认走到了目标
+    // 收口见 #156。每个用例既断言哨兵串不出现，也断言消息含预期片段——确认走到了目标
     // 分支，避免日后被更早的校验拦下而同义反复地通过
     const SENTINEL: &str = "s3cret-sentinel";
     let base_schema = || {
