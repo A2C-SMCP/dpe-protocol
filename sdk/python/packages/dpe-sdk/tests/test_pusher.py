@@ -15,6 +15,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from itertools import chain
 from typing import Any, Protocol
 
+import anyio
+import anyio.to_thread
 import dpe_hash
 import httpx
 import pytest
@@ -1560,3 +1562,215 @@ async def test_intent_save_failure_does_not_leak_into_memory(mode: str, scenario
                 await _save_failure_keeps_both_move_sides_out_of_memory(
                     driver, store, foreign, url, base
                 )
+
+
+# ------------------------------------------------------------ 写后冲突重读即已达成（#140）
+
+
+class _SyncForeignWrite(httpx.BaseTransport):
+    """``_ForeignWrite`` 的同步版本（对真实 TCP 服务端）。"""
+
+    def __init__(self, race: _Race) -> None:
+        self._inner = httpx.HTTPTransport()
+        self._race = race
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        hit = self._race.enter(request)
+        if hit:
+            self._race.before()
+        response = self._inner.handle_request(request)
+        if hit and self._race.after is not None:
+            response.read()
+            self._race.after()
+        return response
+
+
+class _AsyncForeignWrite(httpx.AsyncBaseTransport):
+    """异步版本：外部动作在工作线程执行（它们用同步客户端写入另一个进程中的服务端）。"""
+
+    def __init__(self, race: _Race) -> None:
+        self._inner = httpx.AsyncHTTPTransport()
+        self._race = race
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        hit = self._race.enter(request)
+        if hit:
+            await anyio.to_thread.run_sync(self._race.before)
+        response = await self._inner.handle_async_request(request)
+        if hit and self._race.after is not None:
+            await response.aread()
+            await anyio.to_thread.run_sync(self._race.after)
+        return response
+
+
+class _Race:
+    """一次竞态的脚本：命中的第一个写请求发出前执行 ``before``、响应后执行 ``after``；
+    ``cut_reads`` 时此后的 HEAD（冲突后的重读）一律断网。``writes`` 计命中的写请求数。"""
+
+    def __init__(
+        self,
+        match: Callable[[httpx.Request], bool],
+        before: Callable[[], object],
+        after: Callable[[], object] | None = None,
+        *,
+        cut_reads: bool = False,
+    ) -> None:
+        self.match, self.before, self.after = match, before, after
+        self.cut_reads = cut_reads
+        self.writes = 0
+
+    def enter(self, request: httpx.Request) -> bool:
+        """返回本请求是否是第一个命中的写请求；重读被切断时直接抛传输错误。"""
+        if self.cut_reads and self.writes and request.method == "HEAD":
+            raise httpx.ConnectError("重读断网", request=request)
+        if not self.match(request):
+            return False
+        self.writes += 1
+        return self.writes == 1
+
+
+def _raced(
+    mode: str,
+    url: str,
+    store: MemoryStateStore,
+    race: _Race,
+    operation: Callable[[Any], Any],
+) -> list[PushResult]:
+    """以 ``mode`` 的推送器在注入 ``race`` 的客户端上执行 ``operation(pusher)``。"""
+    if mode == "sync":
+        with DpeClient(url, transport=_SyncForeignWrite(race)) as client:
+            results: list[PushResult] = operation(StatefulPusher(client, state=store))
+        return results
+
+    async def run() -> list[PushResult]:
+        async with AsyncDpeClient(url, transport=_AsyncForeignWrite(race)) as client:
+            done: list[PushResult] = await operation(AsyncStatefulPusher(client, state=store))
+            return done
+
+    return anyio.run(run)
+
+
+def _commit_race(variant: str, foreign: DpeClient, uri: str) -> _Race:
+    """commit 写后冲突的三种裁决（412 / 409 / 404），重读之前他人都已写下与我们相同的内容 v2。"""
+    v1, theirs, v2 = _doc("v1").doc_hash(), _doc("theirs").doc_hash(), _doc("v2").doc_hash()
+    if variant == "precondition":  # L = v1：他人改写 → 412；随后改成 v2
+        return _Race(
+            _is_commit,
+            lambda: foreign.commit(uri, _doc("theirs"), BaseHash(v1)),
+            lambda: foreign.commit(uri, _doc("v2"), BaseHash(theirs)),
+        )
+    if variant == "already_exists":  # 无 L、R 不存在 → if_absent：他人先建 → 409；随后改成 v2
+        return _Race(
+            _is_commit,
+            lambda: foreign.commit(uri, _doc("theirs"), IfAbsent()),
+            lambda: foreign.commit(uri, _doc("v2"), BaseHash(theirs)),
+        )
+    assert variant == "not_found"  # L = v1：他人删除 → 404（不属于已达成）；随后重建为 v2
+    del v2
+    return _Race(
+        _is_commit,
+        lambda: foreign.delete(uri, v1),
+        lambda: foreign.commit(uri, _doc("v2"), IfAbsent()),
+    )
+
+
+def _run_commit_race(
+    mode: str, variant: str, url: str, base: str
+) -> tuple[list[PushResult], int, StateSnapshot | None]:
+    uri = f"{base}/{variant}.md"
+    store = MemoryStateStore()
+    with DpeClient(url) as foreign:
+        if variant != "already_exists":
+            foreign.commit(uri, _doc("v1"), IfAbsent())
+            store.save(url, StateSnapshot(synced={uri: _doc("v1").doc_hash()}))
+        race = _commit_race(variant, foreign, uri)
+        results = _raced(mode, url, store, race, lambda p: p.push({uri: _doc("v2")}))
+    return results, race.writes, store.load(url)
+
+
+def _run_delete_race(
+    mode: str, url: str, base: str, *, cut_reads: bool
+) -> tuple[list[PushResult], int, StateSnapshot | None]:
+    uri = f"{base}/d.md"
+    store = MemoryStateStore()
+    with DpeClient(url) as foreign:
+        foreign.commit(uri, _doc("v1"), IfAbsent())
+        store.save(url, StateSnapshot(synced={uri: _doc("v1").doc_hash()}))
+        race = _Race(
+            _is_delete,
+            lambda: foreign.commit(uri, _doc("theirs"), BaseHash(_doc("v1").doc_hash())),
+            lambda: foreign.delete(uri, _doc("theirs").doc_hash()),
+            cut_reads=cut_reads,
+        )
+        results = _raced(mode, url, store, race, lambda p: p.delete([uri]))
+    return results, race.writes, store.load(url)
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("variant", ["precondition", "already_exists", "not_found"])
+def test_commit_conflict_whose_reread_equals_the_content_is_achieved(
+    mode: str, variant: str
+) -> None:
+    """§7.2：写后 CAS 冲突（412 / 409 / 不属于已达成的 404）、重读值等于本次内容 → 已达成：
+    确认 L = N、清意图、不重提，原 CAS 错误保留。与策略无关，推送器自己判定。
+
+    服务端对「内容已相同」的提交本就判成功（core §5.2），所以冲突来自他人的不同写入，
+    而重读之前他人又写下了与我们相同的内容。"""
+    with spawn_server("--prefix", "/r/1") as info:
+        results, writes, state = _run_commit_race(
+            mode, variant, info["url"], f"dpe://reread/{mode}"
+        )
+    expected_error = {
+        "precondition": PreconditionFailedError,
+        "already_exists": AlreadyExistsError,
+        "not_found": NotFoundError,
+    }[variant]
+    assert [r.status for r in results] == ["achieved"]
+    assert isinstance(results[0].error, expected_error)
+    assert results[0].remote is not None and results[0].remote.doc_hash == _doc("v2").doc_hash()
+    assert results[0].precondition is not None  # 发过写（写前判定的已达成为 None）
+    assert writes == 1  # 没有重提
+    assert state is not None and state.intents == {}
+    assert list(state.synced.values()) == [_doc("v2").doc_hash()]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_delete_conflict_whose_reread_is_absent_is_deleted(mode: str) -> None:
+    """§7.2：delete 写后 CAS 冲突、重读不存在 → 已达成（删条目、清意图），原错误保留。"""
+    with spawn_server("--prefix", "/r/1") as info:
+        results, writes, state = _run_delete_race(
+            mode, info["url"], f"dpe://reread/{mode}", cut_reads=False
+        )
+    assert [r.status for r in results] == ["deleted"]
+    assert isinstance(results[0].error, PreconditionFailedError)
+    assert results[0].remote is not None and results[0].remote.doc_hash is None
+    assert writes == 1
+    assert state is not None and state.synced == {} and state.intents == {}
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_delete_conflict_with_failed_reread_stays_a_conflict(mode: str) -> None:
+    """重读本身失败时不臆测：仍回报 ``conflict``（带重读异常），不删除同步状态条目。"""
+    with spawn_server("--prefix", "/r/1") as info:
+        results, _, state = _run_delete_race(
+            mode, info["url"], f"dpe://reread-cut/{mode}", cut_reads=True
+        )
+    assert [r.status for r in results] == ["conflict"]
+    assert results[0].remote is None and results[0].remote_error is not None
+    assert state is not None and state.synced  # 条目保留（未确认任何结果）
+
+
+def test_reread_achieved_parity_between_sync_and_async() -> None:
+    """同一服务端上同一组竞态：同步与异步推送器的回报逐字段一致（对照场景）。"""
+    views: dict[str, list[Any]] = {}
+    with spawn_server("--prefix", "/r/1") as info:
+        for mode in ("sync", "async"):
+            base = f"dpe://reread-parity/{mode}"
+            out: list[Any] = []
+            for variant in ("precondition", "already_exists", "not_found"):
+                results, _, _ = _run_commit_race(mode, variant, info["url"], base)
+                out.append([_view(r, base) for r in results])
+            results, _, _ = _run_delete_race(mode, info["url"], base, cut_reads=False)
+            out.append([_view(r, base) for r in results])
+            views[mode] = out
+    assert views["sync"] == views["async"]
