@@ -7,6 +7,7 @@ async 对同一真实 TCP 服务端的结果对照由文件末尾的驱动场景
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import threading
@@ -1439,3 +1440,123 @@ async def test_sync_and_async_agree_against_the_same_server() -> None:
                     "dpe://parity/async",
                 )
     assert sync_results == async_results
+
+
+# ---------------------------------------------------------------------- 意图存盘失败（#134）
+
+
+class _FailingStore(MemoryStateStore):
+    """``failing`` 为真时 ``save`` 抛 ``OSError``（模拟落盘失败），不改动已存内容。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failing = False
+
+    def save(self, remote: str, snapshot: StateSnapshot) -> None:
+        if self.failing:
+            raise OSError("模拟的状态落盘失败")
+        super().save(remote, snapshot)
+
+
+async def _save_failure_keeps_reconcile_drops_new_intents(
+    driver: _PushDriver, store: _FailingStore, foreign: AsyncDpeClient, remote: str, base: str
+) -> None:
+    """上一轮 v2 结果未知（意图 A→v2 保留）→ 本轮 push(v3)：对账把 L 推进到 v2，持久化 A→v3 时
+    ``save`` 失败。本批意图不进入内存、未发写；对账结果（来自真实读到的 R）保留，
+    在下次保存时落盘。"""
+    uri, other = f"{base}/a.md", f"{base}/b.md"
+    store.failing = True
+    with pytest.raises(OSError):
+        await driver.push({uri: _doc("v3")})
+    assert await foreign.head(uri) == _doc("v2").doc_hash()  # 未发写
+
+    store.failing = False
+    assert [r.status for r in await driver.push({other: _doc("b")})] == ["created"]
+    state = store.load(remote)
+    assert state is not None
+    assert state.intents == {}  # A→v3 从未进入内存，A→v2 已由对账消费
+    assert state.synced == {uri: _doc("v2").doc_hash(), other: _doc("b").doc_hash()}
+
+
+async def _save_failure_does_not_mask_foreign_same_value_write(
+    driver: _PushDriver, store: _FailingStore, foreign: AsyncDpeClient, base: str
+) -> None:
+    """#134 复现序列：push(v2) 时意图存盘失败 → 他人写下同值 v2 → push(v3) 必须判冲突、不发写。
+
+    若失败的意图残留在内存并随下次保存落盘，R == v2 会被误认为自身写入，以 base=v2 静默覆盖。
+    """
+    uri = f"{base}/repro.md"
+    assert [r.status for r in await driver.push({uri: _doc("v1")})] == ["created"]
+    store.failing = True
+    with pytest.raises(OSError):
+        await driver.push({uri: _doc("v2")})
+    store.failing = False
+    await foreign.commit(uri, _doc("v2"), BaseHash(_doc("v1").doc_hash()))
+
+    final = await driver.push({uri: _doc("v3")})
+
+    assert [r.status for r in final] == ["conflict"]  # L = v1、R = v2
+    assert final[0].precondition is None  # 未发写
+    assert await foreign.head(uri) == _doc("v2").doc_hash()  # 未被静默覆盖
+
+
+async def _save_failure_keeps_both_move_sides_out_of_memory(
+    driver: _PushDriver, store: _FailingStore, foreign: AsyncDpeClient, remote: str, base: str
+) -> None:
+    """move 两侧意图（``from → 不存在``、``to → base``）在写前 ``save`` 失败时都不进入内存、未发写；
+    之后的成功保存不会把任一侧写进 store，同一实例重放 move 照常完成。"""
+    source, target = f"{base}/from.md", f"{base}/to.md"
+    assert [r.status for r in await driver.push({source: _doc("m")})] == ["created"]
+    store.failing = True
+    with pytest.raises(OSError):
+        await driver.move([(source, target)])
+    assert await foreign.head(source) == _doc("m").doc_hash()  # 未发写
+    assert await foreign.head(target) is None
+
+    store.failing = False
+    assert [r.status for r in await driver.push({f"{base}/other.md": _doc("o")})] == ["created"]
+    state = store.load(remote)
+    assert state is not None and state.intents == {}  # 两侧意图都未落盘
+    assert [r.status for r in await driver.move([(source, target)])] == ["moved"]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("scenario", ["reconcile", "repro", "move"])
+async def test_intent_save_failure_does_not_leak_into_memory(mode: str, scenario: str) -> None:
+    """意图存盘失败（#134）：先存、存成功才生效——同步与异步推送器对同一真实 TCP 服务端。"""
+    base = f"dpe://save-failure/{mode}"
+    store = _FailingStore()
+    with spawn_server("--prefix", "/r/1") as info:
+        url = info["url"]
+        async with contextlib.AsyncExitStack() as stack:
+            foreign = await stack.enter_async_context(AsyncDpeClient(url))
+            if scenario == "reconcile":
+                # 上一轮：L = v1，v2 的写入结果未知（意图 A→v2 保留），而它实际已生效（R = v2）
+                uri = f"{base}/a.md"
+                await foreign.commit(uri, _doc("v1"), IfAbsent())
+                await foreign.commit(uri, _doc("v2"), BaseHash(_doc("v1").doc_hash()))
+                store.save(
+                    url,
+                    StateSnapshot(
+                        synced={uri: _doc("v1").doc_hash()}, intents={uri: _doc("v2").doc_hash()}
+                    ),
+                )
+            driver: _PushDriver
+            if mode == "sync":
+                client = stack.enter_context(DpeClient(url))
+                driver = _SyncDriver(StatefulPusher(client, state=store))
+            else:
+                async_client = await stack.enter_async_context(AsyncDpeClient(url))
+                driver = AsyncStatefulPusher(async_client, state=store)
+            if scenario == "reconcile":
+                await _save_failure_keeps_reconcile_drops_new_intents(
+                    driver, store, foreign, url, base
+                )
+            elif scenario == "repro":
+                await _save_failure_does_not_mask_foreign_same_value_write(
+                    driver, store, foreign, base
+                )
+            else:
+                await _save_failure_keeps_both_move_sides_out_of_memory(
+                    driver, store, foreign, url, base
+                )

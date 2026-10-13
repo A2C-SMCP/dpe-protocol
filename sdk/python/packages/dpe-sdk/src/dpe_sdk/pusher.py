@@ -18,6 +18,17 @@
   含校验失败的 2xx、未化解的裸 412、无码 4xx/5xx）即未知，**包括「首发丢响应、重发得到
   DPE 错误或建连失败」这类首发可能已生效的序列**。下一轮判定前先对账：R 等于待定意图值
   （含「不存在」）即视为本实例自己已生效的写入，按意图更新同步状态后再查判定表。
+- **先存、存成功才生效**：写前那次 ``save`` 失败时，store 的异常原样抛出、整批未发写，**本批
+  意图不进入内存**——否则它会随下一次成功的保存落盘，成为「幽灵意图」，他人随后写下同值时被
+  误认为自身写入而静默覆盖（#134）。判定阶段按真实读到的远端值完成的对账保留，下次保存时一并
+  落盘。收尾那次 ``save`` 失败时同样整批报错（写入已发出）：已确定的结果已并入内存，同一实例
+  继续可用；只有结果未知的写入在下一轮按意图对账。
+- **store 与内存不一致**：任何一次 ``save`` 失败后，store 都可能与内存不一致——收尾失败时
+  store 落后于内存（仍留着内存里已清除的意图，如已确定失败的写入）；落盘实现若在写入完成后才
+  抛错（如目录 ``fsync`` 失败），写前那次失败也会让 store 领先于内存（留着从未发出的意图）。
+  继续使用同一个推送器实例，直到下一次 ``save`` 成功；在那之前**不要用同一个 store 新建
+  实例**——读回的过期意图会在他人恰好写下同值时被误认为自身写入。进程崩溃后重新载入属于
+  §7.2 本就接受的崩溃窗口。
 - **条目维护**：成功或已达成时——commit 记 ``uri → doc_hash``；delete 删除该条目；move 把
   条目从 ``from_uri`` 迁到 ``to_uri``（值不变）。冲突与失败不更新。
 - **按 remote 隔离**：状态经 ``StateStore`` 以 remote 为命名空间存取，同一 store 服务多个
@@ -581,13 +592,20 @@ class _PusherBase:
         调用方才允许发出写请求（§7.2）。"""
         if not intents:
             return
-        self._intents.update(intents)
-        self._save()
+        # 先存、存成功才生效（#134）：在副本上合并，save 返回后才替换内存中的意图；save 抛出时
+        # 内存保持原样（不按键删除——同一个键上可能原本挂着结果未知的待定意图）
+        pending = {**self._intents, **intents}
+        self._save(pending)
+        self._intents = pending
 
-    def _save(self) -> None:
+    def _save(self, intents: Mapping[str, str | None] | None = None) -> None:
+        """整批保存同步状态与意图；``intents`` 缺省为内存中的意图（快照只在这里构造）。"""
         self._store.save(
             self.remote,
-            StateSnapshot(synced=dict(self._synced), intents=dict(self._intents)),
+            StateSnapshot(
+                synced=dict(self._synced),
+                intents=dict(self._intents if intents is None else intents),
+            ),
         )
 
     def _move_intents(self, plans: Sequence[_Plan]) -> dict[str, str | None]:
