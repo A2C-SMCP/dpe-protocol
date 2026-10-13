@@ -263,8 +263,8 @@ async def test_clock_advance_hook_renews_and_expires() -> None:
         assert uploaded.status_code == 201
         delta = _seconds(uploaded.headers["dpe-session-expires"]) - _seconds(expires)
         assert 59 <= delta <= 61
-        # 拨过 TTL 之后会话过期
-        await _hook(r, f"{HOOKS}/clock/advance", {"advance_seconds": 3600})
+        # 拨过 TTL 之后会话过期（过期时间向上取整到秒，实际可用时长不少于 TTL：多拨 1 秒）
+        await _hook(r, f"{HOOKS}/clock/advance", {"advance_seconds": 3601})
         gone = await r.raw("HEAD", target)
         assert gone.status_code == 410
         bad = await _hook(r, f"{HOOKS}/clock/advance", {"advance_seconds": 0})

@@ -124,6 +124,9 @@ class StagedPage:
     #: 已收字节数（整段上传与分块为实际接收的字节；negotiate 附带的页没有单独字节，
     #: 取其规范序列化（JCS）的 UTF-8 长度）
     size: int
+    #: 是否经分块上传到齐：只有分块上传的页对象的响应（含其重复上传的 200）可截断缺失清单
+    #: （HTTP 绑定 §4.6）
+    chunked: bool = False
 
 
 @dataclass
@@ -201,8 +204,16 @@ class SessionStore:
         return session
 
     def renew(self, session: Session) -> None:
-        """把过期时间推到「此刻 + staging_ttl」（成功的 negotiate / upload 含中间块）。"""
-        session.expires_at = self.now() + self._ttl
+        """把过期时间推到「此刻 + staging_ttl」（成功的 negotiate / upload 含中间块）。
+
+        向上取整到秒：对外的 ``expires_at`` 是秒精度的 RFC 3339 UTC，服务端 MUST 以对外给出的
+        值判定（core §3.4）——内部留着微秒会让恰在 ``expires_at`` 时刻的请求仍被判为未过期；
+        向上而不是向下取整，使会话的实际可用时长不少于声明的 ``staging_ttl``。
+        """
+        expires = self.now() + self._ttl
+        if expires.microsecond:
+            expires = expires.replace(microsecond=0) + timedelta(seconds=1)
+        session.expires_at = expires
 
     def get(self, caller: str, session_id: str, uri: str | None = None) -> Session:
         """取可用会话；``uri`` 给出时还要求会话的 file_uri 相符（commit；upload 不传）。"""

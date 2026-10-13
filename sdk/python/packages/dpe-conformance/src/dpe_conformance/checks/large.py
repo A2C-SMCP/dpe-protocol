@@ -15,13 +15,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import dpe_hash
 import httpx
 import pytest
 from dpe_hash import ElementObject
+from dpe_hash.jcs import jcs
 
 from dpe_conformance.config import Identity
 from dpe_conformance.plugin import Target
@@ -71,6 +72,25 @@ def _oversized_page(limits: Mapping[str, int]) -> tuple[dict[str, Any], str, int
 def _chunk_size(limits: Mapping[str, int], total: int) -> int:
     # 单块请求体同时受 blob_chunk_bytes 与 max_payload_bytes 约束（HTTP §4.7 第 0/5 步）
     return min(limits["blob_chunk_bytes"], limits["max_payload_bytes"], max(total, 1))
+
+
+def _assert_chunked_page_missing(
+    body: Mapping[str, Any], expected: Sequence[str], max_payload_bytes: int
+) -> None:
+    """分块上传的页对象的缺失清单（HTTP §4.6）：MUST 带 ``missing_truncated``；为 false 时与实际
+    缺失一致；为 true 时是实际缺失的非空子集，且只在未截断的响应体按 JCS 序列化后超过
+    ``max_payload_bytes`` 时才允许截断。"""
+    truncated = body.get("missing_truncated")
+    assert isinstance(truncated, bool), f"页对象响应必须带布尔的 missing_truncated：{truncated!r}"
+    listed = body["missing_content_hashes"]
+    if not truncated:
+        assert set(listed) == set(expected), "未截断时缺失清单必须与实际缺失一致"
+        return
+    assert listed and set(listed) <= set(expected), "截断时缺失清单必须是实际缺失的非空子集"
+    full = jcs({"missing_content_hashes": list(expected), "missing_truncated": False})
+    assert len(full.encode("utf-8")) > max_payload_bytes, (
+        "未截断的响应体放得进 max_payload_bytes 时 MUST NOT 截断"
+    )
 
 
 def _assert_missing_layer(problem: Mapping[str, Any], layer: str, expected: set[str]) -> None:
@@ -193,11 +213,7 @@ def test_page_object_over_limit_chunked_mechanics(
         assert response.headers.get("DPE-Session-Expires") is not None, "202 带会话过期时间头"
     final = responses[-1]
     assert final.status_code == 201, f"末块应为 201，实际 {final.status_code}"
-    missing = set(final.json()["missing_content_hashes"])
-    assert missing and missing <= set(hashes), (
-        "末块的缺失元素清单必须是本页元素集合的非空子集"
-        "（大规模下清单被截断属实现自由，CORE §3.3 的 MAY 截断；此处不做等量断言）"
-    )
+    _assert_chunked_page_missing(final.json(), hashes, limits["max_payload_bytes"])
 
     probe = breakpoint_query(
         conformance_target, session_id, kind="pages", ref=page_hash, identity=full_identity
@@ -322,6 +338,9 @@ def test_commit_missing_content_reports_layers(
     assert set(page_response.json()["missing_content_hashes"]) == {
         dpe_hash.content_hash(cast(ElementObject, element)) for element in document.objects
     }, "页上传响应必须按本会话给出该页仍缺的元素对象"
+    assert page_response.json().get("missing_truncated") is False, (
+        "页对象响应 MUST 带 missing_truncated；未分块上传的页对象 MUST NOT 截断（HTTP §4.6）"
+    )
 
     for element in document.objects:
         response = upload_element(
@@ -418,6 +437,9 @@ def test_inserted_page_is_the_only_missing_page(
     new_element = version2.objects[1]  # 展平后：页 1 的元素、新页的元素、页 2 的元素
     new_ref = dpe_hash.content_hash(cast(ElementObject, new_element))
     assert page_response.json()["missing_content_hashes"] == [new_ref], "新页只缺它自己的元素"
+    assert page_response.json().get("missing_truncated") is False, (
+        "页对象响应 MUST 带 missing_truncated；未分块上传的页对象不截断（HTTP §4.6）"
+    )
     uploaded = upload_element(
         conformance_target, session_id, new_element, new_ref, identity=full_identity
     )

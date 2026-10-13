@@ -137,6 +137,30 @@ async def test_deliver_chunks_a_large_page_against_the_reference_server() -> Non
                 assert body is not None and len(body) <= 100
 
 
+async def test_deliver_completes_a_truncated_large_page_against_the_reference_server() -> None:
+    """参考服务端截断分块大页的清单、commit 每轮只列 1 条（#127）：缺失数远超
+    2 × missing_max，默认预算的 deliver 仍逐轮补齐完成。"""
+    document = many_elements_doc(20)
+    async with remote(small_engine(missing_max=1)) as r:
+        core = await r.core()
+        recorder = Recorded(r.send)
+        result = await adrive(core.deliver(URI, document, IfAbsent()), recorder)
+        assert result.status == "created"
+        assert result.delta.added == 20
+        truncated = [
+            response
+            for request, response in zip(recorder.sent, recorder.responses, strict=True)
+            if "Content-Range" in request.headers and response.status == 201
+        ]
+        assert truncated and json.loads(truncated[-1].body or b"{}")["missing_truncated"] is True
+        missing_rounds = [
+            response
+            for response in recorder.responses
+            if response.header("DPE-Error-Code") == "DPE_MISSING_CONTENT"
+        ]
+        assert len(missing_rounds) > 2 * core.max_resends  # 远超旧语义下的预算
+
+
 async def test_deliver_resumes_a_lost_blob_chunk_against_the_reference_server() -> None:
     """某一块的响应丢失：先断点查询、按已收偏移续传（core §3.4 的客户端义务）。"""
     document = image_doc()

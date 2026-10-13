@@ -547,7 +547,8 @@ pub fn drive<O: Operation>(
 /// 契约返回 [`ErrorKind::InvalidArgument`]；服务端协议版本不是 `dpe/1` 返回
 /// [`ErrorKind::IncompatibleServer`]。
 ///
-/// `max_resends` 是写操作在响应丢失后原样重发的次数上限（见模块说明的驱动约定）。
+/// `max_resends` 是写操作在响应丢失后原样重发的次数上限（见模块说明的驱动约定），也是
+/// `deliver` 恢复轮的预算——只计没有进展的轮次（最多允许几轮没有进展，见 [`ProtocolCore::deliver`]）。
 #[derive(Debug)]
 pub struct ProtocolCore {
     capabilities: Capabilities,
@@ -826,7 +827,10 @@ impl ProtocolCore {
     ///   [`BlobSource::from_bytes`] 包一层）；缺省时若确需上传 blob，失败并给出缺失清单；
     /// - `session`：复用的暂存会话（core §3.4：CAS 失败后重新读取、以新前置条件引用同一会话
     ///   重提，免重传）。会话只作缓存：失效时自动重开，结果与不复用时一致；
-    /// - 恢复轮预算（`max_resends`）用尽时抛出当时的错误；错误带 [`Error::session`]（当前
+    /// - 恢复轮预算（`max_resends`）只由**没有进展**的轮次消耗：`DPE_MISSING_CONTENT` 重新列出
+    ///   本会话已上传过的对象（或清单为空）时计一次，列出的全是新对象则不计——截断的清单
+    ///   （core §3.3）因此可以逐轮补齐；`DPE_SESSION_EXPIRED` 照旧每次计一次（同 Python）；
+    /// - 恢复轮预算用尽时抛出当时的错误；错误带 [`Error::session`]（当前
     ///   会话，可能仍可复用），上层可重新读取后以其继续，结果与不限预算一致。
     ///
     /// **绝不自动 force**：`DPE_PRECONDITION_FAILED` / `DPE_ALREADY_EXISTS` / `DPE_NOT_FOUND`
@@ -3064,8 +3068,10 @@ pub struct DeliverOp<'a> {
     blobs: Option<BlobProvider<'a>>,
     /// 当前暂存会话（会话只作缓存；续期只影响诊断字段）。
     session: Option<Session>,
-    /// 恢复轮预算。
+    /// 恢复轮预算：只由没有进展的轮次消耗（见 [`DeliverOp::stalled`]）。
     budget: u32,
+    /// 本会话已上传的 hash（页、元素、blob）；换会话时清空。
+    uploaded: HashSet<String>,
     /// 待补传的清单（来自 commit 的 `DPE_MISSING_CONTENT` 或 negotiate）。
     pending: Option<Missing>,
     queue: ManifestQueue,
@@ -3123,6 +3129,7 @@ impl<'a> DeliverOp<'a> {
             blobs,
             session: None,
             budget: core.max_resends(),
+            uploaded: HashSet::new(),
             pending: None,
             queue: ManifestQueue::default(),
             queue_active: false,
@@ -3221,6 +3228,7 @@ impl<'a> DeliverOp<'a> {
             .take()
             .expect("negotiate 完成后必有目标");
         self.session = Some(negotiated.session.clone());
+        self.uploaded.clear(); // 新会话从空开始（同 Python：换会话清空本会话已上传）
         match goal {
             DeliverGoal::InlineRecovery => {
                 match self.recovery_body(&negotiated.session) {
@@ -3293,6 +3301,7 @@ impl<'a> DeliverOp<'a> {
             let runner = page_upload_runner(self.core, self.session_id(), &page_hash, payload)?;
             return Ok(Some(ManifestJob {
                 kind: JobKind::Page,
+                target: page_hash,
                 runner,
                 awaiting: false,
             }));
@@ -3310,6 +3319,7 @@ impl<'a> DeliverOp<'a> {
                 element_upload_runner(self.core, self.session_id(), &content_hash, payload)?;
             return Ok(Some(ManifestJob {
                 kind: JobKind::Element,
+                target: content_hash,
                 runner,
                 awaiting: false,
             }));
@@ -3360,6 +3370,7 @@ impl<'a> DeliverOp<'a> {
             )?;
             return Ok(Some(ManifestJob {
                 kind: JobKind::Blob,
+                target: blob,
                 runner,
                 awaiting: false,
             }));
@@ -3367,16 +3378,39 @@ impl<'a> DeliverOp<'a> {
         Ok(None)
     }
 
+    /// `DPE_MISSING_CONTENT` 这一轮是否没有进展：清单为空，或重新列出了本会话已上传过的对象。
+    /// 有进展的轮次不消耗预算——截断的清单（core §3.3）因此可以逐轮补齐；每个有进展的轮次
+    /// 至少上传一个新对象、对象总数有限，循环必然终止。
+    fn stalled(&self, error: &Error) -> bool {
+        let Some(missing) = error.missing() else {
+            return true;
+        };
+        let mut listed = missing
+            .pages
+            .iter()
+            .chain(&missing.content_hashes)
+            .chain(&missing.blobs)
+            .peekable();
+        if listed.peek().is_none() {
+            return true;
+        }
+        listed.any(|hash| self.uploaded.contains(hash))
+    }
+
     /// `Err` 的两类恢复（core §3.4）或如实上报。
     fn handle_error(&mut self, error: Error) -> Result<(), Error> {
         if error.kind() == ErrorKind::MissingContent {
-            if self.budget == 0 {
+            // 只有没有进展的轮次消耗预算（同 Python `_stalled`）
+            let stalled = self.stalled(&error);
+            if stalled && self.budget == 0 {
                 return Err(error);
             }
             if self.session.is_none() {
                 if self.mode == DeliverMode::Inline {
                     // 快路径：先开会话，再以「内联 + 会话」补传重提
-                    self.budget -= 1;
+                    if stalled {
+                        self.budget -= 1;
+                    }
                     self.pending = error.missing().cloned();
                     self.queue_active = false;
                     return self.start_negotiate(DeliverGoal::InlineRecovery);
@@ -3386,7 +3420,9 @@ impl<'a> DeliverOp<'a> {
                 // 不在 `_staged` 的恢复循环内）。
                 return Err(error);
             }
-            self.budget -= 1;
+            if stalled {
+                self.budget -= 1;
+            }
             self.pending = error.missing().cloned();
             self.queue_active = false;
             return self.advance();
@@ -3459,14 +3495,19 @@ impl<'a> DeliverOp<'a> {
                         Ok(())
                     }
                     Ok(Some(JobOutcome::MissingElements(hashes))) => {
+                        self.uploaded.insert(job.target.clone());
                         self.queue.extend_objects(hashes);
                         self.advance()
                     }
                     Ok(Some(JobOutcome::MissingBlobs(blobs))) => {
+                        self.uploaded.insert(job.target.clone());
                         self.queue.extend_blobs(blobs);
                         self.advance()
                     }
-                    Ok(Some(JobOutcome::Done)) => self.advance(),
+                    Ok(Some(JobOutcome::Done)) => {
+                        self.uploaded.insert(job.target.clone());
+                        self.advance()
+                    }
                     Err(error) => self.handle_error(error),
                 }
             }
@@ -3620,6 +3661,8 @@ impl Operation for DeliverOp<'_> {
 #[derive(Debug)]
 struct ManifestJob<'a> {
     kind: JobKind,
+    /// 本任务上传的对象 hash（完成后记入本会话已上传）。
+    target: String,
     runner: UploadRunner<'a>,
     awaiting: bool,
 }

@@ -6,7 +6,15 @@ from typing import Any
 
 import dpe_hash
 import pytest
-from dpe_sdk.wire import BatchHeads, Capabilities, CommitResult, ListPage, Missing, Skeleton
+from dpe_sdk.wire import (
+    BatchHeads,
+    Capabilities,
+    CommitResult,
+    ListPage,
+    Missing,
+    PageUploadMissing,
+    Skeleton,
+)
 from pydantic import ValidationError as PydanticValidationError
 
 H = "dpe1:" + "a" * 64
@@ -100,3 +108,19 @@ def test_skeleton_objects_stay_closed() -> None:
 
 def test_missing_defaults_to_empty_layers() -> None:
     assert Missing().model_dump() == {"pages": [], "content_hashes": [], "blobs": []}
+
+
+def test_page_upload_missing_truncation_flag() -> None:
+    """页对象上传响应的 missing_truncated（HTTP §4.6）：缺省 false，出现时必须是 JSON 布尔。"""
+    assert (
+        PageUploadMissing.model_validate({"missing_content_hashes": []}).missing_truncated is False
+    )
+    flagged = PageUploadMissing.model_validate(
+        {"missing_content_hashes": ["dpe1:" + "0" * 64], "missing_truncated": True}
+    )
+    assert flagged.missing_truncated is True
+    for bad in ("true", 1, None):
+        with pytest.raises(PydanticValidationError):
+            PageUploadMissing.model_validate(
+                {"missing_content_hashes": [], "missing_truncated": bad}
+            )

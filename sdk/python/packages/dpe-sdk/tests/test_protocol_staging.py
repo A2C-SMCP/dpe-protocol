@@ -497,6 +497,19 @@ def test_deliver_recovers_a_missing_blob_into_a_session() -> None:
     assert "force" not in body
 
 
+def test_deliver_fast_path_recovery_with_progress_needs_no_budget() -> None:
+    """快路径恢复同样只计没有进展的轮次（#127）：首次内联 commit 缺 blob、在新会话里补传后
+    完成——预算为 0 也成立。"""
+    document = image_doc()
+    missing = problem(
+        "DPE_MISSING_CONTENT", 400, missing={"pages": [], "content_hashes": [], "blobs": [REF]}
+    )
+    server = Script(missing, negotiated(), uploaded({}), committed(document, "created", 1, 0, 0))
+    core_zero = ProtocolCore(caps(), max_resends=0)
+    result = drive(core_zero.deliver(URI, document, IfAbsent(), blobs=lambda ref: IMAGE), server)
+    assert result.status == "created"
+
+
 def test_deliver_missing_blob_without_a_provider_is_reported() -> None:
     document = image_doc()
     server = Script(problem("DPE_MISSING_CONTENT", 400, missing={"blobs": [REF]}), negotiated())
@@ -692,6 +705,53 @@ def test_deliver_recovery_is_bounded() -> None:
     with pytest.raises(errors.MissingContentError):
         drive(core_one.deliver(URI, document, IfAbsent()), server)
     assert [r.method for r in server.requests] == ["POST", "PUT", "PUT", "PUT", "PUT"]
+
+
+def test_deliver_progress_rounds_do_not_consume_the_budget() -> None:
+    """截断的清单逐轮补齐（#127）：每轮列出的都是本会话没上传过的对象，即有进展，不计
+    ``max_resends``——预算为 0 也能完成。"""
+    document = doc(["a", "b", "c"])
+    parts = inline(text_doc(["a", "b", "c"]))
+    page_hash = parts.page_hashes[0]
+    e1, e2, e3 = parts.content_hashes[0]
+    server = Script(
+        negotiated(missing_pages=[page_hash]),
+        uploaded({"missing_content_hashes": [e1], "missing_truncated": True}),
+        uploaded({"missing_blobs": []}),
+        problem(
+            "DPE_MISSING_CONTENT", 400, missing={"content_hashes": [e2]}, missing_truncated=True
+        ),
+        uploaded({"missing_blobs": []}),
+        problem("DPE_MISSING_CONTENT", 400, missing={"content_hashes": [e3]}),
+        uploaded({"missing_blobs": []}),
+        committed(document, "created", 3, 0, 0),
+    )
+    core_zero = ProtocolCore(caps(limits={"max_payload_bytes": 120}), max_resends=0)
+    result = drive(core_zero.deliver(URI, document, IfAbsent()), server)
+    assert result.status == "created"
+
+
+def test_deliver_stalls_when_the_server_relists_an_uploaded_object() -> None:
+    """服务端反复列出本会话已上传过的对象：每轮计一次预算，用尽后抛出，不会无限循环。"""
+    document = doc(["a"])
+    parts = inline(text_doc(["a"]))
+    page_hash = parts.page_hashes[0]
+    (e1,) = parts.content_hashes[0]
+    stuck = problem("DPE_MISSING_CONTENT", 400, missing={"content_hashes": [e1]})
+    server = Script(
+        negotiated(missing_pages=[page_hash]),
+        uploaded({"missing_content_hashes": [e1]}),
+        uploaded({"missing_blobs": []}),
+        stuck,  # 已上传过 e1：无进展，预算 2 → 1
+        uploaded({"missing_blobs": []}, status=200),
+        stuck,  # 1 → 0
+        uploaded({"missing_blobs": []}, status=200),
+        stuck,  # 预算用尽：抛出
+    )
+    core_two = ProtocolCore(caps(limits={"max_payload_bytes": 120}), max_resends=2)
+    with pytest.raises(errors.MissingContentError):
+        drive(core_two.deliver(URI, document, IfAbsent()), server)
+    assert len(server.requests) == 8
 
 
 # ---------------------------------------------------------------------- deliver：会话复用与 CAS

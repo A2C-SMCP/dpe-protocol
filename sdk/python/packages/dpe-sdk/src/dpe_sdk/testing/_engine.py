@@ -557,7 +557,7 @@ class Engine:
         return UploadResult(
             outcome=outcome,
             expires_at=rfc3339_utc(session.expires_at),
-            missing=PageUploadMissing(missing_content_hashes=missing),
+            missing=PageUploadMissing(missing_content_hashes=missing),  # 未分块：不截断
         )
 
     def _upload_page_chunked(
@@ -604,7 +604,9 @@ class Engine:
                 )
                 if h != page_hash:
                     raise HashMismatchError(f"上传对象的 hash {h} 与路径 {page_hash} 不符")
-                session.pages[page_hash] = StagedPage(dict(data), contract, len(complete))
+                session.pages[page_hash] = StagedPage(
+                    dict(data), contract, len(complete), chunked=True
+                )
                 outcome = "created"
             self._sessions.renew(session)
             elements = session.pages[page_hash].body["elements"]
@@ -613,7 +615,11 @@ class Engine:
         return UploadResult(
             outcome=outcome,
             expires_at=rfc3339_utc(session.expires_at),
-            missing=PageUploadMissing(missing_content_hashes=missing),
+            missing=_page_missing(
+                missing,
+                chunked=session.pages[page_hash].chunked,
+                max_payload_bytes=self.config.max_payload_bytes,
+            ),
         )
 
     def upload_element(
@@ -1306,6 +1312,36 @@ def _delta(old: DocState | None, new: DocState) -> Delta:
         removed=sum((before - after).values()),
         retained=sum((after & before).values()),
     )
+
+
+def _page_missing(
+    missing: Sequence[str], *, chunked: bool, max_payload_bytes: int
+) -> PageUploadMissing:
+    """页对象上传响应的缺失清单（HTTP 绑定 §4.6）。
+
+    只有分块上传的页对象（``chunked``，按该页当初如何到齐判定）在未截断的响应体按 JCS
+    序列化后超过 ``max_payload_bytes`` 时截断：取能放进门槛的最长前缀（至少一条）并注明
+    ``missing_truncated``；只缺一条时无可截，照常完整给出。
+    """
+    full = list(missing)
+    if not chunked or len(full) <= 1:
+        return PageUploadMissing(missing_content_hashes=full)
+    if len(_jcs_body(full, truncated=False)) <= max_payload_bytes:
+        return PageUploadMissing(missing_content_hashes=full)
+    # 序列化长度随前缀长度单调增：二分找最长的、截断后仍不超过门槛的前缀
+    low, high = 1, len(full) - 1
+    while low < high:
+        mid = (low + high + 1) // 2
+        if len(_jcs_body(full[:mid], truncated=True)) <= max_payload_bytes:
+            low = mid
+        else:
+            high = mid - 1
+    return PageUploadMissing(missing_content_hashes=full[:low], missing_truncated=True)
+
+
+def _jcs_body(missing: Sequence[str], *, truncated: bool) -> bytes:
+    body = {"missing_content_hashes": list(missing), "missing_truncated": truncated}
+    return jcs(body).encode("utf-8")
 
 
 def _missing_error(missing: Mapping[str, Sequence[str]], limit: int) -> MissingContentError:

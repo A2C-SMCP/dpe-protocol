@@ -7,6 +7,7 @@ from typing import Any
 
 import dpe_hash
 import pytest
+from dpe_hash.jcs import jcs
 from dpe_sdk import errors
 from dpe_sdk.testing import (
     BaseHash,
@@ -16,6 +17,7 @@ from dpe_sdk.testing import (
     UploadChunk,
     UploadOffsetError,
 )
+from dpe_sdk.testing._engine import _page_missing
 from dpe_sdk.wire import ElementUploadMissing, PageUploadMissing
 from engine_helpers import (
     FakeClock,
@@ -506,3 +508,116 @@ def test_authorizer_callback_into_engine_at_negotiate() -> None:
     r = engine.negotiate("u", negotiate_body(URI, {"file_type": "md", "pages": [bh]}, pages=[b]), C)
     assert r.missing_content_hashes == [xh]  # 另一篇文档持有的元素仍缺失
     assert authorizer.calls == [URI]  # 只为目标文档授权（不再为持有者逐篇授权）
+
+
+# ---------------------------------------------------------------- 缺失清单的截断（HTTP §4.6，#127）
+
+
+def _chunked_page_upload(engine: Engine, sid: str, raw: bytes, ph: str) -> Any:
+    result = None
+    for piece, chunk in chunks(raw, 64):
+        result = engine.upload_page("u", sid, ph, piece, C, chunk=chunk)
+    return result
+
+
+def _jcs_size(missing: PageUploadMissing) -> int:
+    return len(jcs(missing.model_dump(mode="json")).encode("utf-8"))
+
+
+def test_chunked_page_missing_list_is_truncated_to_fit_max_payload() -> None:
+    """分块页的完整清单序列化后超过 max_payload_bytes：截断为放得进门槛的最长前缀并注明。"""
+    engine = make_engine(max_payload_bytes=512, session_id_factory=id_factory())
+    hashes = [
+        dpe_hash.object_hash({"category": "Title", "text": f"t{i}"}, "element", C)
+        for i in range(40)
+    ]
+    page = {"elements": hashes}
+    ph = dpe_hash.object_hash(page, "page", C)
+    raw = json.dumps(page).encode()
+    assert len(raw) > 512  # 构造前提：只能分块上传
+    sid = engine.negotiate(
+        "u", negotiate_body(URI, {"file_type": "md", "pages": [ph]}), C
+    ).staging_session.id
+
+    result = _chunked_page_upload(engine, sid, raw, ph)
+    missing = result.missing
+    assert result.outcome == "created" and isinstance(missing, PageUploadMissing)
+    assert missing.missing_truncated is True
+    listed = missing.missing_content_hashes
+    assert 0 < len(listed) < len(hashes) and listed == hashes[: len(listed)]
+    assert _jcs_size(missing) <= 512
+    longer = PageUploadMissing(
+        missing_content_hashes=hashes[: len(listed) + 1], missing_truncated=True
+    )
+    assert _jcs_size(longer) > 512  # 最长前缀：再多一条就放不下
+
+    # 本会话内重复上传（200）同一口径
+    again = engine.upload_page("u", sid, ph, raw[:4], C, chunk=UploadChunk(0, 3, len(raw)))
+    assert again.outcome == "duplicate" and again.missing == missing
+
+
+def test_chunked_page_missing_list_fits_is_not_truncated() -> None:
+    """分块页的清单放得进门槛时完整给出，missing_truncated 为 false（MUST NOT 截断）。"""
+    engine = make_engine(max_payload_bytes=512, session_id_factory=id_factory())
+    elements = [{"category": "Title", "text": f"t{i}"} for i in range(40)]
+    hashes = [dpe_hash.object_hash(e, "element", C) for e in elements]
+    page = {"elements": hashes}
+    ph = dpe_hash.object_hash(page, "page", C)
+    raw = json.dumps(page).encode()
+    sid = engine.negotiate(
+        "u", negotiate_body(URI, {"file_type": "md", "pages": [ph]}), C
+    ).staging_session.id
+    for element, h in zip(elements[1:], hashes[1:], strict=True):
+        engine.upload_element("u", sid, h, json.dumps(element).encode(), C)
+
+    result = _chunked_page_upload(engine, sid, raw, ph)
+    assert result.missing == PageUploadMissing(
+        missing_content_hashes=[hashes[0]], missing_truncated=False
+    )
+
+
+def test_unchunked_page_missing_list_is_never_truncated() -> None:
+    """未分块上传的页对象：清单规模受请求体约束，MUST NOT 截断。"""
+    engine = make_engine(max_payload_bytes=4096, session_id_factory=id_factory())
+    hashes = [
+        dpe_hash.object_hash({"category": "Title", "text": f"t{i}"}, "element", C)
+        for i in range(40)
+    ]
+    page = {"elements": hashes}
+    ph = dpe_hash.object_hash(page, "page", C)
+    sid = engine.negotiate(
+        "u", negotiate_body(URI, {"file_type": "md", "pages": [ph]}), C
+    ).staging_session.id
+    result = engine.upload_page("u", sid, ph, json.dumps(page).encode(), C)
+    assert result.missing == PageUploadMissing(
+        missing_content_hashes=hashes, missing_truncated=False
+    )
+
+
+def test_single_missing_element_is_not_marked_truncated() -> None:
+    """只缺一条时无可截：即使超过门槛也完整给出，missing_truncated 为 false。"""
+    only = [dpe_hash.object_hash({"category": "Title", "text": "t"}, "element", C)]
+    missing = _page_missing(only, chunked=True, max_payload_bytes=16)
+    assert missing == PageUploadMissing(missing_content_hashes=only, missing_truncated=False)
+    assert _jcs_size(missing) > 16  # 确实超过门槛，仍不标截断
+
+
+def test_page_staged_without_chunking_is_not_truncated_on_chunked_resend() -> None:
+    """按页「当初如何到齐」判定：整段暂存的页，之后以分块请求重发命中 200，也不截断。"""
+    engine = make_engine(max_payload_bytes=4096, session_id_factory=id_factory())
+    hashes = [
+        dpe_hash.object_hash({"category": "Title", "text": f"t{i}"}, "element", C)
+        for i in range(40)
+    ]
+    page = {"elements": hashes}
+    ph = dpe_hash.object_hash(page, "page", C)
+    raw = json.dumps(page).encode()
+    body = negotiate_body(URI, {"file_type": "md", "pages": [ph]})
+    sid = engine.negotiate("u", body, C).staging_session.id
+    engine.upload_page("u", sid, ph, raw, C)  # 整段上传（未分块）
+
+    again = engine.upload_page("u", sid, ph, raw[:4], C, chunk=UploadChunk(0, 3, len(raw)))
+    assert again.outcome == "duplicate"
+    assert again.missing == PageUploadMissing(
+        missing_content_hashes=hashes, missing_truncated=False
+    )
