@@ -543,7 +543,7 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 | --- | --- | --- | --- |
 | 协议级 | 分帧或 JSON-RPC 违例、消息超限、未知 method、initialize 错误响应（实例级，见下行）之外的握手违例（如 initialize 结果缺少必填字段、握手完成前发来响应以外的消息）（§6.2、§6.3、§6.5） | 终止实例，本轮作废 | 不推进 |
 | 实例级 | 清单不合法、实例定义不合法（含前缀非法或重叠）、配置未通过 schema、必填凭证缺失、无共同协议版本（`-32004`）、插件拒绝配置（`-32005`）、选定版本不在运行器列表中、插件身份与清单不符（§3、§4、§6.3）；remote 拒绝凭证（HTTP 401，http.md §6）、remote 不支持运行器可用的任何 hash 契约（capabilities，http.md §4.1） | 不启动插件或终止插件，不开始轮；MUST NOT 自动重试（§5.2） | 不推进 |
-| 轮级 | 实例已有轮在进行（`instance_busy`，未启动插件，§5.2）；`scan` 的 `error` 响应、未知或过期的 `next`（§6.4）、插件异常退出（§6.3）；`scan` 超时，或任何请求超时后插件不响应 `cancel`（§6.7）；remote 不可用：网络失败，或可重试的 DPE 错误（`DPE_UNAVAILABLE` / `DPE_RATE_LIMITED`）按 `Retry-After` 重试耗尽；运行器本地状态故障（`state_unavailable`）：读取失败、内容损坏与启动阶段的写入失败（§4.4「状态目录故障」），轮中与收尾的写入失败按 §7.2 使本轮失败的情形 | 本轮作废并上报，退避后重试（§5.2）；内容损坏（`retryable: false`）不会自愈，按 §6.8「永久失败不得空转」处理，由使用者处置后再重跑 | 不推进 |
+| 轮级 | 实例已有轮在进行（`instance_busy`，未启动插件，§5.2）；`scan` 的 `error` 响应、未知或过期的 `next`（§6.4）、插件异常退出（§6.3）；`scan` 超时，或任何请求超时后插件不响应 `cancel`（§6.7）；remote 不可用：网络失败，或可重试的 DPE 错误（`DPE_UNAVAILABLE` / `DPE_RATE_LIMITED`）按 `Retry-After` 重试耗尽；运行器本地状态故障（`state_unavailable`）：读取失败、内容损坏与启动阶段的写入失败（§4.4「状态目录故障」），轮中与收尾的写入失败按 §7.2 使本轮失败的情形；能力获取（http.md §4.1）返回 401 与契约不兼容（见上行）以外的不可重试 DPE 错误（`source: remote`，code 原样，`retryable: false`）；能力获取或任何读写请求得到的响应不是 DPE 报文（`remote_protocol_error`：非 2xx、含重定向 3xx 的非协议错误，401 与条件读取的 `304` 除外，http.md §3.3、§5；带条件头的写入收到无 problem 体的 412 时，先按 http.md §3.2 判定，判定后仍为非协议错误才归此类；或 2xx 响应的报文不合规） | 本轮作废并上报，退避后重试（§5.2）；`retryable: false` 的轮级失败（状态内容损坏、能力获取的不可重试错误、非 5xx 的 `remote_protocol_error`）不会自愈，按 §6.8「永久失败不得空转」处理，由使用者处置后再重跑 | 不推进 |
 | 条目级 | 见下表 | 该条目失败，本轮继续处理其余条目（§6.5） | 不推进（§6.8） |
 
 条目级失败按来源区分（§6.5 要求报告区分来源）：
@@ -554,7 +554,7 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 | `validation` | 运行器对插件产出的本地校验失败（§6.6），含分段在轮结束时仍未闭合（§6.5） | `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `segment_unclosed` |
 | `prefix` | 条目越出实例前缀（§6.5） | `out_of_prefix` |
 | `blob` | blob 读取失败（含取消、超时、句柄失效）、`size` 不符、超过远端限额（§6.7） | `blob_read_failed` / `blob_size_mismatch` / `blob_too_large` |
-| `remote` | remote 对该条目的写入返回不可重试的 DPE 错误（core.md §6）；可重试的错误不落到条目级，重试耗尽即按轮级中止本轮 | DPE 错误码原样 |
+| `remote` | remote 对该条目的写入或读取（`batch_head` / `head`，含冲突后的重读，§7.2）返回不可重试的 DPE 错误（core.md §6；`head` 的 `DPE_NOT_FOUND` 即 R 不存在，不是失败）；批量读被确定拒绝时，运行器 SHOULD 逐条重读以定位到具体条目，定位不了的，本次读取涉及的条目各记一条失败；可重试的错误不落到条目级，重试耗尽即按轮级中止本轮；响应不是 DPE 报文的（见轮级 `remote_protocol_error`）也不落到条目级，按轮级中止本轮 | DPE 错误码原样 |
 
 - `retryable` 的含义同 §6.5：同样的轮重跑可能成功。`plugin` 来源取插件给出的值；`blob_read_failed` 取插件 `-32003` 的 `data.retryable`（取消、超时视为 true，句柄失效视为 false）；`remote` 来源取 core.md §6 的值，唯一的例外是：按 §7.2 本可自动重新判定的冲突（`source_wins` 下的 commit / delete、源被改写的 move）因超过重试上限而失败时取 true；其余运行器判定的条目级失败均为 false。
 - 运行器对条目的处理 MUST NOT 因其中某个条目失败而崩溃或放弃本轮其余条目（§6.1）。
@@ -564,9 +564,9 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 **同步状态**：运行器 MUST 为每个实例维护本地同步状态——每个文档最近一次**确认**的 remote doc_hash（类比 Git 的 remote-tracking ref），键为 core.md §1.1 规范化后的 file_uri（独立运行器存放于状态目录，§4.4）。它与游标一样只作缓存：丢失时结果仍然正确，只是冲突保护退化（见下）。
 
 - 以下结果确认并更新同步状态：`created` / `updated` / `unchanged`、已达成（remote 已等于本地内容），以及按 `source_wins` 重新提交成功；delete 成功或已达成时删除该条目；move 成功或已达成时把条目从 `from_uri` 迁到 `to_uri`。冲突上报时不更新。
-- **意图日志**：写入请求发出前，运行器 MUST 先持久化本次写入预期的 remote 状态（意图），确认结果后再并入同步状态。意图的取值是 doc_hash 或「不存在」：commit 记 `file_uri → N`，delete 记 `file_uri → 不存在`，move 同时记两侧 `from_uri → 不存在`、`to_uri → 本次 move 的 base_hash`。判定时，R 等于该 URI 的待定意图值（含「不存在」）即视为本实例自己已生效的写入：按意图更新同步状态（「不存在」即删除条目），再按判定表继续。否则进程在写入生效、记录确认之前崩溃，下一轮会把自己的写入误报为他人改写或删除。写入结果一旦确定（成功或失败，含冲突），对应 URI 的待定意图 MUST 清除，只有结果未知（崩溃、响应丢失）时才保留——否则残留的意图会把之后他人的同值写入误当作自己的。意图 MAY 整批持久化后再并发发出写入；持久化只要求对进程崩溃持久（不要求对掉电持久）——意图日志丢失时退化为误报冲突并如实上报，不会造成错误写入。
-- **意图持久化失败**：写前持久化意图失败时，运行器 MUST NOT 发出对应的写请求，这批意图 MUST NOT 在本次调用的后续对账中作为待定意图生效——意图先持久化、成功后才在内存中生效；若先在内存中生效再持久化，失败的意图会随下一次成功的持久化落盘，他人之后恰好写下同值时被误认为自身写入，冲突保护失效：他人的写入不被识别为冲突，被以之为前置条件覆盖。判定阶段依据实际读到的 R 完成的对账结果（上条）不受影响。本轮 MUST 停止：不再发出写入，也不再请求后续批（按 §6.3 结束插件），按下条补存后以 `state_unavailable` 失败（§7.1），游标不推进（§6.8）。因本轮停止而未能发出写入的条目（意图未能持久化的这批写入，以及其后不再处理的条目）不计入 `counts`，也不作为条目级失败列入 `failures`；判定阶段已得出结论的条目（已达成，计 `unchanged` / `deleted` / `moved`；`report` 下的冲突）与此前已完成或已失败的条目照常计入。
-- **持久化状态与内存不一致的窗口**：意图在写入结果确定后才清除，而清除只能随下一次持久化落盘，因此持久化状态可能与运行器内存不一致：写入结果确定、清除落盘之前进程崩溃，或收尾那次持久化失败时，持久化状态**落后**于内存（仍留着已确定的写入的意图）；持久化实现写入完成后才报错（如目录 fsync 失败）时，写前那次失败会让持久化状态**领先**于内存（留着从未发出的写入的意图）。读回的过期意图可能把他人恰好写下的同值误认为自身写入。同步状态与意图日志的任何一次持久化失败后，运行器 MUST 在结束本次调用前以内存状态重新持久化（补存）；补存仍失败时本轮以 `state_unavailable` 失败，MUST NOT 推进游标（§6.8）。收尾那次失败而补存成功时，写入结果都已确定且已落盘，轮结果不受影响。游标在其后持久化（§6.8），写入失败时本轮以 `state_unavailable` 失败、`cursor_persisted: false`；游标扣住记录（§7.4）写入失败（含 `succeeded` 轮的清除）不影响轮结果，不计入 `failures`，SHOULD 记入日志（§7.5）。
+- **意图日志**：写入请求发出前，运行器 MUST 先持久化本次写入预期的 remote 状态（意图），确认结果后再并入同步状态。意图的取值是 doc_hash 或「不存在」：commit 记 `file_uri → N`，delete 记 `file_uri → 不存在`，move 同时记两侧 `from_uri → 不存在`、`to_uri → 本次 move 的 base_hash`。判定时，R 等于该 URI 的待定意图值（含「不存在」）即视为本实例自己已生效的写入：按意图更新同步状态（「不存在」即删除条目），再按判定表继续。否则进程在写入生效、记录确认之前崩溃，下一轮会把自己的写入误报为他人改写或删除。写入结果一旦确定（成功或失败，含冲突），对应 URI 的待定意图 MUST 清除，只有结果未知（崩溃、响应丢失；写请求遇到网络失败或 `remote_protocol_error` 时同样视为结果未知，§7.1）时才保留——否则残留的意图会把之后他人的同值写入误当作自己的。意图 MAY 整批持久化后再并发发出写入；持久化只要求对进程崩溃持久（不要求对掉电持久）——意图日志丢失时退化为误报冲突并如实上报，不会造成错误写入。
+- **意图持久化失败**：写前持久化意图失败时，运行器 MUST NOT 发出对应的写请求，这批意图 MUST NOT 在本次调用的后续对账中作为待定意图生效——意图先持久化、成功后才在内存中生效；若先在内存中生效再持久化，失败的意图会随下一次成功的持久化落盘，他人之后恰好写下同值时被误认为自身写入，冲突保护失效：他人的写入不被识别为冲突，被以之为前置条件覆盖。判定阶段依据实际读到的 R 完成的对账结果（上条）不受影响。本轮按下条停止、补存，并以 `state_unavailable` 失败（§7.1），游标不推进（§6.8）。
+- **持久化状态与内存不一致的窗口**：意图在写入结果确定后才清除，而清除只能随下一次持久化落盘，因此持久化状态可能与运行器内存不一致：写入结果确定、清除落盘之前进程崩溃，或收尾那次持久化失败时，持久化状态**落后**于内存（仍留着已确定的写入的意图）；持久化实现写入完成后才报错（如目录 fsync 失败）时，写前那次失败会让持久化状态**领先**于内存（留着从未发出的写入的意图）。读回的过期意图可能把他人恰好写下的同值误认为自身写入。同步状态与意图日志的任何一次持久化失败后，运行器 MUST 在结束本次调用前以内存状态重新持久化（补存）；无论补存是否成功，本轮都以 `state_unavailable` 失败，MUST NOT 推进游标（§6.8）；补存只为使持久化状态与内存一致——运行器无须区分失败发生在写前还是收尾。本轮 MUST 停止：不再发出写入，也不再请求后续批（按 §6.3 结束插件）。结果尚未被任何一次成功的持久化承载的写入（写前失败时未发出的写入，收尾失败时结果只存在于内存的写入）以及其后不再处理的条目不计入 `counts`，也不作为条目级失败列入 `failures`；判定阶段已得出结论的条目（已达成，计 `unchanged` / `deleted` / `moved`；`report` 下的冲突）、结果已成功持久化的写入，以及停止前已得出结论的其余条目（含 `validation`、`prefix`、`plugin`、`blob` 与 remote 读取的条目级失败）照常计入。各项持久化都成功时，游标在其后持久化（§6.8），写入失败时本轮以 `state_unavailable` 失败、`cursor_persisted: false`；游标扣住记录（§7.4）写入失败（含 `succeeded` 轮的清除）不影响轮结果，不计入 `failures`，SHOULD 记入日志（§7.5）。
   - **可接受的退化窗口**：进程崩溃后重新载入（意图日志只要求对进程崩溃持久，见上条），以及补存失败后的下一次调用——此时持久化状态仍可能领先或落后于内存，下一次调用会读回这些过期意图；状态目录已不可写，运行器无法再留下任何使其失效的记录，与崩溃同属一类。残余风险：他人恰好写下与过期意图相同的值时被认作自身写入，冲突保护失效（同上条）。这与判定表「无 L，R 存在」的退化同类：写入仍以读到的值为前置条件经 CAS 发出，覆盖他人写入的范围限于这一窗口，属于本节已接受的冲突保护退化。
 - **契约**：比较 MUST 在同一 hash 契约下进行。同步状态中的值带契约前缀；服务端仍接受该契约时可直接作前置条件（契约 1 §6、core.md §5.1），不再接受或运行器改用其他契约时，这些条目按缺失处理。
 
@@ -610,9 +610,9 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | --- | --- |
 | `succeeded` | 枚举完整结束，全部条目成功落地（§6.8 的持久化条件）；新游标已持久化，不支持游标时同样以此表示整轮成功 |
 | `partial` | 枚举完整结束（收到结束批），但存在条目级失败；游标不推进 |
-| `failed` | 实例级、轮级（含 `instance_busy`、`state_unavailable`）或协议级失败：轮未完整结束或未开始，或已收到结束批但本轮出现轮级失败（如 `state_unavailable`：写前意图持久化失败、补存未成功、游标持久化失败，§7.2）；游标不推进 |
+| `failed` | 实例级、轮级（含 `instance_busy`、`state_unavailable`）或协议级失败：轮未完整结束或未开始，或已收到结束批但本轮出现轮级失败（如 `state_unavailable`：同步状态、意图日志或游标的任何一次持久化失败，§7.2）；游标不推进 |
 
-- 同一轮既有条目级失败、又有轮级失败（如收尾持久化失败且补存未成功）时取 `failed`。
+- 同一轮既有条目级失败、又有轮级失败（如收尾持久化失败）时取 `failed`。
 - `incremental` 取自结束批（§6.4）；轮未收到结束批时为 `null`。
 - `incremental: false` 的 `succeeded` 轮表示此前的删除与移动未被表达（§6.8），运行器 MUST 让它可观测（§7.5），MUST NOT 把它与增量轮混同。
 
@@ -654,8 +654,8 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 `failures` 的元素：`{level, source, code, message, retryable, file_uri?, from_uri?, to_uri?}`。
 
 - `level`：`protocol` / `instance` / `round` / `item`（§7.1）。
-- `source`：`plugin`（插件报告的错误，含 JSON-RPC `error` 响应）/ `validation` / `prefix` / `blob` / `remote` / `runner`（运行器自身判定的非条目级失败）。
-- `code`：字符串。插件 `error` 条目原样取其 `code`；插件的 JSON-RPC 错误取 §6.5 错误码表的名称（`cancelled`、`unknown_handle`、`source_failed`、`version_unsupported`、`invalid_config`），JSON-RPC 标准码依次记为 `parse_error`、`invalid_request`、`method_not_found`、`invalid_params`、`internal_error`，未知错误码记为 `unknown_error`（按不可重试处理，§6.5）；remote 错误取 DPE 错误码原样；运行器自身的判定取下表。
+- `source`：`plugin`（插件报告的错误，含 JSON-RPC `error` 响应）/ `validation` / `prefix` / `blob` / `remote`（remote 返回的 DPE 错误，以及 `remote_unauthorized` / `remote_incompatible` / `remote_unavailable` / `remote_protocol_error`）/ `runner`（运行器自身判定的其余非条目级失败）。
+- `code`：字符串。插件 `error` 条目原样取其 `code`；插件的 JSON-RPC 错误取 §6.5 错误码表的名称（`cancelled`、`unknown_handle`、`source_failed`、`version_unsupported`、`invalid_config`），JSON-RPC 标准码依次记为 `parse_error`、`invalid_request`、`method_not_found`、`invalid_params`、`internal_error`，未知错误码记为 `unknown_error`（按不可重试处理，§6.5）；remote 错误取 DPE 错误码原样（条目级与轮级都可能，如能力获取的不可重试错误，§7.1；此时 `source` 为 `remote`）；运行器自身的判定取下表。
 - `message`：人类可读的说明，MUST NOT 含凭证值（§4.3）。
 - `file_uri` / `from_uri` / `to_uri`：条目级失败 MUST 给出所涉 URI（规范化后，core.md §1.1）。
 
@@ -676,6 +676,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `plugin_crashed` | round | 插件异常退出（§6.3） |
 | `timeout` | round | `scan` 超时，或请求超时后插件不响应 `cancel`（§6.7） |
 | `remote_unavailable` | round | remote 整体不可用（§7.1） |
+| `remote_protocol_error` | round | remote 的响应不是 DPE 报文：非 2xx 的响应既无 problem 体、也无 `DPE-Error-Code` 头（非协议错误，http.md §5；含重定向 3xx——运行器 MUST NOT 跟随重定向，以免把 `Authorization` 头发往别处；条件读取命中的 `304` 是正常响应，http.md §3.3，不在此列），或 2xx 响应的报文不符合 HTTP 绑定规定的报文（如 remote URL 配错后返回的 HTML 页）；401 除外（`remote_unauthorized`），按 http.md §3.2 先判定的情形以判定结果为准。`message` SHOULD 含 HTTP 状态码。`retryable`：5xx 为 true，其余为 false |
 | `state_unavailable` | round | 运行器本地状态故障：读取失败、内容损坏与启动阶段的写入失败（§4.4「状态目录故障」），以及按 §7.2 使本轮失败的写入失败；`retryable: true`，内容损坏时为 `false` |
 | `out_of_prefix` | item | 越界条目（§6.5） |
 | `segment_unclosed` | item | 分段文档在轮结束时未闭合（§6.5） |
@@ -708,7 +709,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | --- | --- |
 | 0 | `succeeded`（含全量轮；需要区分时读报告的 `incremental`） |
 | 1 | `partial` |
-| 2 | `failed`：轮级（`instance_busy` 除外，含 `state_unavailable`）或协议级失败，重跑可能成功；`retryable: false` 的 `state_unavailable`（状态内容损坏，§4.4）须先由使用者处置 |
+| 2 | `failed`：轮级（`instance_busy` 除外，含 `state_unavailable`）或协议级失败，重跑可能成功；`retryable: false` 的轮级失败（状态内容损坏 §4.4、能力获取的不可重试错误与非 5xx 的 `remote_protocol_error` §7.1）须先由使用者处置 |
 | 3 | `failed`：实例级失败，不修改实例定义、清单或凭证就无法恢复 |
 | 4 | `failed`：`instance_busy`，稍后重试即可 |
 
