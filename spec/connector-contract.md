@@ -654,7 +654,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `started_at` / `ended_at` | RFC 3339 UTC 时间戳 |
 | `outcome` / `incremental` | §7.3 |
 | `cursor_persisted` | 布尔：本轮是否持久化了新游标 |
-| `cursor_held_since` | 游标被扣住的起始时刻：自该实例上一次 `succeeded` 的轮以来，第一个已取得排他锁（§5.2）、已读到状态且结果不是 `succeeded` 的轮的 `started_at`（RFC 3339 UTC，记录于状态目录，§4.4）。本轮为 `succeeded`、此前没有这样的轮，或状态目录中尚无该实例时为 `null`——状态目录中尚未登记的实例（新实例）在本次调用的登记（§4.4）之前就以实例级失败结束时（如清单写错、实例定义不合法）同样取 `null`，且 MUST NOT 为它写入登记、内容身份指纹与该记录（排他锁不在此列）；取得锁之后、读到该实例的状态之前就结束的调用（不分失败类型，如已登记实例的清单校验先于读状态失败），报告同样取 `null`，不读写该记录；其余已读到状态的调用按本格主定义记录；未取得锁的调用（`instance_busy`）不读写该记录，报告中取 `null`；启动时读取状态失败（`state_unavailable`，含该记录本身读取失败）的轮不计入、不读写该记录，报告中取 `null`——调用方应同时以退出码 2 与 `failures` 中的 `state_unavailable` 告警；已读到记录而本轮写入失败（含 `succeeded` 轮的清除）时，报告照常取本轮计算出的值，不要求补记，此后报告的起始时刻可能偏晚，或早于上一次 `succeeded`。`supports_cursor: false` 的实例以同一定义计算（只看 outcome，不看是否有游标）。供调用方对长期卡住的实例告警 |
+| `cursor_held_since` | 游标被扣住的起始时刻：自该实例上一次 `succeeded` 的轮以来，第一个已取得排他锁（§5.2）、已读到状态且结果不是 `succeeded` 的轮的 `started_at`（RFC 3339 UTC，记录于状态目录，§4.4）。本轮为 `succeeded`、此前没有这样的轮，或状态目录中尚无该实例时为 `null`——状态目录中尚未登记的实例（新实例）在本次调用的登记（§4.4）之前就以实例级失败结束时（如清单写错、实例定义不合法）同样取 `null`，且 MUST NOT 为它写入登记、内容身份指纹与该记录（排他锁不在此列）；取得锁之后、读到该实例的状态之前就结束的调用（不分失败类型，如已登记实例的清单校验先于读状态失败），报告同样取 `null`，不读写该记录；其余已读到状态的调用按本格主定义记录；未取得锁的调用（`instance_busy`）不读写该记录，报告中取 `null`；启动时读取状态失败（`state_unavailable`，含该记录本身读取失败）的轮不计入、不读写该记录，报告中取 `null`——调用方应以 `failures` 中的 `state_unavailable` 告警（退出码通常为 2）；已读到记录而本轮写入失败（含 `succeeded` 轮的清除）时，报告照常取本轮计算出的值，不要求补记，此后报告的起始时刻可能偏晚，或早于上一次 `succeeded`。`supports_cursor: false` 的实例以同一定义计算（只看 outcome，不看是否有游标）。供调用方对长期卡住的实例告警 |
 | `counts` | 各项计数（整数，均必填）：`created` / `updated` / `unchanged` 为 commit 结果（core.md §3.3）；`deleted` / `moved` 含按 core.md §5.2 视为已达成的情形；`failed` 为条目级失败的条目数 |
 | `failures` | 失败数组，元素见下；无失败时为 `[]` |
 | `failures_truncated` | 可缺省：失败过多时运行器 MAY 截断 `failures`，此字段为被省略的条数 |
@@ -726,6 +726,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | 70 | `failed`：运行器内部缺陷（`runner_internal_error`，同 BSD `EX_SOFTWARE`），同步一轮的调用中伴随轮报告；报告本身无法写出时不用 70，归下文「其他非零退出码」 |
 
 - 命令行用法错误（如未给出实例定义）MUST 返回 64（同 BSD `EX_USAGE`），且不输出轮报告（§7.4）；同步一轮的调用中，其余退出码都伴随一个轮报告。其他非零退出码表示运行器自身异常且没有报告（如被信号终止），调用方 SHOULD 按 2 处理。
+- 同一次调用中既有 `runner_internal_error`、又有其他轮级或协议级失败时，退出码取 70——运行器缺陷不应被其他失败掩盖；报告的 `failures` 照常列出全部失败。
 - 删除（§5.1）沿用同一组退出码，不伴随轮报告：0 成功（含无可删除的状态）、2 `state_unavailable`、3 实例定义不合法、4 `instance_busy`、70 运行器内部缺陷。
 
 ## 8. 一致性要求
