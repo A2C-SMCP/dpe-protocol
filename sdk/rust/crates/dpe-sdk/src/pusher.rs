@@ -48,6 +48,11 @@
 //!     服务端对同一请求的裁决一致（core §5.2 第 4 步）。
 //! - 比较 MUST 在同一 hash 契约下进行：同步状态中与当前契约不一致的条目按缺失处理。
 //!
+//! **写后冲突的重读先套用「已达成」行**（§7.2 冲突处置表，与策略无关，#140）：写入得到 CAS
+//! 冲突后推送器重读该 URI——commit 重读值等于本次内容 N 记 `achieved`（确认 L = N、清意图），
+//! delete 重读不存在记 `deleted`（删条目、清意图），二者都带重读值与原 CAS 错误、不重提；重读
+//! 本身失败时仍回报 `conflict`（不臆测）。move 不在此列：源被改写时源仍存在。
+//!
 //! 判定表判出的冲突（未发写）不产生新意图、也**不清除**既有待定意图：那条待定写入的结果仍然
 //! 未知（R ≠ 意图值既兼容「未落地」也兼容「落地后被覆盖」），按 §7.2 只有结果确定才清除。
 //!
@@ -187,11 +192,12 @@ impl PushOp {
 
 /// 一条回报的状态；`Deleted` / `Moved` 含按 core §5.2 视为已达成的情形（§7.3 计数口径）。
 ///
-/// 来源：`Achieved`＝commit 判定表初判 R == N（推送器自己判定，跳过写入）；`Unchanged`＝如实
-/// 转述服务端 commit 的结果（本模块不自行产出）；`Created` / `Updated` 同；`Deleted` /
-/// `Moved`＝delete / move 成功，或目标状态已达成（含写后服务端报「不存在」的 delete，§7.2）；
-/// `Conflict`＝判定表判定或服务端 CAS 裁决（后者带重读到的 `remote`）；`Failed`＝失败
-/// （[`PushResult::unknown`] 区分结果是否已确定）。
+/// 来源：`Achieved`＝commit 判定表初判 R == N（推送器自己判定，跳过写入），或写后 CAS 冲突、
+/// 重读值等于本次内容（带重读值与原 CAS 错误）；`Unchanged`＝如实转述服务端 commit 的结果
+/// （本模块不自行产出）；`Created` / `Updated` 同；`Deleted` / `Moved`＝delete / move 成功，
+/// 或目标状态已达成（含写后服务端报「不存在」的 delete、写后 CAS 冲突且重读不存在的 delete，
+/// §7.2）；`Conflict`＝判定表判定，或服务端 CAS 裁决且重读不是目标状态（后者带重读到的
+/// `remote`）；`Failed`＝失败（[`PushResult::unknown`] 区分结果是否已确定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum PushStatus {
@@ -256,13 +262,16 @@ impl Side {
 ///
 /// - `precondition`：本次写入使用的前置条件（commit 的 `BaseHash` / `IfAbsent`，delete / move
 ///   的 `BaseHash`）；未发写时为 `None`；
-/// - `remote`：判定表读到的（冲突时重读到的）remote 状态；`None` 表示未读到（正常写入成功、
-///   未发写的判定不重读、或重读本身失败）；move 为源侧（目标被占时为重读到的目标侧）；
+/// - `remote`：判定表读到的（写后 CAS 冲突时重读到的）remote 状态——重读即已达成的
+///   `Achieved` / `Deleted` 同样带重读值；`None` 表示未读到（正常写入成功、未发写的判定不
+///   重读、或重读本身失败）；move 为源侧（目标被占时为重读到的目标侧）；
 /// - `delta`：commit 成功时服务端给出的元素级差值；
 /// - `to_uri`：move 专用——归一化后的目标 URI；
 /// - `side`：move 专用——问题发生在源侧还是目标侧；非侧向问题为 `None`；
 /// - `error`：失败/冲突时的错误（冲突时为裁决它的 CAS 错误，其 `code` 可原样上报，§7.1）。
-///   delete 的「服务端报文档不存在」计 `Deleted`（已达成）时同样携带该服务端错误，供运行器归因；
+///   **已达成也可能携带**：delete 的「服务端报文档不存在」、写后 CAS 冲突而重读即目标状态的
+///   `Achieved` / `Deleted`，都带原服务端错误供归因——**成败一律看 `status`，不看 `error`
+///   是否为空**；
 /// - `remote_error`：冲突后重读失败的错误（此时 `remote` 为 `None`、`error` 仍是 CAS 错误）；
 /// - `unknown`：结果未确定（响应丢失、请求可能已发出的传输失败等）——对应的待定意图被保留，
 ///   下一轮按意图对账恢复；为 `false` 的失败都是已确定的（服务端已裁决、确定未发出、或本地
@@ -916,6 +925,22 @@ impl PusherState {
                 Action::Failed => results.push(judged_failure(plan)),
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
+                    debug_assert!(plan.new_hash.is_some(), "commit 的 write 计划必有 N");
+                    if outcome.kind == OutcomeKind::Conflict
+                        && outcome.remote.as_ref().map(|remote| &remote.doc_hash)
+                            == Some(&plan.new_hash)
+                    {
+                        // §7.2 冲突处置表 commit 行：重读值等于本次内容＝已达成（与策略无关）；
+                        // 确认 L = N、清意图、不重提，原 CAS 错误一并带上供归因
+                        self.confirm(&plan.uri, plan.new_hash.clone());
+                        let mut result =
+                            PushResult::new(PushOp::Commit, &plan.uri, PushStatus::Achieved);
+                        result.precondition = plan.precondition;
+                        result.remote = outcome.remote;
+                        result.error = outcome.error;
+                        results.push(result);
+                        continue;
+                    }
                     if outcome.error.is_some() {
                         results.push(self.outcome_failure(&plan, outcome));
                         continue;
@@ -933,7 +958,8 @@ impl PusherState {
         results
     }
 
-    /// delete 的收尾：成功与「文档不存在」（服务端裁决）都计 `Deleted`（已达成）。
+    /// delete 的收尾：成功、「文档不存在」（服务端裁决）与写后 CAS 冲突而重读不存在都计
+    /// `Deleted`（已达成）。
     pub(crate) fn finish_delete(
         &mut self,
         plans: Vec<Plan<'_>>,
@@ -959,14 +985,21 @@ impl PusherState {
                 Action::Failed => results.push(judged_failure(plan)),
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
+                    let reread_absent = outcome.kind == OutcomeKind::Conflict
+                        && outcome
+                            .remote
+                            .as_ref()
+                            .is_some_and(|remote| remote.doc_hash.is_none());
                     match (&outcome.error, outcome.kind) {
-                        (Some(_), OutcomeKind::Achieved) => {
-                            // 服务端裁决「文档不存在」＝目标状态已达成（§7.2 冲突处置表 delete
-                            // 行）；原错误一并带上（含 code），供运行器按 §7.1 归因
+                        (Some(_), kind) if kind == OutcomeKind::Achieved || reread_absent => {
+                            // 服务端裁决「文档不存在」、或 CAS 冲突后重读不存在＝目标状态已达成
+                            // （§7.2 冲突处置表 delete 行，与策略无关）；原错误一并带上（含
+                            // code）供运行器按 §7.1 归因
                             self.confirm(&plan.uri, None);
                             let mut result =
                                 PushResult::new(PushOp::Delete, &plan.uri, PushStatus::Deleted);
                             result.precondition = plan.precondition;
+                            result.remote = outcome.remote;
                             result.error = outcome.error;
                             results.push(result);
                         }
@@ -1910,6 +1943,116 @@ mod tests {
         assert_eq!(state.intents.get(A), Some(&Some(h('3'))));
     }
 
+    /// 写后 CAS 冲突的收尾（#140）：`reread` 为重读结果（`None` 表示重读失败）。
+    fn conflicted(code: ErrorKind, reread: Option<Option<String>>) -> Outcome {
+        let outcome = Outcome::failure(Error::protocol(code, "cas"), OutcomeKind::Conflict);
+        match reread {
+            Some(doc_hash) => outcome.with_reread(Ok(doc_hash)),
+            None => outcome.with_reread(Err(Error::invalid_argument("reread failed"))),
+        }
+    }
+
+    #[test]
+    fn commit_conflict_whose_reread_equals_the_content_is_achieved() {
+        let document = doc("v2");
+        let n = document.doc_hash(C).unwrap();
+        let mut state = with_synced(&[(A, h('1'))]);
+        let entry = Entry {
+            uri: A.to_owned(),
+            document: &document,
+            new_hash: n.clone(),
+        };
+        let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C);
+        stage(&mut state, PusherState::commit_intents(&plans));
+        let outcome = conflicted(ErrorKind::PreconditionFailed, Some(Some(n.clone())));
+
+        let results = state.finish_commit(plans, vec![Some(outcome)]);
+
+        assert_eq!(results[0].status, PushStatus::Achieved);
+        assert_eq!(
+            results[0].precondition,
+            Some(Precondition::BaseHash(h('1')))
+        );
+        assert_eq!(
+            results[0].remote,
+            Some(RemoteState {
+                doc_hash: Some(n.clone())
+            })
+        );
+        assert_eq!(
+            results[0].error.as_ref().and_then(Error::code),
+            Some("DPE_PRECONDITION_FAILED"),
+            "已达成也带原 CAS 错误"
+        );
+        assert_eq!(state.synced.get(A), Some(&n), "确认 L = N");
+        assert!(state.intents.is_empty());
+    }
+
+    #[test]
+    fn commit_conflict_whose_reread_differs_stays_a_conflict() {
+        let document = doc("v2");
+        let mut state = with_synced(&[(A, h('1'))]);
+        let entry = Entry {
+            uri: A.to_owned(),
+            document: &document,
+            new_hash: document.doc_hash(C).unwrap(),
+        };
+        let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C);
+        stage(&mut state, PusherState::commit_intents(&plans));
+
+        let results = state.finish_commit(
+            plans,
+            vec![Some(conflicted(
+                ErrorKind::PreconditionFailed,
+                Some(Some(h('9'))),
+            ))],
+        );
+
+        assert_eq!(results[0].status, PushStatus::Conflict);
+        assert_eq!(state.synced.get(A), Some(&h('1')), "冲突不更新同步状态");
+        assert!(state.intents.is_empty(), "结果确定：清意图");
+    }
+
+    #[test]
+    fn delete_conflict_whose_reread_is_absent_is_deleted() {
+        let mut state = with_synced(&[(A, h('1'))]);
+        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C);
+        stage(&mut state, PusherState::delete_intents(&plans));
+
+        let results = state.finish_delete(
+            plans,
+            vec![Some(conflicted(ErrorKind::PreconditionFailed, Some(None)))],
+        );
+
+        assert_eq!(results[0].status, PushStatus::Deleted);
+        assert_eq!(results[0].remote, Some(RemoteState { doc_hash: None }));
+        assert_eq!(
+            results[0].error.as_ref().and_then(Error::code),
+            Some("DPE_PRECONDITION_FAILED")
+        );
+        assert_eq!(state, PusherState::default(), "删条目、清意图");
+    }
+
+    #[test]
+    fn delete_conflict_with_failed_reread_stays_a_conflict() {
+        let mut state = with_synced(&[(A, h('1'))]);
+        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C);
+        stage(&mut state, PusherState::delete_intents(&plans));
+
+        let results = state.finish_delete(
+            plans,
+            vec![Some(conflicted(ErrorKind::PreconditionFailed, None))],
+        );
+
+        assert_eq!(results[0].status, PushStatus::Conflict);
+        assert!(results[0].remote.is_none() && results[0].remote_error.is_some());
+        assert_eq!(
+            state.synced.get(A),
+            Some(&h('1')),
+            "条目保留（未确认任何结果）"
+        );
+    }
+
     #[test]
     fn delete_server_not_found_is_achieved_with_the_error() {
         let mut state = with_synced(&[(A, h('1'))]);
@@ -1920,6 +2063,10 @@ mod tests {
         );
         let results = state.finish_delete(plans, vec![Some(outcome)]);
         assert_eq!(results[0].status, PushStatus::Deleted);
+        assert!(
+            results[0].remote.is_none(),
+            "写后 NotFound 不重读：remote 为 None（与 Python 对等）"
+        );
         assert_eq!(
             results[0].error.as_ref().and_then(Error::code),
             Some("DPE_NOT_FOUND")
