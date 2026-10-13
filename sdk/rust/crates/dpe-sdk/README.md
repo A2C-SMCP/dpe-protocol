@@ -90,3 +90,48 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 - `StateStore` 在异步方法里被同步调用、调用期间占住当前 worker，实现应尽量缩短耗时；多线程运行时上重 I/O（`fsync` 等）可用 `tokio::task::block_in_place` 包住（current_thread 运行时上不可用）；
 - 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
 - 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`：`deliver` 的 future 在 `BlobProvider` 加 `Send`（#131）之前不是 `Send`。
+
+## 媒体来源（`media`）
+
+媒体字节只经 blob 上传通道投递，元素对象的 `blob` 字段只认 `sha256:` 引用。`media` 只做**来源适配**，把调用方显式给出的来源变成核心的 `BlobSource`：本地路径、可 seek 的流，或 connector 契约 §6.7 的 `read_blob` 回调。它会算出引用与总长，并支持按任意偏移读取。分块、断点续传与偏移重同步都在核心里完成。行为与 Python 侧 `dpe_sdk.media` 对等：
+
+```rust,no_run
+use dpe_sdk::http::DpeClient;
+use dpe_sdk::media::{source_from_path, DEFAULT_CHUNK_BYTES};
+use dpe_sdk::protocol::Precondition;
+use dpe_sdk::{ExpandedDocument, CONTRACT};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = DpeClient::new("https://example.com/r/42")?;
+let path = "figures/cover.png";
+let reference = source_from_path(path, DEFAULT_CHUNK_BYTES)?.blob_ref().to_owned();
+let document = ExpandedDocument::parse(
+    &format!(
+        r#"{{"file_type": "md", "pages": [{{"elements": [{{"category": "Image", "blob": "{reference}", "mime_type": "image/png"}}]}}]}}"#
+    ),
+    CONTRACT,
+)?;
+// 来源在 blobs 回调里才构造：未变文档不会要求 blob，大文件也就不会被再读一遍。
+// 回调只能返回 Option，I/O 错误先存下来，deliver 失败时据此给出真实原因
+let mut source_error = None;
+let mut blobs = |_: &str| {
+    source_from_path(path, DEFAULT_CHUNK_BYTES)
+        .map_err(|error| source_error = Some(error))
+        .ok()
+};
+let delivered = client
+    .deliver("s3://bucket/a.md", &document, Precondition::IfAbsent, Some(&mut blobs), None)
+    .await;
+if let Some(error) = source_error {
+    return Err(error.into());
+}
+delivered?;
+# Ok(())
+# }
+```
+
+- 内存占用不随文件大小增长：路径与流按块流式计算哈希。`read_blob` 来源读两趟：第一趟算出摘要与总长，之后按偏移请求同一份快照。
+- 不解析 url，也不识别 metadata 里的路径字符串，来源一律由调用方显式给出。
+- 文件在投递期间必须保持不变；内容变了会被服务端以 `DPE_HASH_MISMATCH` 如实拒绝。
+- 句柄声明了 `size` 时，`source_from_read_blob` 请一并传入 `expected_size`。
+- 错误一律是 `std::io::Error`：参数不合法（含不可 seek 的流）为 `InvalidInput`；`read_blob` 违反契约或总长与声明不符为 `InvalidData`；其余 I/O 错误原样透传。

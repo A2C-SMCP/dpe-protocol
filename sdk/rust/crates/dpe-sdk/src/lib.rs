@@ -11,7 +11,8 @@
 //! 配置与实例定义校验，§4.1–§4.4）与 [`http`]（reqwest / tokio 传输适配：异步客户端
 //! [`http::DpeClient`]、[`credentials::CredentialProvider`]）与 [`pusher`]（增量推送器：
 //! 同步状态与意图日志只作缓存，connector 契约 §7.2 的判定表与按操作回报；判定逻辑无 feature
-//! 门控，异步驱动 `pusher::StatefulPusher` 随 `http`）。
+//! 门控，异步驱动 `pusher::StatefulPusher` 随 `http`）与 [`media`]（媒体上传辅助：路径 / 可 seek
+//! 的流 / connector `read_blob` 回调 → `BlobSource`，只做来源适配，只用 std I/O）。
 
 #![forbid(unsafe_code)]
 
@@ -24,6 +25,7 @@ pub mod models;
 pub use models::{DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, PageObject};
 
 pub mod errors;
+pub mod media;
 pub mod protocol;
 pub mod pusher;
 pub mod wire;
