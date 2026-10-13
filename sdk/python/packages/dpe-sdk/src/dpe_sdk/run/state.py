@@ -321,7 +321,8 @@ class InstanceStore:
         """一轮收尾的唯一一次落盘：游标与 ``cursor_held_since`` 一并写入，返回报告应给出的
         ``cursor_held_since``。
 
-        - ``succeeded`` 时以 ``cursor`` 为新游标（§6.8，``None`` 即不缓存、下一轮全量）并清空
+        - ``succeeded`` 时以 ``cursor`` 为收尾后应保存的游标（§6.8：插件的新游标，或插件未给出
+          新游标时由调用方传回的已缓存游标；``None`` 即不缓存、下一轮全量）并清空
           ``held_since``；否则游标保持不变，``held_since`` 没有时以本轮 ``started_at`` 为起点
           （§7.4）。只在已取得实例锁的轮上调用（``instance_busy`` 不读写该记录）。
         - 同步状态与意图由推送器在本轮内逐次保存，早于这次写入：游标不会先于同步状态前进。

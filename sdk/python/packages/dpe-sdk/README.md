@@ -259,7 +259,10 @@ python -m dpe_sdk.run ...                           # 等价入口
 ```
 
 - **同步一轮**：解析实例定义 → 取实例锁（取不到退出 4）→ 本地可判定的实例级校验（清单、配置 schema、`runner` 调优参数、remote 凭证引用、插件凭证与命令）→ 读实例状态 → 前缀登记（重叠检查先于任何网络请求）→ 写入内容身份指纹 → 取 remote 能力（401、不兼容为已登记实例的实例级失败）→ 按 §4.3 构造的环境启动插件并握手 → 跑一轮。stdout 恰好输出一行 §7.4 轮报告；stderr 输出 §7.5 NDJSON 日志（`item.failed` 的失败元素嵌套在 `failure` 里）；凭证值在报告与日志中一律脱敏。
-- **退出码**（§7.6）：`succeeded` 0、`partial` 1、轮级或协议级 `failed`（含 `state_unavailable`）2、实例级 `failed` 3、`instance_busy` 4、用法错误 64（不输出报告）；运行器自身的未预期异常为 70（仍尽力输出 failed 报告）；轮报告本身写不出时为 74。
+  - 每次调用在 outcome 最终确定后输出恰好一条 `round.finished`，字段与报告一致（含实例级失败与 `instance_busy`）；轮标识自取得实例锁起生成，`plugin.started` 与启动期的 `plugin.stderr` 归入本轮，取锁之前与删除操作的事件 `round` 为 `null`。
+  - 实例定义不合法时，报告与日志的实例信息逐个成员取值：只有缺失或不合法的成员（`id`、`uri_prefix`、`remote.url`）为 `null`，不合法的 `remote.url` 不回显。
+  - 支持游标的插件在成功轮给出 `cursor: null` 时保留已缓存的游标（下一轮仍从它增量开始），本轮 `cursor_persisted` 为 `false`；不支持游标的插件不缓存游标。
+- **退出码**（§7.6）：`succeeded` 0、`partial` 1、轮级或协议级 `failed`（含 `state_unavailable`）2、实例级 `failed` 3、`instance_busy` 4、用法错误 64（不输出报告）；运行器自身的未预期异常为 70（仍尽力输出 failed 报告）；轮报告本身写不出时为 74。同一次调用出现多类失败时按 70 > 3 > 2 > 4 > 1 取。
 - **删除**（#147）：只从定义取 `id`（校验 I-JSON、`definition_version` 与 `id` 文法，其余成员一律不查——清单丢失、前缀已重叠或状态内容损坏的实例也能删）；先取锁；不解析状态内容，移除状态后最后移除登记；幂等（无可删除的状态同样退出 0，`instance.deleted` 的 `found` 为 `false`）；不读写 remote；不输出轮报告，退出码 0 / 2 / 3 / 4 / 70。删除一个从未运行过的 `id` 时会留下它的排他锁文件（`instances/<id>/lock`，规范允许保留）。
 - **实例级校验与登记顺序**（§5.2）：清单、配置、调优参数与凭证都通过之后才读实例状态、登记前缀并写入内容身份指纹，未通过校验的新实例不留下任何状态；取锁后、读到状态前就结束的调用 `cursor_held_since` 为 `null`。
 - **`runner` 调优键**：`max_items`、`scan_timeout`、`blob_timeout`、`max_message_bytes`、`conflict_retries`（0–2）、`state_retries`；不认识的键忽略。

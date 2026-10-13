@@ -37,6 +37,7 @@ from dpe_sdk.run import (
 from dpe_sdk.run import state as state_module
 from dpe_sdk.run.definition import ConflictPolicy
 from dpe_sdk.run.manifest import parse_manifest
+from dpe_sdk.run.round import finished_level
 from dpe_sdk.testing import Engine, PrefixAuthorizer, create_app
 from dpe_sdk.transport import AsyncDpeClient
 from engine_helpers import make_engine
@@ -93,6 +94,7 @@ class Harness:
         self.foreign = foreign
         self.events: list[tuple[str, str, dict[str, Any]]] = []
         self.store: InstanceStore | None = None
+        self.result: RoundResult | None = None
 
     def requests(self, method: str) -> list[dict[str, Any]]:
         if not self.record.exists():
@@ -118,7 +120,7 @@ class Harness:
             )
             self.store = self.dir.open_instance("inst", "identity-1")
             pusher = AsyncStatefulPusher(client or self.client, state=self.store)
-            return await run_round(
+            self.result = await run_round(
                 host=host,
                 pusher=pusher,
                 store=self.store,
@@ -129,11 +131,17 @@ class Harness:
                 options=options,
                 on_event=lambda event, level, fields: self.events.append((event, level, fields)),
             )
+            return self.result
         finally:
             await host.close()
 
     def finished_level(self) -> str:
-        return next(level for event, level, _ in self.events if event == "round.finished")
+        """``round.finished`` 由调用方按最终结果发出（#161）：这里按同一规则从结果算级别。"""
+        assert self.result is not None
+        result = self.result
+        return finished_level(
+            result.outcome, cursor_given=result.cursor_given, incremental=result.incremental
+        )
 
 
 @asynccontextmanager
