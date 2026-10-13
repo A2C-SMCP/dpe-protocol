@@ -14,7 +14,7 @@ readme = "README.md"
 [features]
 # 默认提供 HTTP 传输适配；协议核心不依赖任何异步运行时，关掉默认 feature 也能编译（CI 有断言）
 default = ["http"]
-http = ["dep:reqwest", "dep:tokio"]
+http = ["dep:reqwest", "dep:tokio", "dep:flate2"]
 
 [dependencies]
 # 与 dpe-hash 锁步发布、精确同版本（版本串由 bump-my-version 与工作区版本一并维护）
@@ -30,6 +30,30 @@ serde_json = { version = "1", features = ["arbitrary_precision", "float_roundtri
 # 不依赖其 `\w`、`$` 等默认语义（转译先于编译）；子集结构上界在默认编译限额内的余量
 # 由 scripts/pattern_budget 探针复测（§4.1.1 要求子集内任何 pattern 都必须被接受）。
 regex = "1"
-# 传输适配随 #22 落地；TLS 等 feature 细节届时再定
-reqwest = { version = "0.12", optional = true, default-features = false }
-tokio = { version = "1", optional = true, features = ["rt"] }
+# HTTP 传输适配（#22）。关掉默认 feature 后逐个显式选：
+# - rustls-tls（webpki 根）而不是 native-tls：不依赖系统 OpenSSL、任意环境可编译，
+#   信任根是随包发布的 Mozilla 根证书集——与 Python 侧 httpx（certifi 随包根）对等，
+#   企业自签根需要替换客户端（两侧一样）；
+# - **不开 gzip / deflate（响应解压）**：请求体 gzip 由 flate2 直接压（§7，规范要求的
+#   那一半）；响应压缩不在 HTTP 绑定内，参考服务端也不压响应，而 reqwest 的解压链
+#   （tower-http → async-compression → compression-codecs）当前要求 Rust ≥ 1.83、超出本
+#   workspace 的 MSRV 1.80，为它牺牲 MSRV 或钉死旧版本都不值；不带 accept-encoding 时
+#   合规服务端按 identity 应答，真遇到未经请求的压缩响应会如实报「响应不合规」；
+# - **不开 system-proxy**：该 feature 除环境变量外还读 macOS / Windows 的系统代理设置，
+#   会把流量静默路由进系统代理（Python 侧 httpx 只认环境变量），连接失败也会变成
+#   send 阶段的错误、不再可识别为「确定未发出」；代理支持（环境变量与显式入口）留待定夺，
+#   当前行为是「直连，除非用户自建 reqwest 客户端」；
+# - 不开 http2：Python 侧 httpx 是纯 HTTP/1.1（无 h2 额外依赖），两侧保持同一形态；
+# - 不开 charset / json：本适配只处理字节，编解码都在核心与 serde_json。
+reqwest = { version = "0.12", optional = true, default-features = false, features = [
+    "rustls-tls",
+] }
+# rt：异步读 blob 源进 spawn_blocking；time：按 Retry-After 等待；sync：capabilities 只协商一次
+tokio = { version = "1", optional = true, features = ["rt", "time", "sync"] }
+# 请求体 gzip（HTTP 绑定 §7）：确定性压缩（mtime=0），重发各轮复用同一份字节
+flate2 = { version = "1", optional = true }
+
+[dev-dependencies]
+# 测试驱动：宏（#[tokio::test]）、多线程 flavor（并发首发只协商一次的用例）与暂停时钟
+# （start_paused：断言等待值而不真等）
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "test-util"] }

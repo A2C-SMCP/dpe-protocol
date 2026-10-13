@@ -1928,6 +1928,74 @@ fn outcome_unknown_false_when_a_bare_412_resolves_to_a_coded_verdict() {
     assert!(!error.outcome_unknown());
 }
 
+// ------------------------------------------------- python 结果标记矩阵（#22 交接核对）的补缺
+
+/// 裸 503（无 DPE 错误码）：网关或上游可能已处理 → 不确定（带码的 `DPE_UNAVAILABLE` 是
+/// 明确裁决，见 `outcome_unknown_true_on_a_bare_5xx`）。
+#[test]
+fn outcome_unknown_true_on_a_bare_503() {
+    let document = doc(&[&["x"]]);
+    let mut script = Script::new().response(empty(503, &[]));
+    let c = core("dpe1");
+    let mut op = c
+        .commit(URI, &document, Precondition::IfAbsent, None)
+        .unwrap();
+    let error = op_drive_to_error(&mut op, &mut script);
+    assert_eq!(error.kind(), ErrorKind::UnexpectedResponse);
+    assert_eq!(error.status(), Some(503));
+    assert!(error.outcome_unknown());
+}
+
+/// 裸 504（网关已转发、源站结果未知）：原样重发至预算用尽 → 不确定。
+#[test]
+fn outcome_unknown_true_when_a_bare_504_exhausts_the_resend_budget() {
+    let document = doc(&[&["x"]]);
+    let mut script = Script::new()
+        .response(empty(504, &[]))
+        .response(empty(504, &[]))
+        .response(empty(504, &[]));
+    let c = core("dpe1");
+    let mut op = c
+        .commit(URI, &document, Precondition::IfAbsent, None)
+        .unwrap();
+    let error = op_drive_to_error(&mut op, &mut script);
+    assert_eq!(error.kind(), ErrorKind::UnexpectedResponse);
+    assert_eq!(error.status(), Some(504));
+    assert!(error.outcome_unknown());
+    assert_eq!(methods(&script.requests), vec!["PUT", "PUT", "PUT"]); // 首发 + 2 次重发
+}
+
+/// deliver 的 negotiate 阶段遇传输失败（未打「确定未发出」标记）：commit 尚未发出，
+/// 整体按「确定未生效」打标——单次尝试的不确定性不参与（同 Python
+/// `test_deliver_marks_determined_when_the_commit_was_never_sent`）。
+#[test]
+fn outcome_unknown_false_when_negotiate_fails_with_a_lost_transport_error() {
+    let document = image_doc();
+    let c = staged_core();
+    let mut script = Script::new().lost("negotiate 响应丢失");
+    let mut op = c
+        .deliver(URI, &document, Precondition::IfAbsent, None, None)
+        .unwrap();
+    let error = op_drive_to_error(&mut op, &mut script);
+    assert_eq!(error.kind(), ErrorKind::Transport);
+    assert!(!error.outcome_unknown());
+}
+
+/// 裸 412 经 head 化解的 delete 形态（head 显示内容不同 → 条件不成立）→ 确定。
+#[test]
+fn outcome_unknown_false_when_a_bare_412_resolves_for_delete() {
+    let one = h1();
+    let mut script = Script::new()
+        .response(bare_412())
+        .response(head_found(&h2()));
+    let c = core("dpe1");
+    let mut op = c.delete(URI, &one).unwrap();
+    let error = op_drive_to_error(&mut op, &mut script);
+    assert_eq!(error.kind(), ErrorKind::PreconditionFailed);
+    assert!(!error.outcome_unknown());
+    assert_eq!(methods(&script.requests), vec!["DELETE", "HEAD"]);
+}
+
 /// W3 回归：`upload_blob` 完成后再 poll 是用法错误（与另两个 upload 操作一致）。
 #[test]
 fn upload_blob_poll_after_completion_is_a_usage_error() {
