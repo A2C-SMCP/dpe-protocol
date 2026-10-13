@@ -514,6 +514,56 @@ fn the_client_and_its_operation_futures_are_send() {
     assert_send(client.list_page("s3://bucket/", None, None));
     assert_send(client.commit("s3://bucket/a.md", &document, Precondition::IfAbsent, None));
     assert_send(client.delete("s3://bucket/a.md", &hash('1')));
+    // deliver：blob 回调须为 Send（#131），future 因此是 Send——不带回调、带捕获状态的回调都是
+    assert_send(client.deliver(
+        "s3://bucket/a.md",
+        &document,
+        Precondition::IfAbsent,
+        None,
+        None,
+    ));
+    let mut asked: Vec<String> = Vec::new();
+    let mut provider = |reference: &str| {
+        asked.push(reference.to_owned());
+        None
+    };
+    assert_send(client.deliver(
+        "s3://bucket/a.md",
+        &document,
+        Precondition::IfAbsent,
+        Some(&mut provider),
+        None,
+    ));
+}
+
+/// deliver 的 future 真能交给 `tokio::spawn`（#131）：不只是类型检查，在多线程运行时的工作
+/// 线程上跑完一次投递。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deliver_runs_inside_tokio_spawn() {
+    let document = doc(&["x"]);
+    let server = MockServer::start(vec![
+        capabilities_reply(&["gzip"]),
+        committed(&document, "created", 1, 0, 0),
+    ]);
+    let client = std::sync::Arc::new(DpeClient::new(server.remote()).expect("remote 合法"));
+    let task = tokio::spawn({
+        let client = std::sync::Arc::clone(&client);
+        let document = document.clone();
+        async move {
+            let mut provider = |_: &str| None;
+            client
+                .deliver(
+                    "s3://bucket/a.md",
+                    &document,
+                    Precondition::IfAbsent,
+                    Some(&mut provider),
+                    None,
+                )
+                .await
+        }
+    });
+    let result = task.await.expect("任务未 panic").expect("投递成功");
+    assert_eq!(result.status, CommitStatus::Created);
 }
 
 #[tokio::test]

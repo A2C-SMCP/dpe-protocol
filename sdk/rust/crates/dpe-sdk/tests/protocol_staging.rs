@@ -1096,9 +1096,10 @@ fn deliver_rejects_an_out_of_document_blob_from_an_element_response() {
     let document = doc(&[&["x"]]);
     let (page_hashes, content_hashes) = protocol_common::page_and_element_hashes(&document);
     let other = dpe_hash::blob_ref(b"other");
-    let asked = std::cell::Cell::new(0u32);
+    // 回调须为 Send（#131）：计数用原子量，不用 Cell
+    let asked = std::sync::atomic::AtomicU32::new(0);
     let mut provider = |_reference: &str| {
-        asked.set(asked.get() + 1);
+        asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Some(BlobSource::from_bytes(Vec::new()))
     };
     let mut script = Script::new()
@@ -1119,10 +1120,17 @@ fn deliver_rejects_an_out_of_document_blob_from_an_element_response() {
             None,
         )
         .unwrap();
+    // 持有 Send 回调的 sans-IO 操作本身是 Send，自带传输的驱动方可以跨线程持有它
+    fn assert_send<T: Send>(_: &T) {}
+    assert_send(&op);
     let error = op_drive_to_error(&mut op, &mut script);
     assert_eq!(error.kind(), ErrorKind::UnexpectedResponse);
     assert!(error.message().contains("不是本次提交引用"), "{error}");
-    assert_eq!(asked.get(), 0, "不得向回调索取未校验的引用");
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "不得向回调索取未校验的引用"
+    );
 }
 
 /// 内联体贴着上限（加上会话 id 即超限）：恢复改走暂存路径，请求体只含文档对象。

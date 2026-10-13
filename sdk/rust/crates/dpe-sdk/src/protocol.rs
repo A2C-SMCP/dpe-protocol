@@ -248,11 +248,15 @@ pub struct Session {
 /// 缺失 blob 的字节来源回调（`deliver` 的参数）：`sha256:…` 引用 → 字节来源；没有对应
 /// 来源时返回 `None`（`deliver` 会如实失败并给出缺失清单）。
 ///
+/// 回调须为 `Send`（#131）：持有它的操作与 `DpeClient::deliver` 的 future 因此是 `Send`，
+/// 可以交给 `tokio::spawn`。捕获 `Rc` / `RefCell` 等非 `Send` 状态的闭包改用 `Arc` /
+/// `Mutex`（自 0.4 起的不兼容变更）。
+///
 /// **调用约束（规范性）**：核心只在 [`Operation::poll`] 中同步调用它，取得的 [`BlobSource`]
 /// 自带读取器，字节读取（[`Request::body_bytes`]）不再经过回调；不在 `send` 期间或跨 await
 /// 调用。增量推送器据此在单任务并发的多条 `deliver` 之间共享同一个回调（`pusher` 的
 /// `SharedBlobs`），改动这一点须同步那里。
-pub type BlobProvider<'a> = &'a mut dyn FnMut(&str) -> Option<BlobSource>;
+pub type BlobProvider<'a> = &'a mut (dyn FnMut(&str) -> Option<BlobSource> + Send);
 
 /// blob 字节的读取器：按任意偏移给出字节（可 seek 的二进制流或内存字节都能适配）。
 ///

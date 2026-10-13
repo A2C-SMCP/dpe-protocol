@@ -452,9 +452,8 @@ impl DpeClient {
     ///
     /// `blobs` 是缺失 blob 的字节来源；缺省时若确需上传 blob，失败并给出缺失清单。
     ///
-    /// 注意：`BlobProvider` 的 trait object 未带 `Send`（核心的类型别名，`#21` 定稿），
-    /// 因此本方法返回的 future 不是 `Send`、不能直接交给 `tokio::spawn`；在任务内 `.await`
-    /// 或 `select!` 不受影响。
+    /// `BlobProvider` 的回调须为 `Send`（#131），因此本方法返回的 future 是 `Send`，可以交给
+    /// `tokio::spawn`。
     pub async fn deliver<'a>(
         &'a self,
         uri: &str,
