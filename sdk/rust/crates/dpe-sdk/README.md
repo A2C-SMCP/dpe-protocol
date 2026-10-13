@@ -50,3 +50,42 @@ assert_eq!(result.status.as_str(), "created");
 - 传输层只做 I/O：拼 URL、注入凭证、按策略 gzip（请求体，HTTP 绑定 §7）、把响应还原给核心；协议判定与写操作的重试全在 sans-IO 核心；
 - 例外只有三类：`retry_safe` 的请求遇网络失败、任何请求遇「确定未发出」的建连失败、按 `code` 判定的可重试错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，等 `Retry-After` 后原样重发，等待超过 300 秒不吸收）；
 - 缺省超时 30 秒、不跟随重定向、大 blob 的源读取进工作线程；`send` / `drive` 是公开的驱动缝。
+
+## 增量推送（`pusher`）
+
+`StatefulPusher` 把一批文档变成「只推变化的部分」，删除与移动意图按 connector 契约 §7.2 执行与回报，与 Python 侧 `dpe_sdk.pusher` 行为对等：
+
+```rust,no_run
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use dpe_sdk::http::DpeClient;
+use dpe_sdk::pusher::{MemoryStateStore, StatefulPusher};
+use dpe_sdk::{ExpandedDocument, CONTRACT};
+
+# async fn example() -> Result<(), dpe_sdk::Error> {
+let client = DpeClient::new("https://example.com/r/42")?;
+let mut pusher = StatefulPusher::with_store(&client, Arc::new(MemoryStateStore::new()), 4)?;
+let document = ExpandedDocument::parse(
+    r#"{"file_type": "md", "pages": [{"elements": [{"category": "Title", "text": "季度报告"}]}]}"#,
+    CONTRACT,
+)?;
+let results = pusher
+    .push(&[("s3://bucket/a.md".to_owned(), document)], &HashMap::new())
+    .await?;
+println!("{}", results[0].status); // created / updated / unchanged / achieved / conflict / failed
+pusher
+    .move_documents(&[("s3://bucket/a.md".to_owned(), "s3://bucket/b.md".to_owned())], &HashMap::new())
+    .await?;
+pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
+# Ok(())
+# }
+```
+
+- **本地状态只作缓存**：同步状态记录每篇文档最近一次确认的 remote doc_hash，丢失时退化为以即时读到的值作 base，结果仍然正确；
+- **意图日志**：写入前先经 `StateStore::save` 持久化预期的 remote 状态，`save` 返回 `Ok` 之后才发写请求；结果确定即清除，只有结果未知才保留，下一轮按意图对账；
+- **绝不自动 force、不在内部重试冲突**：冲突与失败按条目如实回报（含服务端原样的错误码、重读到的 remote 状态、move 的问题侧别），`expected_base` 让上层以重读值重提；
+- 缺省 `MemoryStateStore` 不保证崩溃持久，落盘实现属于运行器的状态目录（connector §4.4）；
+- 收尾保存失败时整批报错，store 落后于内存：继续使用同一个实例直到下一次保存成功，在那之前不要用同一个 store 新建实例（跨实例的保证属于运行器）；
+- 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
+- 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`：`deliver` 的 future 在 `BlobProvider` 加 `Send`（#131）之前不是 `Send`。

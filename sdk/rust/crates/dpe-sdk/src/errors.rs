@@ -11,7 +11,8 @@
 //!   不携带。
 //! - 客户端本地错误（[`ErrorKind::UnexpectedResponse`] / [`ErrorKind::IncompatibleServer`] /
 //!   [`ErrorKind::ForceNotConfirmed`] / [`ErrorKind::InvalidArgument`]）不是协议错误，没有
-//!   core §6 的码；传输异常经 [`ErrorKind::Transport`] 透传（见 [`crate::protocol`] 的驱动约定）。
+//!   core §6 的码；传输异常经 [`ErrorKind::Transport`] 透传（见 [`crate::protocol`] 的驱动约定）；
+//!   增量推送器的状态存储故障经 [`ErrorKind::StateStore`] 透传（同样没有 core §6 的码）。
 
 use std::fmt;
 
@@ -71,6 +72,10 @@ pub enum ErrorKind {
     /// 驱动方回送的传输异常（连接失败、超时等）：操作未处理时经
     /// [`Error::transport`] 原样上报，`source()` 可取回原始错误。
     Transport,
+    /// 增量推送器的状态存储（[`StateStore`](crate::pusher::StateStore)）读写失败：本地故障，
+    /// 不是传输异常；`source()` 可取回存储实现给出的原始错误（对应 Python 侧原样抛出的
+    /// store 异常）。写前持久化意图失败时写请求确定未发出（[`Error::outcome_unknown`] 为假）。
+    StateStore,
 }
 
 impl ErrorKind {
@@ -97,7 +102,8 @@ impl ErrorKind {
             | ErrorKind::IncompatibleServer
             | ErrorKind::ForceNotConfirmed
             | ErrorKind::InvalidArgument
-            | ErrorKind::Transport => return None,
+            | ErrorKind::Transport
+            | ErrorKind::StateStore => return None,
         })
     }
 
@@ -172,7 +178,8 @@ struct Details {
     missing_truncated: bool,
     /// force 提交无法确认时的细节。
     force: Option<ForceNotConfirmed>,
-    /// 传输透传的原始错误。
+    /// 透传的原始错误：传输异常（[`ErrorKind::Transport`]）或状态存储的错误
+    /// （[`ErrorKind::StateStore`]），经 `source()` 取回。
     transport: Option<TransportError>,
     /// 本错误由哪个错误引起（如无法确认 force 时的 head 失败），经 `source()` 取回。
     cause: Option<Box<Error>>,
@@ -234,6 +241,15 @@ impl Error {
     /// 传输异常透传（驱动方回送的原始错误，操作未处理）。
     pub(crate) fn transport(error: TransportError) -> Self {
         let mut wrapped = Self::new(ErrorKind::Transport, error.to_string());
+        wrapped.details_mut().transport = Some(error);
+        wrapped
+    }
+
+    /// 增量推送器的状态存储读写失败（[`ErrorKind::StateStore`]），原始错误经 `source()` 取回。
+    /// 唯一调用方是 `http` 下的推送器驱动。
+    #[cfg_attr(not(feature = "http"), allow(dead_code))]
+    pub(crate) fn state_store(error: TransportError) -> Self {
+        let mut wrapped = Self::new(ErrorKind::StateStore, format!("状态存储失败：{error}"));
         wrapped.details_mut().transport = Some(error);
         wrapped
     }
