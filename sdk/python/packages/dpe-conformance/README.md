@@ -17,8 +17,8 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 {
   "schema": 1,
   "target": "https://host/r/1",
-  "totals": {"executed": 116, "passed": 116, "failed": 0, "errors": 0, "skipped": 0, "collection_errors": 0},
-  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "large": {"executed": 13, "passed": 13, "failed": 0, "errors": 0, "skipped": 0}, "staging": {"executed": 11, "passed": 11, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}, "write_ops": {"executed": 20, "passed": 20, "failed": 0, "errors": 0, "skipped": 0}, "http_binding": {"executed": 22, "passed": 22, "failed": 0, "errors": 0, "skipped": 0}}
+  "totals": {"executed": 117, "passed": 117, "failed": 0, "errors": 0, "skipped": 0, "collection_errors": 0},
+  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "large": {"executed": 13, "passed": 13, "failed": 0, "errors": 0, "skipped": 0}, "staging": {"executed": 12, "passed": 12, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}, "write_ops": {"executed": 20, "passed": 20, "failed": 0, "errors": 0, "skipped": 0}, "http_binding": {"executed": 22, "passed": 22, "failed": 0, "errors": 0, "skipped": 0}}
 }
 ```
 

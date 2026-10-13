@@ -9,6 +9,7 @@ from typing import Any
 import dpe_hash
 import httpx
 import pytest
+from dpe_hash.jcs import jcs
 from engine_helpers import FakeClock, make_engine
 from http_helpers import Remote, problem, remote
 
@@ -85,9 +86,14 @@ async def test_staging_path_end_to_end() -> None:
                 assert head.headers["dpe-upload-offset"] == str(end + 1)
             else:
                 assert response.status_code == 201
-                assert response.json() == {
-                    "missing_content_hashes": [text_hash, image_hash, more_hash]
-                }
+                # 分块页的完整清单序列化后超过 max_payload_bytes=200：截断为能放进门槛的最长
+                # 前缀（非空），并注明 missing_truncated（HTTP 绑定 §4.6）
+                body = response.json()
+                assert body["missing_truncated"] is True
+                listed = body["missing_content_hashes"]
+                assert listed and listed == [text_hash, image_hash, more_hash][: len(listed)]
+                assert len(listed) < 3
+                assert len(jcs(body).encode("utf-8")) <= 200
                 assert "dpe-session-expires" in response.headers
         # 偏移不连续：400 + DPE-Upload-Offset（重发已完成的块则命中「已完成」→ 200）
         again = await r.raw(

@@ -10,7 +10,7 @@
 
 mod protocol_common;
 
-use dpe_sdk::wire::{BatchHeads, Capabilities, ListPage, Missing, Skeleton};
+use dpe_sdk::wire::{BatchHeads, Capabilities, ListPage, Missing, PageUploadMissing, Skeleton};
 use serde_json::{json, Value};
 
 use protocol_common::{capabilities_body, h1, skeleton_body};
@@ -182,4 +182,25 @@ fn missing_defaults_to_empty_layers() {
     assert!(missing.pages.is_empty());
     assert!(missing.content_hashes.is_empty());
     assert!(missing.blobs.is_empty());
+}
+
+#[test]
+fn page_upload_missing_truncation_flag() {
+    // 页对象上传响应的 missing_truncated（HTTP §4.6）：缺省 false，出现时必须是 JSON 布尔；
+    // 与 Python test_page_upload_missing_truncation_flag 对等
+    let plain = PageUploadMissing::from_value(&json!({"missing_content_hashes": []})).unwrap();
+    assert!(!plain.missing_truncated);
+    let flagged = PageUploadMissing::from_value(
+        &json!({"missing_content_hashes": [h1()], "missing_truncated": true}),
+    )
+    .unwrap();
+    assert!(flagged.missing_truncated);
+    assert_eq!(flagged.missing_content_hashes, vec![h1()]);
+    for bad in [json!("true"), json!(1), Value::Null] {
+        let body = json!({"missing_content_hashes": [], "missing_truncated": bad});
+        assert!(
+            PageUploadMissing::from_value(&body).is_err(),
+            "missing_truncated={bad} 必须不合规"
+        );
+    }
 }

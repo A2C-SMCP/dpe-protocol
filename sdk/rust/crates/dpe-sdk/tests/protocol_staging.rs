@@ -919,6 +919,32 @@ fn deliver_fast_path_force_has_no_condition_header() {
 }
 
 /// blob 永远不能内联：开会话上传后，以内联 + `staging_session` 重新 commit（core §6）。
+/// 快路径恢复同样只计没有进展的轮次（#127）：首次内联 commit 缺 blob、在新会话里补传后
+/// 完成——预算为 0 也成立（同 Python `test_deliver_fast_path_recovery_with_progress_needs_no_budget`）。
+#[test]
+fn deliver_fast_path_recovery_with_progress_needs_no_budget() {
+    let document = image_doc();
+    let reference = image_ref();
+    let mut provider = |_reference: &str| Some(BlobSource::from_bytes(image_bytes()));
+    let mut script = Script::new()
+        .response(missing_blobs(&[&reference]))
+        .response(negotiated("st-1", &[], &[]))
+        .response(uploaded(201, None, json!({})))
+        .response(protocol_common::committed(&document, "created", 1, 0, 0));
+    let c = core_with_resends(0);
+    let mut op = c
+        .deliver(
+            URI,
+            &document,
+            Precondition::IfAbsent,
+            Some(&mut provider),
+            None,
+        )
+        .unwrap();
+    let result = protocol_common::drive_script_ref(&mut op, &mut script).unwrap();
+    assert_eq!(result.status, dpe_sdk::wire::CommitStatus::Created);
+}
+
 #[test]
 fn deliver_recovers_a_missing_blob_into_a_session() {
     let document = image_doc();
@@ -1319,6 +1345,85 @@ fn deliver_recovery_is_bounded() {
         methods(&script.requests),
         vec!["POST", "PUT", "PUT", "PUT", "PUT"]
     );
+}
+
+/// 截断的清单逐轮补齐（#127）：每轮列出的都是本会话没上传过的对象，即有进展，不计
+/// `max_resends`——预算为 0 也能完成（同 Python
+/// `test_deliver_progress_rounds_do_not_consume_the_budget`）。
+#[test]
+fn deliver_progress_rounds_do_not_consume_the_budget() {
+    let document = doc(&[&["a", "b", "c"]]);
+    let (page_hashes, content_hashes) = protocol_common::page_and_element_hashes(&document);
+    let page_hash = page_hashes[0].clone();
+    let (e1, e2, e3) = (
+        content_hashes[0][0].clone(),
+        content_hashes[0][1].clone(),
+        content_hashes[0][2].clone(),
+    );
+    let mut script = Script::new()
+        .response(negotiated("st-1", &[page_hash.as_str()], &[]))
+        .response(uploaded(
+            201,
+            None,
+            json!({"missing_content_hashes": [e1], "missing_truncated": true}),
+        ))
+        .response(uploaded(201, None, json!({"missing_blobs": []})))
+        .response(problem(
+            "DPE_MISSING_CONTENT",
+            400,
+            json!({"missing": {"content_hashes": [e2]}, "missing_truncated": true}),
+        ))
+        .response(uploaded(201, None, json!({"missing_blobs": []})))
+        .response(problem(
+            "DPE_MISSING_CONTENT",
+            400,
+            json!({"missing": {"content_hashes": [e3]}}),
+        ))
+        .response(uploaded(201, None, json!({"missing_blobs": []})))
+        .response(protocol_common::committed(&document, "created", 3, 0, 0));
+    let c = protocol_common::core_with_caps(
+        protocol_common::caps_with_limits(&[("max_payload_bytes", 120)]),
+        0,
+    );
+    let mut op = c
+        .deliver(URI, &document, Precondition::IfAbsent, None, None)
+        .unwrap();
+    let result = protocol_common::drive_script_ref(&mut op, &mut script).unwrap();
+    assert_eq!(result.status, dpe_sdk::wire::CommitStatus::Created);
+}
+
+/// 服务端反复列出本会话已上传过的对象：每轮计一次预算，用尽后失败，不会无限循环（同 Python
+/// `test_deliver_stalls_when_the_server_relists_an_uploaded_object`）。
+#[test]
+fn deliver_stalls_when_the_server_relists_an_uploaded_object() {
+    let document = doc(&[&["a"]]);
+    let (page_hashes, content_hashes) = protocol_common::page_and_element_hashes(&document);
+    let page_hash = page_hashes[0].clone();
+    let e1 = content_hashes[0][0].clone();
+    let stuck = problem(
+        "DPE_MISSING_CONTENT",
+        400,
+        json!({"missing": {"content_hashes": [e1]}}),
+    );
+    let mut script = Script::new()
+        .response(negotiated("st-1", &[page_hash.as_str()], &[]))
+        .response(uploaded(201, None, json!({"missing_content_hashes": [e1]})))
+        .response(uploaded(201, None, json!({"missing_blobs": []})))
+        .response(stuck.clone()) // 已上传过 e1：无进展，预算 2 → 1
+        .response(uploaded(200, None, json!({"missing_blobs": []})))
+        .response(stuck.clone()) // 1 → 0
+        .response(uploaded(200, None, json!({"missing_blobs": []})))
+        .response(stuck); // 预算用尽：失败
+    let c = protocol_common::core_with_caps(
+        protocol_common::caps_with_limits(&[("max_payload_bytes", 120)]),
+        2,
+    );
+    let mut op = c
+        .deliver(URI, &document, Precondition::IfAbsent, None, None)
+        .unwrap();
+    let error = op_drive_to_error(&mut op, &mut script);
+    assert_eq!(error.kind(), ErrorKind::MissingContent);
+    assert_eq!(script.requests.len(), 8);
 }
 
 // ---------------------------------------------------------------------- deliver：会话复用与 CAS

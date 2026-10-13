@@ -153,9 +153,14 @@ class NegotiateResult(_Envelope):
 
 
 class PageUploadMissing(_Envelope):
-    """页对象上传完成后的响应体：它引用的缺失元素对象（HTTP 绑定 §4.6）。"""
+    """页对象上传完成后的响应体：它引用的缺失元素对象（HTTP 绑定 §4.6）。
+
+    ``missing_truncated``：清单是否被截断（只有分块上传的大页可能截断，截断时为实际缺失的非空
+    子集）。客户端不需要专门处理——余下的缺失由 commit 的 ``DPE_MISSING_CONTENT`` 逐轮给出。
+    """
 
     missing_content_hashes: list[str] = []
+    missing_truncated: Annotated[bool, Field(strict=True)] = False
 
 
 class ElementUploadMissing(_Envelope):

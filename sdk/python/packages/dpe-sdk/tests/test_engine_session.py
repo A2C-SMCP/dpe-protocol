@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import dpe_hash
@@ -377,3 +378,20 @@ def test_commit_session_page_traversal_reports_deep_missing() -> None:
     engine.upload_blob("u", sid, ref, blob, C)
     body = commit_body(document, staging_session=sid)
     assert engine.commit("u", URI, body, C, IfAbsent()).status == "created"
+
+
+def test_expires_at_is_whole_seconds_and_expires_exactly_then() -> None:
+    """core §3.4：服务端以对外给出的 expires_at（秒精度，向上取整）判定，恰在该时刻即过期。"""
+    clock = FakeClock(now=datetime(2026, 1, 1, 12, 0, 0, 750_000, tzinfo=UTC))
+    engine = make_engine(clock=clock, staging_ttl_seconds=3600, session_id_factory=id_factory())
+    _, eh = _element()
+    _, ph = _page([eh])
+    result = engine.negotiate("u", negotiate_body(URI, {"file_type": "md", "pages": [ph]}), C)
+    sid = result.staging_session.id
+    # 12:00:00.75 + 3600s 向上取整到 13:00:01：实际可用时长不少于 TTL
+    assert result.staging_session.expires_at == "2026-01-01T13:00:01Z"
+    clock.now = datetime(2026, 1, 1, 13, 0, 0, 999_999, tzinfo=UTC)
+    engine.upload_offset("u", sid, ph, C, kind="page")  # 断点查询不续期：此刻仍可用
+    clock.now = datetime(2026, 1, 1, 13, 0, 1, tzinfo=UTC)
+    with pytest.raises(errors.SessionExpiredError):
+        engine.upload_offset("u", sid, ph, C, kind="page")

@@ -96,9 +96,14 @@ pub struct NegotiateResult {
 }
 
 /// 页对象上传完成后的响应体（HTTP 绑定 §4.6）：它引用的缺失元素对象（缺省为空）。
+///
+/// `missing_truncated`：清单是否被截断（只有分块上传的大页可能截断，截断时为实际缺失的非空
+/// 子集；缺省 `false`）。客户端不需要专门处理——余下的缺失由 commit 的 `DPE_MISSING_CONTENT`
+/// 逐轮给出。与 Python `PageUploadMissing` 对等。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PageUploadMissing {
     pub missing_content_hashes: Vec<String>,
+    pub missing_truncated: bool,
 }
 
 /// 元素对象上传完成后的响应体（HTTP 绑定 §4.6）：它引用的缺失 blob（缺省为空）。
@@ -407,6 +412,8 @@ impl PageUploadMissing {
         Ok(PageUploadMissing {
             missing_content_hashes: optional_string_list_field(object, "missing_content_hashes")
                 .map_err(wrap("PageUploadMissing"))?,
+            missing_truncated: optional_bool_field(object, "missing_truncated")
+                .map_err(wrap("PageUploadMissing"))?,
         })
     }
 }
@@ -502,6 +509,15 @@ fn optional_string_list_field(
         }
     }
     Ok(parsed)
+}
+
+/// 可缺省的布尔字段（缺省 `false`；出现时必须是 JSON 布尔，`null`、`"true"`、`1` 不合规）。
+fn optional_bool_field(object: &Map<String, Value>, key: &str) -> Result<bool, String> {
+    match object.get(key) {
+        None => Ok(false),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(_) => Err(format!("字段 {key} 必须是布尔")),
+    }
 }
 
 /// 计数（多重集的大小）：必须是 JSON 整数且非负。

@@ -15,13 +15,15 @@
 
 from __future__ import annotations
 
+import math
 import uuid
+from datetime import datetime
 
 import dpe_hash
 import httpx
 
 from dpe_conformance.config import Identity
-from dpe_conformance.hooks import HookDriver
+from dpe_conformance.hooks import HookDriver, HookResult
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
     assert_commit_success,
@@ -33,6 +35,7 @@ from dpe_conformance.support import (
     limits_of,
     negotiate,
     outside_scoped,
+    parse_rfc3339,
     session_of,
     stage_all,
     text_element,
@@ -46,7 +49,7 @@ def test_negotiate_returns_session_and_missing_pages(
     conformance_target: Target, full_identity: Identity
 ) -> None:
     """HTTP §4.5：只交文档对象即完成协商——缺全部页、元素清单为空、会话 id 非空、
-    ``expires_at`` 可解析（RFC 3339 UTC）。"""
+    ``expires_at`` 必带且为以 ``Z`` 结尾的 RFC 3339 UTC。"""
     uri = conformance_target.uri("staging/negotiate")
     document = build_document([[text_element("n")]])
     response = negotiate(
@@ -305,6 +308,52 @@ def test_session_is_bound_to_file_uri(conformance_target: Target, full_identity:
         json={"document": document.document, "staging_session": session_id},
     )
     assert_problem(response, status=410, code="DPE_SESSION_EXPIRED")
+
+
+def _hook_now(result: HookResult) -> datetime:
+    assert result.ok, f"时钟推进钩子失败：{result.detail}"
+    body = result.body
+    assert isinstance(body, dict) and isinstance(body.get("now"), str), (
+        f"时钟推进钩子的成功响应须给出 now（RFC 3339）：{body!r}"
+    )
+    return parse_rfc3339(body["now"])
+
+
+def test_session_expires_exactly_at_expires_at(
+    conformance_target: Target, full_identity: Identity, clock_advance_hook: HookDriver
+) -> None:
+    """CORE §3.4：``now ≥ expires_at`` 即过期，服务端以对外给出的 ``expires_at`` 判定。
+
+    经时钟推进（每步按钩子回报的 ``now`` 计算下一步，不依赖服务端时钟精度）：推进到
+    ``expires_at`` 之前，断点查询（只读、不续期）仍可用；再推进到不早于 ``expires_at``
+    （钩子只接受整秒，可能超调不到 1 秒），断点查询得到 410 + ``DPE_SESSION_EXPIRED``。
+    超调使「判定用 ``>`` 而不是 ``≥``」这类偏差只能概率性检出；精确到时刻需要钩子支持推进到
+    绝对时刻，不在本检查范围内。"""
+    uri = conformance_target.uri("staging/expiry-boundary")
+    document = build_document([[text_element("b")]])
+    negotiated = negotiate(
+        conformance_target, uri, document, identity=full_identity, attach_pages=False
+    )
+    assert negotiated.status_code == 200, f"negotiate 返回 {negotiated.status_code}"
+    session_id, expires_at = session_of(negotiated)
+    page_hash = document.page_hashes[0]
+
+    now = _hook_now(clock_advance_hook.call({"advance_seconds": 1}))
+    before = math.floor((expires_at - now).total_seconds()) - 2
+    assert before >= 1, f"会话过期时间太近，无法构造边界：expires_at={expires_at} now={now}"
+    now = _hook_now(clock_advance_hook.call({"advance_seconds": before}))
+    still = breakpoint_query(
+        conformance_target, session_id, kind="pages", ref=page_hash, identity=full_identity
+    )
+    assert still.status_code == 200, f"expires_at 之前会话仍可用，实际 {still.status_code}"
+
+    reach = math.ceil((expires_at - now).total_seconds())
+    if reach >= 1:
+        _hook_now(clock_advance_hook.call({"advance_seconds": reach}))
+    expired = breakpoint_query(
+        conformance_target, session_id, kind="pages", ref=page_hash, identity=full_identity
+    )
+    assert_staging_head_error(expired, status=410, code="DPE_SESSION_EXPIRED")
 
 
 def test_renewal_and_breakpoint_no_renewal(

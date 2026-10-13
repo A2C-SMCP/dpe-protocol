@@ -315,7 +315,15 @@ def session_of(response: httpx.Response) -> tuple[str, datetime]:
     session = response.json()["staging_session"]
     session_id = session["id"]
     assert isinstance(session_id, str) and session_id, f"staging_session.id 异常：{session_id!r}"
-    return session_id, parse_rfc3339(session["expires_at"])
+    return session_id, parse_utc_timestamp(session["expires_at"], "staging_session.expires_at")
+
+
+def parse_utc_timestamp(value: object, what: str) -> datetime:
+    """必带的过期时间：RFC 3339 UTC 字符串、以 ``Z`` 结尾（HTTP §4.5 / §4.6，同契约 1 §3.3）。"""
+    assert isinstance(value, str) and value.endswith("Z"), (
+        f"{what} 必须是以 Z 结尾的 RFC 3339 UTC 时间戳，实际 {value!r}"
+    )
+    return parse_rfc3339(value)
 
 
 def parse_rfc3339(value: str) -> datetime:
@@ -327,7 +335,7 @@ def expires_at_header(response: httpx.Response) -> datetime:
     """响应头 ``DPE-Session-Expires``（成功操作续期后的过期时间，HTTP §4.5/§4.6）。"""
     value = response.headers.get("DPE-Session-Expires")
     assert value is not None, "响应缺少 DPE-Session-Expires 头"
-    return parse_rfc3339(value)
+    return parse_utc_timestamp(value, "DPE-Session-Expires")
 
 
 def upload_offset(response: httpx.Response) -> int:

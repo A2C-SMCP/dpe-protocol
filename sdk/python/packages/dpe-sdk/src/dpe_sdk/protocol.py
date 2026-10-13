@@ -568,7 +568,8 @@ class ProtocolCore:
     不是 dpe_hash 认识的契约抛 ``ValueError``；服务端协议版本不是 ``dpe/1`` 抛
     ``IncompatibleServerError``。
 
-    ``max_resends`` 是写操作在响应丢失后原样重发的次数上限（见模块说明），须为非负整数。
+    ``max_resends`` 是写操作在响应丢失后原样重发的次数上限（见模块说明），也是 ``deliver``
+    恢复轮的预算——只计没有进展的轮次（最多允许几轮没有进展，见 ``deliver``），须为非负整数。
     """
 
     def __init__(
@@ -1228,7 +1229,11 @@ class ProtocolCore:
           若确需上传 blob，如实抛 ``DPE_MISSING_CONTENT``；
         - ``session``：复用的暂存会话（core §3.4：CAS 失败后重新读取、以新前置条件引用同一
           会话重提，免重传）。会话只作缓存：失效时自动重开，结果与不复用时一致；
-        - 恢复轮预算（``max_resends``）用尽时抛出当时的 ``MissingContentError`` /
+        - 恢复轮预算（``max_resends``）只由**没有进展**的轮次消耗：``DPE_MISSING_CONTENT`` 重新
+          列出本会话已上传过的对象（或清单为空）时计一次，列出的全是新对象则不计——截断的清单
+          （core §3.3）因此可以逐轮补齐而不受轮数限制；每个有进展的轮次至少上传一个新对象、
+          对象总数有限，循环必然终止。``DPE_SESSION_EXPIRED`` 照旧每次计一次；
+        - 恢复轮预算用尽时抛出当时的 ``MissingContentError`` /
           ``SessionExpiredError``；异常带 ``session``，上层可重新读取后以
           ``deliver(..., session=exc.session)`` 继续，结果与不限预算一致。
 
@@ -1285,12 +1290,15 @@ class ProtocolCore:
         session: Session | None = None
         pending: MissingContentError | None = None
         budget = self.max_resends
+        uploaded: set[str] = set()  # 本会话已上传（换会话时清空）
         try:
             while True:
                 try:
                     if pending is not None:
                         assert session is not None  # pending 只在会话开出后设置
-                        yield from self._upload_manifest(session, pending.missing, parts, blobs)
+                        yield from self._upload_manifest(
+                            session, pending.missing, parts, blobs, uploaded
+                        )
                         pending = None
                     return (
                         yield from self._commit(
@@ -1300,9 +1308,10 @@ class ProtocolCore:
                 except MissingContentError as exc:
                     if isinstance(exc, _BlobsUnavailable):
                         raise  # 本地判定：直接逃出恢复循环，不消耗预算
-                    if budget <= 0:
-                        raise
-                    budget -= 1
+                    if _stalled(exc, uploaded):
+                        if budget <= 0:
+                            raise
+                        budget -= 1
                     if session is None:
                         session = (yield from self._negotiate(uri, parts)).session
                         recovery = self._recovery_body(inline, session)
@@ -1319,6 +1328,7 @@ class ProtocolCore:
                         raise
                     budget -= 1
                     session = (yield from self._negotiate(uri, parts)).session
+                    uploaded.clear()
                     recovery = self._recovery_body(inline, session)
                     if recovery is None:
                         return (
@@ -1361,6 +1371,7 @@ class ProtocolCore:
         pending_negotiated = negotiated
         pending_missing: MissingContentError | None = None
         budget = self.max_resends
+        uploaded: set[str] = set()  # 本会话已上传（换会话时清空）
         try:
             while True:
                 try:
@@ -1369,11 +1380,11 @@ class ProtocolCore:
                             pages=pending_negotiated.missing_pages,
                             content_hashes=pending_negotiated.missing_content_hashes,
                         )
-                        yield from self._upload_manifest(session, manifest, parts, blobs)
+                        yield from self._upload_manifest(session, manifest, parts, blobs, uploaded)
                         pending_negotiated = None
                     if pending_missing is not None:
                         yield from self._upload_manifest(
-                            session, pending_missing.missing, parts, blobs
+                            session, pending_missing.missing, parts, blobs, uploaded
                         )
                         pending_missing = None
                     return (
@@ -1384,9 +1395,10 @@ class ProtocolCore:
                 except MissingContentError as exc:
                     if isinstance(exc, _BlobsUnavailable):
                         raise  # 本地判定：直接逃出恢复循环，不消耗预算
-                    if budget <= 0:
-                        raise
-                    budget -= 1
+                    if _stalled(exc, uploaded):
+                        if budget <= 0:
+                            raise
+                        budget -= 1
                     pending_missing = exc
                 except SessionExpiredError:
                     if budget <= 0:
@@ -1394,6 +1406,7 @@ class ProtocolCore:
                     budget -= 1
                     negotiated = yield from self._negotiate(uri, parts)
                     session = negotiated.session
+                    uploaded.clear()
                     body = {"document": parts.document, "staging_session": session.id}
                     if isinstance(precondition, Force):
                         body["force"] = True
@@ -1409,12 +1422,14 @@ class ProtocolCore:
         missing: Missing,
         parts: _Parts,
         blobs: Callable[[str], BlobSource | bytes] | None,
+        uploaded: set[str],
     ) -> Operation[None]:
         """按分层清单补传：页 →（各页响应给出的）元素 →（各元素响应给出的）blob。
 
         清单里的 hash 必须属于本文档引用的对象，否则是服务端问题，抛 ``UnexpectedResponseError``；
         重复的 hash 只上传一次。清单被服务端截断时先补传已列出的部分——剩下的会在重新 commit
-        后的下一份清单里给出。
+        后的下一份清单里给出。每个上传过的 hash 记入 ``uploaded``（本会话已上传，见
+        ``_stalled``）。
         """
         seen_pages: set[str] = set()
         seen_objects: set[str] = set()
@@ -1432,6 +1447,7 @@ class ProtocolCore:
             missing_elements = yield from self.upload_page(
                 session, PageObject.model_validate(page, context={"contract": self.contract})
             )
+            uploaded.add(page_hash)
             objects.extend(missing_elements)
         for content_hash in objects:
             if content_hash in seen_objects:
@@ -1446,6 +1462,7 @@ class ProtocolCore:
                 session,
                 ElementObject.model_validate(element, context={"contract": self.contract}),
             )
+            uploaded.add(content_hash)
             blobs_needed.extend(missing_blobs)
         if not blobs_needed:
             return
@@ -1468,6 +1485,7 @@ class ProtocolCore:
                 self._blob_source(blobs(blob), expected=blob),
                 media_type=parts.blob_mime[blob],
             )
+            uploaded.add(blob)
 
     def delete(self, uri: str, base_hash: str) -> Operation[None]:
         """``DELETE documents?uri=``，CAS 走 ``If-Match``（core §4、§5.1）。
@@ -1693,6 +1711,12 @@ class ProtocolCore:
             raise UnexpectedResponseError(
                 f"{DOC_HASH_HEADER} {header!r} 与结果的 doc_hash 不符", status=response.status
             )
+
+
+def _stalled(exc: MissingContentError, uploaded: set[str]) -> bool:
+    """``DPE_MISSING_CONTENT`` 这一轮是否没有进展：清单为空，或重新列出了本会话已上传过的对象。"""
+    listed = [*exc.missing.pages, *exc.missing.content_hashes, *exc.missing.blobs]
+    return not listed or any(h in uploaded for h in listed)
 
 
 class _BlobsUnavailable(MissingContentError):
