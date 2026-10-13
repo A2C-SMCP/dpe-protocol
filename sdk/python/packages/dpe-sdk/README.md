@@ -110,6 +110,8 @@ with DpeClient("https://example.com/anything/r/42") as client:
 - **删除与移动**（§7.2 同一张判定表，move 取 `from_uri` 的 L 与 R）：delete 的 R 不存在＝目标状态已达成（`deleted`，不发写）；move 的源不存在时查 `head(to)`——等于 base 即已达成（`moved`，迁条目），否则条目失败（`side="from"`）；源不存在且源无 L 时以目标侧的 L 作 base，因此重放自己已成功的 move 判已达成（「已达成」只表示目标状态成立，不担保移动由本实例发生）；目标被占（`DPE_ALREADY_EXISTS`）为条目失败（`side="to"`），源被改写为冲突（`side="from"`）；成功与已达成都维护同步状态条目（delete 删、move 迁）；同一批 move 中，任何 URI 在 from 与 to 合集里出现两次（链式 a→b、b→c，共用目标 a→c、b→c）即整批抛 `ValueError`——这类输入的生效依赖顺序（connector §6.5），保序拆批归调用方；
 - **同步状态 + 意图日志**（§7.2）：同步状态（L）是每篇文档最近一次确认的 remote doc_hash，决定写入的前置条件（`if_absent` / `base_hash`）；写入前先把意图持久化到 `StateStore`（commit 记内容 hash、delete 记「不存在」、move **两侧一起**记），`save` 返回后才发写请求；结果确定即清除、只有结果未知（`unknown=True`）才保留，下一轮按意图对账恢复。缺省 `MemoryStateStore` 只在进程内、**不保证崩溃持久**；落盘实现属运行器的状态目录（契约 §4.4）；
 - **冲突如实上报**：`status == "conflict"`，带读到的（或冲突后重读的）remote 状态；**绝不自动 force、不自动重提**——`source_wins` / `report` 等策略与轮内重试上限归调用方（推送器不设 `retryable`、不在内部重试冲突，§7.1 的「超过重试上限取 true」由运行器计数），重提用 `expected_base` 覆盖前置条件（值为 `None` 表示确认「不存在」；move 以 `from_uri` 为键）；
+- **blob**：`push(..., blobs=lookup)` 把 `sha256:` 引用 → 字节来源（`BlobSource` 或 bytes）原样交给核心 `deliver`，服务端缺的 blob 按需上传；不给时缺字节如实报 `DPE_MISSING_CONTENT`（不解引用任何来源）；
+- **先存、存成功才生效**：写前 `save` 失败时整批报错、未发写，本批意图不进入内存；任何一次 `save` 失败后 store 可能与内存不一致——继续用同一实例，`flush()` 补存成功前不要用同一 store 新建实例；
 - **错误与凭证**：复用 `DpeClient` 的传输层（gzip、`Retry-After`、`CredentialProvider` 全部适用）；失败按异常原类型如实回报（含服务端错误对象的 `code`），`unknown=True` 表示结果未确定——由核心的 `outcome_unknown` 判据给出（写请求任何一次尝试可能已到达服务端即未知，含「首发丢响应后重发得到 DPE 错误或建连失败」等序列），此时意图保留、下一轮对账恢复。
 
 ## 参考服务端（testing）
@@ -238,4 +240,12 @@ python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
 
 钩子通道是测试侧信道：不做 DPE 认证、默认关闭、只建议监听本机（缺省 127.0.0.1）。
 
-> dpe-run（运行器与示例插件）尚在开发中（#16–#17）。
+## dpe-run 运行器（#17）
+
+`dpe_sdk.run` 实现 connector 契约的运行器侧：插件进程宿主（`PluginHost`，#51）、清单 / 实例定义 / 凭证（§4），以及一轮的编排（#52）：
+
+- **状态目录**（`StateDirectory`，§4.4）：缺省 `$XDG_STATE_HOME/dpe-run`（`~/.local/state/dpe-run`；Windows `%LOCALAPPDATA%\dpe-run`）。每个实例一把操作系统文件锁（取不到即 `instance_busy`，持有进程退出即释放）；同一 `remote.url` 下的前缀不重叠检查与登记在目录级锁内原子完成；`state.json` 存游标、同步状态与意图、内容身份指纹与 `cursor_held_since`，先写临时文件再 `os.replace`、写成功才生效；内容身份变化即丢弃缓存（全量轮）。本地状态读写失败为轮级 `state_unavailable`（#137）。
+- **一轮**（`run_round`，§6.4–§6.8）：按批 `scan`、逐条校验（封闭 schema、前缀、元素线格式、分段）、读取 blob（分块 `read_blob` 落本地暂存后上传）、按流中顺序分波次落地（波内 URI 两两不同，链式 move 自动拆开）；冲突按 `conflict_policy` 重读重提，本轮至多 2 次，绝不 force；结果为 `succeeded` / `partial` / `failed` 三态并带 `incremental`，只有整轮全部落地才持久化游标（fail-closed）。
+- **保存失败**：本次调用内只要有过一次保存失败，退出前都用同一推送器实例补存（有限次、短退避）；仍失败即本轮 `failed`、游标不推进。补存成功前进程退出时磁盘上可能残留过期意图，下一次调用会读回——风险与 §7.2 接受的崩溃窗口相同。
+
+> `dpe-run` 命令行（实例级校验流、轮报告、结构化日志与退出码，§7.4–§7.6）与示例插件尚在开发中（#52 Part 2、#53）。

@@ -25,12 +25,13 @@ from dpe_sdk.credentials import StaticCredentialProvider
 from dpe_sdk.errors import (
     AlreadyExistsError,
     ForbiddenError,
+    MissingContentError,
     NotFoundError,
     PreconditionFailedError,
     RateLimitedError,
 )
 from dpe_sdk.models import Document
-from dpe_sdk.protocol import BaseHash, IfAbsent
+from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent
 from dpe_sdk.pusher import (
     AsyncStatefulPusher,
     MemoryStateStore,
@@ -176,6 +177,50 @@ async def test_push_without_cache_rerun_is_equivalent_and_sends_nothing() -> Non
     rerun_traffic = _traffic(recorder)[first_traffic_start:]
     assert all(item[0] != "PUT" or not item[1].endswith("/documents") for item in rerun_traffic)
     assert len(rerun_traffic) == 2  # 两次重跑各一个 POST /heads
+
+
+_PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4
+
+
+def _image_doc() -> Document:
+    """一页一个 Image 元素的文档，blob 引用 ``_PNG`` 的字节。"""
+    element = {"category": "Image", "blob": dpe_hash.blob_ref(_PNG), "mime_type": "image/png"}
+    return Document.model_validate(
+        {"file_type": "md", "pages": [{"page_metadata": {}, "elements": [element]}]}
+    )
+
+
+def _png_lookup(ref: str) -> BlobSource:
+    assert ref == dpe_hash.blob_ref(_PNG)
+    return BlobSource.from_bytes(_PNG)
+
+
+async def test_push_passes_blobs_to_deliver() -> None:
+    """``blobs`` 原样交给 ``deliver``：服务端缺的 blob 经它上传后 commit 成功；不给时缺字节由核心
+    如实报 ``DPE_MISSING_CONTENT``（不自行解引用任何来源），意图随确定的失败清除。"""
+    store = MemoryStateStore()
+    async with in_process_client() as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+
+        missing = await pusher.push({URI: _image_doc()})
+        assert [r.status for r in missing] == ["failed"]
+        assert isinstance(missing[0].error, MissingContentError)
+        assert (await _state(store)).intents == {}
+
+        results = await pusher.push({URI: _image_doc()}, blobs=_png_lookup)
+        assert [r.status for r in results] == ["created"]
+        uploads = [r for r in recorder.requests if "/blobs/" in r.url.path]
+        assert uploads and all(r.url.path.endswith(dpe_hash.blob_ref(_PNG)) for r in uploads)
+        assert (await client.head(URI)) == _image_doc().doc_hash()
+
+
+def test_sync_push_passes_blobs_to_deliver() -> None:
+    """同步推送器对真实 TCP 服务端：语义与异步版本相同。"""
+    with spawn_server("--prefix", "/r/1") as info, DpeClient(info["url"]) as client:
+        pusher = StatefulPusher(client, state=MemoryStateStore())
+        results = pusher.push({URI: _image_doc()}, blobs=_png_lookup)
+        assert [r.status for r in results] == ["created"]
+        assert client.head(URI) == _image_doc().doc_hash()
 
 
 async def test_mid_page_insert_uploads_only_new_objects() -> None:

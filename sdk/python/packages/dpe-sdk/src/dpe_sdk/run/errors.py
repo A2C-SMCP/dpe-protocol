@@ -2,8 +2,8 @@
 
 ``RunFailure`` 的字段与轮报告 ``failures`` 元素一一对应（§7.4），编排层（#52）直接据此写报告、
 日志与退出码。三个子类按层级区分：实例级（不改动实例定义、清单或凭证就无法恢复，MUST NOT
-自动重试）、协议级（终止实例，本轮作废）、轮级（本轮作废，退避后重试）。条目级失败不在
-这里——它们不中断本轮，由编排层逐条记录。
+自动重试）、协议级（终止实例，本轮作废）、轮级（本轮作废，退避后重试）；条目级失败
+（``ItemFailure``）不中断本轮，由编排层逐条记录，报告中 MUST 给出所涉 URI。
 
 ``message`` MUST NOT 含凭证值（§4.3）：构造处只写凭证名，转发插件文本前由 ``Redactor`` 脱敏。
 """
@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 __all__ = [
     "InstanceFailure",
+    "ItemFailure",
     "Level",
     "ProtocolFailure",
     "RoundFailure",
@@ -104,6 +105,39 @@ class RoundFailure(RunFailure):
     """轮级失败（§7.1）：本轮作废，退避后重试。"""
 
     level: Level = "round"
+
+
+class ItemFailure(RunFailure):
+    """条目级失败（§7.1）：该条目失败，本轮继续处理其余条目；游标不推进（§6.8）。
+
+    URI 一律是 core §1.1 规范化后的值（§7.4）；无法规范化的原样给出（如越界判定之前的非法 URI）。
+    """
+
+    level: Level = "item"
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        source: Source,
+        retryable: bool = False,
+        file_uri: str | None = None,
+        from_uri: str | None = None,
+        to_uri: str | None = None,
+    ) -> None:
+        super().__init__(code, message, source=source, retryable=retryable)
+        self.file_uri = file_uri
+        self.from_uri = from_uri
+        self.to_uri = to_uri
+
+    def to_report(self) -> dict[str, Any]:
+        report = super().to_report()
+        for key in ("file_uri", "from_uri", "to_uri"):
+            value = getattr(self, key)
+            if value is not None:
+                report[key] = value
+        return report
 
 
 class RpcError(Exception):
