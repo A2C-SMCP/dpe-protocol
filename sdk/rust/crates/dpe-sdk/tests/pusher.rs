@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dpe_sdk::http::DpeClient;
-use dpe_sdk::protocol::Precondition;
+use dpe_sdk::protocol::{BlobSource, Precondition};
 use dpe_sdk::pusher::{
     MemoryStateStore, PushOp, PushResult, PushStatus, Side, StateSnapshot, StateStore,
     StatefulPusher, StoreError,
@@ -80,6 +80,8 @@ struct Fake {
     head_override: Mutex<Option<Reply>>,
     /// 写请求的处理延迟（并发用例）。
     delay: Mutex<Option<Duration>>,
+    /// 按路由追加的处理延迟（让某一条投递的请求在途更久，构造确定的交错）。
+    route_delay: Mutex<HashMap<Route, Duration>>,
     /// 已收到的写请求数（commit / delete / move；意图持久化时序的判别点）。
     write_count: AtomicUsize,
     in_flight: AtomicUsize,
@@ -192,6 +194,10 @@ impl Fake {
         self.peak.fetch_max(now, Ordering::SeqCst);
         if let Some(delay) = *self.delay.lock().unwrap() {
             std::thread::sleep(delay);
+        }
+        let extra = self.route_delay.lock().unwrap().get(&route).copied();
+        if let Some(extra) = extra {
+            std::thread::sleep(extra);
         }
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         let step = {
@@ -316,12 +322,18 @@ async fn push_creates_then_achieved_without_writes() {
     fake.script(Route::Commit(A.into()), vec![created(A, &hello)]);
     let mut pusher = pusher(&client, &store);
 
-    let first = pusher.push(&docs(&[(A, &hello)]), &none()).await.unwrap();
+    let first = pusher
+        .push(&docs(&[(A, &hello)]), &none(), None)
+        .await
+        .unwrap();
     assert_eq!(statuses(&first), [PushStatus::Created]);
     assert!(first[0].delta.is_some());
     let before = server.count();
 
-    let second = pusher.push(&docs(&[(A, &hello)]), &none()).await.unwrap();
+    let second = pusher
+        .push(&docs(&[(A, &hello)]), &none(), None)
+        .await
+        .unwrap();
     assert_eq!(statuses(&second), [PushStatus::Achieved]);
     assert_eq!(
         second[0].remote.as_ref().unwrap().doc_hash,
@@ -344,13 +356,22 @@ async fn push_without_cache_rerun_is_equivalent_and_sends_nothing() {
     let hello = text("hello");
     fake.script(Route::Commit(A.into()), vec![created(A, &hello)]);
     let mut cached = pusher(&client, &Arc::new(MemoryStateStore::new()));
-    cached.push(&docs(&[(A, &hello)]), &none()).await.unwrap();
+    cached
+        .push(&docs(&[(A, &hello)]), &none(), None)
+        .await
+        .unwrap();
     let start = server.count();
-    let first_rerun = cached.push(&docs(&[(A, &hello)]), &none()).await.unwrap();
+    let first_rerun = cached
+        .push(&docs(&[(A, &hello)]), &none(), None)
+        .await
+        .unwrap();
 
     // 删缓存：换一个空 store 的推送器（同一客户端、同一 remote）
     let mut uncached = pusher(&client, &Arc::new(MemoryStateStore::new()));
-    let second_rerun = uncached.push(&docs(&[(A, &hello)]), &none()).await.unwrap();
+    let second_rerun = uncached
+        .push(&docs(&[(A, &hello)]), &none(), None)
+        .await
+        .unwrap();
 
     assert_eq!(view(&first_rerun), view(&second_rerun));
     assert_eq!(statuses(&second_rerun), [PushStatus::Achieved]);
@@ -450,7 +471,10 @@ async fn mid_page_insert_uploads_only_new_objects() {
         )],
     );
 
-    let results = pusher.push(&docs(&[(A, &doc2)]), &none()).await.unwrap();
+    let results = pusher
+        .push(&docs(&[(A, &doc2)]), &none(), None)
+        .await
+        .unwrap();
 
     assert_eq!(statuses(&results), [PushStatus::Updated]);
     let delta = results[0].delta.expect("updated 带 delta");
@@ -505,7 +529,10 @@ async fn old_contract_state_entries_are_treated_as_missing() {
     fake.script(Route::Commit(A.into()), vec![updated(A, &v2)]);
     let mut reloaded = pusher(&client, &store);
 
-    let changed = reloaded.push(&docs(&[(A, &v2)]), &none()).await.unwrap();
+    let changed = reloaded
+        .push(&docs(&[(A, &v2)]), &none(), None)
+        .await
+        .unwrap();
 
     assert_eq!(statuses(&changed), [PushStatus::Updated]);
     assert_eq!(
@@ -522,7 +549,7 @@ async fn after_v1(fake: &Arc<Fake>, client: &DpeClient, store: &Arc<MemoryStateS
     fake.script(Route::Commit(A.into()), vec![created(A, &v1)]);
     let mut first = pusher(client, store);
     assert_eq!(
-        statuses(&first.push(&docs(&[(A, &v1)]), &none()).await.unwrap()),
+        statuses(&first.push(&docs(&[(A, &v1)]), &none(), None).await.unwrap()),
         [PushStatus::Created]
     );
 }
@@ -539,7 +566,7 @@ async fn conflict_from_read_is_reported_without_overwriting() {
     let before = count(&server, "PUT", "/documents");
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &text("v2"))]), &none())
+        .push(&docs(&[(A, &text("v2"))]), &none(), None)
         .await
         .unwrap();
 
@@ -574,7 +601,7 @@ async fn race_conflict_is_detected_and_reread() {
     );
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &text("v2"))]), &none())
+        .push(&docs(&[(A, &text("v2"))]), &none(), None)
         .await
         .unwrap();
 
@@ -601,7 +628,7 @@ async fn conflict_when_the_document_was_deleted_by_someone_else() {
     fake.set(A, None); // 他人删除
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &text("v2"))]), &none())
+        .push(&docs(&[(A, &text("v2"))]), &none(), None)
         .await
         .unwrap();
 
@@ -625,7 +652,7 @@ async fn expected_base_override() {
 
     // 以重读到的值作 base 重提（source_wins 等策略归上层）
     let base = HashMap::from([(A.to_owned(), Some(doc_hash(&theirs)))]);
-    let resubmitted = pusher.push(&docs(&[(A, &v2)]), &base).await.unwrap();
+    let resubmitted = pusher.push(&docs(&[(A, &v2)]), &base, None).await.unwrap();
     assert_eq!(statuses(&resubmitted), [PushStatus::Updated]);
     assert_eq!(
         resubmitted[0].precondition,
@@ -634,11 +661,17 @@ async fn expected_base_override() {
 
     // 声明「不存在」而已存在 → 冲突（不静默覆盖）
     let absent = HashMap::from([(A.to_owned(), None)]);
-    let conflicted = pusher.push(&docs(&[(A, &v3)]), &absent).await.unwrap();
+    let conflicted = pusher
+        .push(&docs(&[(A, &v3)]), &absent, None)
+        .await
+        .unwrap();
     assert_eq!(statuses(&conflicted), [PushStatus::Conflict]);
 
     // 声明「不存在」但内容已相同：已达成先于矛盾判定
-    let achieved = pusher.push(&docs(&[(A, &v2)]), &absent).await.unwrap();
+    let achieved = pusher
+        .push(&docs(&[(A, &v2)]), &absent, None)
+        .await
+        .unwrap();
     assert_eq!(statuses(&achieved), [PushStatus::Achieved]);
 
     // 声明「不存在」且确实不存在 → if_absent 新建
@@ -646,7 +679,7 @@ async fn expected_base_override() {
     fake.script(Route::Commit(fresh.into()), vec![created(fresh, &v2)]);
     let fresh_absent = HashMap::from([(fresh.to_owned(), None)]);
     let created = pusher
-        .push(&docs(&[(fresh, &v2)]), &fresh_absent)
+        .push(&docs(&[(fresh, &v2)]), &fresh_absent, None)
         .await
         .unwrap();
     assert_eq!(statuses(&created), [PushStatus::Created]);
@@ -694,7 +727,10 @@ async fn intents_are_saved_before_the_write_is_sent() {
     let mut pusher =
         StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 4).unwrap();
 
-    pusher.push(&docs(&[(A, &v1)]), &none()).await.unwrap();
+    pusher
+        .push(&docs(&[(A, &v1)]), &none(), None)
+        .await
+        .unwrap();
 
     let saves = store.saves.lock().unwrap().clone();
     assert_eq!(
@@ -739,12 +775,18 @@ async fn failed_intent_save_aborts_without_writing_and_keeps_only_the_reconciled
         StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 4).unwrap();
     let (v1, v2) = (text("v1"), text("v2"));
     fake.script(Route::Commit(A.into()), vec![created(A, &v1)]);
-    pusher.push(&docs(&[(A, &v1)]), &none()).await.unwrap();
+    pusher
+        .push(&docs(&[(A, &v1)]), &none(), None)
+        .await
+        .unwrap();
     fake.script(
         Route::Commit(A.into()),
         vec![reply_then(Reply::Close, A, Some(doc_hash(&v2)))],
     );
-    let unknown = pusher.push(&docs(&[(A, &v2)]), &none()).await.unwrap();
+    let unknown = pusher
+        .push(&docs(&[(A, &v2)]), &none(), None)
+        .await
+        .unwrap();
     assert!(unknown[0].unknown);
     assert_eq!(
         pusher.snapshot().intents,
@@ -754,7 +796,7 @@ async fn failed_intent_save_aborts_without_writing_and_keeps_only_the_reconciled
     store.failing.store(true, Ordering::SeqCst);
 
     let error = pusher
-        .push(&docs(&[(A, &text("v3"))]), &none())
+        .push(&docs(&[(A, &text("v3"))]), &none(), None)
         .await
         .expect_err("save 失败应整批中止");
 
@@ -791,11 +833,14 @@ async fn failed_intent_save_does_not_mask_a_later_foreign_write() {
         StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 4).unwrap();
     let (v1, v2) = (text("v1"), text("v2"));
     fake.script(Route::Commit(A.into()), vec![created(A, &v1)]);
-    pusher.push(&docs(&[(A, &v1)]), &none()).await.unwrap();
+    pusher
+        .push(&docs(&[(A, &v1)]), &none(), None)
+        .await
+        .unwrap();
     let before = pusher.snapshot();
     store.failing.store(true, Ordering::SeqCst);
     pusher
-        .push(&docs(&[(A, &v2)]), &none())
+        .push(&docs(&[(A, &v2)]), &none(), None)
         .await
         .expect_err("save 失败");
     // 本轮没有可对账的待定意图：内存状态与失败前完全一致（A → v2 的意图没有留下）
@@ -805,7 +850,7 @@ async fn failed_intent_save_does_not_mask_a_later_foreign_write() {
     let writes = fake.write_count.load(Ordering::SeqCst);
 
     let results = pusher
-        .push(&docs(&[(A, &text("v3"))]), &none())
+        .push(&docs(&[(A, &text("v3"))]), &none(), None)
         .await
         .unwrap();
 
@@ -836,7 +881,10 @@ async fn unknown_outcome_keeps_the_intent_and_reconciles_next_round() {
     );
     let mut pusher = pusher(&client, &store);
 
-    let unknown = pusher.push(&docs(&[(A, &v2)]), &none()).await.unwrap();
+    let unknown = pusher
+        .push(&docs(&[(A, &v2)]), &none(), None)
+        .await
+        .unwrap();
     assert_eq!(statuses(&unknown), [PushStatus::Failed]);
     assert!(unknown[0].unknown);
     let snapshot = state(&store, &server);
@@ -844,7 +892,10 @@ async fn unknown_outcome_keeps_the_intent_and_reconciles_next_round() {
     assert_eq!(snapshot.synced, synced(&[(A, doc_hash(&v1))]));
 
     fake.script(Route::Commit(A.into()), vec![updated(A, &v3)]);
-    let reconciled = pusher.push(&docs(&[(A, &v3)]), &none()).await.unwrap();
+    let reconciled = pusher
+        .push(&docs(&[(A, &v3)]), &none(), None)
+        .await
+        .unwrap();
 
     assert_eq!(statuses(&reconciled), [PushStatus::Updated]);
     // 判别点：base 是掉响应那次提交的 doc_hash（对账推进后的 L）
@@ -866,7 +917,7 @@ async fn not_sent_failures_are_determined_and_clear_the_intent() {
     let store = Arc::new(MemoryStateStore::new());
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &text("v1"))]), &none())
+        .push(&docs(&[(A, &text("v1"))]), &none(), None)
         .await
         .unwrap();
 
@@ -894,7 +945,7 @@ async fn first_attempt_lost_then_never_sent_keeps_the_intent() {
     let v1 = text("v1");
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &v1)]), &none())
+        .push(&docs(&[(A, &v1)]), &none(), None)
         .await
         .unwrap();
 
@@ -929,7 +980,7 @@ async fn first_attempt_lost_then_rate_limited_keeps_the_intent() {
     );
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &v1)]), &none())
+        .push(&docs(&[(A, &v1)]), &none(), None)
         .await
         .unwrap();
 
@@ -965,7 +1016,7 @@ async fn determined_conflict_clears_the_intent_so_later_writes_are_not_masked() 
     assert_eq!(
         statuses(
             &pusher
-                .push(&docs(&[(A, &attempted)]), &none())
+                .push(&docs(&[(A, &attempted)]), &none(), None)
                 .await
                 .unwrap()
         ),
@@ -976,7 +1027,7 @@ async fn determined_conflict_clears_the_intent_so_later_writes_are_not_masked() 
     // 他人随后写下与我们的 v2 逐字节相同的内容；本地再改（v3）必须走正常判定表
     fake.set(A, Some(doc_hash(&attempted)));
     let final_ = pusher
-        .push(&docs(&[(A, &text("v3"))]), &none())
+        .push(&docs(&[(A, &text("v3"))]), &none(), None)
         .await
         .unwrap();
 
@@ -1001,7 +1052,7 @@ async fn forbidden_failure_clears_the_intent() {
     );
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &text("v1"))]), &none())
+        .push(&docs(&[(A, &text("v1"))]), &none(), None)
         .await
         .unwrap();
 
@@ -1028,7 +1079,7 @@ async fn reread_failure_is_reported_without_masking_the_conflict() {
     *fake.head_override.lock().unwrap() = Some(Reply::Close);
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &text("v2"))]), &none())
+        .push(&docs(&[(A, &text("v2"))]), &none(), None)
         .await
         .unwrap();
 
@@ -1065,7 +1116,7 @@ async fn concurrency_is_bounded_and_order_is_preserved() {
             StatefulPusher::with_store(&client, Arc::new(MemoryStateStore::new()), concurrency)
                 .unwrap();
 
-        let results = pusher.push(&documents, &none()).await.unwrap();
+        let results = pusher.push(&documents, &none(), None).await.unwrap();
 
         assert_eq!(statuses(&results), [PushStatus::Created; 6]);
         let uris: Vec<&str> = results
@@ -1092,7 +1143,7 @@ async fn local_validation_sends_nothing() {
 
     let duplicate = docs(&[(A, &v1), ("DPE://docs/a.md", &v1)]);
     let error = pusher
-        .push(&duplicate, &none())
+        .push(&duplicate, &none(), None)
         .await
         .expect_err("归一化后重复");
     assert_eq!(error.kind(), ErrorKind::InvalidArgument);
@@ -1103,7 +1154,7 @@ async fn local_validation_sends_nothing() {
     assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     let outside = HashMap::from([(B.to_owned(), None)]);
     let error = pusher
-        .push(&docs(&[(A, &v1)]), &outside)
+        .push(&docs(&[(A, &v1)]), &outside, None)
         .await
         .expect_err("expected_base 在批外");
     assert_eq!(error.kind(), ErrorKind::InvalidArgument);
@@ -1160,7 +1211,7 @@ async fn final_save_failure_is_outcome_unknown_and_the_next_save_catches_up() {
     );
 
     let error = pusher
-        .push(&docs(&[(A, &v1)]), &none())
+        .push(&docs(&[(A, &v1)]), &none(), None)
         .await
         .expect_err("收尾 save 失败应整批报错");
 
@@ -1172,7 +1223,10 @@ async fn final_save_failure_is_outcome_unknown_and_the_next_save_catches_up() {
     assert_eq!(behind.intents, intents(&[(A, Some(doc_hash(&v1)))]));
     assert_eq!(pusher.snapshot().synced, synced(&[(A, doc_hash(&v1))]));
 
-    let results = pusher.push(&docs(&[(A, &v2)]), &none()).await.unwrap();
+    let results = pusher
+        .push(&docs(&[(A, &v2)]), &none(), None)
+        .await
+        .unwrap();
 
     assert_eq!(statuses(&results), [PushStatus::Updated]);
     assert_eq!(
@@ -1196,7 +1250,7 @@ async fn final_save_failure_without_writes_is_determined() {
         StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 4).unwrap();
 
     let error = pusher
-        .push(&docs(&[(A, &v1)]), &none())
+        .push(&docs(&[(A, &v1)]), &none(), None)
         .await
         .expect_err("收尾 save 失败应整批报错");
 
@@ -1228,7 +1282,7 @@ async fn empty_batches_return_empty_without_reading() {
     let client = client(&server);
     let mut pusher = pusher(&client, &Arc::new(MemoryStateStore::new()));
 
-    assert!(pusher.push(&[], &none()).await.unwrap().is_empty());
+    assert!(pusher.push(&[], &none(), None).await.unwrap().is_empty());
     assert!(pusher.delete(&[], &none()).await.unwrap().is_empty());
     assert!(pusher
         .move_documents(&[], &none())
@@ -1237,6 +1291,260 @@ async fn empty_batches_return_empty_without_reading() {
         .is_empty());
     assert_eq!(count(&server, "POST", "/heads"), 0);
     assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
+}
+
+// ---------------------------------------------------------------------- blobs / flush / client（#144）
+
+/// 一页一个 Image 元素的文档，blob 引用 `bytes` 的字节（与 Python `_image_doc` 对等）。
+fn image_doc(bytes: &[u8]) -> ExpandedDocument {
+    ExpandedDocument::from_value(
+        &json!({
+            "file_type": "md",
+            "pages": [{"page_metadata": {}, "elements": [
+                {"category": "Image", "blob": dpe_hash::blob_ref(bytes), "mime_type": "image/png"}
+            ]}],
+        }),
+        dpe_sdk::CONTRACT,
+    )
+    .expect("测试文档必须合法")
+}
+
+fn png(seed: u8) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend((0..=255u8).map(|i| i.wrapping_add(seed)).cycle().take(1024));
+    bytes
+}
+
+/// 快路径 commit 缺 blob 的应答（`DPE_MISSING_CONTENT` + 缺失清单；problem 体须是
+/// `application/problem+json`，核心才解析清单）。
+fn missing_blob(reference: &str) -> Step {
+    let body = json!({
+        "type": "urn:dpe:error:missing-content", "title": "missing", "status": 400,
+        "code": "DPE_MISSING_CONTENT",
+        "missing": {"pages": [], "content_hashes": [], "blobs": [reference]},
+    });
+    reply(Reply::Response {
+        status: 400,
+        headers: vec![
+            (
+                "Content-Type".to_owned(),
+                "application/problem+json".to_owned(),
+            ),
+            (
+                "DPE-Error-Code".to_owned(),
+                "DPE_MISSING_CONTENT".to_owned(),
+            ),
+        ],
+        body: serde_json::to_vec(&body).expect("JSON 值总能序列化"),
+    })
+}
+
+/// 给 `uri` 脚本化「缺 blob → 开会话 → 上传 → 提交成功」。
+fn script_blob_upload(fake: &Fake, uri: &str, document: &ExpandedDocument, reference: &str) {
+    fake.script(
+        Route::Commit(uri.into()),
+        vec![missing_blob(reference), created(uri, document)],
+    );
+    fake.script(
+        Route::Negotiate(uri.into()),
+        vec![reply(Reply::json(
+            200,
+            json!({
+                "missing_pages": [], "missing_content_hashes": [],
+                "staging_session": {"id": format!("s-{uri}"), "expires_at": "2026-10-01T00:00:00Z"},
+            }),
+        ))],
+    );
+    fake.script(
+        Route::Staging,
+        vec![reply(Reply::json_with(
+            201,
+            json!({}),
+            &[("DPE-Session-Expires", "2026-10-01T00:00:00Z")],
+        ))],
+    );
+}
+
+#[tokio::test]
+async fn push_passes_blobs_to_deliver() {
+    // blobs 原样交给 deliver：不给时服务端缺的字节由核心如实报 DPE_MISSING_CONTENT（不自行
+    // 解引用任何来源），意图随确定的失败清除；给了则经它上传后 commit 成功
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let bytes = png(0);
+    let reference = dpe_hash::blob_ref(&bytes);
+    let document = image_doc(&bytes);
+    // 不给 provider：核心照常开会话补传，取不到字节时如实报缺失。`script` 是替换语义——
+    // 这里覆盖 Commit 队列、只留一次缺失应答（Negotiate / Staging 用上面编排的）
+    script_blob_upload(&fake, A, &document, &reference);
+    fake.script(Route::Commit(A.into()), vec![missing_blob(&reference)]);
+    let mut pusher = pusher(&client, &store);
+
+    let missing = pusher
+        .push(&docs(&[(A, &document)]), &none(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&missing), [PushStatus::Failed]);
+    assert_eq!(
+        missing[0].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_MISSING_CONTENT")
+    );
+    assert!(!missing[0].unknown);
+    assert_eq!(state(&store, &server).intents, BTreeMap::new());
+
+    script_blob_upload(&fake, A, &document, &reference);
+    let mut asked = Vec::new();
+    let mut provider = |requested: &str| {
+        asked.push(requested.to_owned());
+        Some(BlobSource::from_bytes(bytes.clone()))
+    };
+
+    let results = pusher
+        .push(&docs(&[(A, &document)]), &none(), Some(&mut provider))
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Created]);
+    assert_eq!(asked, std::slice::from_ref(&reference));
+    let uploads: Vec<String> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.target.contains("/blobs/"))
+        .map(|request| request.target)
+        .collect();
+    assert!(!uploads.is_empty() && uploads.iter().all(|target| target.ends_with(&reference)));
+    assert_eq!(
+        state(&store, &server).synced,
+        synced(&[(A, doc_hash(&document))])
+    );
+}
+
+#[tokio::test]
+async fn unchanged_documents_never_call_blobs() {
+    // 远端已是本次内容（R == N）：推送器不发写，blobs 回调不发生（来源读取可能很贵）
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let bytes = png(0);
+    let document = image_doc(&bytes);
+    fake.set(A, Some(doc_hash(&document)));
+    let mut calls = 0usize;
+    let mut provider = |_: &str| {
+        calls += 1;
+        Some(BlobSource::from_bytes(bytes.clone()))
+    };
+
+    let results = pusher(&client, &Arc::new(MemoryStateStore::new()))
+        .push(&docs(&[(A, &document)]), &none(), Some(&mut provider))
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Achieved]);
+    assert_eq!(calls, 0);
+    assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn concurrent_pushes_share_one_blob_provider() {
+    // 两篇各引用不同 blob 的文档并发投递：同一个 provider 被两条 deliver 共享（单任务内交错，
+    // 借用不重叠），各自拿到自己的 blob。B 的 negotiate 在服务端多停留 300 ms，A 调用
+    // provider 时 B 必有请求在途——确实在交错中共享
+    let fake = Fake::new();
+    *fake.delay.lock().unwrap() = Some(Duration::from_millis(30));
+    fake.route_delay
+        .lock()
+        .unwrap()
+        .insert(Route::Negotiate(B.into()), Duration::from_millis(300));
+    let server = fake.server();
+    let client = client(&server);
+    let (first, second) = (png(1), png(2));
+    let (doc_a, doc_b) = (image_doc(&first), image_doc(&second));
+    script_blob_upload(&fake, A, &doc_a, &dpe_hash::blob_ref(&first));
+    script_blob_upload(&fake, B, &doc_b, &dpe_hash::blob_ref(&second));
+    let sources: HashMap<String, Vec<u8>> = [&first, &second]
+        .into_iter()
+        .map(|bytes| (dpe_hash::blob_ref(bytes), bytes.clone()))
+        .collect();
+    let mut asked = Vec::new();
+    let mut in_flight_at_call = Vec::new();
+    let mut provider = |requested: &str| {
+        asked.push(requested.to_owned());
+        in_flight_at_call.push(fake.in_flight.load(Ordering::SeqCst));
+        sources.get(requested).cloned().map(BlobSource::from_bytes)
+    };
+    let mut pusher =
+        StatefulPusher::with_store(&client, Arc::new(MemoryStateStore::new()), 2).unwrap();
+
+    let results = pusher
+        .push(
+            &docs(&[(A, &doc_a), (B, &doc_b)]),
+            &none(),
+            Some(&mut provider),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        statuses(&results),
+        [PushStatus::Created, PushStatus::Created]
+    );
+    asked.sort();
+    let mut expected: Vec<String> = sources.keys().cloned().collect();
+    expected.sort();
+    assert_eq!(asked, expected);
+    assert!(fake.peak.load(Ordering::SeqCst) > 1, "两条投递确实并发");
+    assert!(
+        in_flight_at_call.iter().any(|&count| count >= 1),
+        "至少一次 provider 调用发生在另一条投递有请求在途时：{in_flight_at_call:?}"
+    );
+}
+
+#[tokio::test]
+async fn flush_catches_the_store_up_after_a_failed_save() {
+    // 收尾保存失败后 store 落后于内存；flush（同一实例）补存后两者一致。flush 本身失败为
+    // StateStore 且确定未生效（它不发写请求）
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(CountingStore::default());
+    store.fail_on.store(2, Ordering::SeqCst);
+    let mut pusher =
+        StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 4).unwrap();
+    let v1 = text("v1");
+    fake.script(Route::Commit(A.into()), vec![created(A, &v1)]);
+    pusher
+        .push(&docs(&[(A, &v1)]), &none(), None)
+        .await
+        .expect_err("收尾保存失败");
+    assert_ne!(
+        store.inner.load(&server.remote()).unwrap().unwrap(),
+        pusher.snapshot()
+    );
+
+    pusher.flush().unwrap();
+
+    assert_eq!(
+        store.inner.load(&server.remote()).unwrap().unwrap(),
+        pusher.snapshot()
+    );
+    store
+        .fail_on
+        .store(store.saves.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    let error = pusher.flush().expect_err("store 不可写");
+    assert_eq!(error.kind(), ErrorKind::StateStore);
+    assert!(!error.outcome_unknown(), "flush 不发写请求");
+}
+
+#[tokio::test]
+async fn client_is_the_instance_given_at_construction() {
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let pusher = pusher(&client, &Arc::new(MemoryStateStore::new()));
+    assert!(std::ptr::eq(pusher.client(), &client));
 }
 
 // ---------------------------------------------------------------------- 写后冲突重读即已达成（#140）
@@ -1274,7 +1582,7 @@ async fn commit_conflict_whose_reread_equals_the_content_is_achieved() {
         );
 
         let results = pusher(&client, &store)
-            .push(&docs(&[(A, &v2)]), &none())
+            .push(&docs(&[(A, &v2)]), &none(), None)
             .await
             .unwrap();
 
@@ -1970,8 +2278,18 @@ async fn parity_scenario_runs_commit_delete_and_move_end_to_end() {
     let mut pusher = pusher(&client, &store);
 
     let mut trail = Vec::new();
-    trail.extend(pusher.push(&docs(&[(A, &v1)]), &none()).await.unwrap());
-    trail.extend(pusher.push(&docs(&[(A, &v2)]), &none()).await.unwrap());
+    trail.extend(
+        pusher
+            .push(&docs(&[(A, &v1)]), &none(), None)
+            .await
+            .unwrap(),
+    );
+    trail.extend(
+        pusher
+            .push(&docs(&[(A, &v2)]), &none(), None)
+            .await
+            .unwrap(),
+    );
     trail.extend(
         pusher
             .move_documents(&moves(&[(A, B)]), &none())

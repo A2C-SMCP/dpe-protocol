@@ -71,7 +71,7 @@ let document = ExpandedDocument::parse(
     CONTRACT,
 )?;
 let results = pusher
-    .push(&[("s3://bucket/a.md".to_owned(), document)], &HashMap::new())
+    .push(&[("s3://bucket/a.md".to_owned(), document)], &HashMap::new(), None)
     .await?;
 println!("{}", results[0].status); // created / updated / unchanged / achieved / conflict / failed
 pusher
@@ -89,7 +89,10 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 - 任何一次保存失败后，store 都可能与内存不一致（收尾失败时落后、写前失败而落盘实现写完才报错时领先）：继续使用同一个实例直到下一次保存成功，在那之前不要用同一个 store 新建实例（跨实例的保证属于运行器）；
 - `StateStore` 在异步方法里被同步调用、调用期间占住当前 worker，实现应尽量缩短耗时；多线程运行时上重 I/O（`fsync` 等）可用 `tokio::task::block_in_place` 包住（current_thread 运行时上不可用）；
 - 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
-- 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`：`deliver` 的 future 在 `BlobProvider` 加 `Send`（#131）之前不是 `Send`。
+- 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`：`deliver` 的 future 在 `BlobProvider` 加 `Send`（#131）之前不是 `Send`，推送器共享 blob 来源的容器届时也一并换成线程安全的；
+- `push` 的最后一个参数 `blobs` 原样交给每条 `deliver`，按 `sha256:` 引用给出服务端缺少的 blob 字节（可用下文 `media` 构造来源），未变文档不会调用它；
+- `flush()` 是补存入口：任何一次保存失败后、结束使用前，用同一个实例调用它，把内存状态整批写回 store；
+- `client()` 返回构造时传入的客户端，运行器经它取得 remote 能力，不另建客户端。
 
 ## 媒体来源（`media`）
 
