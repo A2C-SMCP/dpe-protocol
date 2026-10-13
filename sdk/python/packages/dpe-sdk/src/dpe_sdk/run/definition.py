@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -33,6 +34,7 @@ from dpe_sdk.run.secrets import SourceRef, is_base_env_name, same_source
 
 __all__ = [
     "ConflictPolicy",
+    "DefinitionIdentity",
     "InstanceDefinition",
     "PluginSpec",
     "RemoteSpec",
@@ -40,11 +42,41 @@ __all__ = [
     "load_definition",
     "load_definition_id",
     "parse_definition",
+    "peek_identity",
     "resolve_command",
 ]
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _Str = Annotated[str, Field(strict=True)]
+
+
+# 成员规则（模型校验与 peek_identity / load_definition_id 共用同一份）：不合法抛 ValueError
+
+
+def _valid_id(id_: str) -> str:
+    if not _ID.fullmatch(id_):
+        raise ValueError("id 须匹配 ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    return id_
+
+
+def _valid_url(url: str) -> str:
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("remote.url 须为 http(s) 绝对 URL")
+    if "@" in parts.netloc:
+        raise ValueError("remote.url 不得含 userinfo（凭证经 remote.credential 引用）")
+    return url
+
+
+def _valid_prefix(prefix: str) -> str:
+    # §3、§6.3：符合 core §1.1 文法，且已是规范化不动点
+    try:
+        normalized = dpe_hash.normalize_file_uri(prefix)
+    except dpe_hash.ValidationError as exc:
+        raise ValueError(f"uri_prefix 不是合法的 URI：{exc}") from None
+    if normalized != prefix:
+        raise ValueError(f"uri_prefix 不是规范化不动点（规范化形式为 {normalized!r}）")
+    return prefix
 
 
 class RemoteSpec(ClosedModel):
@@ -56,12 +88,7 @@ class RemoteSpec(ClosedModel):
     @field_validator("url")
     @classmethod
     def _check_url(cls, url: str) -> str:
-        parts = urlsplit(url)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise ValueError("remote.url 须为 http(s) 绝对 URL")
-        if "@" in parts.netloc:
-            raise ValueError("remote.url 不得含 userinfo（凭证经 remote.credential 引用）")
-        return url
+        return _valid_url(url)
 
 
 class PluginSpec(ClosedModel):
@@ -141,21 +168,12 @@ class InstanceDefinition(ClosedModel):
     @field_validator("id")
     @classmethod
     def _check_id(cls, id_: str) -> str:
-        if not _ID.fullmatch(id_):
-            raise ValueError("id 须匹配 ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-        return id_
+        return _valid_id(id_)
 
     @field_validator("uri_prefix")
     @classmethod
     def _check_prefix(cls, prefix: str) -> str:
-        # §3、§6.3：符合 core §1.1 文法，且已是规范化不动点
-        try:
-            normalized = dpe_hash.normalize_file_uri(prefix)
-        except dpe_hash.ValidationError as exc:
-            raise ValueError(f"uri_prefix 不是合法的 URI：{exc}") from None
-        if normalized != prefix:
-            raise ValueError(f"uri_prefix 不是规范化不动点（规范化形式为 {normalized!r}）")
-        return prefix
+        return _valid_prefix(prefix)
 
     @field_validator("config")
     @classmethod
@@ -215,10 +233,9 @@ def load_definition(path: Path) -> InstanceDefinition:
     return parse_definition(data, path.absolute().parent)
 
 
-def load_definition_id(path: Path) -> str:
-    """删除（§5.1）只需从实例定义得到 ``id``：仅校验它是嵌套深度不超过上界的 I-JSON 对象、
-    ``definition_version`` 受支持、``id`` 存在且符合文法；其余成员一律不校验（清单丢失、前缀
-    非法或凭证配错的实例也必须能删除）。不满足即 ``definition_invalid``。"""
+def _definition_object(path: Path) -> dict[str, Any]:
+    """读出受支持的实例定义对象：嵌套深度不超过上界的 I-JSON 对象、``definition_version``
+    受支持；其余成员不校验。不满足即 ``definition_invalid``。"""
     try:
         data = load_json_file(path)
     except ValueError as exc:
@@ -230,10 +247,56 @@ def load_definition_id(path: Path) -> str:
     version = data.get("definition_version")
     if type(version) is not int or version != 1:  # 与完整解析同为严格整数（1.0 不受支持）
         raise _invalid(f"不支持的 definition_version：{version!r}")
-    instance_id = data.get("id")
-    if not isinstance(instance_id, str) or not _ID.fullmatch(instance_id):
-        raise _invalid(f"id 不合法：{instance_id!r}")
+    return data
+
+
+def _member(value: Any, rule: Any) -> str | None:
+    """一个字符串成员按规则取值；缺失、类型不符或不合法为 ``None``。"""
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(rule(value))
+    except ValueError:
+        return None
+
+
+def load_definition_id(path: Path) -> str:
+    """删除（§5.1）只需从实例定义得到 ``id``：仅校验它是嵌套深度不超过上界的 I-JSON 对象、
+    ``definition_version`` 受支持、``id`` 存在且符合文法；其余成员一律不校验（清单丢失、前缀
+    非法或凭证配错的实例也必须能删除）。不满足即 ``definition_invalid``。"""
+    data = _definition_object(path)
+    instance_id = _member(data.get("id"), _valid_id)
+    if instance_id is None:
+        raise _invalid(f"id 不合法：{data.get('id')!r}")
     return instance_id
+
+
+@dataclass(frozen=True)
+class DefinitionIdentity:
+    """报告与日志要的实例信息（§7.4、§7.5）：缺失或不合法的成员为 ``None``。"""
+
+    id: str | None = None
+    uri_prefix: str | None = None
+    remote_url: str | None = None
+
+
+def peek_identity(path: Path) -> DefinitionIdentity:
+    """完整校验失败时，逐个成员取出报告与日志要的实例信息（§7.4：实例定义无法解析、缺少该
+    成员或该成员不合法时，对应成员为 ``null``）。从不抛出。
+
+    成员按与完整解析相同的规则判定；``remote.url`` 不合法时同样不回显——它可能带 userinfo
+    （凭证）。定义整体读不出或 ``definition_version`` 不受支持时全部为 ``None``。
+    """
+    try:
+        data = _definition_object(path)
+    except InstanceFailure:
+        return DefinitionIdentity()
+    remote = data.get("remote")
+    return DefinitionIdentity(
+        id=_member(data.get("id"), _valid_id),
+        uri_prefix=_member(data.get("uri_prefix"), _valid_prefix),
+        remote_url=_member(remote.get("url"), _valid_url) if isinstance(remote, dict) else None,
+    )
 
 
 def check_against_manifest(definition: InstanceDefinition, manifest: Manifest) -> None:

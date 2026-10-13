@@ -439,7 +439,7 @@ def test_runner_crash_reports_redacts_and_exits_70(
     assert run.report["cursor_held_since"] == run.report["started_at"]
     crashed = run.events("runner.crashed")
     assert len(crashed) == 1 and "ValueError" in crashed[0]["traceback"]
-    finished = run.events("round.finished")  # 轮已开始却没收尾：补发 round.finished
+    finished = run.events("round.finished")  # 由 _finish 按最终结果发出恰好一条
     assert len(finished) == 1 and finished[0]["level"] == "error"
     assert all(line.startswith("{") for line in run.stderr.splitlines())  # 仍是 NDJSON
     assert SECRET not in run.stdout + run.stderr
@@ -564,6 +564,7 @@ def test_crash_outside_the_lock_still_reports(
     assert run.report["instance"] == {"id": None, "uri_prefix": None}
     assert run.report["cursor_held_since"] is None and run.report["incremental"] is None
     assert len(run.events("runner.crashed")) == 1
+    _finished_matches_report(run)
 
 
 def test_unresolvable_state_directory_is_a_reported_crash(
@@ -583,6 +584,7 @@ def test_unresolvable_state_directory_is_a_reported_crash(
     run = Run(code, out.getvalue(), err.getvalue())
     assert run.code == 70 and run.codes() == ["runner_internal_error"]
     assert len(run.events("runner.crashed")) == 1
+    _finished_matches_report(run)  # main 的兜底路径同样恰好一条
 
 
 def test_failed_validation_does_not_register_the_prefix(instance: Instance) -> None:
@@ -598,9 +600,9 @@ def test_failed_validation_does_not_register_the_prefix(instance: Instance) -> N
 def test_crash_after_the_round_keeps_its_results(
     instance: Instance, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """一轮已正常收尾、关闭插件时才出缺陷：outcome 记 failed、退出 70，但已落盘的事实照实报告——
-    counts、cursor_persisted: true、run_round 算出的 cursor_held_since（null）——不改写 held，
-    round.finished 不补发第二条。这组取值是有意的（规范未覆盖的边界，口径待规范澄清）。"""
+    """一轮已正常收尾、关闭插件时才出缺陷（§7.3 的例外）：outcome 记 failed、退出 70，但已落盘的
+    事实照实报告——counts、cursor_persisted: true、扣住记录按 succeeded 清除（null）；
+    round.finished 只有一条，与报告一致（failed）。"""
     from dpe_sdk.run import PluginHost
 
     async def broken_exit(self: PluginHost, *exc: object) -> None:
@@ -613,8 +615,8 @@ def test_crash_after_the_round_keeps_its_results(
     assert run.report["outcome"] == "failed" and run.codes() == ["runner_internal_error"]
     assert run.report["counts"]["created"] == 1 and run.report["cursor_persisted"] is True
     assert run.report["cursor_held_since"] is None
-    finished = run.events("round.finished")
-    assert [entry["outcome"] for entry in finished] == ["succeeded"]  # 轮本身确已成功收尾
+    _finished_matches_report(run)
+    assert run.events("round.finished")[0]["level"] == "error"
     assert StateDirectory(instance.state).open_instance("inst", _identity(instance)).cursor == "c1"
 
 
@@ -684,6 +686,8 @@ def test_unwritable_report_exits_74_without_a_crash(instance: Instance) -> None:
     )
     assert code == 74
     assert '"runner.crashed"' not in err.getvalue()
+    # 报告写不出时日志照常：本次调用恰好一条 round.finished
+    assert err.getvalue().count('"event":"round.finished"') == 1
 
 
 def test_crash_mid_round_reports_what_already_happened(
@@ -706,6 +710,7 @@ def test_crash_mid_round_reports_what_already_happened(
     assert run.code == 70
     assert run.report["counts"]["created"] == 1
     assert run.codes() == ["internal", "runner_internal_error"]
+    _finished_matches_report(run)
     assert run.events("round.finished")[0]["counts"]["created"] == 1
 
 
@@ -755,6 +760,7 @@ def test_crash_outside_the_lock_keeps_the_instance_details(
     assert run.report["cursor_held_since"] is None  # 未取得锁：不读写 held 记录
     crashed = run.events("runner.crashed")
     assert len(crashed) == 1 and crashed[0]["instance"] == "inst"
+    _finished_matches_report(run)
 
 
 def test_new_instance_rejected_for_overlap_leaves_nothing_behind(
@@ -846,3 +852,125 @@ def test_lock_io_error_is_state_unavailable(
     run = _main_in_process(instance)
     assert run.code == 2 and run.codes() == ["state_unavailable"]
     assert run.report["cursor_held_since"] is None
+
+
+# ---------------------------------------------------------------------- #155 的口径（#161）
+
+
+def test_succeeded_round_without_a_new_cursor_keeps_the_cached_one(instance: Instance) -> None:
+    """支持游标的插件在成功轮给出 cursor: null：保留已缓存的游标（§6.8），本轮
+    cursor_persisted 为 false；下一轮仍是增量轮、从旧游标开始。"""
+    record = instance.dir / "requests.ndjson"
+    assert instance.run({"batches": [[]], "cursor": "c1"}).code == 0
+    kept = instance.run({"batches": [[]], "cursor": None})
+    assert kept.code == 0 and kept.report["outcome"] == "succeeded"
+    assert kept.report["cursor_persisted"] is False
+    later = instance.run({"batches": [[]], "cursor": "c2", "record": str(record)})
+    assert later.events("round.started")[0]["cursor_given"] is True
+    assert later.report["incremental"] is True
+    scans = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
+    assert scans[0]["method"] == "scan" and scans[0]["params"]["cursor"] == "c1"
+
+
+def test_plugin_without_cursor_support_caches_nothing(instance: Instance) -> None:
+    record = instance.dir / "requests.ndjson"
+    first = instance.run({"batches": [[]], "supports_cursor": False})
+    assert first.code == 0 and first.report["cursor_persisted"] is False
+    second = instance.run({"batches": [[]], "supports_cursor": False, "record": str(record)})
+    assert second.events("round.started")[0]["cursor_given"] is False
+    scan = json.loads(record.read_text(encoding="utf-8").splitlines()[0])
+    assert scan["params"].get("cursor") is None
+
+
+def _finished_matches_report(run: Run) -> None:
+    finished = run.events("round.finished")
+    assert len(finished) == 1, finished  # 同步一轮的调用恰好一条（§7.5）
+    for key in ("outcome", "incremental", "cursor_persisted", "cursor_held_since", "counts"):
+        assert finished[0][key] == run.report[key], key
+
+
+def test_round_finished_is_emitted_once_for_every_sync_call(
+    tmp_path: Path, server: dict[str, Any]
+) -> None:
+    instance = Instance(tmp_path, server["url"], tmp_path / "state")
+    _finished_matches_report(instance.run({"batches": [[doc_item("a.md", "A")]], "cursor": "c"}))
+    instance.manifest["manifest_version"] = 9  # 实例级失败
+    _finished_matches_report(instance.run(None))
+    instance.manifest["manifest_version"] = 1
+    with StateDirectory(instance.state).lock_instance("inst"):
+        busy = instance.run(None)
+    assert busy.code == 4
+    _finished_matches_report(busy)
+    assert busy.events("round.finished")[0]["round"] is None  # 未取得锁：轮外
+
+
+def test_round_id_starts_when_the_lock_is_taken(instance: Instance) -> None:
+    """轮标识自取得实例锁起生成：插件启动期的事件归入本轮（§7.5）；删除的事件为 null。"""
+    run = instance.run({"batches": [[]], "stderr": ["启动期输出"]})
+    round_id = run.events("round.finished")[0]["round"]
+    assert round_id is not None
+    assert run.events("plugin.started")[0]["round"] == round_id
+    assert run.events("plugin.stderr")[0]["round"] == round_id
+    assert {entry["round"] for entry in run.logs} == {round_id}
+    deleted = instance.run(None, "--delete")
+    assert all(entry["round"] is None for entry in deleted.logs)
+
+
+def test_invalid_members_are_null_one_by_one(instance: Instance) -> None:
+    """定义不合法时报告与日志的 instance 逐个成员取值：只有缺失或不合法的成员为 null（§7.4）。"""
+    instance.definition["remote"] = {"url": "ftp://user:secret@example.com/x"}
+    bad_remote = instance.run(None)
+    assert bad_remote.code == 3
+    assert bad_remote.report["instance"] == {"id": "inst", "uri_prefix": P}
+    assert bad_remote.report["remote_url"] is None  # 不合法的 URL 不回显（可能带凭证）
+    assert {entry["instance"] for entry in bad_remote.logs} == {"inst"}
+    assert "secret" not in bad_remote.stdout + bad_remote.stderr
+    _finished_matches_report(bad_remote)
+
+    instance.definition["id"] = "-bad"
+    bad_id = instance.run(None)
+    assert bad_id.report["instance"] == {"id": None, "uri_prefix": P}
+    assert {entry["instance"] for entry in bad_id.logs} == {None}
+
+
+@pytest.mark.parametrize(
+    ("outcome", "failures", "code"),
+    [
+        ("succeeded", [], 0),
+        ("partial", [("item", "internal")], 1),
+        ("failed", [("round", "remote_unavailable")], 2),
+        ("failed", [("protocol", "protocol_error")], 2),
+        ("failed", [("instance", "secret_missing")], 3),
+        ("failed", [("round", "instance_busy")], 4),
+        # 多类并存：70 > 3 > 2 > 4 > 1（§7.6）
+        ("failed", [("instance", "remote_unauthorized"), ("round", "runner_internal_error")], 70),
+        ("failed", [("round", "plugin_crashed"), ("round", "runner_internal_error")], 70),
+        ("failed", [("round", "remote_unavailable"), ("instance", "remote_unauthorized")], 3),
+        ("failed", [("round", "instance_busy"), ("round", "state_unavailable")], 2),
+        ("failed", [("item", "internal"), ("round", "instance_busy")], 4),
+        ("failed", [("item", "internal"), ("round", "runner_internal_error")], 70),
+    ],
+)
+def test_exit_code_priority(outcome: Any, failures: list[tuple[str, str]], code: int) -> None:
+    from dpe_sdk.run import InstanceFailure, ItemFailure, ProtocolFailure, RoundFailure
+    from dpe_sdk.run.report import exit_code
+
+    def failure(level: str, name: str) -> Any:
+        if level == "instance":
+            return InstanceFailure(name, "x")
+        if level == "protocol":
+            return ProtocolFailure("x")
+        if level == "item":
+            return ItemFailure(name, "x", source="plugin")
+        return RoundFailure(name, "x", retryable=False)
+
+    assert exit_code(outcome, [failure(*entry) for entry in failures]) == code
+
+
+def test_fallback_to_full_round_is_a_warning(instance: Instance) -> None:
+    """给了游标、插件却回退为全量轮：round.finished 为 warn（§6.4 MUST 可观测、§7.5）。"""
+    assert instance.run({"batches": [[]], "cursor": "c1"}).code == 0
+    run = instance.run({"batches": [[]], "cursor": "c2", "incremental": False})
+    assert run.code == 0 and run.report["incremental"] is False
+    _finished_matches_report(run)
+    assert run.events("round.finished")[0]["level"] == "warn"
