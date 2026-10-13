@@ -412,10 +412,7 @@ async fn mid_page_insert_uploads_only_new_objects() {
     store
         .save(
             &server.remote(),
-            &StateSnapshot {
-                synced: synced(&[(A, doc_hash(&doc1))]),
-                intents: BTreeMap::new(),
-            },
+            &StateSnapshot::new(synced(&[(A, doc_hash(&doc1))]), BTreeMap::new()),
         )
         .unwrap();
     let mut pusher = pusher(&client, &store);
@@ -502,10 +499,7 @@ async fn old_contract_state_entries_are_treated_as_missing() {
     store
         .save(
             &server.remote(),
-            &StateSnapshot {
-                synced: synced(&[(A, stale)]),
-                intents: BTreeMap::new(),
-            },
+            &StateSnapshot::new(synced(&[(A, stale)]), BTreeMap::new()),
         )
         .unwrap();
     fake.script(Route::Commit(A.into()), vec![updated(A, &v2)]);
@@ -1102,6 +1096,11 @@ async fn local_validation_sends_nothing() {
         .await
         .expect_err("归一化后重复");
     assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    let error = pusher
+        .delete(&[A.to_owned(), "DPE://docs/a.md".to_owned()], &none())
+        .await
+        .expect_err("delete 归一化后重复");
+    assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     let outside = HashMap::from([(B.to_owned(), None)]);
     let error = pusher
         .push(&docs(&[(A, &v1)]), &outside)
@@ -1113,6 +1112,129 @@ async fn local_validation_sends_nothing() {
         "concurrency 必须是正整数"
     );
     // 只有 capabilities 一个请求（校验在任何读写之前）
+    assert_eq!(count(&server, "POST", "/heads"), 0);
+    assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
+}
+
+/// 按调用次序失败的 store：第 `fail_on` 次 `save`（从 1 计）失败，`load` 可设为失败。
+#[derive(Default)]
+struct CountingStore {
+    inner: MemoryStateStore,
+    saves: AtomicUsize,
+    fail_on: AtomicUsize,
+    fail_load: std::sync::atomic::AtomicBool,
+}
+
+impl StateStore for CountingStore {
+    fn load(&self, remote: &str) -> Result<Option<StateSnapshot>, StoreError> {
+        if self.fail_load.load(Ordering::SeqCst) {
+            return Err("unreadable".into());
+        }
+        self.inner.load(remote)
+    }
+
+    fn save(&self, remote: &str, snapshot: &StateSnapshot) -> Result<(), StoreError> {
+        let nth = self.saves.fetch_add(1, Ordering::SeqCst) + 1;
+        if nth == self.fail_on.load(Ordering::SeqCst) {
+            return Err("disk full".into());
+        }
+        self.inner.save(remote, snapshot)
+    }
+}
+
+#[tokio::test]
+async fn final_save_failure_is_outcome_unknown_and_the_next_save_catches_up() {
+    // 第 1 次 save（写前意图）成功、第 2 次（收尾）失败：写请求已发出 → 结果未知；
+    // 同一实例的下一次成功保存把内存整份补上
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(CountingStore::default());
+    store.fail_on.store(2, Ordering::SeqCst);
+    let mut pusher =
+        StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 4).unwrap();
+    let (v1, v2) = (text("v1"), text("v2"));
+    fake.script(
+        Route::Commit(A.into()),
+        vec![created(A, &v1), updated(A, &v2)],
+    );
+
+    let error = pusher
+        .push(&docs(&[(A, &v1)]), &none())
+        .await
+        .expect_err("收尾 save 失败应整批报错");
+
+    assert_eq!(error.kind(), ErrorKind::StateStore);
+    assert!(error.outcome_unknown(), "写请求已发出");
+    assert_eq!(fake.write_count.load(Ordering::SeqCst), 1);
+    // store 落后于内存：仍是写前的意图；内存已确认 v1
+    let behind = store.inner.load(&server.remote()).unwrap().unwrap();
+    assert_eq!(behind.intents, intents(&[(A, Some(doc_hash(&v1)))]));
+    assert_eq!(pusher.snapshot().synced, synced(&[(A, doc_hash(&v1))]));
+
+    let results = pusher.push(&docs(&[(A, &v2)]), &none()).await.unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Updated]);
+    assert_eq!(
+        store.inner.load(&server.remote()).unwrap().unwrap(),
+        pusher.snapshot(),
+        "下一次成功保存后 store 与内存一致"
+    );
+}
+
+#[tokio::test]
+async fn final_save_failure_without_writes_is_determined() {
+    // 本批全部已达成（未发写）：收尾 save 失败时结果确定未生效
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let v1 = text("v1");
+    fake.set(A, Some(doc_hash(&v1)));
+    let store = Arc::new(CountingStore::default());
+    store.fail_on.store(1, Ordering::SeqCst); // 没有写前保存，第 1 次就是收尾保存
+    let mut pusher =
+        StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 4).unwrap();
+
+    let error = pusher
+        .push(&docs(&[(A, &v1)]), &none())
+        .await
+        .expect_err("收尾 save 失败应整批报错");
+
+    assert_eq!(error.kind(), ErrorKind::StateStore);
+    assert!(!error.outcome_unknown(), "本批未发写请求");
+    assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn load_failure_at_construction_is_a_determined_state_store_error() {
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(CountingStore::default());
+    store.fail_load.store(true, Ordering::SeqCst);
+
+    let error = StatefulPusher::with_store(&client, store as Arc<dyn StateStore>, 4)
+        .expect_err("load 失败");
+
+    assert_eq!(error.kind(), ErrorKind::StateStore);
+    assert!(!error.outcome_unknown(), "构造阶段不发写请求");
+    assert_eq!(server.count(), 0);
+}
+
+#[tokio::test]
+async fn empty_batches_return_empty_without_reading() {
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let mut pusher = pusher(&client, &Arc::new(MemoryStateStore::new()));
+
+    assert!(pusher.push(&[], &none()).await.unwrap().is_empty());
+    assert!(pusher.delete(&[], &none()).await.unwrap().is_empty());
+    assert!(pusher
+        .move_documents(&[], &none())
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(count(&server, "POST", "/heads"), 0);
     assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
 }
@@ -1479,6 +1601,12 @@ async fn move_source_gone_and_target_differs_is_failed_side_from() {
 
     assert_eq!(statuses(&results), [PushStatus::Failed]);
     assert_eq!(results[0].side, Some(Side::From));
+    assert_eq!(results[0].to_uri.as_deref(), Some(B));
+    assert_eq!(
+        results[0].remote.as_ref().unwrap().doc_hash,
+        None,
+        "读到的源不存在"
+    );
     assert_eq!(
         results[0].error.as_ref().and_then(|error| error.code()),
         Some("DPE_NOT_FOUND")
@@ -1689,9 +1817,10 @@ async fn overlapping_moves_are_rejected_before_any_request() {
     let x = "dpe://docs/x.md";
 
     for batch in [
-        moves(&[(A, B), (B, x)]), // 链式
-        moves(&[(A, x), (B, x)]), // 共用目标
-        moves(&[(A, B), (A, x)]), // 重复源
+        moves(&[(A, B), (B, x)]),                 // 链式
+        moves(&[(A, x), (B, x)]),                 // 共用目标
+        moves(&[(A, B), (A, x)]),                 // 重复源
+        moves(&[(A, x), ("DPE://docs/b.md", B)]), // 归一化后才重叠（scheme 大小写）
     ] {
         let error = pusher
             .move_documents(&batch, &none())

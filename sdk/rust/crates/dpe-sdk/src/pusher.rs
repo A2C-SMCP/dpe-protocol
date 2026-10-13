@@ -85,6 +85,7 @@ pub use self::driver::{StatefulPusher, DEFAULT_CONCURRENCY};
 
 /// 读到的一篇文档的 remote 状态：`doc_hash` 为 `None` 表示文档不存在。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RemoteState {
     pub doc_hash: Option<String>,
 }
@@ -93,10 +94,23 @@ pub struct RemoteState {
 ///
 /// - `synced`：同步状态（规范化 file_uri → 最近一次确认的 remote doc_hash）；
 /// - `intents`：待定意图（规范化 file_uri → doc_hash 或 `None`＝「不存在」）。
+///
+/// store 实现经 [`StateSnapshot::new`]（或 `Default`）构造，字段可直接读写。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct StateSnapshot {
     pub synced: BTreeMap<String, String>,
     pub intents: BTreeMap<String, Option<String>>,
+}
+
+impl StateSnapshot {
+    /// 由同步状态与待定意图构造（store 实现从持久化介质读回时用）。
+    pub fn new(
+        synced: BTreeMap<String, String>,
+        intents: BTreeMap<String, Option<String>>,
+    ) -> Self {
+        StateSnapshot { synced, intents }
+    }
 }
 
 /// [`StateStore`] 的错误：实现自定的任意错误（推送器包装为 [`ErrorKind::StateStore`]，
@@ -107,6 +121,11 @@ pub type StoreError = Box<dyn std::error::Error + Send + Sync + 'static>;
 ///
 /// `save` 返回 `Ok` 即表示**这一批意图已经持久化**（按其实现承诺的强度），推送器保证在它返回
 /// 之后才发出对应的写请求；实现负责在崩溃后仍能读回（落盘实现属运行器状态目录，§4.4）。
+///
+/// **同步调用约定**：推送器在异步方法里**同步**调用 `load` / `save`（与 Python 侧对等），
+/// 调用期间占住当前 worker 线程（转交别的线程再同步等待也一样），实现应尽量缩短耗时。
+/// 多线程运行时上，重 I/O（文件写入、`fsync`）可用 `tokio::task::block_in_place` 包住，让
+/// 运行时把其他任务挪走；它在 current_thread 运行时上会 panic，那里无法避免阻塞。
 pub trait StateStore: Send + Sync {
     /// 读回该 remote 的状态；从未保存过时返回 `Ok(None)`。
     fn load(&self, remote: &str) -> Result<Option<StateSnapshot>, StoreError>;
@@ -148,6 +167,7 @@ impl StateStore for MemoryStateStore {
 
 /// 一条回报对应的操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PushOp {
     Commit,
     Delete,
@@ -173,6 +193,7 @@ impl PushOp {
 /// `Conflict`＝判定表判定或服务端 CAS 裁决（后者带重读到的 `remote`）；`Failed`＝失败
 /// （[`PushResult::unknown`] 区分结果是否已确定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PushStatus {
     Created,
     Updated,
@@ -212,6 +233,7 @@ impl From<CommitStatus> for PushStatus {
 
 /// move 的问题发生在源侧还是目标侧。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Side {
     From,
     To,
@@ -883,13 +905,15 @@ impl PusherState {
                     result.remote = Some(plan.remote);
                     results.push(result);
                 }
-                Action::Conflict | Action::Failed => {
+                Action::Conflict => {
                     // 未发写：不产生新意图，也不清除既有待定意图（那条写入的结果仍未知）
                     let mut result =
                         PushResult::new(PushOp::Commit, &plan.uri, PushStatus::Conflict);
                     result.remote = Some(plan.remote);
                     results.push(result);
                 }
+                // commit 的判定表当前不产出判定失败；一旦产出，如实报 Failed（不混作冲突）
+                Action::Failed => results.push(judged_failure(plan)),
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
                     if outcome.error.is_some() {
@@ -925,12 +949,14 @@ impl PusherState {
                     result.remote = Some(plan.remote);
                     results.push(result);
                 }
-                Action::Conflict | Action::Failed => {
+                Action::Conflict => {
                     let mut result =
                         PushResult::new(PushOp::Delete, &plan.uri, PushStatus::Conflict);
                     result.remote = Some(plan.remote);
                     results.push(result);
                 }
+                // delete 的判定表当前不产出判定失败；一旦产出，如实报 Failed（不混作冲突）
+                Action::Failed => results.push(judged_failure(plan)),
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
                     match (&outcome.error, outcome.kind) {
@@ -982,12 +1008,13 @@ impl PusherState {
                     result
                 }
                 Action::Failed => {
-                    // 判定失败（源已不存在、目标未达成）：不产生新意图、不清除既有待定意图
-                    let mut result = PushResult::new(PushOp::Move, &plan.uri, PushStatus::Failed);
-                    result.remote = Some(plan.remote);
-                    result.error = plan.error;
+                    // 判定失败（源已不存在、目标未达成）：问题在源侧
+                    let to_uri = plan.to_uri.clone();
+                    let mut result = judged_failure(plan);
                     result.side = Some(Side::From);
-                    result
+                    result.to_uri = to_uri;
+                    results.push(result);
+                    continue;
                 }
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
@@ -1006,6 +1033,15 @@ impl PusherState {
         }
         results
     }
+}
+
+/// 判定失败（未发写）的回报：`Failed`，带判定错误与读到的 remote；不产生新意图、也不清除
+/// 既有待定意图（三个操作共用，move 另补侧别与目标）。
+fn judged_failure(plan: Plan<'_>) -> PushResult {
+    let mut result = PushResult::new(plan.op, &plan.uri, PushStatus::Failed);
+    result.remote = Some(plan.remote);
+    result.error = plan.error;
+    result
 }
 
 impl fmt::Display for PushStatus {
@@ -1034,6 +1070,11 @@ mod driver {
     use crate::models::ExpandedDocument;
     use crate::protocol::Precondition;
 
+    /// 本批是否有发写的计划（收尾保存失败时据此置 `outcome_unknown`）。
+    fn has_writes(plans: &[Plan<'_>]) -> bool {
+        plans.iter().any(|plan| plan.action == Action::Write)
+    }
+
     /// 写操作的缺省并发度（同 Python 侧的 `concurrency=4`）。
     pub const DEFAULT_CONCURRENCY: usize = 4;
 
@@ -1047,14 +1088,19 @@ mod driver {
     ///   `deliver` 的 future 在 #131 之前不是 `Send`；
     /// - 批级失败（输入校验、`batch_head`、store 读写）以 `Err` 返回、不产生逐条回报；store 的
     ///   错误包装为 [`ErrorKind::StateStore`]，原错误经 `source()` 取回：
+    ///   - 构造时载入失败：未发任何请求（`outcome_unknown()` 为假）；
     ///   - 写前持久化意图失败：写请求确定未发出（`outcome_unknown()` 为假），本批意图不进入
     ///     内存（判定阶段按真实读到的远端值完成的对账保留，下次保存时一并落盘）；
-    ///   - 收尾保存失败（写请求已发出）：整批报错，本轮的逐条回报随之丢失，调用方不应据此推进
-    ///     游标。此时 **store 落后于内存**：store 里仍是写前持久化的意图，其中已确定失败的写入
-    ///     对应的意图在内存里已清除、在 store 里还在（等同于「结果确定之后、清除落盘之前崩溃」，
-    ///     §7.2 的崩溃窗口）。**继续使用同一个实例**，直到下一次保存成功（它会整份写入内存
-    ///     状态）；在那之前**不要用同一个 store 新建实例**——否则载入的失效意图可能把他人恰好
-    ///     写下的同值误认为自身写入。跨实例的保证属于运行器的职责。
+    ///   - 收尾保存失败（本批发过写请求时 `outcome_unknown()` 为真，否则为假）：整批报错，本轮的逐条回报
+    ///     随之丢失，调用方不应据此推进游标；已确定的结果已并入内存，同一实例继续可用，只有
+    ///     结果未知的写入在下一轮按意图对账。
+    ///
+    /// **store 与内存不一致**：任何一次保存失败后，store 都可能与内存不一致——收尾失败时
+    /// store **落后**于内存（仍留着内存里已清除的意图，如已确定失败的写入）；落盘实现若在写入
+    /// 完成后才报错（如目录 `fsync` 失败），写前那次失败也会让 store **领先**于内存（留着从未
+    /// 发出的意图）。**继续使用同一个实例**，直到下一次保存成功（它会整份写入内存状态）；在那
+    /// 之前**不要用同一个 store 新建实例**——读回的过期意图会在他人恰好写下同值时被误认为自身
+    /// 写入。进程崩溃后重新载入属于 §7.2 本就接受的崩溃窗口；跨实例的保证属于运行器的职责。
     ///
     /// ```no_run
     /// use std::collections::HashMap;
@@ -1164,9 +1210,10 @@ mod driver {
                 .state
                 .plan_commit(entries, &heads, &expected, &contract);
             self.persist(PusherState::commit_intents(&plans))?;
+            let wrote = has_writes(&plans);
             let outcomes = self.run_all(&plans).await;
             let results = self.state.finish_commit(plans, outcomes);
-            self.save()?;
+            self.save(wrote)?;
             Ok(results)
         }
 
@@ -1191,9 +1238,10 @@ mod driver {
                 .state
                 .plan_delete(&normalized, &heads, &expected, &contract);
             self.persist(PusherState::delete_intents(&plans))?;
+            let wrote = has_writes(&plans);
             let outcomes = self.run_all(&plans).await;
             let results = self.state.finish_delete(plans, outcomes);
-            self.save()?;
+            self.save(wrote)?;
             Ok(results)
         }
 
@@ -1229,9 +1277,10 @@ mod driver {
                 .state
                 .plan_move(&pairs, &heads, &to_heads, &expected, &contract);
             self.persist(PusherState::move_intents(&plans))?;
+            let wrote = has_writes(&plans);
             let outcomes = self.run_all(&plans).await;
             let results = self.state.finish_move(plans, outcomes);
-            self.save()?;
+            self.save(wrote)?;
             Ok(results)
         }
 
@@ -1249,12 +1298,13 @@ mod driver {
             Ok(())
         }
 
-        /// 收尾保存（写请求已发出）：失败时整批报错，本轮的逐条回报随之丢失；store 落后于内存
-        /// （见类型说明），同一实例的下一次成功保存会整份补上。
-        fn save(&self) -> Result<(), Error> {
+        /// 收尾保存：失败时整批报错，本轮的逐条回报随之丢失；`outcome_unknown` 显式置位——
+        /// 本批发过写请求（`wrote`）为真，否则为假（确定未生效）。store 与内存不一致（见类型
+        /// 说明），同一实例的下一次成功保存会整份补上。
+        fn save(&self, wrote: bool) -> Result<(), Error> {
             self.store
                 .save(self.client.remote(), &self.state.snapshot())
-                .map_err(Error::state_store)
+                .map_err(|error| Error::state_store(error).with_outcome_unknown(wrote))
         }
 
         /// 对全部 write 计划按 `concurrency` 有界并发地执行（同一任务内），结果按序回填。
@@ -1908,10 +1958,12 @@ mod tests {
                 .collect()
         };
         for moves in [
-            pairs(&[(A, B), (B, X)]), // 链式
-            pairs(&[(A, X), (B, X)]), // 共用目标
-            pairs(&[(A, B), (A, X)]), // 重复源
-            pairs(&[(A, A)]),         // 源＝目标
+            pairs(&[(A, B), (B, X)]),                 // 链式
+            pairs(&[(A, X), (B, X)]),                 // 共用目标
+            pairs(&[(A, B), (A, X)]),                 // 重复源
+            pairs(&[(A, A)]),                         // 源＝目标
+            pairs(&[(A, X), ("DPE://docs/b.md", B)]), // 归一化后才重叠
+            pairs(&[("DPE://docs/a.md", A)]),         // 归一化后源＝目标
         ] {
             assert_eq!(
                 invalid(PusherState::prepare_moves(&moves, &none(), C)),

@@ -74,7 +74,8 @@ pub enum ErrorKind {
     Transport,
     /// 增量推送器的状态存储（[`StateStore`](crate::pusher::StateStore)）读写失败：本地故障，
     /// 不是传输异常；`source()` 可取回存储实现给出的原始错误（对应 Python 侧原样抛出的
-    /// store 异常）。写前持久化意图失败时写请求确定未发出（[`Error::outcome_unknown`] 为假）。
+    /// store 异常）。[`Error::outcome_unknown`] 显式置位：构造时载入失败与写前持久化意图失败
+    /// 为假（写请求确定未发出）；收尾保存失败时，本批发过写请求为真、否则为假。
     StateStore,
 }
 

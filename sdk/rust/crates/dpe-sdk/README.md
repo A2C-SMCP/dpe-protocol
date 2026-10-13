@@ -86,6 +86,7 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 - **意图日志**：写入前先经 `StateStore::save` 持久化预期的 remote 状态，`save` 返回 `Ok` 之后才发写请求；结果确定即清除，只有结果未知才保留，下一轮按意图对账；
 - **绝不自动 force、不在内部重试冲突**：冲突与失败按条目如实回报（含服务端原样的错误码、重读到的 remote 状态、move 的问题侧别），`expected_base` 让上层以重读值重提；
 - 缺省 `MemoryStateStore` 不保证崩溃持久，落盘实现属于运行器的状态目录（connector §4.4）；
-- 收尾保存失败时整批报错，store 落后于内存：继续使用同一个实例直到下一次保存成功，在那之前不要用同一个 store 新建实例（跨实例的保证属于运行器）；
+- 任何一次保存失败后，store 都可能与内存不一致（收尾失败时落后、写前失败而落盘实现写完才报错时领先）：继续使用同一个实例直到下一次保存成功，在那之前不要用同一个 store 新建实例（跨实例的保证属于运行器）；
+- `StateStore` 在异步方法里被同步调用、调用期间占住当前 worker，实现应尽量缩短耗时；多线程运行时上重 I/O（`fsync` 等）可用 `tokio::task::block_in_place` 包住（current_thread 运行时上不可用）；
 - 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
 - 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`：`deliver` 的 future 在 `BlobProvider` 加 `Send`（#131）之前不是 `Send`。
