@@ -233,7 +233,20 @@ class PluginHost:
             return
         if self._close_task is None:
             self._close_task = asyncio.ensure_future(self._close(graceful))
-        await asyncio.shield(self._close_task)
+        # 调用方被取消（如运行器收到 SIGTERM）也要等关闭做完再把取消抛出去：进程组清理是
+        # MUST（§6.3），提前返回会让实例锁在插件终止前释放，而事件循环收尾时取消未完成的
+        # 关闭任务，清理就不会执行，插件的子孙进程成了孤儿（#175）
+        cancelled = False
+        while not self._close_task.done():
+            try:
+                await asyncio.shield(self._close_task)
+            except asyncio.CancelledError:
+                if self._close_task.cancelled():
+                    raise
+                cancelled = True
+        self._close_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def kill(self) -> None:
         """立即终止插件（进程组 KILL），用于中止本轮（§6.4）。"""

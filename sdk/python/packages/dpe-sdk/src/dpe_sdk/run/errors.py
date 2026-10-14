@@ -68,8 +68,16 @@ class RunFailure(Exception):
         self.retryable = retryable
 
     def redact(self, redactor: Callable[[str], str]) -> None:
-        """就地脱敏 ``message``（其中可能有插件控制的文本，§4.3「不外泄」）。"""
-        self.message = redactor(self.message)
+        """就地脱敏 ``message``（其中可能有插件控制的文本，§4.3「不外泄」）；**从不抛出**（#175）。
+
+        脱敏器自身出错时，``message`` 换成只含异常类型名的占位文本——原文可能带凭证，宁可
+        丢掉也不外泄；失败记录照常进入日志与报告，不让脱敏器的缺陷中断收尾。所有失败记录都
+        经由这一个方法脱敏（日志、报告、扣住记录、轮编排、插件宿主）。
+        """
+        try:
+            self.message = redactor(self.message)
+        except Exception as exc:
+            self.message = f"<脱敏失败：{type(exc).__name__}>"
         self.args = (self.message,)
 
     def to_report(self) -> dict[str, Any]:

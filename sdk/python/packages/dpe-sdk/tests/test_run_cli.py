@@ -1155,3 +1155,283 @@ def test_crash_report_counts_the_failure_details_it_omits(
     run = _main_in_process(instance)
     assert run.code == 70 and run.codes() == ["runner_internal_error"]
     assert run.report["failures_truncated"] == 2 and run.report["counts"]["failed"] == 2
+
+
+# ---------------------------------------------------------------------- 脱敏出错与信号中断（#175）
+
+
+def test_redactor_defect_never_breaks_the_finish(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """脱敏器自身抛错：失败记录换成占位文本（不带原文），收尾照常——实例信息、扣住记录、
+    恰好一条 round.finished 都在。"""
+    from dpe_sdk.run.secrets import Redactor
+
+    def broken(self: Redactor, text: str) -> str:
+        raise RuntimeError("脱敏器缺陷")
+
+    monkeypatch.setattr(Redactor, "__call__", broken)
+    error = {"kind": "error", "code": "internal", "message": "原文-不得外泄", "retryable": False}
+    instance.script({"batches": [[error]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 1, run.stderr
+    assert run.report["instance"] == {"id": "inst", "uri_prefix": P}
+    assert run.report["cursor_held_since"] == run.report["started_at"]
+    assert run.report["failures"][0]["message"] == "<脱敏失败：RuntimeError>"
+    _finished_matches_report(run)
+    assert "原文-不得外泄" not in run.stdout + run.stderr
+
+
+def test_fallback_crash_log_carries_only_the_exception_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """进入同步流程之前的兜底拿不到扩展过的脱敏器：只记异常类型，不写 traceback 原文。"""
+    import io
+
+    from dpe_sdk.run import cli
+
+    def leaky() -> Path:
+        raise RuntimeError("token=secret-in-message")
+
+    monkeypatch.setattr(cli, "default_state_dir", leaky)
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main([str(tmp_path / "instance.json")], stdout=out, stderr=err, environ={})
+    assert code == 70
+    assert "secret-in-message" not in out.getvalue() + err.getvalue()
+    crashed = [json.loads(line) for line in err.getvalue().splitlines() if "runner.crashed" in line]
+    assert crashed and crashed[0]["traceback"] == "RuntimeError"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 信号")
+@pytest.mark.parametrize(("sig", "expected"), [("SIGINT", 130), ("SIGTERM", 143)])
+def test_signal_interrupt_releases_the_lock_and_writes_no_report(
+    instance: Instance, sig: str, expected: int
+) -> None:
+    """被信号中断：不补写报告（§7.6），释放锁、关闭插件，以 128 + 信号号退出。"""
+    import signal
+    import time
+
+    instance.script({"batches": [[]], "scan_delay": 30})
+    proc = subprocess.Popen(
+        instance.command(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=instance.environ,
+    )
+    assert proc.stderr is not None
+    plugin_pid = None
+    for line in proc.stderr:  # 等到插件已启动、轮已开始
+        if '"plugin.started"' in line:
+            plugin_pid = json.loads(line)["pid"]
+        if '"round.started"' in line:
+            break
+    assert plugin_pid is not None
+    proc.send_signal(getattr(signal, sig))
+    stdout, rest = proc.communicate(timeout=30)
+    assert proc.returncode == expected, rest
+    assert stdout == ""  # 没有报告
+    assert "Traceback" not in rest  # 不打印多行 traceback，日志仍是 NDJSON
+    StateDirectory(instance.state).lock_instance("inst").release()  # 锁已释放
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(plugin_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("插件进程未被关闭")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 信号")
+def test_signal_after_the_report_keeps_the_report_result(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGINT 在最后一次 await 之后、收尾写报告时才到：报告照常写完，以报告的结果退出，
+    不报成「被中断、没有报告」（§7.6）。"""
+    import signal
+
+    from dpe_sdk.run import cli
+
+    real = cli._conclude
+
+    def interrupted_conclude(*args: Any) -> int:
+        os.kill(os.getpid(), signal.SIGINT)  # asyncio 只把它记成待取消，同步部分照常做完
+        return real(*args)
+
+    monkeypatch.setattr(cli, "_conclude", interrupted_conclude)
+    instance.script({"batches": [[]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 0 and run.report["outcome"] == "succeeded"
+    assert not run.events("runner.interrupted")
+    _finished_matches_report(run)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 信号")
+def test_signal_during_a_completed_delete_keeps_its_result(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import signal
+
+    from dpe_sdk.run.cli import main
+
+    assert instance.run({"batches": [[]]}).code == 0
+    real = StateDirectory.discard
+
+    def interrupted_discard(self: StateDirectory, instance_id: str) -> bool:
+        os.kill(os.getpid(), signal.SIGINT)
+        return real(self, instance_id)
+
+    monkeypatch.setattr(StateDirectory, "discard", interrupted_discard)
+    err = io.StringIO()
+    code = main(
+        ["--state-dir", str(instance.state), "--delete", str(instance.write())],
+        stdout=io.StringIO(),
+        stderr=err,
+        environ=instance.environ,
+    )
+    assert code == 0 and '"event":"instance.deleted"' in err.getvalue()
+    assert "runner.interrupted" not in err.getvalue()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 信号")
+def test_second_signal_does_not_cut_plugin_cleanup_short(instance: Instance) -> None:
+    """SIGINT 之后紧跟 SIGTERM（逐级升级）：第二个信号不打断插件进程组的清理，插件不成孤儿。"""
+    import signal
+    import time
+
+    instance.script({"batches": [[]], "scan_delay": 30})
+    proc = subprocess.Popen(
+        instance.command(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=instance.environ,
+    )
+    assert proc.stderr is not None
+    plugin_pid = None
+    for line in proc.stderr:
+        if '"plugin.started"' in line:
+            plugin_pid = json.loads(line)["pid"]
+        if '"round.started"' in line:
+            break
+    assert plugin_pid is not None
+    proc.send_signal(signal.SIGINT)
+    time.sleep(0.2)  # 清理进行中（插件卧在 scan_delay，要等宽限期后 TERM / KILL）
+    proc.send_signal(signal.SIGTERM)
+    proc.send_signal(signal.SIGINT)
+    stdout, rest = proc.communicate(timeout=60)
+    assert proc.returncode == 130 and stdout == "", rest  # 以第一个信号为准
+    assert "Traceback" not in rest
+    StateDirectory(instance.state).lock_instance("inst").release()
+    with pytest.raises(ProcessLookupError):
+        os.kill(plugin_pid, 0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 信号")
+def test_repeated_signals_while_writing_the_report_leave_it_whole(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写报告期间连收两个 SIGINT：处理器从不抛出，报告完整写出，以报告的结果退出。"""
+    import signal
+
+    from dpe_sdk.run import cli
+
+    real = cli._conclude
+
+    def interrupted_conclude(*args: Any) -> int:
+        os.kill(os.getpid(), signal.SIGINT)
+        os.kill(os.getpid(), signal.SIGINT)
+        return real(*args)
+
+    monkeypatch.setattr(cli, "_conclude", interrupted_conclude)
+    instance.script({"batches": [[]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 0 and run.report["outcome"] == "succeeded"
+    assert not run.events("runner.interrupted")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 信号")
+def test_signal_after_the_event_loop_finished_does_not_kill(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """报告写完、事件循环已结束、进程尚未退出时收到 SIGTERM：不再被直接杀死，以报告的结果退出。"""
+    import asyncio
+    import signal
+
+    real_run = asyncio.run
+
+    def run_then_signal(coro: Any) -> Any:
+        code = real_run(coro)
+        os.kill(os.getpid(), signal.SIGTERM)
+        return code
+
+    monkeypatch.setattr("dpe_sdk.run.cli.asyncio.run", run_then_signal)
+    instance.script({"batches": [[]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 0 and run.report["outcome"] == "succeeded"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 信号")
+def test_signal_before_work_starts_is_a_clean_interrupt(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """还没开始做事（定位状态目录时）就收到 SIGINT：不开始、不写报告，干净地以 130 退出。"""
+    import signal
+
+    from dpe_sdk.run import cli
+    from dpe_sdk.run.state import default_state_dir as real
+
+    def interrupted() -> Path:
+        os.kill(os.getpid(), signal.SIGINT)
+        return real()
+
+    monkeypatch.setattr(cli, "default_state_dir", interrupted)
+    import io
+
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main([str(instance.write())], stdout=out, stderr=err, environ=instance.environ)
+    assert code == 130 and out.getvalue() == ""
+    assert '"event":"runner.interrupted"' in err.getvalue()
+
+
+def test_signal_received_before_registration_does_not_start_the_call() -> None:
+    """信号在登记取消入口之前就到了：不开始这次调用（否则它可能一路做完、写出报告，却以
+    「被中断」退出）。"""
+    import asyncio
+    import signal
+
+    from dpe_sdk.run.cli import _interruptible, _Interrupts
+
+    started: list[bool] = []
+
+    async def call() -> int:
+        started.append(True)
+        return 0
+
+    interrupts = _Interrupts(received=signal.SIGTERM)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_interruptible(call(), interrupts))
+    assert started == []
+
+
+def test_foreign_signal_handlers_are_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """原处理器不是 Python 装的（getsignal 为 None，嵌入式宿主）：不接管，也就不会恢复失败。"""
+    import signal
+
+    from dpe_sdk.run.cli import _Interrupts, _signals_handled
+
+    installed: list[signal.Signals] = []
+    real_signal = signal.signal
+
+    def tracking(sig: signal.Signals, handler: Any) -> Any:
+        installed.append(sig)
+        return real_signal(sig, handler)
+
+    monkeypatch.setattr(signal, "getsignal", lambda sig: None)
+    monkeypatch.setattr(signal, "signal", tracking)
+    with _signals_handled(_Interrupts()):
+        pass
+    assert installed == []
