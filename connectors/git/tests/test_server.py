@@ -16,6 +16,7 @@ from helpers import FixtureRepo, requires_git
 
 from dpe_git_connector import PLUGIN_NAME, __version__
 from dpe_git_connector.cursor import decode_cursor
+from dpe_git_connector.gitrepo import GitError
 from dpe_git_connector.server import Serve
 
 pytestmark = requires_git
@@ -159,6 +160,53 @@ def test_initialize_rejects_config_problems(tmp_path: Path, history: History) ->
         assert response["error"]["code"] == -32005, config
         assert match in response["error"]["message"], config
         assert serve.fatal is True
+
+
+@pytest.mark.parametrize(
+    ("version", "match"),
+    [((2, 31, 9), "2.31.9"), ((1, 9, 0), "1.9.0"), (None, "无法确定 git 版本")],
+)
+def test_initialize_rejects_git_older_than_2_32(
+    history: History,
+    monkeypatch: pytest.MonkeyPatch,
+    version: tuple[int, int, int] | None,
+    match: str,
+) -> None:
+    """git < 2.32 时 GIT_CONFIG_GLOBAL 不生效、全局配置会被静默读入：initialize 以实例级
+    错误（-32005）明确拒绝，消息带实测版本与下限（#170）。"""
+    monkeypatch.setattr("dpe_git_connector.server.git_version", lambda: version)
+    serve = Serve()
+    response = handle(
+        serve, request(1, "initialize", initialize_params({"repo": str(history.path)}))
+    )
+    assert response["error"]["code"] == -32005
+    assert match in response["error"]["message"]
+    assert "2.32" in response["error"]["message"]
+    assert serve.fatal is True
+
+
+def test_initialize_rejects_unusable_git(history: History, monkeypatch: pytest.MonkeyPatch) -> None:
+    """git 起不来（不可执行、超时、退出码非零）同样以实例级错误拒绝，消息带原因。"""
+
+    def broken() -> None:
+        raise GitError("无法执行 git：Permission denied")
+
+    monkeypatch.setattr("dpe_git_connector.server.git_version", broken)
+    serve = Serve()
+    params = initialize_params({"repo": str(history.path)})
+    response = handle(serve, request(1, "initialize", params))
+    assert response["error"]["code"] == -32005
+    assert "git 不可用" in response["error"]["message"]
+    assert "Permission denied" in response["error"]["message"]
+
+
+def test_initialize_accepts_git_2_32(history: History, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("dpe_git_connector.server.git_version", lambda: (2, 32, 0))
+    serve = Serve()
+    response = handle(
+        serve, request(1, "initialize", initialize_params({"repo": str(history.path)}))
+    )
+    assert "result" in response
 
 
 def test_uri_prefix_must_end_with_separator(history: History) -> None:
@@ -369,7 +417,8 @@ def test_continuation_budget_shrink_degrades_to_item_error(tmp_path: Path) -> No
     assert "分段" in result["items"][0]["message"]
     # 该文档失败不扣住本轮：同一响应即结束轮（§6.8）；新游标不记录这篇未能产出的文档
     assert result["incremental"] is False
-    assert decode_cursor(result["cursor"], serve_digest(serve)) == {}
+    decoded = decode_cursor(result["cursor"], serve_digest(serve))
+    assert decoded is not None and decoded[0] == {}
 
 
 def test_scan_batches_by_max_items(repos_root: ReposRoot) -> None:

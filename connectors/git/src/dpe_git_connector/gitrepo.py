@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 __all__ = [
+    "MIN_GIT_VERSION",
     "CommitRecord",
     "GitContentError",
     "GitError",
@@ -45,8 +47,10 @@ __all__ = [
     "RepoDir",
     "discover_repos",
     "first_parent_chain",
+    "git_version",
     "looks_like_repo",
     "order_commits",
+    "parse_git_version",
     "root_commits",
 ]
 
@@ -434,18 +438,7 @@ class GitRepo:
     # ------------------------------------------------------------------ 子进程
 
     def _exec(self, *args: str) -> subprocess.CompletedProcess[bytes]:
-        try:
-            return subprocess.run(
-                ["git", "-C", self.path, *args],
-                capture_output=True,
-                timeout=_GIT_TIMEOUT,
-                env=_git_env(),
-                check=False,
-            )
-        except FileNotFoundError:
-            raise GitError("找不到 git 可执行文件（PATH 中没有 git）") from None
-        except subprocess.TimeoutExpired:
-            raise GitError(f"git {' '.join(args)} 超过 {_GIT_TIMEOUT:.0f} 秒未完成") from None
+        return _exec_git(["-C", self.path, *args], label=" ".join(args))
 
     def _run_bytes(self, *args: str, allow_exit: tuple[int, ...] = ()) -> bytes:
         completed = self._exec(*args)
@@ -460,6 +453,57 @@ class GitRepo:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
             raise GitError(f"git {' '.join(args)} 的输出不是 UTF-8") from None
+
+
+#: 最低 git 版本：``GIT_CONFIG_GLOBAL``（隔离全局配置，见 ``_git_env``）自 2.32 起才生效，更低的
+#: 版本会静默读入使用者的全局配置，映射结果随之变化
+MIN_GIT_VERSION = (2, 32, 0)
+#: 版本探测的超时：``git --version`` 不读仓库，远小于扫描用的 ``_GIT_TIMEOUT``
+_VERSION_TIMEOUT = 10.0
+#: ``git --version`` 输出开头的版本号：``2.39.3 (Apple Git-146)``、``2.45.1.windows.1``、``2.32``
+_GIT_VERSION = re.compile(r"git version (\d+)\.(\d+)(?:\.(\d+))?")
+
+
+def parse_git_version(text: str) -> tuple[int, int, int] | None:
+    """解析 ``git --version`` 的输出；认不出时为 ``None``（调用方按无法确定处理）。"""
+    match = _GIT_VERSION.match(text.strip())
+    if match is None:
+        return None
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch or 0)
+
+
+def git_version() -> tuple[int, int, int] | None:
+    """本机 git 的版本（与扫描用同一环境）；输出认不出为 ``None``。
+
+    git 不可用（不存在、不可执行、超时、退出码非零）抛 ``GitError``，消息带退出码与 stderr 摘要。
+    """
+    completed = _exec_git(["--version"], label="--version", timeout=_VERSION_TIMEOUT)
+    if completed.returncode != 0:
+        message = completed.stderr.decode("utf-8", "replace").strip()
+        raise GitError(f"git --version 失败（退出码 {completed.returncode}）：{message}")
+    return parse_git_version(completed.stdout.decode("utf-8", "replace"))
+
+
+def _exec_git(
+    args: list[str], *, label: str, timeout: float = _GIT_TIMEOUT
+) -> subprocess.CompletedProcess[bytes]:
+    """以插件环境运行一条 git 命令；git 起不来（不存在、不可执行等 ``OSError``）或超时都映射成
+    ``GitError``，不让底层异常穿出 initialize / scan。"""
+    try:
+        return subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            timeout=timeout,
+            env=_git_env(),
+            check=False,
+        )
+    except FileNotFoundError:
+        raise GitError("找不到 git 可执行文件（PATH 中没有 git）") from None
+    except OSError as exc:
+        raise GitError(f"无法执行 git：{exc}") from None
+    except subprocess.TimeoutExpired:
+        raise GitError(f"git {label} 超过 {timeout:.0f} 秒未完成") from None
 
 
 def _git_env() -> dict[str, str]:
