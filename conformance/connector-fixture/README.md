@@ -29,7 +29,7 @@ Python 运行器的验收用例在 `sdk/python/packages/dpe-sdk/tests/test_confo
 ```
 
 remote 用参考服务端（`python -m dpe_sdk.testing --port 0`，属 `dpe-sdk` 包）或任何实现。每个场景用
-新的状态目录与空前缀，`fallback_full`、`no_cursor`、`multi_batch` 需在同一状态目录下连跑两轮。
+新的状态目录与空前缀，`fallback_full`、`no_cursor`、`cursor_violation`、`multi_batch` 需在同一状态目录下连跑两轮。
 
 不认识的场景名（拼错或夹具尚未实现）在 initialize 以 `-32005` 拒绝，运行器得到 `invalid_config`——不会退化为
 一轮空同步而被误判通过。
@@ -60,6 +60,7 @@ remote 用参考服务端（`python -m dpe_sdk.testing --port 0`，属 `dpe-sdk`
 | `scan_error` | 轮首 `scan` 以 `-32003` 失败 |
 | `fallback_full` | 结束批给出游标 `full-1`，且始终 `incremental: false`（第二轮带着游标也回退全量） |
 | `no_cursor` | `supports_cursor: false`，结束批 `cursor: null` |
+| `cursor_violation` | `supports_cursor: false`，结束批却给出游标 `violation-1`（`incremental: false`） |
 | `env_probe` | `env.txt` 一页：自身环境变量的名字（不含值）按字典序各一个元素 |
 
 ### `env_probe` 的注意事项

@@ -101,7 +101,8 @@ class InstanceFailure(RunFailure):
 
 
 class ProtocolFailure(RunFailure):
-    """协议级失败（§7.1）：分帧、JSON-RPC 或握手违例、消息超限；终止实例，本轮作废。"""
+    """协议级失败（§7.1）：分帧、JSON-RPC 或握手违例、消息超限、结束批违反游标约定（§6.4、
+    §6.8）；终止实例，本轮作废。"""
 
     level: Level = "protocol"
 

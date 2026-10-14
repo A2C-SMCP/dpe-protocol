@@ -56,6 +56,7 @@ SCENARIOS = (
     "scan_error",
     "fallback_full",
     "no_cursor",
+    "cursor_violation",
     "env_probe",
 )
 
@@ -228,6 +229,13 @@ def scenario_script(name: str, prefix: str) -> dict[str, Any]:
         return {"batches": [[]], "cursor": "full-1", "incremental": False}
     if name == "no_cursor":
         return {"batches": [[]], "cursor": None, "incremental": False, "supports_cursor": False}
+    if name == "cursor_violation":  # 声明不支持游标，结束批却给出游标（§6.8 违规）
+        return {
+            "batches": [[]],
+            "cursor": "violation-1",
+            "incremental": False,
+            "supports_cursor": False,
+        }
     if name == "env_probe":
         names = sorted(set(os.environ) - _PLATFORM_INJECTED)
         return {"batches": [[text_document(prefix + "env.txt", *names)]], "cursor": None}
