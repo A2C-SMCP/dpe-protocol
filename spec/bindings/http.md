@@ -1,6 +1,6 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73、#81、#83、#97、#127 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73、#81、#83、#97、#127、#130 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
@@ -49,7 +49,7 @@
   3. 查询参数的形态（§1）：查询串在请求行里，无需读取请求体即可判定。
   4. 请求体（core.md §3.3 第 0 步）：超过 `max_payload_bytes` → `413` + `DPE_PAYLOAD_TOO_LARGE`，按解码后计算；不支持的 `Content-Encoding` → `415` + `Accept-Encoding`，非 DPE 错误，带 `Content-Range` 的请求不走这条（§7）；gzip 数据损坏或不完整 → `DPE_VALIDATION`（§7）。
 
-  限流与不可用（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，§5）**不**被本节固定：它们仍可在任何时刻发生。下文的校验顺序都假定传输层已通过。
+  带码的限流与不可用（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，§5）**不**被本节固定：它们仍可在任何时刻发生，但 MUST 发生在请求产生任何效果之前（core.md §6）；不带码的 429 / 503 不受此约束（§5）。下文的校验顺序都假定传输层已通过。
 - **带 JSON 请求体的端点的校验顺序**（batch_head、negotiate、页对象与元素对象的**非分块** upload、commit、move；blob 上传与分块的页对象上传的请求体是原始字节，校验在字节到齐后进行（§4.6、§4.7），不适用本节顺序）：
   1. 整个请求体是 I-JSON（core.md §2.8 第 0 步），否则 `DPE_VALIDATION`；
   2. 契约声明（`DPE-Hash-Contract` 头），否则 `DPE_CONTRACT_UNSUPPORTED`；
@@ -282,7 +282,7 @@
 
 - `type` 是规范中稳定的 URI：v1 使用 `urn:dpe:error:<code 去掉 DPE_ 前缀后转 kebab-case>`（如 `DPE_PRECONDITION_FAILED` → `urn:dpe:error:precondition-failed`），`title` 为对应的小写短语（同一个串，连接线换成空格，如 `precondition failed`）；规范将来若发布到固定域名，MAY 改为该域名下的 URL（plan §16）。
 - **`DPE-Error-Code` 响应头**：每个 DPE 错误响应 MUST 带 `DPE-Error-Code: <code>`，值等于 problem 体的 `code`。HEAD 响应不能带内容（RFC 9110 §9.3.2），HEAD 出错时只有这个头、没有 problem 体，客户端 MUST 按它分派；`retryable` 由 code 决定（core.md §6），不另设头。错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头时不是 DPE 错误（例如 remote URL 配错或网关返回的 404），客户端 MUST NOT 猜测 code，按非协议错误上报。
-- **非协议错误**（既无 problem 体、也无 `DPE-Error-Code` 头，客户端按上文如实上报，MUST NOT 猜测 code）：未知路由 → `404`；路径存在但方法不符 → `405` + `Allow`（列出该路径允许的方法）；未认证 → `401` + `WWW-Authenticate`（§6）；不支持的 `Content-Encoding` → `415` + `Accept-Encoding`（§7）。它们与「非 DPE 实现返回的错误」（remote URL 配错、网关返回的 404）在客户端侧不作区分；彼此的先后见 §3.1 的传输层顺序。`staging/{sid}` 下会话不存在、过期、已消费或不属于调用者，**仍是** DPE 错误 `410` + `DPE_SESSION_EXPIRED`（core.md §3.4），不在此列。
+- **非协议错误**（既无 problem 体、也无 `DPE-Error-Code` 头，客户端按上文如实上报，MUST NOT 猜测 code）：未知路由 → `404`；路径存在但方法不符 → `405` + `Allow`（列出该路径允许的方法）；未认证 → `401` + `WWW-Authenticate`（§6）；不支持的 `Content-Encoding` → `415` + `Accept-Encoding`（§7）；请求已产生效果后的限流与不可用 → 无码 5xx（core.md §6；它可在请求处理的任何阶段出现，不在 §3.1 的传输层顺序之内）。它们与「非 DPE 实现返回的错误」（remote URL 配错、网关返回的 404）在客户端侧不作区分；彼此的先后见 §3.1 的传输层顺序。`staging/{sid}` 下会话不存在、过期、已消费或不属于调用者，**仍是** DPE 错误 `410` + `DPE_SESSION_EXPIRED`（core.md §3.4），不在此列。
 - 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。`DPE_MISSING_CONTENT` 另带 `missing: {pages: […], content_hashes: […], blobs: […]}` 与 `missing_truncated: true|false`（core.md §3.3）：截断时三层合计为实际缺失的非空子集，为 `true`；未截断时各层与实际缺失一致，为 `false`。
 - HTTP 状态映射（每个 code 在给定端点上只有一个状态码；客户端按 `code` 分派，§3.2）：
 
@@ -300,7 +300,7 @@
 
 暂存分块的偏移不连续（`DPE_VALIDATION`，§4.7）带 `DPE-Upload-Offset` 头，客户端据此重新同步。
 
-429 与 503 MUST 带 `Retry-After`，**不可缺省**：实现没有可给的提示值时给 `1`。
+带码的 429 与 503 MUST 带 `Retry-After`，**不可缺省**：实现没有可给的提示值时给 `1`（无码响应是非协议错误，不受此约束）。带码的 429 / 503 表示请求未产生任何效果（core.md §6），客户端可原样重试；不带 DPE 错误码的 429 / 503 是非协议错误（错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头，见上文），结果未知。服务端在请求已产生效果后改以无码 5xx 响应的限流与不可用（core.md §6）同样按结果未知处理。
 
 ## 6. 鉴权
 

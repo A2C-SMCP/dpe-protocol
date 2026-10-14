@@ -17,7 +17,8 @@
 ``drive`` / ``adrive`` 送回操作，按 core §5.2 处理。httpx 的异常不包装：调用方按异常类型区分
 连接失败、超时与响应丢失。写请求在连续建连失败时两级的预算会叠加（传输层每轮与核心的
 ``max_resends``，最坏 ``(1+max_retries)×(1+max_resends)`` 次尝试）——两者都只覆盖「请求确定
-未生效」的情形，叠加是安全的。
+未生效」的情形，叠加是安全的：建连失败确定未发出；带码的 ``DPE_RATE_LIMITED`` /
+``DPE_UNAVAILABLE`` 依 core §6 表示请求未产生任何效果。
 
 **gzip**（HTTP 绑定 §7）：请求体在满足全部条件时压缩并带 ``Content-Encoding: gzip``——服务端
 capabilities 的 ``content_encodings`` 含 ``gzip``、媒体类型为 ``application/json``、体不小于
