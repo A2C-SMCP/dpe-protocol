@@ -52,6 +52,7 @@ files = [
     "tools/bench_hash.py",
     "tools/tests",
     "conftest.py",
+    "../../conformance/connector-fixture/dpe_connector_fixture.py",
 ]
 
 [tool.pytest.ini_options]

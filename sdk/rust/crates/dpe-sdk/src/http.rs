@@ -52,6 +52,15 @@
 //! 它约束，连接阶段取其中的 90%（[`connect_budget`]：连接计时器必须先到点，连接阶段的超时
 //! 才落在连接类、「确定未发出」）；不跟随重定向（协议未定义）；分块上传等大 blob 的源读取
 //! （[`Body::BlobRange`]）经 `spawn_blocking` 在工作线程取出，不阻塞执行器线程。
+//!
+//! **代理只来自环境变量**（#132）：[`build`](DpeClientBuilder::build) 按固定规则从
+//! `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` 判定 remote 走哪个代理（规则见
+//! `src/proxy.rs` 与 crate README 传输一节，与 Python 侧同一张用例表），先关掉 reqwest 自身的代理探测、再
+//! 显式挂上判定结果——reqwest 的 `system-proxy` feature 若经依赖图合并被打开，会读 macOS /
+//! Windows 的系统代理设置，这里不受它影响。代理 scheme 只支持 http / https，其他 scheme 在构造
+//! 时报 `invalid_argument`。连不上代理、HTTPS 隧道（`CONNECT`）被拒都发生在请求到达 remote
+//! 之前，属于 reqwest 的 `is_connect`，即「确定未发出」；明文 HTTP 经代理转发时，代理的应答
+//! （如 502）是普通响应。
 
 use std::fmt;
 use std::io::Write as _;
@@ -630,12 +639,25 @@ impl DpeClientBuilder {
         self
     }
 
-    /// 校验 remote 并构造客户端。
+    /// 校验 remote、按环境变量判定代理（见模块说明）并构造客户端。
     pub fn build(self) -> Result<DpeClient, Error> {
         let remote = remote_base(&self.remote)?;
+        let proxy = crate::proxy::proxy_for(&remote, |name| {
+            std::env::var_os(name).map(|value| value.to_string_lossy().into_owned())
+        })
+        .map_err(Error::invalid_argument)?;
         let mut http = reqwest::Client::builder()
             // 协议未定义重定向：不跟随，3xx 原样交回核心
-            .redirect(reqwest::redirect::Policy::none());
+            .redirect(reqwest::redirect::Policy::none())
+            // 关掉 reqwest 自身的代理探测（环境变量与可能经 feature 合并打开的系统设置）
+            .no_proxy();
+        if let Some(choice) = proxy {
+            // 只回显变量名：代理 URL 可能带凭证
+            let proxy = reqwest::Proxy::all(choice.url.as_str()).map_err(|_| {
+                Error::invalid_argument(format!("环境变量 {} 的代理 URL 不合法", choice.variable))
+            })?;
+            http = http.proxy(proxy);
+        }
         if let Some(timeout) = self.timeout {
             // 连接超时单独设置、且必须比整体超时**早到**：reqwest 的连接计时器晚于请求计时器
             // 启动（实测两者相同时整体先触发、错误落在超时而非连接类），而连接阶段的超时要按

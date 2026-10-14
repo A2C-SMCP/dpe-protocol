@@ -1,11 +1,20 @@
 """增量游标的编码（connector 契约 §6.8）：不透明、自包含，解释不了即回退全量轮。
 
 游标记录**上一轮成功产出时各仓库的状态**——仓库标识 → ``RepoMark``（状态指纹 + 移动键），
-外加数据源摘要（实例前缀、配置与远端单元素上限）。下一轮据此只产出有变化的仓库，并把
-「消失的仓库」表达为 delete / move（``server``）。
+外加数据源摘要（实例前缀与配置）与生成游标那一轮的远端单元素上限。下一轮据此只产出有变化
+的仓库，并把「消失的仓库」表达为 delete / move（``server``）。
 
 形态：``g1.`` + base64url（无填充）的 zlib 压缩 JSON
-``{"v": 1, "src": <数据源摘要>, "repos": {<base64url 标识字节>: [指纹, 移动键 | null]}}``。
+``{"v": 2, "src": <数据源摘要>, "limit": <max_payload_bytes | null>,
+"repos": {<base64url 标识字节>: [指纹, 移动键 | null]}}``。
+
+远端上限**不进数据源摘要**（#170）：上限变了，同一源状态下的产出可能不同（切分后仍超限的
+守卫，``mapping.Limits``），但仓库集合不变——下一轮各仓库都重新扫描（不按指纹跳过），删除与
+移动仍按上一轮的仓库集合表达，本轮仍是增量轮。
+
+**v1 兼容**：v1 游标（``{"v": 1, "src", "repos"}``，摘要里含上限）只在「按本次上限算出的 v1
+摘要」与之相等时解释，视为在本次上限下生成；上限也变了就解释不了、回退一次全量轮。这样常见
+的升级（上限没变）不会在升级那一轮丢掉删除与移动。
 
 - **不透明**：运行器只原样保存与回传（§6.8 MUST NOT 解析）；
 - **自包含**：插件重启后仍可解释，不依赖进程内状态；
@@ -32,10 +41,10 @@ from dpe_hash import jcs
 
 from dpe_git_connector.mapping import RepoMark
 
-__all__ = ["decode_cursor", "encode_cursor", "source_digest"]
+__all__ = ["decode_cursor", "encode_cursor", "legacy_source_digest", "source_digest"]
 
 _PREFIX = "g1."
-_VERSION = 1
+_VERSION = 2
 #: 指纹与移动键的形态（``mapping._digest``：128 位小写十六进制）
 _DIGEST = re.compile(r"[0-9a-f]{32}")
 #: 解压后的上限：真实游标是随机摘要，几乎压不动（约 2:1）；按压缩长度的倍数收紧，被篡改的
@@ -44,14 +53,16 @@ _MIN_DECOMPRESSED = 1 << 20
 _EXPANSION = 16
 
 
-def source_digest(
-    uri_prefix: str, config: Mapping[str, Any], max_payload_bytes: int | None = None
-) -> str:
-    """数据源摘要：实例前缀 + 实例配置 + 远端单元素上限（JCS）。游标只在同一数据源下有效。
+def source_digest(uri_prefix: str, config: Mapping[str, Any]) -> str:
+    """数据源摘要：实例前缀 + 实例配置（JCS）。游标只在同一数据源下有效；上限另记（见模块说明）。"""
+    canonical = jcs({"uri_prefix": uri_prefix, "config": dict(config)})
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
-    远端上限决定「切分后仍超限」的守卫（``mapping.Limits``）：它变了，同一源状态下文档的
-    产出（document 还是 content_invalid）可能不同，而状态指纹看不出来——回退一次全量轮。
-    """
+
+def legacy_source_digest(
+    uri_prefix: str, config: Mapping[str, Any], max_payload_bytes: int | None
+) -> str:
+    """v1 游标的数据源摘要（实例前缀 + 配置 + 远端上限），只用于解释升级前留下的游标。"""
     canonical = jcs(
         {"uri_prefix": uri_prefix, "config": dict(config), "max_payload_bytes": max_payload_bytes}
     )
@@ -68,11 +79,15 @@ def _b64decode(text: str) -> bytes:
     return base64.b64decode(padded, altchars=b"-_", validate=True)
 
 
-def encode_cursor(source: str, repos: Mapping[bytes, RepoMark]) -> str:
-    """把各仓库的记录编码成游标；同一输入总是得到同一字符串（键排序、紧凑编码）。"""
+def encode_cursor(source: str, limit: int | None, repos: Mapping[bytes, RepoMark]) -> str:
+    """把各仓库的记录编码成游标；同一输入总是得到同一字符串（键排序、紧凑编码）。
+
+    ``limit`` 是本轮使用的远端单元素上限（``remote_limits.max_payload_bytes``，未提供为 ``None``）。
+    """
     body = {
         "v": _VERSION,
         "src": source,
+        "limit": limit,
         "repos": {
             _b64encode(identifier): [mark.fingerprint, mark.move_key]
             for identifier, mark in repos.items()
@@ -82,8 +97,15 @@ def encode_cursor(source: str, repos: Mapping[bytes, RepoMark]) -> str:
     return _PREFIX + _b64encode(zlib.compress(raw, 9))
 
 
-def decode_cursor(token: str, source: str) -> dict[bytes, RepoMark] | None:
-    """解释游标；任何不符都返回 ``None``（调用方回退全量轮，不报错）。"""
+def decode_cursor(
+    token: str, source: str, legacy: tuple[str, int | None] | None = None
+) -> tuple[dict[bytes, RepoMark], int | None] | None:
+    """解释游标，返回（各仓库的记录, 生成游标那一轮的远端上限）；任何不符都返回 ``None``
+    （调用方回退全量轮，不报错）。
+
+    ``legacy`` 是（按本次上限算出的 v1 摘要, 本次上限）：给出时，摘要相符的 v1 游标按在本次
+    上限下生成解释（见模块说明）。
+    """
     if not token.startswith(_PREFIX):
         return None
     try:
@@ -98,14 +120,23 @@ def decode_cursor(token: str, source: str) -> dict[bytes, RepoMark] | None:
     except (binascii.Error, ValueError, zlib.error, RecursionError, MemoryError):
         # RecursionError：深嵌套的 JSON（被篡改）；同样只是「解释不了」，不得让本轮报错
         return None
-    if (
-        not isinstance(body, dict)
-        or set(body) != {"v", "src", "repos"}
-        or type(body["v"]) is not int
-        or body["v"] != _VERSION
+    if not isinstance(body, dict) or "v" not in body or type(body["v"]) is not int:
+        return None
+    remote_limit: int | None
+    if body["v"] == 1 and legacy is not None:
+        if set(body) != {"v", "src", "repos"} or body["src"] != legacy[0]:
+            return None
+        remote_limit = legacy[1]
+    elif (
+        body["v"] != _VERSION
+        or set(body) != {"v", "src", "limit", "repos"}
         or body["src"] != source
-        or not isinstance(body["repos"], dict)
+        or not _valid_limit(body["limit"])
     ):
+        return None
+    else:
+        remote_limit = body["limit"]
+    if not isinstance(body["repos"], dict):
         return None
     repos: dict[bytes, RepoMark] = {}
     for key, value in body["repos"].items():
@@ -124,4 +155,9 @@ def decode_cursor(token: str, source: str) -> dict[bytes, RepoMark] | None:
         if not identifier or identifier in repos:
             return None
         repos[identifier] = RepoMark(value[0], value[1])
-    return repos
+    return repos, remote_limit
+
+
+def _valid_limit(value: Any) -> bool:
+    """``limit``：null 或正整数（bool 不算整数）。"""
+    return value is None or (type(value) is int and value > 0)

@@ -56,6 +56,16 @@ with DpeClient(
 - **凭证**：`CredentialProvider`（`dpe_sdk.credentials`）在每个请求发送前调用一次（传输层内部的重发同样重新取，轮换中的短时凭证在长等待后仍可用），返回 `Authorization` 头的完整值（含方案名）；SDK 不感知鉴权方案，也不解释凭证内容；
 - **gzip**：服务端 capabilities 声明 `gzip`、请求体是 `application/json`、不小于 1024 字节且不是分块请求（带 `Content-Range`）时才压缩；分块上传按规范（§7）MUST NOT 压缩；
 - **重试**：传输层只自行重发三类——`retry_safe` 的请求（只读操作与断点查询，含走 POST 的 `batch_head`）遇上的网络失败、任何请求上确定未发出的建连失败、以及可重试的 DPE 错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，按 `code` 的 `retryable` 判定）按 `Retry-After`（秒数或 HTTP 日期）等待后原样重发（等待上限 5 分钟，更长则抛给调用方）。`Retry-After` 只按 RFC 9110 文法解析（HTTP 绑定 §5，`dpe_hash.retry_after_seconds`，`dpe_sdk.protocol` 重新导出）。**升级须知**（0.4 起，不兼容）：以前经 `email.utils` 接受的宽松日期（时区缩写、`+0000` 偏移、小写月份、多余空格等）现在视同没有提示（`None`）；首尾只去 SP / HTAB，NBSP 等 Unicode 空白不再去掉；rfc850 的两位年份改按 50 年规则解释；畸形时区不再漏出 `OverflowError`。参考服务端对无限期不可用改发 `Retry-After: 86400`（以前是 1）。写请求可能已发出后的超时与响应丢失一律抛回核心，由核心按 core §5.2 处理，**绝不自动 force**；
+- **代理只来自环境变量**（#132）：构造客户端时按下面的规则判定一次 remote 走哪个代理，**从不读操作系统的代理设置**（macOS / Windows 的系统代理、PAC 都不看）。两个 SDK 规则相同，共用一张用例表 `sdk/testdata/proxy_env.json`：
+  - https remote 用 `HTTPS_PROXY`，http remote 用 `HTTP_PROXY`，都没有时用 `ALL_PROXY`；每个名字先看大写、再看小写，空值视为未设置；
+  - 环境中存在 `REQUEST_METHOD`（CGI）时忽略全部代理变量；
+  - `NO_PROXY` 逗号分隔：`*` 匹配一切；IP 与 CIDR（如 `10.0.0.0/8`、`::1`）按地址匹配；其余条目是域名，匹配自身及其子域（`example.com` 与 `.example.com` 等价，不匹配 `notexample.com`）；条目不带端口；
+  - 代理 URL 只支持 `http://` / `https://`（不带 scheme 按 `http://`，`user:pass@` 作为代理的 Basic 认证；密码里的 `@` 须写成 `%40`）；`socks5://` 等在构造客户端时报参数错误；
+  - 规则全部按字符判定，两个 SDK 不借助各自 URL 库的解析：空白只指 ASCII 空白（空格、`\t`、`\n`、`\r`、`\v`、`\f`），不区分大小写只按 ASCII；代理 URL 整体只能含 RFC 3986 允许的 ASCII 字符且不超过 4096 个（`\`、空白、控制字符、非 ASCII 都不合法），userinfo 只能含 RFC 3986 userinfo 字符；主机必须是方括号内的 IPv6（不带 zone）、点分十进制 IPv4 或 ASCII 字母 / 数字 / `-` 组成的域名（不接受 `xn--` 标签），端口写了就是不超过 65535 的十进制数，authority 之后只允许单个 `/`，不合法的值在构造客户端时报错（错误消息不回显值）；
+  - 关闭代理：不设这些变量，或设 `NO_PROXY=*`；
+  - 连不上代理、HTTPS 隧道（`CONNECT`）被代理拒绝都按「确定未发出」处理；明文 HTTP 经代理转发时代理的应答（如 502）是普通响应。
+
+  **升级须知**（0.4 起，行为变化）：Python 侧以前用 httpx 的缺省，在 macOS / Windows 上环境变量为空时会悄悄走系统代理，现在改为直连——依赖系统代理上网的环境请改设 `HTTPS_PROXY` 等环境变量；隧道被拒的 `httpx.ProxyError` 现在也判为「确定未发出」。传入自定义 `transport` 时原样使用，不做上述判定；
 - **异常**：httpx 的连接失败、超时等异常原样抛出、按类型区分，不包装成协议错误；
 - **依赖边界**：`dpe-hash` 保持零依赖；httpx 是 `dpe-sdk` 的运行时依赖，且 `dpe_sdk` 顶层不 import 传输模块（按需 `from dpe_sdk.transport import …`）。
 

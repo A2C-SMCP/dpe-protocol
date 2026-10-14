@@ -11,14 +11,17 @@ import pytest
 from helpers import FixtureRepo, git_env, requires_git, run_git
 
 from dpe_git_connector.gitrepo import (
+    MIN_GIT_VERSION,
     CommitRecord,
     GitContentError,
     GitError,
     GitRepo,
     discover_repos,
     first_parent_chain,
+    git_version,
     looks_like_repo,
     order_commits,
+    parse_git_version,
     root_commits,
 )
 
@@ -424,3 +427,48 @@ def test_root_commits_agree_between_log_and_rev_list(tmp_path: Path) -> None:
     tip = git.resolve_ref("HEAD")
     assert tip is not None
     assert git.root_commits(tip) == root_commits(git.log(tip)) == (tip,)  # 浅边界即根
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("git version 2.32.0\n", (2, 32, 0)),
+        ("git version 2.39.3 (Apple Git-146)\n", (2, 39, 3)),
+        ("git version 2.45.1.windows.1\n", (2, 45, 1)),
+        ("git version 2.32", (2, 32, 0)),
+        ("git version 3.0.0-rc1", (3, 0, 0)),
+        ("", None),
+        ("hub version 2.14", None),
+        ("git version x.y", None),
+    ],
+)
+def test_parse_git_version(output: str, expected: tuple[int, int, int] | None) -> None:
+    assert parse_git_version(output) == expected
+
+
+def test_local_git_meets_the_minimum() -> None:
+    """测试机上的 git 能被识别（connector 的测试本身依赖 git ≥ 2.32）。"""
+    version = git_version()
+    assert version is not None and version >= MIN_GIT_VERSION
+
+
+def test_git_version_maps_os_errors_to_git_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """git 存在但不可执行（noexec 挂载等）：映射成 GitError，不让 OSError 穿出 initialize。"""
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError("Permission denied")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    with pytest.raises(GitError, match="无法执行 git"):
+        git_version()
+
+
+def test_git_version_reports_failing_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    """退出码非零：带退出码与 stderr 摘要，不只说「无法确定」。"""
+
+    def failing(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(args, 128, b"", b"fatal: broken install")
+
+    monkeypatch.setattr(subprocess, "run", failing)
+    with pytest.raises(GitError, match=r"退出码 128.*broken install"):
+        git_version()

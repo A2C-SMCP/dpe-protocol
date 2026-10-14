@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import shutil
 import sys
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +21,12 @@ import pytest
 from helpers import FixtureRepo, requires_git, run_git
 from test_server import handle, initialize_params, request
 
-from dpe_git_connector.cursor import decode_cursor, encode_cursor, source_digest
+from dpe_git_connector.cursor import (
+    decode_cursor,
+    encode_cursor,
+    legacy_source_digest,
+    source_digest,
+)
 from dpe_git_connector.mapping import RepoMark
 from dpe_git_connector.server import Serve
 
@@ -89,7 +97,7 @@ def marks(serve: Serve, cursor: str | None, root: Path) -> dict[bytes, Any]:
     assert cursor is not None
     decoded = decode_cursor(cursor, source_digest(PREFIX, {"root": str(root)}))
     assert decoded is not None
-    return decoded
+    return decoded[0]
 
 
 # --------------------------------------------------------------------------- 增量轮
@@ -310,23 +318,94 @@ def test_incremental_round_across_many_batches(root: Path) -> None:
     assert batched.cursor == whole.cursor
 
 
-def test_remote_limits_change_falls_back_to_full(root: Path) -> None:
-    """远端单元素上限变化：守卫的结论可能不同而指纹看不出来——回退一次全量轮。"""
-    serve = serve_for(root)
-    first = run(serve)
-    limited = Serve()
+def _limited(root: Path, max_payload_bytes: int | None) -> Serve:
+    serve = Serve()
+    limits = None if max_payload_bytes is None else {"max_payload_bytes": max_payload_bytes}
     handle(
-        limited,
-        request(
-            1,
-            "initialize",
-            initialize_params(
-                {"root": str(root)}, remote_limits={"max_payload_bytes": 8 * 1024 * 1024}
-            ),
-        ),
+        serve,
+        request(1, "initialize", initialize_params({"root": str(root)}, remote_limits=limits)),
     )
-    again = run(limited, first.cursor)
-    assert again.incremental is False and len(again.items) == 2
+    return serve
+
+
+def test_remote_limits_change_keeps_deletes_and_moves(root: Path) -> None:
+    """远端单元素上限变化（#170）：各仓库重新扫描，删除与改名仍按上一轮的仓库集合表达，
+    本轮仍是增量轮——不回退全量轮，remote 上不留下已删 / 已改名仓库的残留文档。"""
+    make_repo(root / "gamma", "gamma 初始化")
+    first = run(serve_for(root))
+    shutil.rmtree(root / "beta")
+    os.rename(root / "alpha", root / "alpha2")
+    limited = _limited(root, 8 * 1024 * 1024)
+    second = run(limited, first.cursor)
+    assert second.incremental is True
+    assert second.kinds() == [
+        ("move", uri("alpha"), uri("alpha2")),
+        ("delete", uri("beta")),
+        ("document", uri("alpha2")),  # 上限变了不按指纹跳过：未变的仓库也重新产出
+        ("document", uri("gamma")),
+    ]
+    assert decode_cursor(second.cursor or "", source_digest(PREFIX, {"root": str(root)})) == (
+        marks(limited, second.cursor, root),
+        8 * 1024 * 1024,
+    )
+    # 上限不再变化：恢复按指纹跳过
+    third = run(limited, second.cursor)
+    assert third.incremental is True and third.kinds() == []
+
+
+def test_remote_limits_appearing_or_vanishing_also_rescans(root: Path) -> None:
+    """上限从无到有、从有到无同样算变化。"""
+    first = run(_limited(root, 4096))
+    second = run(serve_for(root), first.cursor)
+    assert second.incremental is True
+    assert second.kinds() == [("document", uri("alpha")), ("document", uri("beta"))]
+
+
+def test_rescan_failures_keep_the_previous_limit(root: Path) -> None:
+    """rescan 轮里仓库在新上限下没能产出（守卫转 content_invalid）：沿用旧记录，新游标的上限
+    也退回旧值——不越过未产出的变更（§6.8），下一轮仍按新上限重扫、如实再报。"""
+    first = run(serve_for(root))
+    tight = _limited(root, 64)  # 任何元素都放不下
+    second = run(tight, first.cursor)
+    assert second.incremental is True
+    assert {kind for kind, *_ in second.kinds()} == {"error"}
+    decoded = decode_cursor(second.cursor or "", source_digest(PREFIX, {"root": str(root)}))
+    assert decoded is not None and decoded[1] is None  # 退回上一轮（无上限）
+    third = run(tight, second.cursor)
+    assert {kind for kind, *_ in third.kinds()} == {"error"}  # 仍重扫，不被指纹跳过
+
+
+def test_rescan_round_is_the_same_across_batches(root: Path) -> None:
+    """rescan 轮分批（每批一条）与一批拉完结果相同，游标一致。"""
+    make_repo(root / "gamma", "gamma 初始化")
+    first = run(serve_for(root))
+    shutil.rmtree(root / "beta")
+    batched = run(_limited(root, 8 * 1024 * 1024), first.cursor, max_items=1)
+    whole = run(_limited(root, 8 * 1024 * 1024), first.cursor)
+    assert batched.kinds() == whole.kinds()
+    assert batched.cursor == whole.cursor
+    assert whole.kinds()[0] == ("delete", uri("beta"))
+
+
+def _v1_token(body: dict[str, Any]) -> str:
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    return "g1." + base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode().rstrip("=")
+
+
+def test_v1_cursor_from_before_the_upgrade(root: Path) -> None:
+    """升级前留下的 v1 游标：上限没变时照样是增量轮（删除照常表达）；上限也变了才回退全量轮。"""
+    first = run(serve_for(root))
+    repos = {
+        base64.urlsafe_b64encode(key).decode().rstrip("="): [mark.fingerprint, mark.move_key]
+        for key, mark in marks(serve_for(root), first.cursor, root).items()
+    }
+    legacy = legacy_source_digest(PREFIX, {"root": str(root)}, None)
+    token = _v1_token({"v": 1, "src": legacy, "repos": repos})
+    shutil.rmtree(root / "beta")
+    same = run(serve_for(root), token)
+    assert same.incremental is True and same.kinds() == [("delete", uri("beta"))]
+    changed = run(_limited(root, 4096), token)
+    assert changed.incremental is False
 
 
 def test_repo_mode_cursor_with_foreign_identifiers_is_reported(tmp_path: Path) -> None:
@@ -336,10 +415,11 @@ def test_repo_mode_cursor_with_foreign_identifiers_is_reported(tmp_path: Path) -
     config = {"repo": str(repo.root)}
     handle(serve, request(1, "initialize", initialize_params(config)))
     first = run(serve)
-    previous = decode_cursor(first.cursor or "", source_digest(PREFIX, config))
-    assert previous is not None
+    decoded = decode_cursor(first.cursor or "", source_digest(PREFIX, config))
+    assert decoded is not None
+    previous, limit = decoded
     forged = encode_cursor(
-        source_digest(PREFIX, config), {**previous, b"ghost": RepoMark("0" * 32, None)}
+        source_digest(PREFIX, config), limit, {**previous, b"ghost": RepoMark("0" * 32, None)}
     )
     second = run(serve, forged)
     assert second.kinds() == [("error", "")]
@@ -350,7 +430,7 @@ def marks_for(cursor: str | None, config: dict[str, Any]) -> dict[bytes, RepoMar
     assert cursor is not None
     decoded = decode_cursor(cursor, source_digest(PREFIX, config))
     assert decoded is not None
-    return decoded
+    return decoded[0]
 
 
 def test_unchanged_repositories_are_skipped_in_bounded_batches(

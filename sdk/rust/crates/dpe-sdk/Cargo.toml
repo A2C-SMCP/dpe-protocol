@@ -43,9 +43,10 @@ sha2 = "0.10"
 #   workspace 的 MSRV 1.80，为它牺牲 MSRV 或钉死旧版本都不值；不带 accept-encoding 时
 #   合规服务端按 identity 应答，真遇到未经请求的压缩响应会如实报「响应不合规」；
 # - **不开 system-proxy**：该 feature 除环境变量外还读 macOS / Windows 的系统代理设置，
-#   会把流量静默路由进系统代理（Python 侧 httpx 只认环境变量），连接失败也会变成
-#   send 阶段的错误、不再可识别为「确定未发出」；代理支持（环境变量与显式入口）留待定夺，
-#   当前行为是「直连，除非用户自建 reqwest 客户端」；
+#   会把流量静默路由进使用方看不到的代理（#132）。代理只来自环境变量，由本 crate 按固定
+#   规则自行判定（src/proxy.rs，与 Python 侧同一张用例表），构造客户端时先 `no_proxy()`
+#   关掉 reqwest 自身的探测、再显式挂上判定结果——即使依赖图里别的 crate 经 feature 合并
+#   打开了 system-proxy，本客户端也不受影响；
 # - 不开 http2：Python 侧 httpx 是纯 HTTP/1.1（无 h2 额外依赖），两侧保持同一形态；
 # - 不开 charset / json：本适配只处理字节，编解码都在核心与 serde_json。
 reqwest = { version = "0.12", optional = true, default-features = false, features = [

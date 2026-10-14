@@ -4,6 +4,13 @@
 
 **当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。全量 3/6（#56）已落地——求值顺序与校验顺序（传输层、uri、条件头、暂存上传的组合场景，报文校验先于授权）一章，以及经 HTTP 消费 `invalid_objects` / `nesting_depth` 向量一章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。全量 4/6（#57）已落地——安全与去重范围一章（内容存于他处仍按层列为缺失、上传状态只按本会话、无写授权一律 403、元素层与 blob 层的去重下界）。全量 5/6（#58）已落地——契约升级期一章（按请求契约给值、跨契约 If-Match、契约混用）。全量 6/6（#59）已落地——收敛一致性一章（delta 与读回互证、增量写入收敛后等于全量推送），全量检查面至此完成：全部钩子配置时对参考服务端按两轮的并集零 skip（见 [在 CI 中运行跑分器](ci.md)）。`dpe-conformance` 发布在 PyPI，服务端仓库在 CI 中的用法见 [在 CI 中运行跑分器](ci.md)。
 
+## connector 线协议夹具（验证运行器）
+
+本目录另有一份**运行器侧**的一致性设施：[connector 线协议夹具](connector-fixture/README.md)（connector 契约
+§8.4）。它是一个脚本化插件，由实例配置 `{"scenario": …}` 选择 21 个场景之一，覆盖全部线协议消息与失败路径；
+由于插件是独立进程，任何语言写的运行器都能用它验收——对每个场景跑一轮，断言得到 §8.4 表中的结果。它验证的是
+运行器，不是 remote，与下文的服务端跑分器互不依赖。
+
 ## 通用检查面
 
 - capabilities 协商与限额如实声明（`staging_ttl_seconds` ≥ 3600）；

@@ -103,6 +103,7 @@ nav:
       - 一致性向量: vectors/README.md
       - 服务端跑分器: conformance/README.md
       - 在 CI 中运行跑分器: conformance/ci.md
+      - connector 线协议夹具: conformance/connector-fixture/README.md
   - 计划与迁移:
       - v1 计划: docs/plan/v1-plan.md
       - 内核迁移对照: docs/migration/kernel-to-dpe1.md
