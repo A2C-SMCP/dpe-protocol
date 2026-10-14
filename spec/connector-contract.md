@@ -1,6 +1,6 @@
 # DPE Connector 契约
 
-> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点，经 Issue #105 补充 §6.3 的插件进程组清理），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集，经 Issue #95 同步 §6.6 的 `file_type` 语法措辞，经 Issue #94 将 §4.1 / §4.4 的 JSON 嵌套深度统一为 core.md §2.8 的计数口径，经 Issue #137 补充 §4.4 / §5.2 / §6.8 / §7.1–§7.4 / §7.6 / §8 的运行器本地状态故障，经 Issue #147 补充 §5.1 / §7.4–§7.6 / §8.4 的删除操作、`item.failed` 的嵌套与运行器内部缺陷，经 Issue #155 澄清 §7.2 持久化失败时的计数口径，以及 §4.4 / §6.8 / §7.3–§7.6 的若干措辞，经 Issue #130 澄清 §7.2 写请求按最终结局判定意图的清除与保留，经 Issue #112 为 §3 / §4.4 的 `remote.url` 引入 http.md §1 的可判定文法与按字节比较）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
+> 状态：**定稿**——§6「运行边界」由 Issue #34 定稿（经 Issue #39 补充 §6.3 / §6.5 的 uri_prefix 规范化不动点，经 Issue #105 补充 §6.3 的插件进程组清理），§1–§5、§7–§8 由 Issue #41 定稿（经 Issue #80 补充 §4.1.1 的 config_schema 正则子集，经 Issue #95 同步 §6.6 的 `file_type` 语法措辞，经 Issue #94 将 §4.1 / §4.4 的 JSON 嵌套深度统一为 core.md §2.8 的计数口径，经 Issue #137 补充 §4.4 / §5.2 / §6.8 / §7.1–§7.4 / §7.6 / §8 的运行器本地状态故障，经 Issue #147 补充 §5.1 / §7.4–§7.6 / §8.4 的删除操作、`item.failed` 的嵌套与运行器内部缺陷，经 Issue #155 澄清 §7.2 持久化失败时的计数口径，以及 §4.4 / §6.8 / §7.3–§7.6 的若干措辞，经 Issue #130 澄清 §7.2 写请求按最终结局判定意图的清除与保留，经 Issue #112 为 §3 / §4.4 的 `remote.url` 引入 http.md §1 的可判定文法与按字节比较，经 Issue #145 修订 §7.1 批量读被拒后逐条重读都通过时的处置）；全文关键词 MUST / MUST NOT / SHOULD / SHOULD NOT / MAY 按 RFC 2119 理解。
 > 依据：[docs/plan/v1-plan.md](../docs/plan/v1-plan.md) §11。
 > 这是独立的中立规范，**不属于 Core**：核心投递协议完全不知道 connector 的存在（类比 git 与 remote-helper）。
 > Issue #2 已关闭：平台不引入 connector 运行环境，connector 由用户自行开发、自行部署；托管运行若将来需要，另立独立产品。v1 官方 connector 只有 Git connector（本仓 `connectors/git/`）。
@@ -562,7 +562,7 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 | `validation` | 运行器对插件产出的本地校验失败（§6.6），含分段在轮结束时仍未闭合（§6.5） | `DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `segment_unclosed` |
 | `prefix` | 条目越出实例前缀（§6.5） | `out_of_prefix` |
 | `blob` | blob 读取失败（含取消、超时、句柄失效）、`size` 不符、超过远端限额（§6.7） | `blob_read_failed` / `blob_size_mismatch` / `blob_too_large` |
-| `remote` | remote 对该条目的写入或读取（`batch_head` / `head`，含冲突后的重读，§7.2）返回不可重试的 DPE 错误（core.md §6；`head` 的 `DPE_NOT_FOUND` 即 R 不存在，不是失败）；批量读被确定拒绝时，运行器 SHOULD 逐条重读以定位到具体条目，定位不了的，本次读取涉及的条目各记一条失败；可重试的错误不落到条目级，重试耗尽即按轮级中止本轮；响应不是 DPE 报文的（见轮级 `remote_protocol_error`）也不落到条目级，按轮级中止本轮 | DPE 错误码原样 |
+| `remote` | remote 对该条目的写入或读取（`batch_head` / `head`，含冲突后的重读，§7.2）返回不可重试的 DPE 错误（core.md §6；`head` 的 `DPE_NOT_FOUND` 即 R 不存在，不是失败）；批量读被确定拒绝时，运行器 SHOULD 逐条重读以定位到具体条目：读被拒的条目各记一条失败，其余条目按逐条读到的值继续判定与写入；逐条重读都通过（拒绝与具体 URI 无关）时，全部条目同样按逐条读到的值继续——判定只需要每个 URI 的 R，写入仍经 CAS，不会因此覆盖任何内容——但批量读被拒这件事 SHOULD 以 warn 记入日志（带原错误码，§7.5），使对一切批量读都拒绝的服务端可被察觉；可重试的错误不落到条目级，重试耗尽即按轮级中止本轮；响应不是 DPE 报文的（见轮级 `remote_protocol_error`）也不落到条目级，按轮级中止本轮 | DPE 错误码原样 |
 
 - `retryable` 的含义同 §6.5：同样的轮重跑可能成功。`plugin` 来源取插件给出的值；`blob_read_failed` 取插件 `-32003` 的 `data.retryable`（取消、超时视为 true，句柄失效视为 false）；`remote` 来源取 core.md §6 的值，唯一的例外是：按 §7.2 本可自动重新判定的冲突（`source_wins` 下的 commit / delete、源被改写的 move）因超过重试上限而失败时取 true；其余运行器判定的条目级失败均为 false。
 - 运行器对条目的处理 MUST NOT 因其中某个条目失败而崩溃或放弃本轮其余条目（§6.1）。

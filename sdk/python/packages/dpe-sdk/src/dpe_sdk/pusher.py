@@ -81,7 +81,10 @@ delete 重读不存在记 ``deleted``（删条目、清意图），二者都带�
 拒绝（如其中一个 URI 不在授权前缀内）时，推送器对本批每个 URI 各 ``head`` 一次（并发至多
 ``concurrency``），只让读被拒的条目以该条 ``failed`` 返回（``error`` 是那次读的原错误，code
 原样，``side`` 为 ``None``），其余条目照常判定与写入；逐条读都通过（拒绝与具体 URI 无关）时，
-每条各返回一条原错误的 ``failed``。定位在任何写入与意图持久化之前完成。网络失败、可重试错误
+全部条目同样按逐条读到的值判定与写入（写入仍经 CAS）。两种情况都在 logger ``dpe_sdk.pusher``
+上记一条 warning（带原错误码与计数，``extra`` 中有 ``dpe_pusher`` / ``dpe_code`` /
+``dpe_entries`` / ``dpe_denied``，不带远端文本），使对一切批量读都拒绝的服务端可被察觉
+（connector §7.1）。定位在任何写入与意图持久化之前完成。网络失败、可重试错误
 耗尽与响应不是 DPE 报文仍整批抛出（定位过程中遇到同样整批抛出）。
 
 **快/暂存分界**：完全复用核心 ``deliver`` 的判据（inline 请求体 ≤
@@ -91,6 +94,7 @@ delete 重读不存在记 ``deleted``（删条目、清意图），二者都带�
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
@@ -325,6 +329,11 @@ def _matches_contract(value: str, contract: str) -> bool:
     return True
 
 
+_log = logging.getLogger("dpe_sdk.pusher")
+# 库的惯例：不替使用方决定输出去向（未配置 logging 时不落到 stderr 的兜底输出）
+_log.addHandler(logging.NullHandler())
+
+
 def _determinate(exc: BaseException) -> bool:
     """服务端确定、不可重试地拒绝了这次读（DPE 错误且 ``retryable`` 为假）。
 
@@ -365,13 +374,26 @@ def _first_leaf(group: BaseExceptionGroup[BaseException]) -> BaseException:
 
 
 def _located(
-    heads: Sequence[str | Exception | None], rejected: Exception
+    pusher: object, heads: Sequence[str | Exception | None], rejected: Exception
 ) -> tuple[list[str | None], dict[int, Exception]]:
-    """逐条读的结果 → （读到的值，被拒的 URI 下标 → 原错误）；都读通时每个 URI 记原批量错误。"""
+    """逐条读的结果 → （读到的值，被拒的 URI 下标 → 原错误）。都读通时没有被拒的 URI，全部条目
+    按读到的值继续（connector §7.1）。批量读被拒这件事不被吞掉：记一条 warning（带原错误码与
+    计数，不带远端文本）。"""
     denied = {index: head for index, head in enumerate(heads) if isinstance(head, Exception)}
     values = [None if isinstance(head, Exception) else head for head in heads]
-    if not denied:
-        denied = dict.fromkeys(range(len(heads)), rejected)
+    code = getattr(rejected, "code", None)
+    _log.warning(
+        "批量读被拒（%s），逐条读定位：%d 个 URI 中 %d 个读被拒",
+        code,
+        len(heads),
+        len(denied),
+        extra={
+            "dpe_pusher": pusher,
+            "dpe_code": code,
+            "dpe_entries": len(heads),
+            "dpe_denied": len(denied),
+        },
+    )
     return values, denied
 
 
@@ -1094,7 +1116,7 @@ class StatefulPusher(_PusherBase):
         if workers <= 1:
             for index, uri in enumerate(uris):
                 heads[index] = self._probe(uri)
-            return _located(heads, rejected)
+            return _located(self, heads, rejected)
         pool = ThreadPoolExecutor(max_workers=workers)
         try:
             pending = {pool.submit(self._probe, uri): index for index, uri in enumerate(uris)}
@@ -1105,7 +1127,7 @@ class StatefulPusher(_PusherBase):
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         pool.shutdown()
-        return _located(heads, rejected)
+        return _located(self, heads, rejected)
 
     def _probe(self, uri: str) -> str | Exception | None:
         """逐条定位的一次读：被确定拒绝时把错误作为结果返回，其余失败上抛（整批中止）。"""
@@ -1324,7 +1346,7 @@ class AsyncStatefulPusher(_PusherBase):
         except BaseExceptionGroup as failures:
             # 第一个整批失败即取消其余读；把原异常（而非任务组的异常组）交给调用方，与同步版一致
             raise _first_leaf(failures) from None
-        return _located(heads, rejected)
+        return _located(self, heads, rejected)
 
     async def _run_all(
         self, plans: Sequence[_Plan], worker: Callable[[_Plan], Awaitable[_Outcome]]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import json
+import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -2145,15 +2146,29 @@ async def test_batch_read_rejection_fails_only_the_offending_entry() -> None:
     assert state.intents == {}
 
 
-async def test_unlocalizable_batch_rejection_fails_every_entry() -> None:
-    """批量读被拒、逐条读都通过（拒绝与具体 URI 无关）：每条各返回一条原错误，零写入。"""
+async def test_batch_rejection_with_every_single_read_passing_still_writes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """批量读被拒、逐条读都通过（拒绝与具体 URI 无关）：按逐条读到的值照常判定与写入（connector
+    §7.1），批量读被拒记一条 warning（带原错误码，不带远端文本）。"""
     transport = _rejecting(set(), all_batches=True)
-    async with in_process_client(transport=transport) as (client, recorder):
-        pusher = AsyncStatefulPusher(client, state=MemoryStateStore())
-        results = await pusher.push({_ALLOWED + "a.md": _doc("A"), _ALLOWED + "b.md": _doc("B")})
-        assert [r.status for r in results] == ["failed", "failed"]
-        assert all(isinstance(r.error, ForbiddenError) for r in results)
-        assert _commits(recorder) == []
+    with caplog.at_level(logging.WARNING, logger="dpe_sdk.pusher"):
+        async with in_process_client(transport=transport) as (client, recorder):
+            pusher = AsyncStatefulPusher(client, state=MemoryStateStore())
+            results = await pusher.push(
+                {_ALLOWED + "a.md": _doc("A"), _ALLOWED + "b.md": _doc("B")}
+            )
+            assert [r.status for r in results] == ["created", "created"]
+            assert len(_commits(recorder)) == 2
+    records = [r for r in caplog.records if r.name == "dpe_sdk.pusher"]
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
+    assert getattr(records[0], "dpe_code", None) == "DPE_FORBIDDEN"
+    assert (getattr(records[0], "dpe_entries", None), getattr(records[0], "dpe_denied", None)) == (
+        2,
+        0,
+    )
+    assert getattr(records[0], "dpe_pusher", None) is pusher
+    assert "拒绝" not in records[0].getMessage()  # 不带远端 detail 文本
 
 
 async def test_network_failure_while_locating_raises_the_whole_batch() -> None:

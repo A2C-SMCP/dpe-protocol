@@ -102,7 +102,7 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 - `StateStore` 在异步方法里被同步调用、调用期间占住当前 worker，实现应尽量缩短耗时；多线程运行时上重 I/O（`fsync` 等）可用 `tokio::task::block_in_place` 包住（current_thread 运行时上不可用）；
 - move 的目标已持有与源相同的内容时（读到的目标值等于 base，如失败轮已建出目标，#165），不发 move，以 base 删除源并判 `moved`；目标内容不同仍为条目失败（`Side::To`），绝不在目标上写入；
 - 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
-- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `Failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；拒绝与具体 URI 无关时每条各返回一份原错误。网络失败、可重试错误耗尽与不合规响应仍整批返回 `Err`。**升级须知**（0.4 起，不兼容）：以前这类拒绝整批返回 `Err`；
+- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `Failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；逐条读都通过（拒绝与具体 URI 无关）时全部条目按逐条读到的值照常写入（connector §7.1，写入仍经 CAS）。两种情况都经 `log` 门面记一条 warn（target `dpe_sdk::pusher`，带原错误码与计数；新增依赖 `log`，随 feature `http`）。网络失败、可重试错误耗尽、不合规响应与契约不兼容仍整批返回 `Err`。**升级须知**（0.4 起，不兼容）：以前这类拒绝整批返回 `Err`；
 - 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`；`push` / `delete` / `move_documents` 的 future 都是 `Send`，调用方可以把整次操作交给 `tokio::spawn`（推送器借用客户端，任务内持有 `Arc<DpeClient>` 再构造推送器即可满足 `'static`；`blobs` 回调须为 `Send`，见上文「传输适配」）；
 - `push` 的最后一个参数 `blobs` 原样交给每条 `deliver`，按 `sha256:` 引用给出服务端缺少的 blob 字节（可用下文 `media` 构造来源），未变文档不会调用它；
 - `flush()` 是补存入口：任何一次保存失败后、结束使用前，用同一个实例调用它，把内存状态整批写回 store；

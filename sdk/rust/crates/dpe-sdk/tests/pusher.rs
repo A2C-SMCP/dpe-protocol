@@ -2653,6 +2653,7 @@ fn deny(fake: &Fake, uris: &[&str]) {
 
 #[tokio::test]
 async fn batch_read_rejection_fails_only_the_offending_entry() {
+    let logs = captured_logs();
     let fake = Fake::new();
     let server = fake.server();
     let client = client(&server);
@@ -2682,6 +2683,14 @@ async fn batch_read_rejection_fails_only_the_offending_entry() {
     assert_eq!((results[1].side, results[1].unknown), (None, false));
     assert_eq!(count(&server, "POST", "/heads"), 1);
     assert_eq!(count(&server, "HEAD", "/documents"), 3);
+    assert!(logs
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(level, message)| *level == log::Level::Warn
+            && message.contains("DPE_FORBIDDEN")
+            && message.contains("3 个 URI 中 1 个读被拒")));
     let snapshot = state(&store, &server);
     assert_eq!(
         snapshot.synced.keys().cloned().collect::<Vec<_>>(),
@@ -2690,31 +2699,79 @@ async fn batch_read_rejection_fails_only_the_offending_entry() {
     assert_eq!(snapshot.intents, BTreeMap::new());
 }
 
+/// 测试用的日志后端：收下 target `dpe_sdk::pusher` 的记录（`log` 只能设一次后端，进程内共享）。
+struct Capture(Mutex<Vec<(log::Level, String)>>);
+
+impl log::Log for Capture {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.target() == "dpe_sdk::pusher"
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((record.level(), record.args().to_string()));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
+
+fn captured_logs() -> &'static Capture {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        log::set_logger(&CAPTURE).expect("测试进程内只设一次日志后端");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    &CAPTURE
+}
+
 #[tokio::test]
-async fn unlocalizable_batch_rejection_fails_every_entry() {
+async fn batch_rejection_with_every_single_read_passing_still_writes() {
+    let logs = captured_logs();
     let fake = Fake::new();
     let server = fake.server();
     let client = client(&server);
     let store = Arc::new(MemoryStateStore::new());
     fake.reject_all_batches.store(true, Ordering::SeqCst);
+    const C: &str = "dpe://docs/c.md";
+    for (uri, body) in [(A, "A"), (B, "B"), (C, "C")] {
+        fake.script(Route::Commit(uri.into()), vec![created(uri, &text(body))]);
+    }
 
     let results = pusher(&client, &store)
-        .push(&docs(&[(A, &text("A")), (B, &text("B"))]), &none(), None)
+        .push(
+            &docs(&[(A, &text("A")), (B, &text("B")), (C, &text("C"))]),
+            &none(),
+            None,
+        )
         .await
         .unwrap();
 
-    assert_eq!(statuses(&results), [PushStatus::Failed, PushStatus::Failed]);
-    for result in &results {
-        assert_eq!(
-            result.error.as_ref().and_then(|error| error.code()),
-            Some("DPE_FORBIDDEN")
-        );
-        assert_eq!(
-            result.error.as_ref().map(|error| error.is_retryable()),
-            Some(false)
-        );
-    }
-    assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
+    // 拒绝与具体 URI 无关：按逐条读到的值照常写入（connector §7.1）
+    assert_eq!(
+        statuses(&results),
+        [
+            PushStatus::Created,
+            PushStatus::Created,
+            PushStatus::Created
+        ]
+    );
+    assert_eq!(fake.write_count.load(Ordering::SeqCst), 3);
+    // 批量读被拒不被吞掉：一条 warn，带原错误码与计数（并行用例可能也写了日志，按内容找）
+    let records = logs.0.lock().unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|(level, message)| *level == log::Level::Warn
+                && message.contains("DPE_FORBIDDEN")
+                && message.contains("3 个 URI 中 0 个读被拒")),
+        "{records:?}"
+    );
 }
 
 #[tokio::test]

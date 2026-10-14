@@ -71,8 +71,10 @@
 //! **批量读被拒时逐条定位**（#145，connector §7.1）：判定前的 `batch_head` 被确定、不可重试地
 //! 拒绝（如其中一个 URI 不在授权前缀内）时，推送器对本批每个 URI 各 `head` 一次（并发至多
 //! `concurrency`），只让读被拒的条目以该条 `Failed` 返回（`error` 是那次读的原错误，code 原样，
-//! `side` 为 `None`），其余条目照常判定与写入；逐条读都通过（拒绝与具体 URI 无关）时，每条各
-//! 返回一份原错误的 `Failed`。定位在任何写入与意图持久化之前完成。网络失败、可重试错误耗尽
+//! `side` 为 `None`），其余条目照常判定与写入；逐条读都通过（拒绝与具体 URI 无关）时，全部条目
+//! 同样按逐条读到的值判定与写入（写入仍经 CAS）。两种情况都记一条 warn（`log` 门面，target
+//! `dpe_sdk::pusher`，带原错误码与计数，不带远端文本），使对一切批量读都拒绝的服务端可被察觉。
+//! 定位在任何写入与意图持久化之前完成。网络失败、可重试错误耗尽
 //! 与不合规响应仍整批返回 `Err`（定位过程中遇到同样如此）。与 Python 侧行为对等。
 //!
 //! **快/暂存分界**：完全复用核心 `deliver` 的判据，本模块不引入任何阈值；`concurrency` 只限制
@@ -1495,8 +1497,10 @@ mod driver {
 
         /// 判定前的读：一次 `batch_head`；被确定、不可重试地拒绝时逐 URI `head` 定位（至多
         /// `concurrency` 个并发，同一任务内），返回（读到的值，被拒的 URI 下标 → 原错误）。逐条
-        /// 读都通过（拒绝与具体 URI 无关）时每个 URI 各记一份原批量错误。网络失败、可重试错误
-        /// 耗尽与不合规响应（含定位途中遇到的）整批返回 `Err`；此时尚未写入、未持久化意图。
+        /// 读都通过（拒绝与具体 URI 无关）时没有被拒的 URI，全部条目按读到的值继续（connector
+        /// §7.1）；批量读被拒这件事不被吞掉，记一条 warn（target `dpe_sdk::pusher`，带原错误码
+        /// 与计数，不带远端文本）。网络失败、可重试错误耗尽、不合规响应与契约不兼容（含定位途中
+        /// 遇到的）整批返回 `Err`；此时尚未写入、未持久化意图。
         async fn read(
             &self,
             uris: &[String],
@@ -1522,11 +1526,13 @@ mod driver {
                     Err(error) => return Err(error),
                 }
             }
-            if denied.is_empty() {
-                denied = (0..uris.len())
-                    .map(|index| (index, rejected.protocol_copy()))
-                    .collect();
-            }
+            log::warn!(
+                target: "dpe_sdk::pusher",
+                "批量读被拒（{}），逐条读定位：{} 个 URI 中 {} 个读被拒",
+                rejected.code().unwrap_or("?"),
+                uris.len(),
+                denied.len()
+            );
             Ok((heads, denied))
         }
 

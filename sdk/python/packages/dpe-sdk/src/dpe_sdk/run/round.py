@@ -41,7 +41,10 @@ fail-closed 的代价只是重跑一轮（commit 由内容幂等、意图可对�
 
 **读失败**（§7.1，#137）：``batch_head`` 与冲突后重读得到确定、不可重试的错误时归条目级
 （code 原样），本轮继续。``batch_head`` 一次覆盖整波：被确定拒绝时由推送器逐 URI 定位，只让读
-被拒的条目以 ``failed`` 回报（#145），运行器按普通条目失败入账，其余条目照常落地。
+被拒的条目以 ``failed`` 回报（#145），运行器按普通条目失败入账，其余条目（含逐条读都通过时的全部
+条目）按逐条读到的值照常落地。推送器为此记的 warning 由本模块转成 ``remote.batch_read_rejected``
+（warn）事件，只带 ``code`` / ``entries`` / ``denied``（读被拒的 URI 数），不带远端文本——对一切
+批量读都拒绝的服务端由此可被察觉（connector §7.1）。
 
 **游标 fail-closed**（§6.8）：收到结束批、全部条目成功落地才 ``succeeded`` 并持久化新游标
 （同步状态与意图由推送器先行落盘，游标最后写，不会先于同步状态前进）；有条目失败为
@@ -55,6 +58,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -304,6 +308,30 @@ _K = TypeVar("_K", str, tuple[str, str])
 
 #: ``settle`` 的结论：``None`` 为已入账（成功或条目失败）；``RunFailure`` 为终止本轮的失败
 _Settled = _Retry | RunFailure | None
+
+
+class _BatchReadRejected(logging.Handler):
+    """把本轮推送器的「批量读被拒」warning（logger ``dpe_sdk.pusher``）转成事件（§7.1、§7.5）。
+
+    只转发本轮推送器发出的记录（``dpe_pusher`` 为同一实例），同一进程里的其他推送器不串扰。
+    """
+
+    def __init__(self, state: _Round) -> None:
+        super().__init__(logging.WARNING)
+        self._state = state
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "dpe_pusher", None) is not self._state.pusher:
+            return
+        self._state.emit(
+            "remote.batch_read_rejected",
+            "warn",
+            {
+                "code": getattr(record, "dpe_code", None),
+                "entries": getattr(record, "dpe_entries", None),
+                "denied": getattr(record, "dpe_denied", None),
+            },
+        )
 
 
 class _Round:
@@ -705,6 +733,9 @@ async def run_round(
     state.emit("round.started", "info", {"cursor_given": cursor is not None})
     fatal: RunFailure | None = None
     final: ScanBatch | None = None
+    rejected_reads = _BatchReadRejected(state)
+    pusher_log = logging.getLogger("dpe_sdk.pusher")
+    pusher_log.addHandler(rejected_reads)
     try:
         await negotiate_capabilities(pusher.client)
         final = await state.run(cursor)
@@ -718,6 +749,7 @@ async def run_round(
         if failure.code == "state_unavailable":
             state.save_failed = True
     finally:
+        pusher_log.removeHandler(rejected_reads)
         state.stage.close()
     if fatal is not None:
         state.record(fatal)
