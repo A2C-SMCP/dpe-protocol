@@ -1,0 +1,396 @@
+{
+  "name": "remote_url",
+  "kind": "remote_url",
+  "spec": "spec/bindings/http.md",
+  "section": "§1",
+  "description": "HTTP 绑定 §1：客户端接受的 remote URL 文法——MUST 接受与 MUST 拒绝的两组用例（reason 仅供人读）",
+  "valid": [
+    "https://dpe.example.com/remotes/acme",
+    "https://example.com/anything/r/42",
+    "http://example.com",
+    "http://localhost:8080",
+    "http://127.0.0.1:8000/dpe",
+    "https://example.com:8443/r",
+    "http://example.com:443/r",
+    "https://example.com:80",
+    "http://h:1",
+    "http://h:65535",
+    "https://xn--fsqu00a.example/r",
+    "http://a_b~c.example",
+    "http://a!b$c&d'e(f)g*h+i,j;k=l.example",
+    "http://[::1]:8080/x",
+    "http://[2001:db8::7]/r",
+    "http://[::]",
+    "http://[1:2:3:4:5:6:7:8]",
+    "http://[::ffff:c000:201]",
+    "http://[2001:db8::1:0:0:1]",
+    "http://[2001:db8:0:1:1:1:1:1]",
+    "http://[1::2:0:0:3:4]",
+    "http://192.0.2.1:8080/r",
+    "http://1a.example",
+    "http://a.0x1g",
+    "https://example.com/a%20b/r%2F1",
+    "https://example.com/%C3%A9t%C3%A9",
+    "https://example.com/a:b@c/;x=1,y",
+    "https://example.com/a//b",
+    "https://example.com/..a/.b/..."
+  ],
+  "invalid": [
+    {
+      "input": "",
+      "reason": "not_uri"
+    },
+    {
+      "input": "example.com/r",
+      "reason": "not_uri"
+    },
+    {
+      "input": "https://exämple.com/r",
+      "reason": "not_uri"
+    },
+    {
+      "input": "https://example.com/a b",
+      "reason": "not_uri"
+    },
+    {
+      "input": "https://example.com/a%2",
+      "reason": "not_uri"
+    },
+    {
+      "input": "HTTPS://example.com/r",
+      "reason": "not_normalized"
+    },
+    {
+      "input": "https://Example.com/r",
+      "reason": "not_normalized"
+    },
+    {
+      "input": "https://example.com/%7Er",
+      "reason": "not_normalized"
+    },
+    {
+      "input": "https://example.com/a%2fb",
+      "reason": "not_normalized"
+    },
+    {
+      "input": "http://[::FFFF:192.0.2.1]",
+      "reason": "not_normalized"
+    },
+    {
+      "input": "https://example.com/r?",
+      "reason": "query_or_fragment"
+    },
+    {
+      "input": "https://example.com/r?a=1",
+      "reason": "query_or_fragment"
+    },
+    {
+      "input": "https://example.com/r#",
+      "reason": "query_or_fragment"
+    },
+    {
+      "input": "https://example.com/r#f",
+      "reason": "query_or_fragment"
+    },
+    {
+      "input": "https://example.com?a=1",
+      "reason": "query_or_fragment"
+    },
+    {
+      "input": "ftp://example.com/r",
+      "reason": "scheme"
+    },
+    {
+      "input": "file:///tmp/r",
+      "reason": "scheme"
+    },
+    {
+      "input": "ws://example.com/r",
+      "reason": "scheme"
+    },
+    {
+      "input": "https:example.com/r",
+      "reason": "no_authority"
+    },
+    {
+      "input": "https:/example.com/r",
+      "reason": "no_authority"
+    },
+    {
+      "input": "https://user@example.com/r",
+      "reason": "userinfo"
+    },
+    {
+      "input": "https://user:pw@example.com/r",
+      "reason": "userinfo"
+    },
+    {
+      "input": "https://@example.com",
+      "reason": "userinfo"
+    },
+    {
+      "input": "https://",
+      "reason": "host"
+    },
+    {
+      "input": "https:///r",
+      "reason": "host"
+    },
+    {
+      "input": "https://:8080/r",
+      "reason": "host"
+    },
+    {
+      "input": "http://::1/r",
+      "reason": "host"
+    },
+    {
+      "input": "http://h%C3%A9.example",
+      "reason": "host"
+    },
+    {
+      "input": "http://a]b",
+      "reason": "host"
+    },
+    {
+      "input": "http://[v1.fe]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[fe80::1%25eth0]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::1",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::1]x",
+      "reason": "host"
+    },
+    {
+      "input": "http://[]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:2:3:4:5:6:7:8:9]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:2:3:4:5:6:7]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:2:3:4:5:6:7:8::]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1::2::3]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[:1::2]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:::2]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[12345::]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::g]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::ffff:256.0.0.1]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::1.2.3.04]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1.2.3.4::]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1.2.3.4]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::1.2.3.4:5]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::ffff:192.0.2.1]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:2:3:4:5:6:1.2.3.4]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[0::1]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::0001]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[0:0:0:0:0:0:0:1]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:2:3:4:5:6:7::]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[::2:3:4:5:6:7:8]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[2001:db8::1:1:1:1:1]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:0:0:2::3:4]",
+      "reason": "host"
+    },
+    {
+      "input": "http://[1:0:0:0:2::3]",
+      "reason": "host"
+    },
+    {
+      "input": "http://127.1",
+      "reason": "host"
+    },
+    {
+      "input": "http://1.2.3.256",
+      "reason": "host"
+    },
+    {
+      "input": "http://127.000.000.001",
+      "reason": "host"
+    },
+    {
+      "input": "http://1.2.3.4.5",
+      "reason": "host"
+    },
+    {
+      "input": "http://0x7f.0.0.1",
+      "reason": "host"
+    },
+    {
+      "input": "http://4294967296",
+      "reason": "host"
+    },
+    {
+      "input": "http://a.123",
+      "reason": "host"
+    },
+    {
+      "input": "http://a.0x1",
+      "reason": "host"
+    },
+    {
+      "input": "http://a.0x",
+      "reason": "host"
+    },
+    {
+      "input": "http://example.com.",
+      "reason": "host"
+    },
+    {
+      "input": "http://.example.com",
+      "reason": "host"
+    },
+    {
+      "input": "http://a..b",
+      "reason": "host"
+    },
+    {
+      "input": "http://example.com:80",
+      "reason": "default_port"
+    },
+    {
+      "input": "https://example.com:443/r",
+      "reason": "default_port"
+    },
+    {
+      "input": "https://example.com:",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:0",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:08080",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:65536",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:123456",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:8a",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:+80",
+      "reason": "port"
+    },
+    {
+      "input": "http://[::1]:",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:/r",
+      "reason": "port"
+    },
+    {
+      "input": "https://example.com:1:2",
+      "reason": "port"
+    },
+    {
+      "input": "http://[::1]:80",
+      "reason": "default_port"
+    },
+    {
+      "input": "https://example.com/",
+      "reason": "trailing_slash"
+    },
+    {
+      "input": "https://example.com/r/",
+      "reason": "trailing_slash"
+    },
+    {
+      "input": "https://example.com/a/./b",
+      "reason": "dot_segment"
+    },
+    {
+      "input": "https://example.com/a/..",
+      "reason": "dot_segment"
+    },
+    {
+      "input": "https://example.com/.",
+      "reason": "dot_segment"
+    },
+    {
+      "input": "https://example.com/a[b",
+      "reason": "path"
+    },
+    {
+      "input": "https://example.com/a]",
+      "reason": "path"
+    }
+  ]
+}

@@ -3,8 +3,8 @@
 //! 与 Python SDK 的 `test_run_definition.py` 同口径：逐项映射其用例，同一输入两侧的接受/拒绝
 //! 结果与错误类别一致。文件末尾的 `remote_url_rules` / `uri_prefix_rules` / 深度边界等用例是
 //! Rust 侧的额外钉子，期望值逐条对照 Python SDK 的实际行为核对过（不是从规范文本推的）。
-//! `remote_url_rules` 只钉 §4.4 语义级的四条规则——CPython `urlsplit` 的加固细节（括号字面量
-//! 格式、NFKC 等）不复刻，`remote.url` 的可判定文法与相应向量见 Issue #112。
+//! `remote.url` 的文法（HTTP 绑定 §1）由向量逐例固定，见 `remote_url_vectors.rs`；这里的
+//! `remote_url_rules` 只留几条与旧行为不同的代表用例。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -780,54 +780,27 @@ fn secret_file_in_symlink_loop_is_definition_invalid() {
 
 #[test]
 fn remote_url_rules() {
+    // 文法全集由向量固定（remote_url_vectors.rs）；这里钉住 #112 收紧前曾被接受的几类写法
     let tmp = TempDir::new("url");
-    let accepted = [
-        "https://dpe.example.com/remotes/acme",
-        "HTTP://dpe.example.com/r", // 方案大小写不敏感（RFC 3986 §3.1）
-        "https://dpe.example.com:8080/r", // 带端口
-        "http://h",
-        "http://h/x?q=1",
-        "http://h/x#frag",
-        "http://[::1]:8080/x", // RFC 3986 的 IP-literal 只做结构切分，不校验字面量（#112）
-        "http://x/y@z",        // `@` 在路径而非 netloc
-    ];
-    for url in accepted {
-        assert!(
-            parse_definition(
-                &mutated(|map| {
-                    map["remote"]["url"] = json!(url);
-                }),
-                tmp.path()
-            )
-            .is_ok(),
-            "{url}"
-        );
-    }
-    // 语义级拒绝（§4.4 的四条规则；文法收紧见 #112）
+    assert!(parse_definition(&example(), tmp.path()).is_ok());
     let rejected = [
-        "https://",                // authority 为空
-        "https:///path",           // authority 为空
-        "https://:8080/r",         // host 为空
-        "//h/x",                   // 相对 URL（无 scheme）
-        "dpe.example.com/r",       // 相对 URL（无 scheme）
-        "mailto:x@y",              // 非 http(s)，且无 authority
-        "ftp://dpe.example.com/r", // 方案非 http(s)
-        "",                        // 空串
-        "http://@h/x",             // userinfo
-        "http://u:p@h/x",          // userinfo
-        "http:h/x",                // 无 "//"，缺 authority
+        "HTTP://dpe.example.com/r",      // 不是规范化不动点（scheme 须小写）
+        "https://dpe.example.com:443/r", // 显式默认端口
+        "https://dpe.example.com/r/",    // 尾部 `/`
+        "http://h/x?q=1",                // 查询串
+        "http://h/x#frag",               // 片段
+        "http://[v1.fe]/x",              // IPvFuture
+        "http://[fe80::1%25eth0]/x",     // zone
+        "http://u:p@h/x",                // userinfo
     ];
     for url in rejected {
-        assert_eq!(
-            code_of(
-                &mutated(|map| {
-                    map["remote"]["url"] = json!(url);
-                }),
-                tmp.path()
-            ),
-            "definition_invalid",
-            "{url}"
-        );
+        let data = mutated(|map| {
+            map["remote"]["url"] = json!(url);
+        });
+        let failure = parse_definition(&data, tmp.path()).expect_err(url);
+        assert_eq!(failure.code(), "definition_invalid", "{url}");
+        // 消息不回显 URL（§4.3「不外泄」）
+        assert!(!failure.to_string().contains(url), "{url}");
     }
 }
 

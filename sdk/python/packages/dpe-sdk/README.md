@@ -52,7 +52,7 @@ with DpeClient(
     conf = client.capabilities().limits  # capabilities 快照（契约与 limits 与它绑定）
 ```
 
-- **remote**：只接受 http / https、有主机名、无查询串与片段、不带凭证信息（凭证走 `CredentialProvider`）；capabilities 在实例内快照一次，服务端变更能力后新建客户端；
+- **remote**：按 HTTP 绑定 §1 的文法校验（`dpe_sdk.remote_url.check_remote_url`：http / https、已是 core §1.1 规范化形式、无查询串与片段、不带凭证信息（凭证走 `CredentialProvider`）、不写默认端口、路径不以 `/` 结尾且无点段），合法即原样使用；capabilities 在实例内快照一次，服务端变更能力后新建客户端；
 - **凭证**：`CredentialProvider`（`dpe_sdk.credentials`）在每个请求发送前调用一次（传输层内部的重发同样重新取，轮换中的短时凭证在长等待后仍可用），返回 `Authorization` 头的完整值（含方案名）；SDK 不感知鉴权方案，也不解释凭证内容；
 - **gzip**：服务端 capabilities 声明 `gzip`、请求体是 `application/json`、不小于 1024 字节且不是分块请求（带 `Content-Range`）时才压缩；分块上传按规范（§7）MUST NOT 压缩；
 - **重试**：传输层只自行重发三类——`retry_safe` 的请求（只读操作与断点查询，含走 POST 的 `batch_head`）遇上的网络失败、任何请求上确定未发出的建连失败、以及可重试的 DPE 错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，按 `code` 的 `retryable` 判定）按 `Retry-After`（秒数或 HTTP 日期）等待后原样重发（等待上限 5 分钟，更长则抛给调用方）。写请求可能已发出后的超时与响应丢失一律抛回核心，由核心按 core §5.2 处理，**绝不自动 force**；
@@ -266,7 +266,8 @@ python -m dpe_sdk.run ...                           # 等价入口
 - **删除**（#147）：只从定义取 `id`（校验 I-JSON、`definition_version` 与 `id` 文法，其余成员一律不查——清单丢失、前缀已重叠或状态内容损坏的实例也能删）；先取锁；不解析状态内容，移除状态后最后移除登记；幂等（无可删除的状态同样退出 0，`instance.deleted` 的 `found` 为 `false`）；不读写 remote；不输出轮报告，退出码 0 / 2 / 3 / 4 / 70。删除一个从未运行过的 `id` 时会留下它的排他锁文件（`instances/<id>/lock`，规范允许保留）。
 - **实例级校验与登记顺序**（§5.2）：清单、配置、调优参数与凭证都通过之后才读实例状态、登记前缀并写入内容身份指纹，未通过校验的新实例不留下任何状态；取锁后、读到状态前就结束的调用 `cursor_held_since` 为 `null`。
 - **`runner` 调优键**：`max_items`、`scan_timeout`、`blob_timeout`、`max_message_bytes`、`conflict_retries`（0–2）、`state_retries`；不认识的键忽略。
-- `remote.url` 目前按字面比较（§3），可判定文法待 #112。
+- **`remote.url`**（#112）：按 HTTP 绑定 §1 的文法校验（与 `DpeClient` 构造同一个判定 `dpe_sdk.remote_url.check_remote_url`），不合法即 `definition_invalid`；同一地址的写法差异已被文法消除，前缀登记按字符串相等比较 remote（DNS 别名等字符串无法判定的重叠由服务端前缀授权兜底）。
+  - **升级须知**（0.4 起，不兼容）：此前接受的写法——尾部 `/`（`DpeClient` 以前会去掉）、大写 scheme 或 host、显式默认端口、查询串或片段、点段、`127.1` 这类数字主机、非 RFC 5952 形式的 IPv6——现在构造客户端即报 `ValueError`，实例定义报 `definition_invalid`。`remote.url` 属于实例的内容身份（§1），改正它会使下一轮丢弃游标、同步状态与意图日志，以全量轮重新开始。
 - **规范依据**：删除、`item.failed` 的 `failure` 嵌套与 `runner_internal_error` 见 #147（PR #150，已合入）。
 
 > 示例插件与端到端收敛测试尚在开发中（#53）。

@@ -74,23 +74,7 @@ def _problem(code: str, status: int, **headers: str) -> httpx.Response:
 # ---------------------------------------------------------------------- remote
 
 
-@pytest.mark.parametrize(
-    "remote",
-    [
-        "ftp://example.com/r",
-        "http://",
-        "https://example.com/r?a=1",
-        "https://example.com/r#f",
-        # 空定界符：解析后与「没有」不可区分，但原始串拼接会让首个请求错位，必须同样拒绝
-        "https://example.com/r?",
-        "https://example.com/r#",
-        "https://user:pw@example.com/r",
-        "not-a-url",
-    ],
-)
-async def test_remote_must_be_a_plain_http_base_url(remote: str) -> None:
-    with pytest.raises(ValueError):
-        DpeClient(remote)
+# remote URL 的接受与拒绝由向量逐例固定（tests/test_remote_url.py，HTTP 绑定 §1）
 
 
 async def test_remote_must_be_a_string() -> None:
@@ -98,17 +82,25 @@ async def test_remote_must_be_a_string() -> None:
         DpeClient(123)  # type: ignore[arg-type]
 
 
-async def test_remote_trailing_slash_is_stripped() -> None:
+async def test_remote_is_used_verbatim() -> None:
+    """合法的 remote 原样保存，路径直接拼在其后（不经 URL 库归一）。"""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
         return httpx.Response(200, json=CAPABILITIES)
 
-    with DpeClient("http://dpe.test/r/1/", transport=httpx.MockTransport(handler)) as client:
-        assert client.remote == "http://dpe.test/r/1"
+    remote = "http://dpe.test:8080/r/a%2Fb"
+    with DpeClient(remote, transport=httpx.MockTransport(handler)) as client:
+        assert client.remote == remote
         assert client.capabilities().protocol == "dpe/1"
-    assert seen == ["http://dpe.test/r/1/capabilities"]
+    assert seen == ["http://dpe.test:8080/r/a%2Fb/capabilities"]
+
+
+async def test_remote_trailing_slash_is_rejected() -> None:
+    """尾部 ``/`` 不再归一（HTTP 绑定 §1 第 7 条）。"""
+    with pytest.raises(ValueError, match="/ 结尾"):
+        DpeClient("http://dpe.test/r/1/")
 
 
 @pytest.mark.parametrize(("name", "value"), [("max_retries", -1), ("max_retries", True)])

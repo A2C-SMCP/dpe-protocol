@@ -53,7 +53,7 @@ def test_default_state_dir_follows_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path
 def test_content_identity_covers_exactly_the_identity_fields() -> None:
     base = identity()
     assert identity(config={"repo": "x"}) == base  # JCS：同一内容同一指纹
-    assert identity(remote_url=REMOTE + "/") != base
+    assert identity(remote_url=REMOTE + "2") != base
     assert identity(uri_prefix="dpe://other/") != base
     assert identity(config={"repo": "y"}) != base
     assert identity(plugin_name="q") != base

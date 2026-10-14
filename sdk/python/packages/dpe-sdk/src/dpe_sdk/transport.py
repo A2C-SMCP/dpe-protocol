@@ -63,6 +63,7 @@ from dpe_sdk.protocol import (
     fetch_capabilities,
     mark_request_not_sent,
 )
+from dpe_sdk.remote_url import check_remote_url
 from dpe_sdk.wire import Capabilities, CommitResult, ListPage, MoveResult, Skeleton
 
 __all__ = ["AsyncDpeClient", "DpeClient", "not_sent"]
@@ -120,26 +121,10 @@ def _media_type(value: str | None) -> str:
 
 
 def _remote_base(remote: str) -> str:
-    """校验并归一化 remote：http / https、有 host、无查询串与片段、不带凭证信息，去掉尾部 ``/``。"""
+    """按 HTTP 绑定 §1 的文法校验 remote，原样返回（下文路径直接拼在它之后）。"""
     if not isinstance(remote, str):
         raise TypeError(f"remote 必须是字符串，实际为 {type(remote).__name__}")
-    base = remote.rstrip("/")
-    # 解析会把显式的空定界符（``…/r?``、``…/r#``）归一成「没有」，但拼 target 用的是原始串，
-    # 放行会让首个请求静默错位（``…/r?/capabilities`` 被解析成 path=/r、query=/capabilities），
-    # 所以在原始串上直接拒绝任何 ``?`` / ``#``（``%3F`` 这类编码不在此列）
-    if "?" in base or "#" in base:
-        raise ValueError(f"remote 不能带查询串或片段：{remote!r}")
-    try:
-        url = httpx.URL(base)
-    except httpx.InvalidURL as exc:
-        raise ValueError(f"remote 不是合法的 URL：{remote!r}（{exc}）") from None
-    if url.scheme not in ("http", "https"):
-        raise ValueError(f"remote 只接受 http / https，实际为 {url.scheme!r}：{remote!r}")
-    if not url.host:
-        raise ValueError(f"remote 缺少主机名：{remote!r}")
-    if url.userinfo:
-        raise ValueError(f"remote 不能带凭证信息（凭证走 CredentialProvider）：{remote!r}")
-    return base
+    return check_remote_url(remote)
 
 
 def _network_failure(exc: Exception) -> bool:

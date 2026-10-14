@@ -493,7 +493,8 @@ class StateDirectory:
             raise _corrupt(f"状态目录登记文件不可识别：{path}")
         return instances
 
-    # remote.url 按 §3 的字面相同比较；可判定文法待 #112（调用处留有 TODO）。注销见 unregister
+    # remote.url 按字符串相等比较（§3）：已通过 HTTP 绑定 §1 的文法，同一地址的写法差异已消除。
+    # 注销见 unregister
     def register(self, instance_id: str, *, remote_url: str, uri_prefix: str) -> None:
         """登记实例并检查前缀不重叠（§3、§4.4）：同一 ``remote.url`` 下任意两个实例的前缀不得
         互为前缀（含相等）；重叠即 ``definition_invalid``。读登记、检查、写回在目录级锁内完成；

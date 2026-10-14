@@ -475,6 +475,141 @@ def normalize_file_uri(uri: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# remote URL 的文法（http.md §1）：客户端接受 remote URL 的判定，只看输入串本身
+# ---------------------------------------------------------------------------
+
+_SUB_DELIMS = frozenset("!$&'()*+,;=")
+#: 主机名（http.md §1 第 5 条）：RFC 3986 的 reg-name 去掉 pct-encoded。
+_HOST_CHARS = _UNRESERVED | _SUB_DELIMS
+#: pchar 中除 pct-encoded 以外的字符（RFC 3986 §3.3）。
+_PCHARS = _UNRESERVED | _SUB_DELIMS | frozenset(":@")
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
+_DEC_OCTET = re.compile(r"25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9]")
+_H16 = re.compile(r"[0-9A-Fa-f]{1,4}")
+#: 数字形式的末标签（WHATWG URL 的 "ends in a number"）：全为十进制数字，或 0x 后接 hex。
+_NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
+
+
+class RemoteUrlInvalid(Exception):
+    """remote URL 不符合 http.md §1 的文法；``reason`` 是供人读的原因标记（不作跨实现断言）。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _ipv4(text: str) -> bool:
+    parts = text.split(".")
+    return len(parts) == 4 and all(_DEC_OCTET.fullmatch(p) for p in parts)
+
+
+def _ipv6_groups(text: str) -> list[int] | None:
+    """RFC 3986 §3.2.2 的 IPv6address（不含内嵌 IPv4、IPvFuture 与 zone）解析为 8 个 16 位组。"""
+    if text.count("::") > 1:
+        return None
+    if "::" in text:
+        head, tail = text.split("::")
+        left = head.split(":") if head else []
+        right = tail.split(":") if tail else []
+        if len(left) + len(right) > 7:
+            return None
+        parts = left + ["0"] * (8 - len(left) - len(right)) + right
+    else:
+        parts = text.split(":")
+        if len(parts) != 8:
+            return None
+    if not all(_H16.fullmatch(part) for part in parts):
+        return None
+    return [int(part, 16) for part in parts]
+
+
+def _ipv6_text(groups: list[int]) -> str:
+    """RFC 5952 §4 的推荐文本：hex 小写无前导 0，只压缩最长（≥2，并列取首段）的零组串。"""
+    best_start, best_len = -1, 1
+    i = 0
+    while i < 8:
+        if groups[i] == 0:
+            j = i
+            while j < 8 and groups[j] == 0:
+                j += 1
+            if j - i > best_len:
+                best_start, best_len = i, j - i
+            i = j
+        else:
+            i += 1
+    parts = [format(group, "x") for group in groups]
+    if best_start < 0:
+        return ":".join(parts)
+    return ":".join(parts[:best_start]) + "::" + ":".join(parts[best_start + best_len :])
+
+
+def _ipv6(text: str) -> bool:
+    """IPv6 字面量须恰为其 RFC 5952 §4 推荐文本（http.md §1 第 5 条）。"""
+    groups = _ipv6_groups(text)
+    return groups is not None and _ipv6_text(groups) == text
+
+
+def _hostname(host: str) -> bool:
+    """主机名（http.md §1 第 5 条）：非空标签以 "." 连接；末标签是数字形式时须为严格 IPv4。"""
+    if any(ch not in _HOST_CHARS for ch in host):
+        return False
+    labels = host.split(".")
+    if not all(labels):
+        return False
+    if _NUMERIC_LABEL.fullmatch(labels[-1]):
+        return _ipv4(host)
+    return True
+
+
+def check_remote_url(url: str) -> None:
+    """按 http.md §1 判定 remote URL；不符合即抛 ``RemoteUrlInvalid``。"""
+    try:
+        if normalize_file_uri(url) != url:
+            raise RemoteUrlInvalid("not_normalized")
+    except Reject:
+        raise RemoteUrlInvalid("not_uri") from None
+    if "?" in url or "#" in url:
+        raise RemoteUrlInvalid("query_or_fragment")
+    scheme, _, rest = url.partition(":")
+    if scheme not in _DEFAULT_PORTS:
+        raise RemoteUrlInvalid("scheme")
+    if not rest.startswith("//"):
+        raise RemoteUrlInvalid("no_authority")
+    authority, slash, path = rest[2:].partition("/")
+    path = slash + path
+    if "@" in authority:
+        raise RemoteUrlInvalid("userinfo")
+    if authority.startswith("["):
+        close = authority.find("]")
+        if close == -1 or not _ipv6(authority[1:close]):
+            raise RemoteUrlInvalid("host")
+        after = authority[close + 1 :]
+        if after and not after.startswith(":"):
+            raise RemoteUrlInvalid("host")
+        port = after[1:] if after else None
+    else:
+        host, colon, port_text = authority.partition(":")
+        if not _hostname(host):
+            raise RemoteUrlInvalid("host")
+        port = port_text if colon else None
+    if port is not None:
+        if not _PORT.fullmatch(port) or int(port) > 65535:
+            raise RemoteUrlInvalid("port")
+        if port == _DEFAULT_PORTS[scheme]:
+            raise RemoteUrlInvalid("default_port")
+    if path:
+        if path.endswith("/"):
+            raise RemoteUrlInvalid("trailing_slash")
+        for segment in path[1:].split("/"):
+            # "%" 后的两位 HEXDIG 已由第 1 条（core §1.1 的合法性判定）保证
+            if any(ch not in _PCHARS and ch != "%" for ch in segment):
+                raise RemoteUrlInvalid("path")
+            if segment in (".", ".."):
+                raise RemoteUrlInvalid("dot_segment")
+
+
+# ---------------------------------------------------------------------------
 # 三层对象（线上原像）的规范化
 # ---------------------------------------------------------------------------
 
@@ -3431,6 +3566,164 @@ def depth_vector() -> dict[str, Any]:
     }
 
 
+# remote URL 的文法（http.md §1，Issue #112）：MUST 接受 / MUST 拒绝的两组用例
+REMOTE_URL_VALID: tuple[str, ...] = (
+    "https://dpe.example.com/remotes/acme",
+    "https://example.com/anything/r/42",
+    "http://example.com",
+    "http://localhost:8080",
+    "http://127.0.0.1:8000/dpe",
+    "https://example.com:8443/r",
+    "http://example.com:443/r",  # 443 不是 http 的默认端口
+    "https://example.com:80",  # 80 不是 https 的默认端口
+    "http://h:1",
+    "http://h:65535",
+    "https://xn--fsqu00a.example/r",  # 非 ASCII 主机名先转为 IDNA A-label
+    "http://a_b~c.example",
+    "http://a!b$c&d'e(f)g*h+i,j;k=l.example",  # 主机名可含 sub-delims
+    "http://[::1]:8080/x",
+    "http://[2001:db8::7]/r",
+    "http://[::]",
+    "http://[1:2:3:4:5:6:7:8]",
+    "http://[::ffff:c000:201]",  # IPv4 映射地址同样写成 hex（不采用 RFC 5952 §5 的混合写法）
+    "http://[2001:db8::1:0:0:1]",  # 并列最长的零组串压缩第一段
+    "http://[2001:db8:0:1:1:1:1:1]",  # 单个 0 组不压缩
+    "http://[1::2:0:0:3:4]",
+    "http://192.0.2.1:8080/r",
+    "http://1a.example",  # 末标签不是数字形式
+    "http://a.0x1g",  # 0x 后不全是 hex，不是数字形式
+    "https://example.com/a%20b/r%2F1",  # reserved 字符的三元组保持编码
+    "https://example.com/%C3%A9t%C3%A9",
+    "https://example.com/a:b@c/;x=1,y",
+    "https://example.com/a//b",  # 中间的空段是字面内容
+    "https://example.com/..a/.b/...",  # 不是整段的 . 与 ..
+)
+
+REMOTE_URL_INVALID: tuple[dict[str, str], ...] = (
+    {"input": "", "reason": "not_uri"},
+    {"input": "example.com/r", "reason": "not_uri"},
+    {"input": "https://exämple.com/r", "reason": "not_uri"},
+    {"input": "https://example.com/a b", "reason": "not_uri"},
+    {"input": "https://example.com/a%2", "reason": "not_uri"},
+    {"input": "HTTPS://example.com/r", "reason": "not_normalized"},
+    {"input": "https://Example.com/r", "reason": "not_normalized"},
+    {"input": "https://example.com/%7Er", "reason": "not_normalized"},
+    {"input": "https://example.com/a%2fb", "reason": "not_normalized"},
+    {"input": "http://[::FFFF:192.0.2.1]", "reason": "not_normalized"},
+    {"input": "https://example.com/r?", "reason": "query_or_fragment"},
+    {"input": "https://example.com/r?a=1", "reason": "query_or_fragment"},
+    {"input": "https://example.com/r#", "reason": "query_or_fragment"},
+    {"input": "https://example.com/r#f", "reason": "query_or_fragment"},
+    {"input": "https://example.com?a=1", "reason": "query_or_fragment"},
+    {"input": "ftp://example.com/r", "reason": "scheme"},
+    {"input": "file:///tmp/r", "reason": "scheme"},
+    {"input": "ws://example.com/r", "reason": "scheme"},
+    {"input": "https:example.com/r", "reason": "no_authority"},
+    {"input": "https:/example.com/r", "reason": "no_authority"},
+    {"input": "https://user@example.com/r", "reason": "userinfo"},
+    {"input": "https://user:pw@example.com/r", "reason": "userinfo"},
+    {"input": "https://@example.com", "reason": "userinfo"},
+    {"input": "https://", "reason": "host"},
+    {"input": "https:///r", "reason": "host"},
+    {"input": "https://:8080/r", "reason": "host"},
+    {"input": "http://::1/r", "reason": "host"},
+    {"input": "http://h%C3%A9.example", "reason": "host"},
+    {"input": "http://a]b", "reason": "host"},
+    {"input": "http://[v1.fe]", "reason": "host"},
+    {"input": "http://[fe80::1%25eth0]", "reason": "host"},
+    {"input": "http://[::1", "reason": "host"},
+    {"input": "http://[::1]x", "reason": "host"},
+    {"input": "http://[]", "reason": "host"},
+    {"input": "http://[1:2:3:4:5:6:7:8:9]", "reason": "host"},
+    {"input": "http://[1:2:3:4:5:6:7]", "reason": "host"},
+    {"input": "http://[1:2:3:4:5:6:7:8::]", "reason": "host"},
+    {"input": "http://[1::2::3]", "reason": "host"},
+    {"input": "http://[:1::2]", "reason": "host"},
+    {"input": "http://[1:::2]", "reason": "host"},
+    {"input": "http://[12345::]", "reason": "host"},
+    {"input": "http://[::g]", "reason": "host"},
+    {"input": "http://[::ffff:256.0.0.1]", "reason": "host"},
+    {"input": "http://[::1.2.3.04]", "reason": "host"},
+    {"input": "http://[1.2.3.4::]", "reason": "host"},
+    {"input": "http://[1.2.3.4]", "reason": "host"},
+    {"input": "http://[::1.2.3.4:5]", "reason": "host"},
+    {"input": "http://[::ffff:192.0.2.1]", "reason": "host"},  # 不用内嵌 IPv4 的点分写法
+    {"input": "http://[1:2:3:4:5:6:1.2.3.4]", "reason": "host"},
+    {"input": "http://[0::1]", "reason": "host"},  # 以下为非 RFC 5952 §4 推荐文本
+    {"input": "http://[::0001]", "reason": "host"},
+    {"input": "http://[0:0:0:0:0:0:0:1]", "reason": "host"},
+    {"input": "http://[1:2:3:4:5:6:7::]", "reason": "host"},
+    {"input": "http://[::2:3:4:5:6:7:8]", "reason": "host"},
+    {"input": "http://[2001:db8::1:1:1:1:1]", "reason": "host"},
+    {"input": "http://[1:0:0:2::3:4]", "reason": "host"},
+    {"input": "http://[1:0:0:0:2::3]", "reason": "host"},
+    {"input": "http://127.1", "reason": "host"},  # 以下末标签为数字形式但不是严格 IPv4
+    {"input": "http://1.2.3.256", "reason": "host"},
+    {"input": "http://127.000.000.001", "reason": "host"},
+    {"input": "http://1.2.3.4.5", "reason": "host"},
+    {"input": "http://0x7f.0.0.1", "reason": "host"},
+    {"input": "http://4294967296", "reason": "host"},
+    {"input": "http://a.123", "reason": "host"},
+    {"input": "http://a.0x1", "reason": "host"},
+    {"input": "http://a.0x", "reason": "host"},
+    {"input": "http://example.com.", "reason": "host"},  # 空标签：尾点、首点、连续点
+    {"input": "http://.example.com", "reason": "host"},
+    {"input": "http://a..b", "reason": "host"},
+    {"input": "http://example.com:80", "reason": "default_port"},
+    {"input": "https://example.com:443/r", "reason": "default_port"},
+    {"input": "https://example.com:", "reason": "port"},
+    {"input": "https://example.com:0", "reason": "port"},
+    {"input": "https://example.com:08080", "reason": "port"},
+    {"input": "https://example.com:65536", "reason": "port"},
+    {"input": "https://example.com:123456", "reason": "port"},
+    {"input": "https://example.com:8a", "reason": "port"},
+    {"input": "https://example.com:+80", "reason": "port"},
+    {"input": "http://[::1]:", "reason": "port"},
+    {"input": "https://example.com:/r", "reason": "port"},
+    {"input": "https://example.com:1:2", "reason": "port"},
+    {"input": "http://[::1]:80", "reason": "default_port"},
+    {"input": "https://example.com/", "reason": "trailing_slash"},
+    {"input": "https://example.com/r/", "reason": "trailing_slash"},
+    {"input": "https://example.com/a/./b", "reason": "dot_segment"},
+    {"input": "https://example.com/a/..", "reason": "dot_segment"},
+    {"input": "https://example.com/.", "reason": "dot_segment"},
+    {"input": "https://example.com/a[b", "reason": "path"},
+    {"input": "https://example.com/a]", "reason": "path"},
+)
+
+
+def remote_url_vector() -> dict[str, Any]:
+    """构建 remote_url 向量；生成器逐条用参考实现核对，不一致即失败。"""
+    for url in REMOTE_URL_VALID:
+        try:
+            check_remote_url(url)
+        except RemoteUrlInvalid as exc:
+            raise AssertionError(f"remote_url/valid {url!r}: 被拒绝（{exc.reason}）") from None
+    if len(set(REMOTE_URL_VALID)) != len(REMOTE_URL_VALID):
+        raise AssertionError("remote_url/valid: 用例重复")
+    for entry in REMOTE_URL_INVALID:
+        try:
+            check_remote_url(entry["input"])
+        except RemoteUrlInvalid as exc:
+            if exc.reason != entry["reason"]:
+                raise AssertionError(
+                    f"remote_url/invalid {entry['input']!r}: 期望 {entry['reason']}，实得 {exc.reason}"
+                ) from None
+        else:
+            raise AssertionError(f"remote_url/invalid {entry['input']!r}: 未被拒绝")
+    if len({e["input"] for e in REMOTE_URL_INVALID}) != len(REMOTE_URL_INVALID):
+        raise AssertionError("remote_url/invalid: 用例重复")
+    return {
+        "name": "remote_url",
+        "kind": "remote_url",
+        "spec": "spec/bindings/http.md",
+        "section": "§1",
+        "description": "HTTP 绑定 §1：客户端接受的 remote URL 文法——MUST 接受与 MUST 拒绝的两组用例（reason 仅供人读）",
+        "valid": list(REMOTE_URL_VALID),
+        "invalid": list(REMOTE_URL_INVALID),
+    }
+
+
 def build_files() -> dict[str, str]:
     """返回 {相对路径: 文件内容}，内容确定性。"""
     files: dict[str, str] = {}
@@ -3538,6 +3831,7 @@ def build_files() -> dict[str, str]:
 
     files["config_schema_patterns.json"] = dump_json(pattern_vector())
     files["nesting_depth.json"] = dump_json(depth_vector())
+    files["remote_url.json"] = dump_json(remote_url_vector())
 
     manifest = {
         "contract": "dpe1",
@@ -3549,7 +3843,7 @@ def build_files() -> dict[str, str]:
         },
         "provenance": {
             "generator": "scripts/gen_vectors.py",
-            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项）",
+            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1",
         },
         "files": [
             {
