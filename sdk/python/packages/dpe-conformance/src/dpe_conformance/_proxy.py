@@ -81,9 +81,15 @@ def _network(entry: str) -> _Network | None:
         return None
     if not slash:
         return ipaddress.ip_network(address)
-    if not prefix.isascii() or not prefix.isdigit() or int(prefix) > address.max_prefixlen:
+    if not prefix.isascii() or not prefix.isdigit():
         return None
-    return ipaddress.ip_network((address, int(prefix)), strict=False)
+    # 先去掉前导零再看位数：去零后超过 3 位必然大于 128，直接判不匹配——不把任意长的数字串交给
+    # int()（Python 对超过 4300 位的转换直接抛错，#206）。与 Rust 按 u32 解析的结论逐例一致：
+    # 前导零照常接受，越界（含 u32 溢出）都不匹配
+    digits = prefix.lstrip("0") or "0"
+    if len(digits) > 3 or int(digits) > address.max_prefixlen:
+        return None
+    return ipaddress.ip_network((address, int(digits)), strict=False)
 
 
 def _bypass(host: str, no_proxy: str) -> bool:
