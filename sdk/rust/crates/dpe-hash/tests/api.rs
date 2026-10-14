@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 use dpe_hash::{
     blob_ref, children, content_hash, doc_hash, document_hashes, normalize_file_uri, object_hash,
-    page_hash, parse_blob_ref, parse_hash, parse_hash_with, parse_ijson, DocumentFields,
-    DocumentObject, ElementObject, ErrorKind, ExpandedDocument, ExpandedPage, JsonObject,
-    ObjectKind, PageFields, PageObject, CONTRACT, DRILL_CONTRACT, KNOWN_CONTRACTS,
+    page_hash, parse_blob_ref, parse_hash, parse_hash_with, parse_ijson, BlobHasher,
+    DocumentFields, DocumentObject, ElementObject, ErrorKind, ExpandedDocument, ExpandedPage,
+    JsonObject, ObjectKind, PageFields, PageObject, CONTRACT, DRILL_CONTRACT, KNOWN_CONTRACTS,
     SUPPORTED_CONTRACTS,
 };
 use serde_json::{json, Value};
@@ -332,4 +332,34 @@ fn object_kind_round_trips_through_names() {
         assert_eq!(kind.to_string(), kind.as_str());
     }
     assert!("expanded_document".parse::<ObjectKind>().is_err());
+}
+
+#[test]
+fn blob_hasher_matches_blob_ref_for_any_chunking() {
+    // 分任意块喂入与整段 blob_ref 结果相同（#146；Python 侧 tests/test_api.py 同例）
+    let mut data: Vec<u8> = (0..1000).flat_map(|_| 0..=255u8).collect();
+    data.extend_from_slice(b"tail");
+    for chunk in [1usize, 7, 4096, 1 << 20] {
+        let mut hasher = BlobHasher::new();
+        for piece in data.chunks(chunk) {
+            hasher.update(piece);
+        }
+        assert_eq!(hasher.length(), data.len() as u64, "chunk {chunk}");
+        assert_eq!(hasher.finish(), blob_ref(&data), "chunk {chunk}");
+    }
+}
+
+#[test]
+fn blob_hasher_edge_cases() {
+    let empty = BlobHasher::new();
+    assert_eq!(empty.length(), 0);
+    assert_eq!(empty.finish(), blob_ref(b""));
+    assert_eq!(empty.finish(), blob_ref(b"")); // finish 不改变状态
+    assert_eq!(empty.finish(), format!("sha256:{:x}", Sha256::digest(b"")));
+    let mut hasher = BlobHasher::default();
+    hasher.update(b""); // 空块不改变结果
+    hasher.update(b"ab");
+    hasher.update(b"cd");
+    assert_eq!(hasher.length(), 4);
+    assert_eq!(hasher.finish(), blob_ref(b"abcd"));
 }

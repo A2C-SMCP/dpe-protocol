@@ -18,11 +18,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import os
 from collections.abc import Callable
 from typing import BinaryIO, TypeAlias
+
+from dpe_hash import BlobHasher
 
 from dpe_sdk.protocol import BlobSource
 
@@ -31,8 +32,6 @@ __all__ = ["ReadAt", "source_from_path", "source_from_read_blob", "source_from_s
 #: 流式哈希与 ``read_blob`` 单次请求的缺省块大小（1 MiB）
 _CHUNK_BYTES = 1 << 20
 
-#: blob 引用的前缀（契约 1 §1）；等价性由测试对照 ``dpe_hash.blob_ref`` 钉住
-_BLOB_PREFIX = "sha256:"
 
 #: ``read_blob`` 形状的任意偏移读取（connector 契约 §6.7，句柄由调用方绑定）：
 #: ``read(offset, max_bytes)`` 返回 ``(data, eof)``——``data`` 不超过 ``max_bytes``，
@@ -114,19 +113,18 @@ def source_from_read_blob(
         isinstance(expected_size, bool) or not isinstance(expected_size, int) or expected_size < 0
     ):
         raise ValueError(f"expected_size 必须是非负整数，实际为 {expected_size!r}")
-    hasher = hashlib.sha256()
-    total = 0
+    hasher = BlobHasher()
     while True:
-        data, eof = _read_once(read, total, chunk_bytes)
+        data, eof = _read_once(read, hasher.length, chunk_bytes)
         hasher.update(data)
-        total += len(data)
+        total = hasher.length
         if expected_size is not None and total > expected_size:
             raise ValueError(f"read_blob 读到的总长已超过声明的 {expected_size}")
         if eof:
             break
     if expected_size is not None and total != expected_size:
         raise ValueError(f"read_blob 读到的总长 {total} 与声明的 {expected_size} 不符")
-    ref = _BLOB_PREFIX + hasher.hexdigest()
+    ref = hasher.finish()
 
     def read_range(offset: int, length: int) -> bytes:
         block = bytearray()
@@ -142,15 +140,13 @@ def source_from_read_blob(
 
 def _hash_stream(stream: BinaryIO, chunk_bytes: int) -> tuple[str, int]:
     """分块流式哈希：内存 O(chunk_bytes)，不整读（路径与流共用）。"""
-    hasher = hashlib.sha256()
-    total = 0
+    hasher = BlobHasher()
     while True:
         chunk = stream.read(chunk_bytes)
         if not chunk:
             break
         hasher.update(chunk)
-        total += len(chunk)
-    return _BLOB_PREFIX + hasher.hexdigest(), total
+    return hasher.finish(), hasher.length
 
 
 def _read_once(read: ReadAt, offset: int, max_bytes: int) -> tuple[bytes, bool]:

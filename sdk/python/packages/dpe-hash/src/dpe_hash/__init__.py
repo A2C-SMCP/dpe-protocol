@@ -18,6 +18,7 @@ from dpe_hash.constants import (
     SUPPORTED_CONTRACTS,
 )
 from dpe_hash.contract1 import (
+    BlobHasher,
     blob_ref,
     children,
     content_hash,
@@ -67,6 +68,7 @@ __all__ = [
     "MAX_NESTING_DEPTH",
     "RECOMMENDED_FILE_TYPES",
     "SUPPORTED_CONTRACTS",
+    "BlobHasher",
     "CategoryUnknownError",
     "ContractUnsupportedError",
     "DocumentFields",

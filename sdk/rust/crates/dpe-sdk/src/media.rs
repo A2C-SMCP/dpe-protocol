@@ -28,15 +28,12 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
+use dpe_hash::BlobHasher;
 
 use crate::protocol::{BlobReader, BlobSource};
 
 /// 流式哈希与 `read_blob` 单次请求的缺省块大小（1 MiB，同 Python 侧）。
 pub const DEFAULT_CHUNK_BYTES: usize = 1 << 20;
-
-/// blob 引用的前缀（契约 1 §1）；与 `dpe_hash::blob_ref` 的等价性由测试钉住。
-const BLOB_PREFIX: &str = "sha256:";
 
 /// 本地路径 → [`BlobSource`]：分块流式哈希算出引用与总长（不整读进内存）。
 ///
@@ -127,12 +124,11 @@ where
 {
     check_chunk(chunk_bytes)?;
     let chunk = chunk_bytes as u64;
-    let mut hasher = Sha256::new();
-    let mut total: u64 = 0;
+    let mut hasher = BlobHasher::new();
     loop {
-        let (data, eof) = read_once(&read, total, chunk)?;
+        let (data, eof) = read_once(&read, hasher.length(), chunk)?;
         hasher.update(&data);
-        total += data.len() as u64;
+        let total = hasher.length();
         if let Some(expected) = expected_size {
             if total > expected {
                 return Err(invalid_data(format!(
@@ -144,6 +140,7 @@ where
             break;
         }
     }
+    let total = hasher.length();
     if let Some(expected) = expected_size {
         if total != expected {
             return Err(invalid_data(format!(
@@ -151,7 +148,7 @@ where
             )));
         }
     }
-    let blob_ref = format!("{BLOB_PREFIX}{}", hex(&hasher.finalize()));
+    let blob_ref = hasher.finish();
     let reader = ReadBlobReader { read, chunk };
     Ok(BlobSource::new(blob_ref, total, Arc::new(reader)))
 }
@@ -216,9 +213,8 @@ where
 
 /// 分块流式哈希：内存 O(chunk_bytes)，不整读（路径与流共用）。
 fn hash_reader<R: Read>(reader: &mut R, chunk_bytes: usize) -> io::Result<(String, u64)> {
-    let mut hasher = Sha256::new();
+    let mut hasher = BlobHasher::new();
     let mut buffer = vec![0u8; chunk_bytes];
-    let mut total: u64 = 0;
     loop {
         let read = match reader.read(&mut buffer) {
             Ok(0) => break,
@@ -227,9 +223,9 @@ fn hash_reader<R: Read>(reader: &mut R, chunk_bytes: usize) -> io::Result<(Strin
             Err(error) => return Err(error),
         };
         hasher.update(&buffer[..read]);
-        total += read as u64;
     }
-    Ok((format!("{BLOB_PREFIX}{}", hex(&hasher.finalize())), total))
+    let total = hasher.length();
+    Ok((hasher.finish(), total))
 }
 
 /// 一次 `read_blob` 调用并校验其契约（`data` ≤ `max_bytes`；空块必带 `eof`）。
@@ -264,17 +260,6 @@ fn check_chunk(chunk_bytes: usize) -> io::Result<()> {
 
 fn invalid_data(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
-/// 小写十六进制（与 `dpe_hash::blob_ref` 同形）。
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 #[cfg(test)]

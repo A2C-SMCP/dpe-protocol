@@ -35,6 +35,7 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 | `children(obj, kind, contract)` | 原像引用的下一层：页 → content_hash，文档 → page_hash，元素 → blob 引用 |
 | `parse_hash(s, contracts=SUPPORTED_CONTRACTS)` / `parse_blob_ref(s)` | 校验并拆分 `dpe1:<hex>` / `sha256:<hex>` |
 | `blob_ref(data)` | blob 字节的引用 `sha256:<hex>` |
+| `BlobHasher()` → `.update(data)` / `.length` / `.finish()` | 分块增量计算同一引用（大 blob 流式哈希、不整读进内存），结果与 `blob_ref(整段)` 相同 |
 | `jcs(value)` | RFC 8785 规范化字符串 |
 | `normalize_file_uri(uri)` | file_uri 的语法规范化（core.md §1.1），身份的比较形式；非法输入抛 `ValidationError`（`DPE_VALIDATION`） |
 | `check_remote_url(url)` | remote URL 的文法判定（HTTP 绑定 §1），合法时原样返回；不合法抛 `RemoteUrlError`（`ValueError` 的子类，是调用方的配置错误、没有规范错误码，不属于 `DpeHashError`），消息不回显 URL。dpe-sdk 与 dpe-conformance 共用这一判定 |

@@ -30,9 +30,6 @@ serde_json = { version = "1", features = ["arbitrary_precision", "float_roundtri
 # 不依赖其 `\w`、`$` 等默认语义（转译先于编译）；子集结构上界在默认编译限额内的余量
 # 由 scripts/pattern_budget 探针复测（§4.1.1 要求子集内任何 pattern 都必须被接受）。
 regex = "1"
-# 媒体来源适配（#24）的分块流式哈希：路径 / 流 / read_blob 来源算 `sha256:` 引用时不整读进内存。
-# dpe-hash 只对外给整段字节的 `blob_ref`，增量哈希在这里做；与 dpe-hash 同一版本（锁文件已有）。
-sha2 = "0.10"
 # HTTP 传输适配（#22）。关掉默认 feature 后逐个显式选：
 # - rustls-tls（webpki 根）而不是 native-tls：不依赖系统 OpenSSL、任意环境可编译，
 #   信任根是随包发布的 Mozilla 根证书集——与 Python 侧 httpx（certifi 随包根）对等，
