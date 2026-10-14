@@ -2,6 +2,8 @@
 
 [DPE](https://doc.turingfocus.cn/dpe/) **服务端一致性跑分器**：黑盒对任意实现了 [core.md](https://doc.turingfocus.cn/dpe/latest/spec/core/) + [HTTP 绑定](https://doc.turingfocus.cn/dpe/latest/spec/bindings/http/) 的 remote 运行协议检查（检查面见仓库 [`conformance/README.md`](https://github.com/A2C-SMCP/dpe-protocol/blob/main/conformance/README.md)）。跑分器本体只依赖 `dpe-hash`（期望 hash）与 HTTP，不依赖任何服务端实现。
 
+> **关于 0.4**：本包随 0.4.0 首次发布；同期规范与 SDK 的变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处「升级须知」只是摘要。
+
 ## 用法
 
 ```console
@@ -9,7 +11,8 @@ $ pip install dpe-conformance==X.Y.Z   # X.Y.* 对应规范文档 X.Y.*
 $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.json
 ```
 
-- `REMOTE-URL` 须符合 HTTP 绑定 §1 的 remote URL 文法（与 SDK 同一判定，`dpe_hash.check_remote_url`）：不合法即以退出码 2 拒绝、不开跑，消息不回显 URL——SDK 连不上的 remote（如带查询串、尾部 `/`、大写 scheme）跑分全绿没有意义。**升级须知**（0.4 起，不兼容）：以前能跑的 `https://host/r/1/`（尾部 `/`）、`HTTPS://…`、显式 `:443` 等写法现在以退出码 2 拒绝，CI 里的 `REMOTE-URL` 须改成规范写法。**升级须知**（0.4 起，不兼容）：演练契约由 `dpe2` 改名为 `dpex`（契约 1 §1，#183），按旧文档同时声明 `dpe1` 与 `dpe2` 做演练的服务端须改为声明 `dpex`——否则契约升级期一章与以演练契约为用例契约的向量用例会被如实 skip（不报错），若 CI 没有守住执行数基线就察觉不到覆盖的丢失；
+- `REMOTE-URL` 须符合 HTTP 绑定 §1 的 remote URL 文法（与 SDK 同一判定，`dpe_hash.check_remote_url`）：不合法即以退出码 2 拒绝、不开跑，消息不回显 URL——SDK 连不上的 remote（如带查询串、尾部 `/`、大写 scheme）跑分全绿没有意义。
+- **规范变化（#183）**：演练契约由 `dpe2` 改名为 `dpex`（契约 1 §1，#183），按旧文档同时声明 `dpe1` 与 `dpe2` 做演练的服务端须改为声明 `dpex`——否则契约升级期一章与以演练契约为用例契约的向量用例会被如实 skip（不报错），若 CI 没有守住执行数基线就察觉不到覆盖的丢失；
 - `--section NAME` 按章过滤（可重复；缺省全部章节；未知章节以退出码 2 拒绝——拼错章节名不会静默跑出一个「假绿」的空套件）；
 - `--junit-xml PATH` 输出 JUnit XML（CI 直接消费）；
 - `--counts-json PATH` 输出机器可读计数，供 CI 断言**执行数不低于基线**（防止因 skip 过多而假绿）：
@@ -42,8 +45,6 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 - 大写变量优先，空值视为未设置；`NO_PROXY` 支持 `*`、域名及子域、IP 与 CIDR；
 - 代理 URL 按固定文法校验（只支持 `http://` / `https://`，密码里的 `@` 写成 `%40`）；不合法时在发出任何请求之前以退出码 `2` 结束，报错只含变量名、不回显值；
 - 关闭代理：不设这些变量，或设 `NO_PROXY=*`。
-
-**升级须知**（0.4 起，行为变化）：以前在 macOS / Windows 上环境变量为空时会悄悄走系统代理（连本机回环地址也会），现在改为直连；需要经代理访问被测服务端时请设置上述环境变量。
 
 ## 配置
 

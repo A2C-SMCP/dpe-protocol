@@ -2,6 +2,8 @@
 
 [DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的 Rust SDK：把结构化文档正确、增量、可靠地投递到任意 DPE 服务端。
 
+> **从 0.3 升级**：全部不兼容变更与行为变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处的升级说明只是摘要。
+
 - sans-IO 协议核心 + reqwest / tokio 传输适配（默认 feature `http`，核心不绑定异步运行时）；
 - 数据模型（[`models`](https://docs.rs/dpe-sdk/latest/dpe_sdk/models/)）：文档 / 页 / 元素三层对象的封闭 schema（core §2），校验与 hash 全部委托 `dpe-hash`（错误码与位置同一致性向量），保留输入的原样表示；
 - 只接受 remote URL 与可插拔的 `CredentialProvider`，不封装任何服务端私有端点；
@@ -47,7 +49,7 @@ assert_eq!(result.status.as_str(), "created");
 ```
 
 - 只接受 remote URL 与可插拔的 `CredentialProvider`（每个请求发送前取一次，轮换中的短时凭证在重发前会重新取）；
-- remote 按 HTTP 绑定 §1 的文法校验（`dpe_sdk::remote_url::check_remote_url`，即 dpe-hash 的同一函数，与实例定义的 `remote.url` 同一个判定）：http / https、已是 core §1.1 规范化形式、无查询串与片段、无 userinfo、不写默认端口、路径不以 `/` 结尾且无点段；合法即原样使用。**升级须知**（0.4 起，不兼容）：此前构造时去掉的尾部 `/`，以及大写 scheme、显式默认端口、`127.1` 这类数字主机、非 RFC 5952 形式的 IPv6，现在都报 `InvalidArgument`；
+- remote 按 HTTP 绑定 §1 的文法校验（`dpe_sdk::remote_url::check_remote_url`，即 dpe-hash 的同一函数，与实例定义的 `remote.url` 同一个判定）：http / https、已是 core §1.1 规范化形式、无查询串与片段、无 userinfo、不写默认端口、路径不以 `/` 结尾且无点段；合法即原样使用，不合法报 `InvalidArgument`；
 - 传输层只做 I/O：拼 URL、注入凭证、按策略 gzip（请求体，HTTP 绑定 §7）、把响应还原给核心；协议判定与写操作的重试全在 sans-IO 核心；
 - 例外只有三类：`retry_safe` 的请求遇网络失败、任何请求遇「确定未发出」的建连失败、按 `code` 判定的可重试错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，等 `Retry-After` 后原样重发，等待超过 300 秒不吸收；`Retry-After` 只按 RFC 9110 文法解析，即 dpe-hash 的 `retry_after_seconds`，经 `dpe_sdk::protocol` 重新导出。0.4 起首尾只去 SP / HTAB（以前用 `trim()` 去掉全部 Unicode 空白），rfc850 两位年份在世纪交替前后改为取「不晚于现在加 50 年」的最晚年份，以前固定按当前世纪读）；
 - **代理只来自环境变量**（#132）：构造客户端时按下面的规则判定一次 remote 走哪个代理，**从不读操作系统的代理设置**（macOS / Windows 的系统代理、PAC 都不看）。两个 SDK 规则相同，共用一张用例表 `sdk/testdata/proxy_env.json`：
@@ -59,9 +61,8 @@ assert_eq!(result.status.as_str(), "created");
   - 关闭代理：不设这些变量，或设 `NO_PROXY=*`；
   - 连不上代理、HTTPS 隧道（`CONNECT`）被代理拒绝都按「确定未发出」处理；明文 HTTP 经代理转发时代理的应答（如 502）是普通响应。
 
-  **升级须知**（0.4 起，行为变化）：Rust 侧以前就只读环境变量（reqwest 缺省），现在改由本 crate 按上述规则判定，个别边界与 reqwest 的口径不同（例如大写变量为空时现在退到小写变量），`socks5://` 等不受支持的代理在构造时报 `InvalidArgument`，不再交给 reqwest；即使依赖图经 feature 合并打开了 reqwest 的 `system-proxy`，本客户端也不读系统设置；
 - 缺省超时 30 秒、不跟随重定向、大 blob 的源读取进工作线程；`send` / `drive` 是公开的驱动缝；
-- 所有操作的 future 都是 `Send`，可以交给 `tokio::spawn`。**不兼容变更（自 0.3.x 之后的下一个次版本起）**：`deliver` 与推送器 `push` 的 `blobs` 回调（`BlobProvider`）须为 `Send`；捕获 `Rc`、`RefCell`、`Cell` 等非 `Send` 状态的闭包不再能编译，请改用 `Arc`、`Mutex`、原子类型，或直接捕获 `&mut` 局部变量（见下文「媒体来源」的示例）。
+- 所有操作的 future 都是 `Send`，可以交给 `tokio::spawn`。`deliver` 与推送器 `push` 的 `blobs` 回调（`BlobProvider`）须为 `Send`：捕获 `Rc`、`RefCell`、`Cell` 等非 `Send` 状态的闭包不能编译，请改用 `Arc`、`Mutex`、原子类型，或直接捕获 `&mut` 局部变量（见下文「媒体来源」的示例）。
 
 ## 增量推送（`pusher`）
 
@@ -102,7 +103,7 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 - `StateStore` 在异步方法里被同步调用、调用期间占住当前 worker，实现应尽量缩短耗时；多线程运行时上重 I/O（`fsync` 等）可用 `tokio::task::block_in_place` 包住（current_thread 运行时上不可用）；
 - move 的目标已持有与源相同的内容时（读到的目标值等于 base，如失败轮已建出目标，#165），不发 move，以 base 删除源并判 `moved`；目标内容不同仍为条目失败（`Side::To`），绝不在目标上写入；
 - 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
-- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `Failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；逐条读都通过（拒绝与具体 URI 无关）时全部条目按逐条读到的值照常写入（connector §7.1，写入仍经 CAS）。两种情况都经 `log` 门面记一条 warn（target `dpe_sdk::pusher`，带原错误码与计数；新增依赖 `log`，随 feature `http`）。网络失败、可重试错误耗尽、不合规响应与契约不兼容仍整批返回 `Err`。**升级须知**（0.4 起，不兼容）：以前这类拒绝整批返回 `Err`；
+- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `Failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；逐条读都通过（拒绝与具体 URI 无关）时全部条目按逐条读到的值照常写入（connector §7.1，写入仍经 CAS）。两种情况都经 `log` 门面记一条 warn（target `dpe_sdk::pusher`，带原错误码与计数；新增依赖 `log`，随 feature `http`）。网络失败、可重试错误耗尽、不合规响应与契约不兼容仍整批返回 `Err`；
 - 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`；`push` / `delete` / `move_documents` 的 future 都是 `Send`，调用方可以把整次操作交给 `tokio::spawn`（推送器借用客户端，任务内持有 `Arc<DpeClient>` 再构造推送器即可满足 `'static`；`blobs` 回调须为 `Send`，见上文「传输适配」）；
 - `push` 的最后一个参数 `blobs` 原样交给每条 `deliver`，按 `sha256:` 引用给出服务端缺少的 blob 字节（可用下文 `media` 构造来源），未变文档不会调用它；
 - `flush()` 是补存入口：任何一次保存失败后、结束使用前，用同一个实例调用它，把内存状态整批写回 store；
