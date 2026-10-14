@@ -137,7 +137,43 @@ pub fn parse_blob_ref(value: &str) -> Result<&str> {
 
 /// blob 原始字节的引用 `"sha256:<hex>"`（契约 1 §1）。
 pub fn blob_ref(data: &[u8]) -> String {
-    format!("{BLOB_PREFIX}{:x}", Sha256::digest(data))
+    let mut hasher = BlobHasher::new();
+    hasher.update(data);
+    hasher.finish()
+}
+
+/// blob 引用的增量计算：分块喂入原始字节，得到与 [`blob_ref`]（整段）相同的引用（契约 1 §1）。
+///
+/// 供大 blob 流式哈希（不整读进内存）的调用方使用——引用的写法（`sha256:` 前缀与小写 hex）只在
+/// 本模块出现，SDK 的媒体辅助经由它（#146，北极星「契约算法只有一份实现」）。与 Python 侧
+/// `dpe_hash.BlobHasher` 对等：`update` / `length` / `finish`。
+#[derive(Debug, Clone, Default)]
+pub struct BlobHasher {
+    hasher: Sha256,
+    length: u64,
+}
+
+impl BlobHasher {
+    /// 空状态（尚未喂入任何字节）。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 追加一段原始字节。
+    pub fn update(&mut self, data: &[u8]) {
+        self.hasher.update(data);
+        self.length += data.len() as u64;
+    }
+
+    /// 已喂入的总字节数。
+    pub fn length(&self) -> u64 {
+        self.length
+    }
+
+    /// 到目前为止全部字节的引用 `"sha256:<hex>"`；可重复调用，不改变状态（同 Python 侧）。
+    pub fn finish(&self) -> String {
+        format!("{BLOB_PREFIX}{:x}", self.hasher.clone().finalize())
+    }
 }
 
 // ---------------------------------------------------------------------------

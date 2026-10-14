@@ -196,9 +196,40 @@ def parse_blob_ref(value: str) -> str:
     return _blob_hex(value, "")
 
 
+class BlobHasher:
+    """blob 引用的增量计算：分块喂入原始字节，得到与 ``blob_ref(整段)`` 相同的引用（契约 1 §1）。
+
+    供大 blob 流式哈希（不整读进内存）的调用方使用——引用的写法（``sha256:`` 前缀与小写 hex）
+    只在本模块出现，SDK 的媒体辅助与运行器都经由它（#146，北极星「契约算法只有一份实现」）。
+    ``length`` 为已喂入的总字节数；``finish`` 可重复调用，不改变状态。
+    """
+
+    __slots__ = ("_hasher", "_length")
+
+    def __init__(self) -> None:
+        self._hasher = hashlib.sha256()
+        self._length = 0
+
+    def update(self, data: bytes | bytearray | memoryview) -> None:
+        """追加一段原始字节。"""
+        self._hasher.update(data)
+        self._length += memoryview(data).nbytes
+
+    @property
+    def length(self) -> int:
+        """已喂入的总字节数。"""
+        return self._length
+
+    def finish(self) -> str:
+        """到目前为止全部字节的引用 ``"sha256:<hex>"``。"""
+        return _BLOB_PREFIX + self._hasher.hexdigest()
+
+
 def blob_ref(data: bytes | bytearray | memoryview) -> str:
     """blob 原始字节的引用 ``"sha256:<hex>"``（契约 1 §1）。"""
-    return _BLOB_PREFIX + hashlib.sha256(data).hexdigest()
+    hasher = BlobHasher()
+    hasher.update(data)
+    return hasher.finish()
 
 
 # ---------------------------------------------------------------------------

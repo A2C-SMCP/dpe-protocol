@@ -11,6 +11,7 @@ from dpe_hash import (
     DRILL_CONTRACT,
     KNOWN_CONTRACTS,
     SUPPORTED_CONTRACTS,
+    BlobHasher,
     ContractUnsupportedError,
     DocumentFields,
     ElementObject,
@@ -86,6 +87,29 @@ def test_children() -> None:
     ]
     assert children(dict(ELEMENTS[2]), "element") == [BLOB]
     assert children(dict(ELEMENTS[0]), "element") == []
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 4096, 1 << 20])
+def test_blob_hasher_matches_blob_ref_for_any_chunking(chunk: int) -> None:
+    """分任意块喂入与整段 ``blob_ref`` 结果相同（#146；Rust 侧 tests/api.rs 同例）。"""
+    data = bytes(range(256)) * 1000 + b"tail"
+    hasher = BlobHasher()
+    for offset in range(0, len(data), chunk):
+        hasher.update(data[offset : offset + chunk])
+    assert hasher.length == len(data)
+    assert hasher.finish() == blob_ref(data)
+    assert hasher.finish() == blob_ref(data)  # finish 不改变状态
+
+
+def test_blob_hasher_edge_cases() -> None:
+    empty = BlobHasher()
+    assert (empty.length, empty.finish()) == (0, blob_ref(b""))
+    assert empty.finish() == "sha256:" + hashlib.sha256(b"").hexdigest()
+    hasher = BlobHasher()
+    hasher.update(b"")  # 空块不改变结果
+    hasher.update(bytearray(b"ab"))
+    hasher.update(memoryview(b"cd"))
+    assert (hasher.length, hasher.finish()) == (4, blob_ref(b"abcd"))
 
 
 def test_blob_ref_and_parse() -> None:

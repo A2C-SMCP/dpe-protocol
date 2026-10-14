@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import tempfile
 import threading
 from dataclasses import dataclass
 from typing import IO, Any
+
+from dpe_hash import BlobHasher
 
 from dpe_sdk.protocol import BlobSource
 from dpe_sdk.run.errors import ItemFailure, RpcError
@@ -32,8 +33,6 @@ _MAX_CHUNK = 1 << 20
 _ENVELOPE_RESERVE = 4096
 #: 单份暂存留在内存中的上限，超过即落临时文件
 _SPOOL_MEMORY = 1 << 20
-
-_BLOB_PREFIX = "sha256:"
 
 
 def chunk_bytes(max_message_bytes: int) -> int:
@@ -131,18 +130,17 @@ class BlobStage:
         if size is not None and self._limit is not None and size > self._limit:
             return _failure("blob_too_large", f"句柄 blob 声明 {size} 字节，超过 {self._limit}")
         stream: IO[bytes] = tempfile.SpooledTemporaryFile(max_size=_SPOOL_MEMORY)  # noqa: SIM115
-        hasher = hashlib.sha256()
-        total = 0
+        hasher = BlobHasher()
         try:
             while True:
-                chunk = await self._read_chunk(handle, total)
+                chunk = await self._read_chunk(handle, hasher.length)
                 if isinstance(chunk, _Failed):
                     stream.close()
                     return chunk
                 data, eof = chunk
                 hasher.update(data)
                 stream.write(data)
-                total += len(data)
+                total = hasher.length
                 if size is not None and total > size:
                     stream.close()
                     return _failure("blob_size_mismatch", f"句柄读到的字节已超过声明的 {size}")
@@ -157,7 +155,7 @@ class BlobStage:
         if size is not None and total != size:
             stream.close()
             return _failure("blob_size_mismatch", f"句柄读到 {total} 字节，声明为 {size}")
-        ref = _BLOB_PREFIX + hasher.hexdigest()
+        ref = hasher.finish()
         if ref in self._sources:
             stream.close()  # 相同内容已有一份暂存
         else:
