@@ -13,14 +13,21 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 - `--junit-xml PATH` 输出 JUnit XML（CI 直接消费）；
 - `--counts-json PATH` 输出机器可读计数，供 CI 断言**执行数不低于基线**（防止因 skip 过多而假绿）：
 
+结构如下（示意：数字为虚构，`sections` 只节选两章；实际每章一项，键为章节名）：
+
 ```json
 {
   "schema": 1,
   "target": "https://host/r/1",
-  "totals": {"executed": 117, "passed": 117, "failed": 0, "errors": 0, "skipped": 0, "collection_errors": 0},
-  "sections": {"capabilities": {"executed": 4, "passed": 4, "failed": 0, "errors": 0, "skipped": 0}, "read": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "commit": {"executed": 18, "passed": 18, "failed": 0, "errors": 0, "skipped": 0}, "large": {"executed": 13, "passed": 13, "failed": 0, "errors": 0, "skipped": 0}, "staging": {"executed": 12, "passed": 12, "failed": 0, "errors": 0, "skipped": 0}, "validation": {"executed": 7, "passed": 7, "failed": 0, "errors": 0, "skipped": 0}, "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0}, "write_ops": {"executed": 20, "passed": 20, "failed": 0, "errors": 0, "skipped": 0}, "http_binding": {"executed": 22, "passed": 22, "failed": 0, "errors": 0, "skipped": 0}}
+  "totals": {"executed": 40, "passed": 39, "failed": 1, "errors": 0, "skipped": 2, "collection_errors": 0},
+  "sections": {
+    "smoke": {"executed": 3, "passed": 3, "failed": 0, "errors": 0, "skipped": 0},
+    "staging": {"executed": 10, "passed": 9, "failed": 1, "errors": 0, "skipped": 2}
+  }
 }
 ```
+
+章节名即 `src/dpe_conformance/checks/` 下的一级模块名；章节与检查条数随版本增加，本文不列具体数字——当前版本的章节列表见 `--section` 给出未知章节名时的报错，各章条数以实际输出的 `counts.json` 为准。CI 的执行数基线按你接入的身份与钩子自行记录。
 
 在服务端仓库 CI 中的接入步骤与最小 GitHub Actions 示例见 [在 CI 中运行跑分器](https://github.com/A2C-SMCP/dpe-protocol/blob/main/conformance/ci.md)。
 
