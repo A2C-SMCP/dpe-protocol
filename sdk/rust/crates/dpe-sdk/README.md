@@ -89,6 +89,7 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 - 缺省 `MemoryStateStore` 不保证崩溃持久，落盘实现属于运行器的状态目录（connector §4.4）；
 - 任何一次保存失败后，store 都可能与内存不一致（收尾失败时落后、写前失败而落盘实现写完才报错时领先）：继续使用同一个实例直到下一次保存成功，在那之前不要用同一个 store 新建实例（跨实例的保证属于运行器）；
 - `StateStore` 在异步方法里被同步调用、调用期间占住当前 worker，实现应尽量缩短耗时；多线程运行时上重 I/O（`fsync` 等）可用 `tokio::task::block_in_place` 包住（current_thread 运行时上不可用）；
+- move 的目标已持有与源相同的内容时（读到的目标值等于 base，如失败轮已建出目标，#165），不发 move，以 base 删除源并判 `moved`；目标内容不同仍为条目失败（`Side::To`），绝不在目标上写入；
 - 同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用目标须由调用方保序拆批）；
 - 写操作在调用方的同一个任务内有界并发（`concurrency`），不经 `tokio::spawn`；`push` / `delete` / `move_documents` 的 future 都是 `Send`，调用方可以把整次操作交给 `tokio::spawn`（推送器借用客户端，任务内持有 `Arc<DpeClient>` 再构造推送器即可满足 `'static`；`blobs` 回调须为 `Send`，见上文「传输适配」）；
 - `push` 的最后一个参数 `blobs` 原样交给每条 `deliver`，按 `sha256:` 引用给出服务端缺少的 blob 字节（可用下文 `media` 构造来源），未变文档不会调用它；

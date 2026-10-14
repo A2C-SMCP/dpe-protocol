@@ -593,6 +593,8 @@ class-char = ( %x00-2C / %x2E-5A / %x5E-D7FF / %xE000-10FFFF ) / escape   ; 除 
 
 delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，以前置条件发出的写入仍可能因读写之间的竞态得到 `DPE_PRECONDITION_FAILED`、`DPE_ALREADY_EXISTS` 或不属于「已达成」的 `DPE_NOT_FOUND`（core.md §5.2），同样是冲突。
 
+**move 的目标已持有同一内容**：按上表源侧可以写入（「有 L，R == L」以 L 为 base，「无 L，R 存在」以 R 为 base），而运行器同时读到的目标 R 也等于这个 base 时，目标已经是 move 要达成的内容（例如早先一轮已把同一份内容提交到目标，而该轮未成功、游标未推进，§6.8）。运行器 MUST NOT 发出 move（服务端会以 `DPE_ALREADY_EXISTS` 拒绝，重放永不收敛），而是以该 base 为前置条件**删除源**（delete，仍经 CAS），成功即计 `moved`：这正是 core.md §5.2 为 move 定义的目标状态（源不存在、目标内容为 base）。意图与同步状态按 move 处理——两侧一起记意图，成功后条目从源迁到目标。为此运行器 MUST 在判定 move 时读取目标的 R（与源一起，可经同一次 `batch_head`）。删除请求得到 `DPE_PRECONDITION_FAILED`、`DPE_NOT_FOUND` 以外的错误时，按 delete 的常规归类（含结果未知时保留意图），不属于 move 的条目失败、不标侧别。判定只看目标的 R、不看目标侧的 L：目标的 R 等于 base 时，即使那是他人写下的同一内容也按本条处理——目标不被写入，同步状态随之记目标为 base，与 remote 一致。目标只被读取、不被写入，**不受任何前置条件保护**：在读到目标 R 与删除源之间，他人若删除或改写目标，源仍会被删除，remote 上该内容可能缺失；这一窗口与上表「读写之间的竞态窗口」同样短暂，但没有 CAS 兜底，其后果在下一次对目标的写入中按判定表以冲突上报（同步状态记目标为 base，而 R 已不同或不存在），不会被静默覆盖。
+
 **冲突处置**：运行器就是 core.md §5.2 所说的「上层」。它 MUST NOT 改用 force（move 本就不支持 force，core.md §4），MUST 重新读取冲突 URI 的当前状态后按下表决定，运行器实现的其他按 URI 缓存（若有）MUST NOT 影响本节的判定。重新提交以重读到的 doc_hash 为前置条件，仍经 CAS：同级写入之间经 CAS 的后写覆盖不属于静默覆盖（core.md §7 第 4 条）。
 
 策略由实例的 `conflict_policy` 给出（§4.4；宿主以自己的方式配置，缺省值相同）：`commit` 取 `source_wins`（缺省）或 `report`，`delete` 取 `report`（缺省）或 `source_wins`。delete 不可逆，会连带丢掉他人的新内容与学习产物，因此缺省不以源为准。
@@ -607,10 +609,12 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | move | 源存在、被他人改写 | 受 `commit` 策略约束——`source_wins`：以重读到的 doc_hash 为 `base_hash` 重试 move（move 保留内容与学习产物，他人的写入随之移到目标）；`report`：条目失败 |
 | move | 目标已被占用（`DPE_ALREADY_EXISTS`） | 条目失败 |
 | move | 源已不存在，目标未达成（`DPE_NOT_FOUND`） | 条目失败 |
+| move（目标已持有同一内容，删除源） | 源不存在（删除得到 `DPE_NOT_FOUND`，或删除得到 `DPE_PRECONDITION_FAILED` 后重读源不存在） | 已达成，计 `moved` |
+| move（目标已持有同一内容，删除源） | 源存在、被他人改写 | 冲突（问题在源侧），按上面 move 的「源存在、被他人改写」行处置（受 `commit` 策略约束）；`source_wins` 下以重读值重新判定时，目标通常已不等于新的 base，于是照常发出 move，目标被占即按「目标已被占用」行条目失败 |
 
-- **重试上限**：本轮内对同一条目的重读与重新提交 MUST 有次数上限（由运行器决定，SHOULD 不超过 2 次），以免与并发写入者互相饿死；超过即该条目失败（`retryable: true`，§7.1），游标不推进（§6.8）；`report` 策略下的冲突与 move 的两类失败重跑不会自行消失，取 false。
+- **重试上限**：本轮内对同一条目的重读与重新提交 MUST 有次数上限（由运行器决定，SHOULD 不超过 2 次），以免与并发写入者互相饿死；超过即该条目失败（`retryable: true`，§7.1），游标不推进（§6.8）；`report` 策略下的冲突与 move 的两类条目失败（「目标已被占用」「源已不存在，目标未达成」）重跑不会自行消失，取 false。
 - **`source_wins` 的副作用**：它会覆盖他人在实例前缀内的同级写入，并复活他人删除的文档，两者都会在 remote 侧引起重新学习（plan §0.1 P3）；两个写入者都以自己为准时，同一文档会被反复改写。因此服务端与其他写入者 SHOULD NOT 写入 connector 实例的前缀；需要在 remote 上保持删除的文档，应先从源中删除，或对该实例使用 `report`。
-- **永久冲突**：move 的后两类失败与 `report` 策略下的冲突，重跑不会自行消失，按 §6.8「永久失败不得空转」处理。恢复由使用者完成：在 remote 上消除冲突后重跑；或丢弃该实例的本地游标，以全量轮恢复现存内容（全量轮不表达此前的删除与移动，§6.8）。运行器 MUST NOT 把失败的 move 自动退化为「在目标上 commit、再删除源」——那会丢失学习产物并覆盖占用目标的文档。
+- **永久冲突**：move 的两类条目失败（「目标已被占用」「源已不存在，目标未达成」）与 `report` 策略下的冲突，重跑不会自行消失，按 §6.8「永久失败不得空转」处理。恢复由使用者完成：在 remote 上消除冲突后重跑；或丢弃该实例的本地游标，以全量轮恢复现存内容（全量轮不表达此前的删除与移动，§6.8）。运行器 MUST NOT 把失败的 move 自动退化为「在目标上 commit、再删除源」——那会丢失学习产物并覆盖占用目标的文档。注意与上文「move 的目标已持有同一内容」区分：那不是失败后的退化（根本不发出 move），也不在目标上写入——仅当判定时读到的目标 R 等于 base，只删除源，目标不被覆盖，其学习产物与源等价，不引起重学；目标内容与源不同时仍按「目标已被占用」行处理（条目失败）。
 
 ### 7.3 轮结果
 
@@ -808,7 +812,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `no_cursor` | `supports_cursor: false` | 不缓存游标，下一轮不带游标 |
 | `env_probe` | 声明一个必填凭证；把自身环境变量的**名字**（不含值）作为文档内容产出 | 环境恰为 §4.3 的三部分；凭证缺失时 `secret_missing`，退出码 3 |
 
-另有不依赖插件行为的运行器用例：同一实例并发运行两次，其一以 `instance_busy`（退出码 4）结束；清单或实例定义违例得到 `manifest_invalid` / `definition_invalid`，配置未通过 schema 得到 `config_schema_violation`；清单的 `pattern` / `patternProperties` 键超出 §4.1.1 的子集或结构上界（如 lookaround、反向引用、`\p{…}`、超展开规模）得到 `manifest_invalid`；同一状态目录中前缀重叠的第二个实例被拒绝（`definition_invalid`）；沿用同一 `id` 修改 `config` 后，下一轮不带游标（全量轮）；remote 上他人改写某文档、源端随后也修改该文档（使插件再次产出它）后，commit 冲突按 `source_wins` 重新提交、`report` 下判条目失败（`retryable: false`，`cursor_held_since` 非 `null`）；同步状态与意图日志：写入生效后、确认前终止运行器进程，重跑不得报告冲突（含 delete 后源端重建同一 URI、move 后向原 URI 写入）；move 目标被占用时为 `partial`，`cursor_held_since` 保持为首次失败轮的开始时刻；以下状态故障用例依赖各运行器自身的状态格式与故障注入，由运行器自带测试覆盖、不属于共享夹具：状态目录不可读写（含取锁时的 I/O 错误，如锁文件无法创建；以非 root 身份运行）时以 `state_unavailable`（退出码 2）结束、游标不推进，且不降级为全量轮；状态内容损坏（以可正常读取、但无法解析的内容构造，而非改权限）时同样以 `state_unavailable` 结束（`retryable: false`），不覆盖损坏的内容；对一个已成功同步的文档（同步状态中有 L），注入写前意图持久化失败（commit 意图 `file_uri → N`）时不发出对应写请求、以 `state_unavailable` 结束；补存成功后，他人在 remote 上写下 N、源随后把该文档改为 N′，在 `conflict_policy.commit: "report"` 下下一次调用判该条目失败（`retryable: false`），不把 N 认作自身写入。删除（§5.1）：锁被占用时以退出码 4 结束；实例未登记时以退出码 0 结束，`instance.deleted` 的 `found` 为 `false`；删除成功后 stdout 为空、不发出任何 remote 请求，同一前缀的新实例可以登记；清单缺失或前缀已与他人重叠的已登记实例，删除仍以退出码 0 结束；清单写错的新实例首次调用以退出码 3 结束，`cursor_held_since` 为 `null`；remote 凭证配错的新实例以 `remote_unauthorized`（退出码 3）结束且已登记，修正凭证后重跑即可成功，放弃该实例则按 §5.1 删除登记。以下两项依赖运行器自身的状态格式，由运行器自带测试覆盖：状态内容损坏的已登记实例，删除仍以退出码 0 结束，之后可重新创建并以全量轮重建；清单写错的新实例首次调用后，状态目录中不留下该实例的登记、内容身份指纹与扣住记录。
+另有不依赖插件行为的运行器用例：同一实例并发运行两次，其一以 `instance_busy`（退出码 4）结束；清单或实例定义违例得到 `manifest_invalid` / `definition_invalid`，配置未通过 schema 得到 `config_schema_violation`；清单的 `pattern` / `patternProperties` 键超出 §4.1.1 的子集或结构上界（如 lookaround、反向引用、`\p{…}`、超展开规模）得到 `manifest_invalid`；同一状态目录中前缀重叠的第二个实例被拒绝（`definition_invalid`）；沿用同一 `id` 修改 `config` 后，下一轮不带游标（全量轮）；remote 上他人改写某文档、源端随后也修改该文档（使插件再次产出它）后，commit 冲突按 `source_wins` 重新提交、`report` 下判条目失败（`retryable: false`，`cursor_held_since` 非 `null`）；同步状态与意图日志：写入生效后、确认前终止运行器进程，重跑不得报告冲突（含 delete 后源端重建同一 URI、move 后向原 URI 写入）；move 目标被他人以**不同内容**占用时为 `partial`，`cursor_held_since` 保持为首次失败轮的开始时刻；目标在早先未成功的一轮中已被提交为与源**相同**的内容时（如该轮另有条目失败、游标未推进，源随后被删除，插件据此推断出 move），下一轮 move 计 `moved`、轮结果为 `succeeded`，源不存在、目标保留（§7.2「move 的目标已持有同一内容」）；以下状态故障用例依赖各运行器自身的状态格式与故障注入，由运行器自带测试覆盖、不属于共享夹具：状态目录不可读写（含取锁时的 I/O 错误，如锁文件无法创建；以非 root 身份运行）时以 `state_unavailable`（退出码 2）结束、游标不推进，且不降级为全量轮；状态内容损坏（以可正常读取、但无法解析的内容构造，而非改权限）时同样以 `state_unavailable` 结束（`retryable: false`），不覆盖损坏的内容；对一个已成功同步的文档（同步状态中有 L），注入写前意图持久化失败（commit 意图 `file_uri → N`）时不发出对应写请求、以 `state_unavailable` 结束；补存成功后，他人在 remote 上写下 N、源随后把该文档改为 N′，在 `conflict_policy.commit: "report"` 下下一次调用判该条目失败（`retryable: false`），不把 N 认作自身写入。删除（§5.1）：锁被占用时以退出码 4 结束；实例未登记时以退出码 0 结束，`instance.deleted` 的 `found` 为 `false`；删除成功后 stdout 为空、不发出任何 remote 请求，同一前缀的新实例可以登记；清单缺失或前缀已与他人重叠的已登记实例，删除仍以退出码 0 结束；清单写错的新实例首次调用以退出码 3 结束，`cursor_held_since` 为 `null`；remote 凭证配错的新实例以 `remote_unauthorized`（退出码 3）结束且已登记，修正凭证后重跑即可成功，放弃该实例则按 §5.1 删除登记。以下两项依赖运行器自身的状态格式，由运行器自带测试覆盖：状态内容损坏的已登记实例，删除仍以退出码 0 结束，之后可重新创建并以全量轮重建；清单写错的新实例首次调用后，状态目录中不留下该实例的登记、内容身份指纹与扣住记录。
 
 **插件测试驱动**（验证插件）：驱动插件进程并检查 §8.1——分帧与握手、条目的封闭 schema、句柄的快照一致性（同一句柄在不同偏移重复读取）、`shutdown` / stdin EOF 后按时退出、`cancel` 的响应，以及确定性（判据 1）。
 

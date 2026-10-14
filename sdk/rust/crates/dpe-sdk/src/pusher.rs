@@ -43,6 +43,9 @@
 //!     不发写），否则**条目失败**（源已不存在、目标未达成，§7.2）；源 R ≠ base → **冲突**
 //!     （[`Side::From`]）；写后目标被占（`DPE_ALREADY_EXISTS`）→ **条目失败**（[`Side::To`]，
 //!     §7.2 列为不可由策略重判定）、源被改写（412 前置条件不符）→ **冲突**（`Side::From`）。
+//!     源可写入而目标 R 也等于 base（目标已持有同一内容，如失败轮已建出目标，#165）→ 不发
+//!     move，以 base **删除源**、判 `moved`（§7.2）；删源遇 412 → 冲突（`Side::From`），遇
+//!     「不存在」→ 已达成。
 //!     源不存在、源无 L 且调用方未确认「不存在」时，以**目标侧的 L** 作 base 候选：move 成功后
 //!     条目已从源迁到目标，迁移后的条目就是本实例完成过这次 move 的记录，重放据此判已达成，与
 //!     服务端对同一请求的裁决一致（core §5.2 第 4 步）。
@@ -355,6 +358,9 @@ pub(crate) struct Plan<'d> {
     /// move：目标 uri（归一化）与本次使用的 base_hash（已达成 / 迁移条目时也用）。
     pub(crate) to_uri: Option<String>,
     pub(crate) base: Option<String>,
+    /// move：目标已持有与源相同的内容（目标 R == base）——不发 move，以 base 删除源
+    /// （§7.2「move 的目标已持有同一内容」，#165）。
+    pub(crate) delete_source: bool,
     /// `Action::Failed` 时的判定错误（未发写）。
     pub(crate) error: Option<Error>,
 }
@@ -371,6 +377,7 @@ impl<'d> Plan<'d> {
             new_hash: None,
             to_uri: None,
             base: None,
+            delete_source: false,
             error: None,
         }
     }
@@ -437,6 +444,17 @@ impl Outcome {
             unknown,
             ..Outcome::failure(error, OutcomeKind::Failed)
         }
+    }
+
+    /// 删除的写后结局是否就是「文档不存在」这一目标状态：服务端裁决不存在，或 CAS 冲突后
+    /// 重读不存在（§7.2 冲突处置表 delete 行；move 改为删源时同理，#165）。
+    pub(crate) fn reached_absent(&self) -> bool {
+        self.kind == OutcomeKind::Achieved
+            || (self.kind == OutcomeKind::Conflict
+                && self
+                    .remote
+                    .as_ref()
+                    .is_some_and(|remote| remote.doc_hash.is_none()))
     }
 
     pub(crate) fn with_side(mut self, side: Side) -> Self {
@@ -775,18 +793,15 @@ impl PusherState {
                 }
             } else {
                 let from_head = from_head.clone().expect("上一分支已排除源不存在");
-                match base {
-                    None => {
-                        plan.action = Action::Write;
-                        plan.precondition = Some(Precondition::BaseHash(from_head.clone()));
-                        plan.base = Some(from_head);
-                    }
-                    Some(base) if base == from_head => {
-                        plan.action = Action::Write;
-                        plan.precondition = Some(Precondition::BaseHash(base.clone()));
-                        plan.base = Some(base);
-                    }
-                    Some(_) => {} // 源被改写：冲突
+                // 无 L 时以读到的 R 为 base（§7.2「无 L，R 存在」的退化）；有 L 而 R ≠ L 即源被
+                // 改写：冲突
+                if base.is_none() || base.as_deref() == Some(from_head.as_str()) {
+                    plan.action = Action::Write;
+                    plan.precondition = Some(Precondition::BaseHash(from_head.clone()));
+                    // 目标已持有同一内容：不发 move（服务端会以 ALREADY_EXISTS 拒绝、重放永不
+                    // 收敛），改为以 base 删除源（#165）
+                    plan.delete_source = to_head.as_deref() == Some(from_head.as_str());
+                    plan.base = Some(from_head);
                 }
             }
             plans.push(plan);
@@ -985,13 +1000,8 @@ impl PusherState {
                 Action::Failed => results.push(judged_failure(plan)),
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
-                    let reread_absent = outcome.kind == OutcomeKind::Conflict
-                        && outcome
-                            .remote
-                            .as_ref()
-                            .is_some_and(|remote| remote.doc_hash.is_none());
-                    match (&outcome.error, outcome.kind) {
-                        (Some(_), kind) if kind == OutcomeKind::Achieved || reread_absent => {
+                    match &outcome.error {
+                        Some(_) if outcome.reached_absent() => {
                             // 服务端裁决「文档不存在」、或 CAS 冲突后重读不存在＝目标状态已达成
                             // （§7.2 冲突处置表 delete 行，与策略无关）；原错误一并带上（含
                             // code）供运行器按 §7.1 归因
@@ -1003,8 +1013,8 @@ impl PusherState {
                             result.error = outcome.error;
                             results.push(result);
                         }
-                        (Some(_), _) => results.push(self.outcome_failure(&plan, outcome)),
-                        (None, _) => {
+                        Some(_) => results.push(self.outcome_failure(&plan, outcome)),
+                        None => {
                             self.confirm(&plan.uri, None); // 删除成功
                             let mut result =
                                 PushResult::new(PushOp::Delete, &plan.uri, PushStatus::Deleted);
@@ -1052,13 +1062,30 @@ impl PusherState {
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
                     if outcome.error.is_some() {
-                        results.push(self.outcome_failure(&plan, outcome));
-                        continue;
+                        if !(plan.delete_source && outcome.reached_absent()) {
+                            results.push(self.outcome_failure(&plan, outcome));
+                            continue;
+                        }
+                        // 删源时服务端裁决「源不存在」、或 CAS 冲突后重读源不存在：move 的目标
+                        // 状态（源不存在、目标为 base）已达成，同 delete 的口径；原错误一并带上
+                        self.migrate(&plan);
+                        let mut result =
+                            PushResult::new(PushOp::Move, &plan.uri, PushStatus::Moved);
+                        result.precondition = plan.precondition;
+                        result.remote = outcome.remote;
+                        result.error = outcome.error;
+                        result
+                    } else {
+                        // 写入成功：迁移条目；删源路径带判定时读到的源侧 R
+                        self.migrate(&plan);
+                        let mut result =
+                            PushResult::new(PushOp::Move, &plan.uri, PushStatus::Moved);
+                        result.precondition = plan.precondition;
+                        if plan.delete_source {
+                            result.remote = Some(plan.remote);
+                        }
+                        result
                     }
-                    self.migrate(&plan);
-                    let mut result = PushResult::new(PushOp::Move, &plan.uri, PushStatus::Moved);
-                    result.precondition = plan.precondition;
-                    result
                 }
             };
             result.to_uri = plan.to_uri;
@@ -1324,7 +1351,10 @@ mod driver {
         /// - 同一 URI 在本批 from 与 to 中至多出现一次（链式、共用目标整批拒绝，保序拆批归
         ///   调用方）；
         /// - 目标被占（`DPE_ALREADY_EXISTS`）为条目失败（`Side::To`），源被改写为冲突
-        ///   （`Side::From`），都如实回报、绝不自动退化。
+        ///   （`Side::From`），都如实回报、绝不自动退化；
+        /// - 例外：目标已持有与源相同的内容（读到的目标值等于 base）时不发 move，以 base 为
+        ///   前置条件删除源，判 `Moved`（§7.2，#165）；删源遇源被改写为冲突（`Side::From`），
+        ///   遇源已不存在为已达成。
         pub async fn move_documents(
             &mut self,
             moves: &[(String, String)],
@@ -1459,6 +1489,16 @@ mod driver {
         async fn move_one(&self, plan: &Plan<'_>) -> Outcome {
             let to_uri = plan.to_uri.as_deref().expect("move 的 write 计划必有目标");
             let base = plan.base.as_deref().expect("move 的 write 计划必有 base");
+            if plan.delete_source {
+                // 目标已持有同一内容（#165）：以 base 删除源，结局归类同 delete，只有 CAS 冲突
+                // 标源侧（侧别专指 move 的问题侧，其余错误不标，运行器据此分级）
+                let outcome = self.delete_one(plan).await;
+                return if outcome.kind == OutcomeKind::Conflict {
+                    outcome.with_side(Side::From)
+                } else {
+                    outcome
+                };
+            }
             match self.client.move_document(&plan.uri, to_uri, base).await {
                 Ok(_) => Outcome::ok(None),
                 Err(error) => match error.kind() {
@@ -1830,6 +1870,36 @@ mod tests {
             &expected(&[(A, None)]),
         );
         assert_eq!(plan.action, Action::Failed);
+    }
+
+    #[test]
+    fn move_onto_target_holding_same_content_plans_source_delete() {
+        // #165：源可写入且目标 R == base → 仍为 Write，但删源而不发 move（有 L / 无 L 两种 base）
+        for state in [with_synced(&[(A, h('1'))]), PusherState::default()] {
+            let plan = move_plan(&mut state.clone(), Some(h('1')), Some(h('1')), &none());
+            assert_eq!(
+                (plan.action, plan.delete_source, plan.base),
+                (Action::Write, true, Some(h('1')))
+            );
+        }
+        // 目标内容不同、目标不存在：照常发 move
+        for to_head in [Some(h('2')), None] {
+            let plan = move_plan(
+                &mut with_synced(&[(A, h('1'))]),
+                Some(h('1')),
+                to_head,
+                &none(),
+            );
+            assert_eq!((plan.action, plan.delete_source), (Action::Write, false));
+        }
+        // 源被改写（R ≠ L）即使目标等于 R 也是冲突，不删源
+        let plan = move_plan(
+            &mut with_synced(&[(A, h('1'))]),
+            Some(h('2')),
+            Some(h('2')),
+            &none(),
+        );
+        assert_eq!((plan.action, plan.delete_source), (Action::Conflict, false));
     }
 
     #[test]
