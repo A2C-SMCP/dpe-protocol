@@ -2,7 +2,7 @@
 
 黑盒 HTTP 跑分器：对着任意实现了 [core.md](../spec/core.md) + [HTTP 绑定](../spec/bindings/http.md) 的 remote 跑一遍协议语义（CAS、暂存原子切换、delta 如实回报、错误格式等），供各服务端在自己的 CI 中执行。
 
-**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。全量 3/6（#56）已落地——求值顺序与校验顺序（传输层、uri、条件头、暂存上传的组合场景，报文校验先于授权）一章，以及经 HTTP 消费 `invalid_objects` / `nesting_depth` 向量一章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。其余全量（#57–#59）随 M2 推进。`dpe-conformance` 发布在 PyPI，服务端仓库在 CI 中的用法见 [在 CI 中运行跑分器](ci.md)。
+**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。全量 3/6（#56）已落地——求值顺序与校验顺序（传输层、uri、条件头、暂存上传的组合场景，报文校验先于授权）一章，以及经 HTTP 消费 `invalid_objects` / `nesting_depth` 向量一章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。全量 4/6（#57）已落地——安全与去重范围一章（内容存于他处仍按层列为缺失、上传状态只按本会话、无写授权一律 403、元素层与 blob 层的去重下界）。其余全量（#58–#59）随 M2 推进。`dpe-conformance` 发布在 PyPI，服务端仓库在 CI 中的用法见 [在 CI 中运行跑分器](ci.md)。
 
 ## 通用检查面
 
@@ -70,6 +70,8 @@
   - 缺失清单必须把 X 列为缺失，按 X 所在的层核对：X 是页对象时，出现在 negotiate 的 `missing_pages` 中；X 是元素对象时，出现在附带了引用它的页的 negotiate 响应、或该页对象上传响应的 `missing_content_hashes` 中（页对象分块上传时，仅当 `missing_truncated` 为 `false` 才作此断言，http §4.6）；X 是 blob 时，出现在引用它的元素对象上传响应的 `missing_blobs` 中；
   - A 在 commit 中引用 X 而不上传，必须返回 `DPE_MISSING_CONTENT`；
   - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于别处而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
+- 上传状态只按本会话判定：同一文档、同一调用者的另一个未提交会话里已上传的元素与 blob，在新会话中首次上传仍为 `201`，blob 的断点偏移仍为 `0`，且仍列入元素上传响应的 `missing_blobs`。服务端对同一文档与调用者复用已打开的会话时，无法构造另一个会话，该项如实 skip。
+- 去重范围下界：本文档当前状态可得的对象不列为缺失。页层见「大文档与逐层协商」（插入一页只缺新页）；元素层与 blob 层：新页复用当前状态已有的元素、并新增一个引用当前状态已有 blob 的元素时，页上传响应只列新元素，新元素上传响应的 `missing_blobs` 为空。
 - 对无写授权的 URI 提交与其当前内容相同的 commit，必须返回 `403`，而不是 `unchanged`。
 - 对无写授权的 URI 做 delete，无论文档是否存在都返回 `403`；对源或目标任一侧无写授权的 move，无论两侧状态如何都返回 `403`（#6 F3）。
 

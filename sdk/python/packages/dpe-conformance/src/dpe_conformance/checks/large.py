@@ -35,6 +35,7 @@ from dpe_conformance.support import (
     breakpoint_query,
     build_document,
     chunk_upload,
+    commit_with_session,
     limits_of,
     negotiate,
     session_of,
@@ -125,13 +126,12 @@ def test_large_document_layerwise_roundtrip(
     session_id, _ = session_of(negotiated)
 
     stage_all(conformance_target, session_id, document, identity=full_identity)
-    response = conformance_target.send(
-        "PUT",
-        "documents",
+    response = commit_with_session(
+        conformance_target,
+        uri,
+        document,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-None-Match": "*"},
-        json={"document": document.document, "staging_session": session_id},
     )
     commit_body = assert_commit_success(
         response, status=201, status_text="created", doc_hash=document.doc_hash
@@ -309,17 +309,16 @@ def test_commit_missing_content_reports_layers(
     assert negotiated.status_code == 200, f"negotiate 返回 {negotiated.status_code}"
     session_id, _ = session_of(negotiated)
 
-    def commit_with_session() -> httpx.Response:
-        return conformance_target.send(
-            "PUT",
-            "documents",
+    def commit_request() -> httpx.Response:
+        return commit_with_session(
+            conformance_target,
+            uri,
+            document,
+            session_id,
             identity=full_identity,
-            params={"uri": uri},
-            headers={"If-None-Match": "*"},
-            json={"document": document.document, "staging_session": session_id},
         )
 
-    first = commit_with_session()
+    first = commit_request()
     assert first.status_code == 400, f"缺内容时应 400，实际 {first.status_code}"
     missing = first.json()["missing"]
     assert missing["pages"] == document.page_hashes, "页对象尚未上传：缺失清单的 pages 层必须列出它"
@@ -351,13 +350,13 @@ def test_commit_missing_content_reports_layers(
             identity=full_identity,
         )
         assert response.status_code == 201
-    second = commit_with_session()
+    second = commit_request()
     second_problem = assert_problem(second, status=400, code="DPE_MISSING_CONTENT")
     _assert_missing_layer(second_problem, "blobs", {blob_ref_value})
 
     blob_response = upload_blob(conformance_target, session_id, image_bytes, identity=full_identity)
     assert blob_response.status_code == 201, f"blob 上传失败：{blob_response.status_code}"
-    final = commit_with_session()
+    final = commit_request()
     assert_commit_success(final, status=201, status_text="created", doc_hash=document.doc_hash)
 
 
@@ -385,13 +384,12 @@ def test_staging_is_invisible_to_reads(conformance_target: Target, full_identity
         "暂存中的文档不得出现在 list 中（可见中间态即跑偏）"
     )
 
-    committed = conformance_target.send(
-        "PUT",
-        "documents",
+    committed = commit_with_session(
+        conformance_target,
+        uri,
+        document,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-None-Match": "*"},
-        json={"document": document.document, "staging_session": session_id},
     )
     assert_commit_success(committed, status=201, status_text="created", doc_hash=document.doc_hash)
     after = conformance_target.send(
@@ -444,13 +442,13 @@ def test_inserted_page_is_the_only_missing_page(
         conformance_target, session_id, new_element, new_ref, identity=full_identity
     )
     assert uploaded.status_code == 201
-    committed = conformance_target.send(
-        "PUT",
-        "documents",
+    committed = commit_with_session(
+        conformance_target,
+        uri,
+        version2,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-Match": f'"{version1.doc_hash}"'},
-        json={"document": version2.document, "staging_session": session_id},
+        if_match=version1.doc_hash,
     )
     assert_commit_success(committed, status=200, status_text="updated", doc_hash=version2.doc_hash)
 
@@ -479,13 +477,13 @@ def test_swapped_pages_delta_zero(conformance_target: Target, full_identity: Ide
     assert negotiated.json()["missing_pages"] == [], "对调后无缺失页（内容寻址）"
     session_id, _ = session_of(negotiated)
 
-    committed = conformance_target.send(
-        "PUT",
-        "documents",
+    committed = commit_with_session(
+        conformance_target,
+        uri,
+        version2,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-Match": f'"{version1.doc_hash}"'},
-        json={"document": version2.document, "staging_session": session_id},
+        if_match=version1.doc_hash,
     )
     body = assert_commit_success(
         committed, status=200, status_text="updated", doc_hash=version2.doc_hash

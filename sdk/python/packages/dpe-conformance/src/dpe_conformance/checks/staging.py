@@ -26,11 +26,13 @@ from dpe_conformance.config import Identity
 from dpe_conformance.hooks import HookDriver, HookResult
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
+    WRONG_HASH,
     assert_commit_success,
     assert_problem,
     assert_staging_head_error,
     breakpoint_query,
     build_document,
+    commit_with_session,
     expires_at_header,
     limits_of,
     negotiate,
@@ -125,13 +127,12 @@ def test_commit_with_session_then_unchanged_replay(
     stage_all(conformance_target, session_id, document, identity=full_identity)
 
     def commit_request() -> httpx.Response:
-        return conformance_target.send(
-            "PUT",
-            "documents",
+        return commit_with_session(
+            conformance_target,
+            uri,
+            document,
+            session_id,
             identity=full_identity,
-            params={"uri": uri},
-            headers={"If-None-Match": "*"},
-            json={"document": document.document, "staging_session": session_id},
         )
 
     created = commit_request()
@@ -171,23 +172,22 @@ def test_session_survives_precondition_failure(
     session_id, _ = session_of(negotiated)
     stage_all(conformance_target, session_id, version2, identity=full_identity)
 
-    wrong = "dpe1:" + "0" * 64
-    failed = conformance_target.send(
-        "PUT",
-        "documents",
+    failed = commit_with_session(
+        conformance_target,
+        uri,
+        version2,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-Match": f'"{wrong}"'},
-        json={"document": version2.document, "staging_session": session_id},
+        if_match=WRONG_HASH,
     )
     assert_problem(failed, status=412, code="DPE_PRECONDITION_FAILED")
-    retried = conformance_target.send(
-        "PUT",
-        "documents",
+    retried = commit_with_session(
+        conformance_target,
+        uri,
+        version2,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-Match": f'"{version1.doc_hash}"'},
-        json={"document": version2.document, "staging_session": session_id},
+        if_match=version1.doc_hash,
     )
     assert_commit_success(retried, status=200, status_text="updated", doc_hash=version2.doc_hash)
 
@@ -228,13 +228,12 @@ def test_consumed_session_is_410(conformance_target: Target, full_identity: Iden
     assert negotiated.status_code == 200
     session_id, _ = session_of(negotiated)
     stage_all(conformance_target, session_id, document, identity=full_identity)
-    created = conformance_target.send(
-        "PUT",
-        "documents",
+    created = commit_with_session(
+        conformance_target,
+        uri,
+        document,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-None-Match": "*"},
-        json={"document": document.document, "staging_session": session_id},
     )
     assert_commit_success(created, status=201, status_text="created", doc_hash=document.doc_hash)
 
@@ -279,13 +278,12 @@ def test_session_is_bound_to_caller(
     )
     session_id, _ = session_of(negotiated)
 
-    response = conformance_target.send(
-        "PUT",
-        "documents",
+    response = commit_with_session(
+        conformance_target,
+        uri,
+        document,
+        session_id,
         identity=full_identity,
-        params={"uri": uri},
-        headers={"If-None-Match": "*"},
-        json={"document": document.document, "staging_session": session_id},
     )
     assert_problem(response, status=410, code="DPE_SESSION_EXPIRED")
 
@@ -299,13 +297,12 @@ def test_session_is_bound_to_file_uri(conformance_target: Target, full_identity:
     assert negotiated.status_code == 200
     session_id, _ = session_of(negotiated)
 
-    response = conformance_target.send(
-        "PUT",
-        "documents",
+    response = commit_with_session(
+        conformance_target,
+        uri_b,
+        document,
+        session_id,
         identity=full_identity,
-        params={"uri": uri_b},
-        headers={"If-None-Match": "*"},
-        json={"document": document.document, "staging_session": session_id},
     )
     assert_problem(response, status=410, code="DPE_SESSION_EXPIRED")
 

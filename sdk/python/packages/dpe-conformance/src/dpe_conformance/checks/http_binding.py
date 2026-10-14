@@ -36,6 +36,7 @@ from dpe_conformance.config import Identity
 from dpe_conformance.hooks import PROBE_HEADER, HookDriver, inject_error_payload
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
+    WRONG_HASH,
     WireDocument,
     assert_commit_success,
     assert_head_error,
@@ -48,10 +49,10 @@ from dpe_conformance.support import (
     optional_identity,
     outside_scoped,
     payload_limit_within_budget,
+    seed,
     text_element,
 )
 
-_WRONG_HASH = "dpe1:" + "0" * 64
 #: 百分号编码：只保留 unreserved（RFC 3986 §2.3：ALPHA / DIGIT / ``-`` / ``.`` / ``_`` / ``~``）
 #: 或合法的 %XX（HTTP §4.9）
 _PERCENT_ENCODED = re.compile(r"(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+")
@@ -61,18 +62,12 @@ def _document() -> WireDocument:
     return build_document([[text_element("http-binding")]], title="HTTP 绑定样例")
 
 
-def _seed(target: Target, identity: Identity, uri: str, document: WireDocument) -> WireDocument:
-    response = commit(target, uri, document, identity=identity, if_none_match_star=True)
-    assert response.status_code == 201, f"铺垫失败：{response.status_code} {response.text[:200]}"
-    return document
-
-
 def _invalid_element_body(element: dict[str, Any]) -> dict[str, Any]:
     """含非法对象的 commit 体：hash 用占位值——报文校验是 schema 层判定，先于任何 hash 重算；
     非法对象无法（也不该）经 dpe-hash 构造。"""
     return {
-        "document": {"file_type": "md", "pages": [_WRONG_HASH]},
-        "pages": [{"elements": [_WRONG_HASH]}],
+        "document": {"file_type": "md", "pages": [WRONG_HASH]},
+        "pages": [{"elements": [WRONG_HASH]}],
         "objects": [element],
     }
 
@@ -89,7 +84,7 @@ def test_weak_if_match_never_matches(conformance_target: Target, full_identity: 
     """HTTP §3.1/§3.2：``W/"…"`` 合法但永不匹配——弱校验器形式的当前 doc_hash 在内容变化时
     得到 ``412`` + ``DPE_PRECONDITION_FAILED``。"""
     uri = conformance_target.uri("http/weak-if-match")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     changed = build_document([[text_element("changed")]])
     response = conformance_target.send(
         "PUT",
@@ -112,7 +107,7 @@ def test_non_hash_if_match_value_compares_by_value(
     得到 ``412`` + ``DPE_PRECONDITION_FAILED``（不是 ``DPE_VALIDATION``、也不是
     ``DPE_CONTRACT_UNSUPPORTED``）。"""
     uri = conformance_target.uri(f"http/value-compare/{case}")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     changed = build_document([[text_element("changed")]])
     response = conformance_target.send(
         "PUT",
@@ -130,7 +125,7 @@ def test_if_match_from_dpe_doc_hash_succeeds(
 ) -> None:
     """HTTP §3.1：客户端取 ``DPE-Doc-Hash``（权威值）构造 ``If-Match`` 的写入必须成功。"""
     uri = conformance_target.uri("http/authority-header")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     head = conformance_target.send("HEAD", "documents", identity=full_identity, params={"uri": uri})
     assert head.status_code == 200, f"HEAD 返回 {head.status_code}"
     current = head.headers.get("DPE-Doc-Hash")
@@ -156,7 +151,7 @@ def test_delete_204_has_no_document_token_headers(
 ) -> None:
     """HTTP §3.3：delete 的 ``204`` 不带 ``DPE-Doc-Hash`` 与 ``ETag``。"""
     uri = conformance_target.uri("http/delete-headers")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     response = delete(conformance_target, uri, identity=full_identity, if_match=document.doc_hash)
     assert response.status_code == 204, f"delete 预期 204，实际 {response.status_code}"
     assert "DPE-Doc-Hash" not in response.headers, "delete 的 204 不得带 DPE-Doc-Hash"
@@ -176,7 +171,7 @@ def test_move_response_headers_and_content_location(
     """
     source = conformance_target.uri("http/move-from")
     to_uri = conformance_target.uri("http/move-to")
-    document = _seed(conformance_target, full_identity, source, _document())
+    document = seed(conformance_target, source, _document(), identity=full_identity)
     response = move(
         conformance_target, source, to_uri, identity=full_identity, base_hash=document.doc_hash
     )
@@ -215,7 +210,7 @@ def test_head_without_contract_header_is_contract_unsupported(
     """HTTP §3.1/§3.3/§5 + CORE §3.1：HEAD 缺 ``DPE-Hash-Contract`` → ``400`` +
     ``DPE_CONTRACT_UNSUPPORTED``（HEAD 出错只有错误码头）。"""
     uri = conformance_target.uri("http/head-no-contract")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     response = conformance_target.send(
         "HEAD", "documents", identity=full_identity, contract=None, params={"uri": uri}
     )
@@ -349,18 +344,16 @@ def test_code_status_precondition_failed(
     """HTTP §5：``DPE_PRECONDITION_FAILED`` → ``412``（条件头；move 的请求体前置条件取
     ``409``，见 ``write_ops`` 章）。"""
     uri = conformance_target.uri("http/code-precondition")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     changed = build_document([[text_element("changed")]])
-    response = commit(
-        conformance_target, uri, changed, identity=full_identity, if_match=_WRONG_HASH
-    )
+    response = commit(conformance_target, uri, changed, identity=full_identity, if_match=WRONG_HASH)
     assert_problem(response, status=412, code="DPE_PRECONDITION_FAILED")
 
 
 def test_code_status_already_exists(conformance_target: Target, full_identity: Identity) -> None:
     """HTTP §5：``DPE_ALREADY_EXISTS`` → ``412``（``If-None-Match: *`` 命中已存在且内容不同）。"""
     uri = conformance_target.uri("http/code-already-exists")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     changed = build_document([[text_element("changed")]])
     response = commit(
         conformance_target, uri, changed, identity=full_identity, if_none_match_star=True
