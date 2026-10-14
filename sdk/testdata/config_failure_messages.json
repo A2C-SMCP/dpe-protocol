@@ -1,0 +1,512 @@
+{
+  "description": "两个 SDK 的实例配置校验失败消息共用的用例表（#156）：每例的 config 含哨兵串 s3cret-sentinel 或哨兵数值 31337，校验必须以 config_schema_violation 失败，消息必须含 expected 片段（位置写法两侧不同，不在片段内），且不得含任何哨兵。Python 的 dpe_sdk.run.manifest.validate_config 与 Rust 的 dpe_sdk::run::manifest::validate_config 都必须逐例通过。这不是规范向量：消息格式不是契约。 多处同时失败时两侧报告的不一定是同一处（Python 取 jsonschema 的 relevance 最高者、Rust 取求值顺序的第一个），用例表每例只构造一处失败。",
+  "sentinels": [
+    "s3cret-sentinel",
+    "31337"
+  ],
+  "cases": [
+    {
+      "name": "pattern 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^https://"
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "值与 pattern \"^https://\" 不匹配"
+    },
+    {
+      "name": "minLength 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 100
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "字符串长度少于 minLength（100）"
+    },
+    {
+      "name": "maxLength 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 3
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "字符串长度多于 maxLength（3）"
+    },
+    {
+      "name": "minimum 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "minimum": 900000
+          }
+        }
+      },
+      "config": {
+        "n": 31337
+      },
+      "expected": "数值小于 minimum（900000）"
+    },
+    {
+      "name": "maximum 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "maximum": 10
+          }
+        }
+      },
+      "config": {
+        "n": 31337
+      },
+      "expected": "数值大于 maximum（10）"
+    },
+    {
+      "name": "exclusiveMinimum 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "exclusiveMinimum": 99999
+          }
+        }
+      },
+      "config": {
+        "n": 31337
+      },
+      "expected": "数值不大于 exclusiveMinimum（99999）"
+    },
+    {
+      "name": "exclusiveMaximum 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer",
+            "exclusiveMaximum": 10
+          }
+        }
+      },
+      "config": {
+        "n": 31337
+      },
+      "expected": "数值不小于 exclusiveMaximum（10）"
+    },
+    {
+      "name": "enum 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "enum": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "值不在 enum 中"
+    },
+    {
+      "name": "const 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "const": "a"
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "值与 const 不相等"
+    },
+    {
+      "name": "type 只写类型名",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "integer"
+          }
+        }
+      },
+      "config": {
+        "n": "s3cret-sentinel"
+      },
+      "expected": "值不是 integer 类型"
+    },
+    {
+      "name": "type 数组只写类型名",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": [
+              "integer",
+              "boolean"
+            ]
+          }
+        }
+      },
+      "config": {
+        "n": "s3cret-sentinel"
+      },
+      "expected": "值不是 integer / boolean 类型"
+    },
+    {
+      "name": "未允许的属性不写键",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "config": {
+        "repo": "x",
+        "s3cret-sentinel": 1
+      },
+      "expected": "出现未允许的属性"
+    },
+    {
+      "name": "propertyNames 不写属性名",
+      "schema": {
+        "type": "object",
+        "propertyNames": {
+          "pattern": "^[a-z]+$"
+        }
+      },
+      "config": {
+        "s3cret-sentinel": 1
+      },
+      "expected": "属性名：值与 pattern \"^[a-z]+$\" 不匹配"
+    },
+    {
+      "name": "uniqueItems 不写元素",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "uniqueItems": true
+          }
+        }
+      },
+      "config": {
+        "tags": [
+          "s3cret-sentinel",
+          "s3cret-sentinel"
+        ]
+      },
+      "expected": "数组含重复元素（uniqueItems）"
+    },
+    {
+      "name": "minItems 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "minItems": 5
+          }
+        }
+      },
+      "config": {
+        "tags": [
+          "s3cret-sentinel"
+        ]
+      },
+      "expected": "数组长度少于 minItems（5）"
+    },
+    {
+      "name": "maxItems 只写界值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "maxItems": 0
+          }
+        }
+      },
+      "config": {
+        "tags": [
+          "s3cret-sentinel"
+        ]
+      },
+      "expected": "数组长度多于 maxItems（0）"
+    },
+    {
+      "name": "minProperties 只写界值",
+      "schema": {
+        "type": "object",
+        "minProperties": 5
+      },
+      "config": {
+        "s3cret-sentinel": "s3cret-sentinel"
+      },
+      "expected": "属性个数少于 minProperties（5）"
+    },
+    {
+      "name": "maxProperties 只写界值",
+      "schema": {
+        "type": "object",
+        "maxProperties": 0
+      },
+      "config": {
+        "a": "s3cret-sentinel"
+      },
+      "expected": "属性个数多于 maxProperties（0）"
+    },
+    {
+      "name": "anyOf 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "anyOf": [
+              {
+                "pattern": "^a"
+              },
+              {
+                "minLength": 100
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "anyOf 至少需一个分支通过"
+    },
+    {
+      "name": "oneOf 不写值与计数",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "oneOf": [
+              {
+                "pattern": "^a"
+              },
+              {
+                "minLength": 100
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "oneOf 恰需一个分支通过"
+    },
+    {
+      "name": "oneOf 多个分支通过同样不写计数",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "minLength": 1
+              }
+            ]
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "oneOf 恰需一个分支通过"
+    },
+    {
+      "name": "not 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "not": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "not 分支通过"
+    },
+    {
+      "name": "布尔 schema false 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": false
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "布尔 schema false 不通过"
+    },
+    {
+      "name": "items 里的 pattern 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": {
+              "pattern": "^a"
+            }
+          }
+        }
+      },
+      "config": {
+        "tags": [
+          "s3cret-sentinel"
+        ]
+      },
+      "expected": "值与 pattern \"^a\" 不匹配"
+    },
+    {
+      "name": "$ref 目标里的 pattern 不写值",
+      "schema": {
+        "type": "object",
+        "$defs": {
+          "url": {
+            "type": "string",
+            "pattern": "^https://"
+          }
+        },
+        "properties": {
+          "repo": {
+            "$ref": "#/$defs/url"
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "值与 pattern \"^https://\" 不匹配"
+    },
+    {
+      "name": "then 分支里的 pattern 不写值",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "if": {
+              "type": "string"
+            },
+            "then": {
+              "pattern": "^a"
+            }
+          }
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "值与 pattern \"^a\" 不匹配"
+    },
+    {
+      "name": "dependentRequired 只写 schema 里的名字",
+      "schema": {
+        "type": "object",
+        "dependentRequired": {
+          "repo": [
+            "branch"
+          ]
+        }
+      },
+      "config": {
+        "repo": "s3cret-sentinel"
+      },
+      "expected": "属性 \"repo\" 存在时要求属性 \"branch\"（dependentRequired）"
+    },
+    {
+      "name": "required 只写 schema 里的名字",
+      "schema": {
+        "type": "object",
+        "required": [
+          "repo"
+        ]
+      },
+      "config": {
+        "other": "s3cret-sentinel"
+      },
+      "expected": "缺少必填属性 \"repo\""
+    },
+    {
+      "name": "patternProperties 不加前缀（匹配上的键已在位置里）",
+      "schema": {
+        "type": "object",
+        "patternProperties": {
+          "^s": {
+            "type": "string"
+          }
+        }
+      },
+      "config": {
+        "sample": 5
+      },
+      "expected": "）：值不是 string 类型"
+    },
+    {
+      "name": "items 为 false 按布尔 schema 措辞",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tags": {
+            "type": "array",
+            "items": false
+          }
+        }
+      },
+      "config": {
+        "tags": [
+          "s3cret-sentinel"
+        ]
+      },
+      "expected": "布尔 schema false 不通过"
+    }
+  ]
+}

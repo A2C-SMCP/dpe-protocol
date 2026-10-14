@@ -508,7 +508,7 @@ def test_error_message_survives_substring_translations() -> None:
     manifest = parse_manifest(with_schema(schema))
     with pytest.raises(InstanceFailure) as info:
         validate_config(manifest, {"p2": "zz"})
-    assert repr("ab") in str(info.value)
+    assert '值与 pattern "ab" 不匹配' in str(info.value)
 
 
 def test_closed_keyword_subset() -> None:
@@ -676,7 +676,7 @@ def test_pattern_properties_translation_collision_merges_subschemas() -> None:
     validate_config(manifest, {"1": "a"})
     with pytest.raises(InstanceFailure) as info:
         validate_config(manifest, {"1": "ab"})
-    assert "too long" in str(info.value)  # 后一个键的子 schema 生效
+    assert "maxLength（1）" in str(info.value)  # 后一个键的子 schema 生效
 
 
 def test_error_message_shows_original_pattern() -> None:
@@ -685,21 +685,22 @@ def test_error_message_shows_original_pattern() -> None:
     with pytest.raises(InstanceFailure) as info:
         validate_config(manifest, {"r": "héllo"})
     message = str(info.value)
-    assert repr("^\\w+$") in message  # 显示原 pattern
+    assert json.dumps("^\\w+$") in message  # 显示原 pattern
     assert "\\x30" not in message  # 不泄漏转译后的写法
+    assert "héllo" not in message  # 不回显取值（#156）
 
 
 def test_collision_error_message_lists_all_originals() -> None:
+    """两个 pattern 转译后同形：消息无法区分是哪一个，列出全部原文。"""
     schema = {
         "type": "object",
-        "patternProperties": {"\\d": {}, "[0-9]": {}},
-        "additionalProperties": False,
+        "properties": {"a": {"pattern": "\\d"}, "b": {"pattern": "[0-9]"}},
     }
     manifest = parse_manifest(with_schema(schema))
     with pytest.raises(InstanceFailure) as info:
-        validate_config(manifest, {"x": 1})
+        validate_config(manifest, {"a": "x"})
     message = str(info.value)
-    assert "\\d" in message and "[0-9]" in message  # 碰撞键的全部原文都在
+    assert "\\\\d" in message and "[0-9]" in message  # 碰撞的全部原文都在（JSON 引号转义）
 
 
 def test_pattern_properties_keys_are_checked_and_matched() -> None:

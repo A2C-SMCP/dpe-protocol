@@ -14,15 +14,17 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import unquote_to_bytes
 
 import dpe_hash
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import best_match
+from jsonschema.exceptions import ValidationError as SchemaError
+from jsonschema.exceptions import best_match, relevance
 from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 from referencing import Registry, Resource
@@ -90,7 +92,7 @@ class Manifest(ClosedModel):
     @classmethod
     def _check_version(cls, version: int) -> int:
         if version != 1:
-            raise ValueError(f"不认识的 manifest_version {version}")
+            raise ValueError("manifest_version 只能为 1（本规范只定义 1）")
         return version
 
     @field_validator("config_schema")
@@ -107,7 +109,9 @@ class Manifest(ClosedModel):
             # 同 check_schema，但不启用 format 校验（format 只作注解，对 schema 本身同样如此）
             error = best_match(_META_VALIDATOR.iter_errors(schema))
             if error is not None:
-                raise ValueError(f"不是合法的 draft 2020-12 schema：{error.message}")
+                # 不拼 error.message：它内嵌 schema 里的取值（§4.3「不外泄」，#156）
+                where = error.json_path
+                raise ValueError(f"不是合法的 draft 2020-12 schema（{where}：{error.validator}）")
             _check_closed_schema(schema)
         except RecursionError:
             # 同上：JSON 深度上界（_check_json_depth）在前，合法清单不会触达
@@ -228,24 +232,27 @@ _SUBSCHEMA_MAP = ("properties", "patternProperties")
 
 
 def _parse_defs_ref(ref: str) -> str:
-    """解析 §4.1.1 的 `$ref` 唯一形式，返回解码后的名字；不合形式抛 ``ValueError``。"""
+    """解析 §4.1.1 的 `$ref` 唯一形式，返回解码后的名字；不合形式抛 ``ValueError``。
+
+    消息不回显 ref（§4.3「不外泄」，#156）；调用方报告时只写位置。
+    """
     if not ref.startswith("#/"):
-        raise ValueError(f'$ref {ref!r} 只允许 "#/$defs/<名字>" 一种形式（§4.1.1）')
+        raise ValueError('$ref 只允许 "#/$defs/<名字>" 一种形式（§4.1.1）')
     fragment = ref[2:]
     # 非法百分号序列（`%` 后不是两位十六进制）在 RFC 3986 下无效，一律拒绝
     if re.search(r"%(?![0-9A-Fa-f]{2})", fragment):
-        raise ValueError(f"$ref {ref!r} 含非法百分号序列（§4.1.1）")
+        raise ValueError("$ref 含非法百分号序列（§4.1.1）")
     # RFC 6901 §6：先百分号解码，再按 "/" 拆分，最后处理 ~1 / ~0（顺序不可换）
     try:
         decoded = unquote_to_bytes(fragment).decode("utf-8")
     except UnicodeDecodeError:
-        raise ValueError(f"$ref {ref!r} 的片段不是合法 UTF-8（§4.1.1）") from None
+        raise ValueError("$ref 的片段不是合法 UTF-8（§4.1.1）") from None
     segments = decoded.split("/")
     if len(segments) != 2 or segments[0] != "$defs" or not segments[1]:
-        raise ValueError(f'$ref {ref!r} 只允许 "#/$defs/<名字>" 一种形式（§4.1.1）')
+        raise ValueError('$ref 只允许 "#/$defs/<名字>" 一种形式（§4.1.1）')
     name = segments[1]
     if re.search(r"~(?![01])", name):
-        raise ValueError(f"$ref {ref!r} 的名字含非法转义（~ 后只能是 0 或 1，§4.1.1）")
+        raise ValueError("$ref 的名字含非法转义（~ 后只能是 0 或 1，§4.1.1）")
     return name.replace("~1", "/").replace("~0", "~")
 
 
@@ -275,14 +282,17 @@ def _check_closed_schema(schema: dict[str, Any]) -> None:
                 raise ValueError(f"{position}: $schema 只允许出现在根上（§4.1.1）")
         dialect = node.get("$schema")
         if dialect is not None and dialect not in (_DRAFT_2020_12, _DRAFT_2020_12 + "#"):
-            raise ValueError(f"$schema {dialect!r} 必须缺省或为 {_DRAFT_2020_12}")
+            raise ValueError(f"{position}: $schema 必须缺省或为 {_DRAFT_2020_12}")
         ref = node.get("$ref")
         if ref is not None:
             if not isinstance(ref, str):
                 raise ValueError(f"{position}: $ref 必须是字符串")
-            name = _parse_defs_ref(ref)
+            try:
+                name = _parse_defs_ref(ref)
+            except ValueError:
+                raise ValueError(f"{position}: $ref 形式不合法（只允许 #/$defs/<名字>）") from None
             if name not in names:
-                raise ValueError(f"{position}: $ref {ref!r} 指向的 $defs 条目不存在")
+                raise ValueError(f"{position}: $ref 的目标不存在")
             if owner is not None:
                 edges.setdefault(owner, set()).add(name)
         if isinstance(node.get("items"), list):
@@ -292,9 +302,8 @@ def _check_closed_schema(schema: dict[str, Any]) -> None:
             try:
                 check_pattern(pattern)
             except PatternSubsetError as exc:
-                raise ValueError(
-                    f"{position}: pattern {pattern!r} 超出 §4.1.1 子集：{exc}"
-                ) from None
+                # 只报原因标记，不回显 pattern 与说明文字（与 Rust 同一格式，#156）
+                raise ValueError(f"{position}: pattern 超出 §4.1.1 子集（{exc.reason}）") from None
         props = node.get("patternProperties")
         if isinstance(props, dict):
             for key in props:
@@ -302,8 +311,10 @@ def _check_closed_schema(schema: dict[str, Any]) -> None:
                     try:
                         check_pattern(key)
                     except PatternSubsetError as exc:
+                        # 键属于位置（schema 结构），写出；原因只报标记
                         raise ValueError(
-                            f"{position}: patternProperties 键 {key!r} 超出 §4.1.1 子集：{exc}"
+                            f"{position}/patternProperties: 键 {key!r} 超出 §4.1.1 子集"
+                            f"（{exc.reason}）"
                         ) from None
         for keyword in _SUBSCHEMA_VALUE:
             if keyword in node:
@@ -460,19 +471,112 @@ def _translate_schema(schema: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     return copied, mapping
 
 
-def _restore_patterns(message: str, mapping: dict[str, list[str]]) -> str:
-    """把错误消息里内嵌的转译写法还原为原 pattern（碰撞时列出全部原文）。
+#: schema 路径里「下一段是名字或下标、不是关键字」的关键字（判断 propertyNames 是否作为关键字出现）
+_NAMED_CHILDREN = frozenset(
+    {"properties", "patternProperties", "$defs", "dependentRequired", "allOf", "anyOf", "oneOf"}
+)
 
-    jsonschema 的消息把 pattern 以 repr（含两侧引号、反斜杠已转义）内嵌；按「长转译串优先」做整段
-    repr 替换——短串是长串子串时（如 ``\\x61`` 与 ``\\x61\\x62``）先替短串会把长串打碎，顺序即
-    为此而设。
+
+def _quote(text: str) -> str:
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _bound(value: Any) -> str:
+    """界值的写法与 Rust 一致：整数值的浮点数不带 ``.0``。"""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _under_property_names(schema_path: Iterable[Any]) -> bool:
+    """错误是否出自 ``propertyNames`` 子 schema（实例是属性名本身）。"""
+    segments = iter(schema_path)
+    for segment in segments:
+        if segment == "propertyNames":
+            return True
+        if segment in _NAMED_CHILDREN:
+            next(segments, None)  # 跳过名字 / 下标
+    return False
+
+
+def _describe(error: SchemaError, mapping: dict[str, list[str]]) -> str:
+    """按关键字、约束与位置生成失败说明，**不含实例的取值**（§4.3「不外泄」，#156）。
+
+    不拼接 jsonschema 的 ``error.message``——它内嵌实例值（如 ``'xxx' does not match '^y'``）。
+    措辞与 Rust 侧 ``run/schema.rs`` 一致，用例表 ``sdk/testdata/config_failure_messages.json``
+    两侧共用。只写 schema 里的东西：关键字、界值、pattern 原文、schema 声明的属性名；实例里未
+    通过校验的串（含属性名）一律不写。
     """
-    ordered = sorted(mapping.items(), key=lambda item: len(item[0]), reverse=True)
-    for translated, originals in ordered:
-        quoted = repr(translated)
-        if quoted in message:
-            message = message.replace(quoted, repr(" / ".join(originals)))
+    # jsonschema 把这些字段标注为「可能未设置」；布尔 schema false 的错误没有关键字
+    keyword: Any = error.validator
+    value: Any = error.validator_value
+    instance: Any = error.instance
+    message: str
+    if not isinstance(keyword, str) or (keyword == "items" and value is False):
+        # 布尔 schema false；``items: false`` 由 items 关键字自己报出，同样按此措辞（Rust 对每个
+        # 元素求值 false），位置由调用方补上首个元素的下标
+        message = "布尔 schema false 不通过"
+    elif keyword == "type":
+        names = [value] if isinstance(value, str) else list(value)
+        message = f"值不是 {' / '.join(names)} 类型"
+    elif keyword == "enum":
+        message = "值不在 enum 中"
+    elif keyword == "const":
+        message = "值与 const 不相等"
+    elif keyword == "anyOf":
+        message = "anyOf 至少需一个分支通过"
+    elif keyword == "oneOf":
+        message = "oneOf 恰需一个分支通过"
+    elif keyword == "not":
+        message = "not 分支通过"
+    elif keyword == "required":
+        missing = next(name for name in value if name not in instance)
+        message = f"缺少必填属性 {_quote(missing)}"
+    elif keyword == "additionalProperties":
+        message = "出现未允许的属性"
+    elif keyword == "dependentRequired":
+        trigger, name = next(
+            (trigger, name)
+            for trigger, names in value.items()
+            if trigger in instance
+            for name in names
+            if name not in instance
+        )
+        message = f"属性 {_quote(trigger)} 存在时要求属性 {_quote(name)}（dependentRequired）"
+    elif keyword == "pattern":
+        original = " / ".join(mapping.get(value, [value]))
+        message = f"值与 pattern {_quote(original)} 不匹配"
+    else:
+        message = _bound_message(keyword, value)
+    if _under_property_names(error.absolute_schema_path):
+        message = f"属性名：{message}"
     return message
+
+
+#: 只写界值的关键字：关键字 → 说明模板（``{}`` 处填界值）
+_BOUND_MESSAGES = {
+    "minLength": "字符串长度少于 minLength（{}）",
+    "maxLength": "字符串长度多于 maxLength（{}）",
+    "minimum": "数值小于 minimum（{}）",
+    "maximum": "数值大于 maximum（{}）",
+    "exclusiveMinimum": "数值不大于 exclusiveMinimum（{}）",
+    "exclusiveMaximum": "数值不小于 exclusiveMaximum（{}）",
+    "minItems": "数组长度少于 minItems（{}）",
+    "maxItems": "数组长度多于 maxItems（{}）",
+    "minProperties": "属性个数少于 minProperties（{}）",
+    "maxProperties": "属性个数多于 maxProperties（{}）",
+}
+
+
+def _bound_message(keyword: str, value: Any) -> str:
+    if keyword == "uniqueItems":
+        return "数组含重复元素（uniqueItems）"
+    template = _BOUND_MESSAGES.get(keyword)
+    if template is None:
+        # 子集内会单独报错的关键字上面已逐一覆盖（properties / patternProperties / allOf / $ref
+        # / if 等只经子 schema 报错）；兜底只为防御，同样不写取值
+        return f"未通过 {keyword}"
+    return template.format(_bound(value))
 
 
 def _prune_absent(value: Any) -> Any:
@@ -526,7 +630,9 @@ def validate_config(manifest: Manifest, config: dict[str, Any]) -> None:
     translated, mapping = manifest._translated
     try:
         validator = Draft202012Validator(translated, registry=Registry())
-        error = best_match(validator.iter_errors(config))
+        # 取最相关的顶层错误，不像 best_match 那样钻进 anyOf / oneOf 的分支：与 Rust 侧一致，
+        # 组合关键字整体报告
+        error = max(validator.iter_errors(config), key=relevance, default=None)
     except RecursionError:
         # §4.1/§4.1.1 的上界（JSON 深度、展开深度）保证合法输入不会走到这里：触发即实现缺陷。
         # 按内部错误响亮失败，不得映射成校验结论——那会把合法配置静默拒绝。
@@ -536,7 +642,9 @@ def validate_config(manifest: Manifest, config: dict[str, Any]) -> None:
         ) from None
     if error is not None:
         where = error.json_path
-        message = _restore_patterns(error.message, mapping)
+        if error.validator == "items" and error.validator_value is False:
+            where = f"{where}[0]"  # 与 Rust 一致：指向首个元素（prefixItems 不在子集内）
+        message = _describe(error, mapping)
         raise InstanceFailure(
             "config_schema_violation", f"实例配置未通过 config_schema（{where}）：{message}"
         )

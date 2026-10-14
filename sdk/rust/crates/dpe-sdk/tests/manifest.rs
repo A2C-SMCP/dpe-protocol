@@ -523,10 +523,10 @@ fn config_semantics() {
 
 #[test]
 fn failure_messages_do_not_echo_input_values() {
-    // §4.3「不外泄」（#114）：消息会进入日志与 §7.4 轮报告，只写成员名 / 位置 / 类型，不回显
-    // 取值（同 tests/definition.rs 的 #100 口径）。Python 侧清单解析目前仍有取值回显，两侧统一
-    // 收口见 #156。每个用例既断言哨兵串不出现，也断言消息含预期片段——确认走到了目标
-    // 分支，避免日后被更早的校验拦下而同义反复地通过
+    // §4.3「不外泄」（#114、#156）：消息会进入日志与 §7.4 轮报告，只写成员名 / 位置 / 类型，不
+    // 回显取值（同 tests/definition.rs 的 #100 口径；Python 侧见 tests/test_run_failure_messages.py）。
+    // 每个用例既断言哨兵串不出现，也断言消息含预期片段——确认走到了目标分支，避免日后被更早的
+    // 校验拦下而同义反复地通过
     const SENTINEL: &str = "s3cret-sentinel";
     let base_schema = || {
         json!({
@@ -637,6 +637,19 @@ fn failure_messages_do_not_echo_input_values() {
         assert!(!message.contains("s3cret"), "回显了输入值：{message}");
     }
 
+    // 通过了 ^[A-Z][A-Z0-9_]*$ 但被保留名规则拒绝的凭证名：全大写的令牌恰能走到这里——按下标
+    // 定位，不写名字（#156）
+    for (name, expected) in [
+        ("DPE_S3CRET_TOKEN", "secrets[0].name 不得以 DPE_ 开头"),
+        ("PATH", "secrets[0].name 不得与基础环境变量同名"),
+    ] {
+        let data = with_member("secrets", json!([{"name": name}]));
+        let failure = parse_manifest(&data).expect_err(expected);
+        let message = failure.message();
+        assert!(message.contains(expected), "{message}");
+        assert!(!message.contains(name), "回显了凭证名：{message}");
+    }
+
     // patternProperties 的键属于成员名（位置，口径「键名即位置」），整串写出；超出子集时只报
     // 原因标记——与 pattern 分支同一格式、消息稳定（说明文字随实现措辞变化，不进消息）
     let mut schema = base_schema();
@@ -662,4 +675,43 @@ fn failure_messages_do_not_echo_input_values() {
     // 空的 protocol_versions 单独说明
     let failure = parse_manifest(&with_member("protocol_versions", json!([]))).expect_err("空数组");
     assert_eq!(failure.message(), "protocol_versions 不得为空");
+}
+
+#[test]
+fn config_failure_messages_do_not_echo_input_values() {
+    // §4.3「不外泄」（#156）：实例配置的校验失败消息只写位置与约束（关键字及其参数），不写取值；
+    // 未通过校验的属性名不写出。用例表与 Python 侧共用（措辞一致），位置写法两侧不同、不在片段内
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../testdata/config_failure_messages.json"
+    );
+    let text =
+        std::fs::read_to_string(path).expect("读取 sdk/testdata/config_failure_messages.json");
+    let table: Value = serde_json::from_str(&text).expect("用例表是 JSON");
+    let sentinels: Vec<&str> = table["sentinels"]
+        .as_array()
+        .expect("sentinels")
+        .iter()
+        .map(|s| s.as_str().expect("哨兵是字符串"))
+        .collect();
+    let cases = table["cases"].as_array().expect("cases");
+    assert!(!cases.is_empty());
+    for case in cases {
+        let name = case["name"].as_str().expect("name");
+        let expected = case["expected"].as_str().expect("expected");
+        let manifest = manifest_with(case["schema"].clone());
+        let failure = validate_config(&manifest, &case["config"]).expect_err(name);
+        assert_eq!(failure.code(), "config_schema_violation", "{name}");
+        let message = failure.message();
+        assert!(
+            message.contains(expected),
+            "{name}：走到了别的分支：{message}（期望含 {expected}）"
+        );
+        for sentinel in &sentinels {
+            assert!(
+                !message.contains(sentinel),
+                "{name}：回显了输入值：{message}"
+            );
+        }
+    }
 }
