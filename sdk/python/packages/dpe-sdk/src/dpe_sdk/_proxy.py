@@ -12,7 +12,8 @@ httpx 缺省经 ``urllib.request.getproxies()`` 取代理，在 macOS / Windows 
    ``\\r``、``\\v``、``\\f``）后为空即视为未设置；
 3. 环境中存在 ``REQUEST_METHOD``（CGI，httpoxy）时忽略全部代理变量；
 4. ``NO_PROXY``（同样先大写、后小写）：逗号分隔、条目去掉 ASCII 空白；``*`` 匹配一切；IP 与
-   CIDR（``addr/前缀长度``）按地址匹配，IPv6 可带方括号；其余条目是域名，按 ASCII 不区分大小写
+   CIDR（``addr/前缀长度``；前缀只认十进制数字，前导零照常接受，越界即不匹配、不报错）按地址
+   匹配，IPv6 可带方括号；其余条目是域名，按 ASCII 不区分大小写
    匹配自身及其子域，前导 ``.`` 可有可无（``example.com`` 不匹配 ``notexample.com``）；条目不带
    端口；命中即直连（此时不再校验代理 URL）；
 5. 代理 URL 不带 ``://`` 时按 ``http://`` 补上，随后必须符合：整体只含 RFC 3986 允许的 ASCII
@@ -103,9 +104,15 @@ def _network(entry: str) -> _Network | None:
         return None
     if not slash:
         return ipaddress.ip_network(address)
-    if not prefix.isascii() or not prefix.isdigit() or int(prefix) > address.max_prefixlen:
+    if not prefix.isascii() or not prefix.isdigit():
         return None
-    return ipaddress.ip_network((address, int(prefix)), strict=False)
+    # 先去掉前导零再看位数：去零后超过 3 位必然大于 128，直接判不匹配——不把任意长的数字串交给
+    # int()（Python 对超过 4300 位的转换直接抛错，#206）。与 Rust 按 u32 解析的结论逐例一致：
+    # 前导零照常接受，越界（含 u32 溢出）都不匹配
+    digits = prefix.lstrip("0") or "0"
+    if len(digits) > 3 or int(digits) > address.max_prefixlen:
+        return None
+    return ipaddress.ip_network((address, int(digits)), strict=False)
 
 
 def _bypass(host: str, no_proxy: str) -> bool:
