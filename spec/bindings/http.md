@@ -93,7 +93,7 @@
 - **条件头里的值按值比较**（core.md §5.2），MUST NOT 做格式校验：`"abc"`、`"dpe9:…"`（旧契约或未知契约的令牌）只是比较不上，得到 `412` + `DPE_PRECONDITION_FAILED`（文档不存在时为 `DPE_NOT_FOUND`，§5），**不是** `DPE_VALIDATION`、也不是 `DPE_CONTRACT_UNSUPPORTED`。`W/"…"` 合法，但永不匹配（§3.1）。
 - **commit 的 unchanged 先于条件求值**（core.md §3.3 的求值顺序）：提交内容的 doc_hash 等于当前 doc_hash 时，服务端返回 `200` + `unchanged`，即使条件头不满足。对 `If-Match`，这符合 RFC 9110 §13.1.1：状态变更请求所要求的结果已经生效时，源服务器可以返回 2xx 而不是 412。对 `If-None-Match: *`，RFC 9110 §13.1.2 要求条件不满足时返回 412，这里是**有意偏离**：内容已经是提交的值时，DPE 以内容幂等（core.md §5.2）为准返回 `unchanged`。服务端 MUST 在应用层求值条件头，不得交给会先行返回 412 的通用中间件。
 - 同一个 `code` 在不同端点可能映射到不同状态码（如 `DPE_PRECONDITION_FAILED` 在 PUT 上是 412、在 move 上是 409）。**客户端 MUST 依据错误的 `code` 分派**（有 problem 体时取体中的 `code`，HEAD 取 `DPE-Error-Code` 头，§5），MUST NOT 依据状态码分派。
-- 带条件头的写操作若仍收到既无 problem 体、也无 `DPE-Error-Code` 头的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定；判定为「可原样重试」时，重试得到的响应若仍是这样的 `412`，同样 MUST 先 `head` 再判定，重试至多一次（不带条件头的 `force` 提交收到 `412` 时无从判定来自哪次求值，按非协议错误上报，§5）：
+- 带条件头的写操作若仍收到既无 problem 体、也无 `DPE-Error-Code` 头（含 §5 视同没有的重复码）的 `412`（例如网关自行求值），客户端 MUST 先 `head` 该文档再判定；判定为「可原样重试」时，重试得到的响应若仍是这样的 `412`，同样 MUST 先 `head` 再判定，重试至多一次（不带条件头的 `force` 提交收到 `412` 时无从判定来自哪次求值，按非协议错误上报，§5）：
   - PUT（`If-Match: "H"`）：doc_hash 等于提交内容 → 成功；不存在 → `DPE_NOT_FOUND`；否则 → `DPE_PRECONDITION_FAILED`。
   - PUT（`If-None-Match: *`）：doc_hash 等于提交内容 → 成功；存在 → `DPE_ALREADY_EXISTS`；不存在 → 前置条件实际成立，是中间层误判，可原样重试一次，仍如此则按非协议错误上报（§5），MUST NOT 报 `DPE_NOT_FOUND`。
   - DELETE：不存在 → 成功（§5.2）；doc_hash 等于 `If-Match` 的值 → 中间层误判，可原样重试一次，仍如此则上报；否则 → `DPE_PRECONDITION_FAILED`。
@@ -295,7 +295,8 @@
 ```
 
 - `type` 是规范中稳定的 URI：v1 使用 `urn:dpe:error:<code 去掉 DPE_ 前缀后转 kebab-case>`（如 `DPE_PRECONDITION_FAILED` → `urn:dpe:error:precondition-failed`），`title` 为对应的小写短语（同一个串，连接线换成空格，如 `precondition failed`）；规范将来若发布到固定域名，MAY 改为该域名下的 URL（plan §16）。
-- **`DPE-Error-Code` 响应头**：每个 DPE 错误响应 MUST 带 `DPE-Error-Code: <code>`，值等于 problem 体的 `code`。HEAD 响应不能带内容（RFC 9110 §9.3.2），HEAD 出错时只有这个头、没有 problem 体，客户端 MUST 按它分派；`retryable` 由 code 决定（core.md §6），不另设头。错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头时不是 DPE 错误（例如 remote URL 配错或网关返回的 404），客户端 MUST NOT 猜测 code，按非协议错误上报。
+- **同名响应字段**：响应中同名字段出现多次时，客户端 MUST 按 RFC 9110 §5.3 依出现顺序以 `, `（逗号加一个 SP）合并为一个值后再解析，MUST NOT 只取其中一个（例如最后一个）。单值字段合并后通常不合文法：`Retry-After: 1` 与 `Retry-After: 2` 合并为 `1, 2`，按下文视同没有给出提示。
+- **`DPE-Error-Code` 响应头**：每个 DPE 错误响应 MUST 带恰好一个 `DPE-Error-Code: <code>`，值等于 problem 体的 `code`。合并后（去掉首尾 OWS）含逗号的值不是单个 code——不论各项是否相同——客户端视同没有这个头，MUST NOT 从中挑选一个：有 problem 体时照常按体内的 `code`，没有时按下文的非协议错误上报。HEAD 响应不能带内容（RFC 9110 §9.3.2），HEAD 出错时只有这个头、没有 problem 体，客户端 MUST 按它分派；`retryable` 由 code 决定（core.md §6），不另设头。错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头时不是 DPE 错误（例如 remote URL 配错或网关返回的 404），客户端 MUST NOT 猜测 code，按非协议错误上报。
 - **非协议错误**（既无 problem 体、也无 `DPE-Error-Code` 头，客户端按上文如实上报，MUST NOT 猜测 code）：未知路由 → `404`；路径存在但方法不符 → `405` + `Allow`（列出该路径允许的方法）；未认证 → `401` + `WWW-Authenticate`（§6）；不支持的 `Content-Encoding` → `415` + `Accept-Encoding`（§7）；请求已产生效果后的限流与不可用 → 无码 5xx（core.md §6；它可在请求处理的任何阶段出现，不在 §3.1 的传输层顺序之内）。它们与「非 DPE 实现返回的错误」（remote URL 配错、网关返回的 404）在客户端侧不作区分；彼此的先后见 §3.1 的传输层顺序。`staging/{sid}` 下会话不存在、过期、已消费或不属于调用者，**仍是** DPE 错误 `410` + `DPE_SESSION_EXPIRED`（core.md §3.4），不在此列。
 - 扩展成员：`code`（core.md §6 的错误码）与 `retryable`（语义见 core.md §6：仅表示原样重试可能成功）。`DPE_MISSING_CONTENT` 另带 `missing: {pages: […], content_hashes: […], blobs: […]}` 与 `missing_truncated: true|false`（core.md §3.3）：截断时三层合计为实际缺失的非空子集，为 `true`；未截断时各层与实际缺失一致，为 `false`。
 - HTTP 状态映射（每个 code 在给定端点上只有一个状态码；客户端按 `code` 分派，§3.2）：
@@ -314,14 +315,14 @@
 
 暂存分块的偏移不连续（`DPE_VALIDATION`，§4.7）带 `DPE-Upload-Offset` 头，客户端据此重新同步。
 
-带码的 429 与 503 MUST 带 `Retry-After`，**不可缺省**：实现预期很快恢复、但给不出具体时间时给 `1`（无码响应是非协议错误，不受此约束）；预计无法在可知时间内恢复时 SHOULD 给出足够大的 delay-seconds（如 `86400`），MUST NOT 用 `1` 这类小值表达无限期——客户端会据此很快重试。带码的 429 / 503 表示请求未产生任何效果（core.md §6），客户端可原样重试；不带 DPE 错误码的 429 / 503 是非协议错误（错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头，见上文），结果未知。服务端在请求已产生效果后改以无码 5xx 响应的限流与不可用（core.md §6）同样按结果未知处理。
+带码的 429 与 503 MUST 带恰好一个 `Retry-After`，**不可缺省**（重复的字段合并后不合文法，客户端视同没有提示，§5「同名响应字段」）：实现预期很快恢复、但给不出具体时间时给 `1`（无码响应是非协议错误，不受此约束）；预计无法在可知时间内恢复时 SHOULD 给出足够大的 delay-seconds（如 `86400`），MUST NOT 用 `1` 这类小值表达无限期——客户端会据此很快重试。带码的 429 / 503 表示请求未产生任何效果（core.md §6），客户端可原样重试；不带 DPE 错误码的 429 / 503 是非协议错误（错误状态码的响应既无 problem 体、也无 `DPE-Error-Code` 头，见上文），结果未知。服务端在请求已产生效果后改以无码 5xx 响应的限流与不可用（core.md §6）同样按结果未知处理。
 
 **`Retry-After` 的解析**：客户端按 RFC 9110 §10.2.3 与 §5.6.7 的文法解析 `Retry-After`，不合文法的值视同没有给出提示。判定只依赖字段值本身，不借用邮件日期（RFC 5322）一类更宽松的解析器：
 
 1. 先去掉首尾的 OWS（SP 与 HTAB）；
 2. `delay-seconds = 1*DIGIT`（ASCII 十进制）：其值即等待秒数（按 IEEE 754 双精度取最近值）；舍入后超出双精度有限范围时视为无穷大，仍是「等待很久」的提示，不退化为没有提示；
 3. 否则须是 `HTTP-date` 的三种形式之一：IMF-fixdate（`Sun, 06 Nov 1994 08:49:37 GMT`）、rfc850-date（`Sunday, 06-Nov-94 08:49:37 GMT`）与 asctime-date（`Sun Nov  6 08:49:37 1994`）。文法区分大小写，SP 的个数是文法的一部分（asctime 的日只在 `SP SP 1DIGIT` 形式下允许 1 位）；时区只认字面 `GMT`；星期名须属于该形式的星期名集合，但不与日期核对；日期须真实存在，`hour` 00–23、`minute` 00–59、`second` 00–60（闰秒）。rfc850-date 的两位年份按 RFC 9110 §5.6.7 的 50 年规则解释：取末两位相同、且所得时刻不晚于「当前时刻加 50 年」（按年、月、日、时、分、秒逐字段比较）的最晚年份——晚于 50 年的读作上一个世纪，世纪交替前后同样适用（当前时刻为 1999 年末时，`00` 读作 2000）；按此选出的年份里日期不存在（如该年没有 2 月 29 日）即不合文法，不另选年份。当前时刻的精度（是否带小数秒）由实现决定，向量只用整秒。等待秒数是该时刻减去当前时刻，已过去的时刻为 0；
-4. 其余输入一律视同没有提示。
+4. 其余输入一律视同没有提示，包括同名字段重复时合并出的列表（如 `1, 2`、`1, 1`）。
 
 一致性向量 `kind: "retry_after"`（`vectors/retry_after.json`）给出输入、当前时刻与期望结果，客户端与一致性跑分器 MUST 逐例通过。
 

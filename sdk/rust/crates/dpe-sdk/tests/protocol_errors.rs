@@ -326,3 +326,62 @@ fn problem_helper_round_trip() {
     assert_eq!(error.kind(), ErrorKind::Forbidden);
     assert_eq!(error.message(), "no");
 }
+
+// ---------------------------------------------------------------------- 同名响应字段（#205）
+
+/// 同名字段出现多次：按 RFC 9110 §5.3 依出现顺序以 `, ` 合并，不只取最后一个（HTTP 绑定 §5）。
+#[test]
+fn repeated_response_fields_are_combined() {
+    let response = dpe_sdk::protocol::Response::new(
+        429,
+        [("Retry-After", "1"), ("retry-after", "2"), ("X-Other", "a")],
+        Vec::new(),
+    );
+    assert_eq!(response.header("retry-after"), Some("1, 2"));
+    assert_eq!(response.header("x-other"), Some("a"));
+}
+
+/// 合并出的 `Retry-After` 列表不合文法：视同没有提示（与 Python 侧一致）。
+#[test]
+fn repeated_retry_after_is_no_hint() {
+    let response = dpe_sdk::protocol::Response::new(
+        429,
+        [
+            ("DPE-Error-Code", "DPE_RATE_LIMITED"),
+            ("Retry-After", "1"),
+            ("Retry-After", "2"),
+        ],
+        Vec::new(),
+    );
+    let error = dpe_sdk::protocol::error_from_response(&response);
+    assert_eq!(error.kind(), ErrorKind::RateLimited);
+    assert_eq!(error.retry_after(), None);
+}
+
+/// 重复的 `DPE-Error-Code`（不论是否相同）不是单个 code：没有 problem 体时是非协议错误，
+/// 不从中挑一个；有 problem 体时照常按体内的 code。
+#[test]
+fn repeated_error_code_header_is_not_a_code() {
+    for codes in [
+        ["DPE_NOT_FOUND", "DPE_FORBIDDEN"],
+        ["DPE_NOT_FOUND", "DPE_NOT_FOUND"],
+    ] {
+        let response = dpe_sdk::protocol::Response::new(
+            404,
+            [("DPE-Error-Code", codes[0]), ("DPE-Error-Code", codes[1])],
+            Vec::new(),
+        );
+        let error = dpe_sdk::protocol::error_from_response(&response);
+        assert_eq!(error.kind(), ErrorKind::UnexpectedResponse, "{codes:?}");
+        assert_eq!(error.status(), Some(404));
+    }
+    let with_body = problem("DPE_FORBIDDEN", 403, json!({}));
+    let mut headers: Vec<(String, String)> = with_body
+        .headers()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+    headers.push(("DPE-Error-Code".into(), "DPE_NOT_FOUND".into()));
+    let response = dpe_sdk::protocol::Response::new(403, headers, with_body.body().to_vec());
+    let error = dpe_sdk::protocol::error_from_response(&response);
+    assert_eq!(error.kind(), ErrorKind::Forbidden);
+}

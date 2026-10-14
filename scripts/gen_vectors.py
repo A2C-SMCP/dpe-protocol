@@ -3974,6 +3974,11 @@ RETRY_AFTER_CASES: tuple[tuple[str, str, Any], ...] = (
     ("GMT", _NOW, None),
     ("tomorrow", _NOW, None),
     ("2026-10-08T12:00:30Z", _NOW, None),  # RFC 3339 不是 HTTP-date
+    # 同名字段重复时按 RFC 9110 §5.3 合并出的列表（HTTP 绑定 §5，#205）
+    ("1, 2", _NOW, None),
+    ("120, 30", _NOW, None),
+    ("1, 1", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30 GMT, Thu, 08 Oct 2026 12:00:40 GMT", _NOW, None),
 )
 
 
