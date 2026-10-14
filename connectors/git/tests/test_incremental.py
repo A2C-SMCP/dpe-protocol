@@ -150,7 +150,11 @@ def test_renamed_repository_is_a_move(root: Path) -> None:
     first = run(serve)
     os.rename(root / "alpha", root / "renamed")
     second = run(serve, first.cursor)
-    assert second.kinds() == [("move", uri("alpha"), uri("renamed"))]  # 内容未变：只有 move
+    # 内容未变也紧跟目标的 document（§6.5，#178）：运行器判为 unchanged、不发写
+    assert second.kinds() == [
+        ("move", uri("alpha"), uri("renamed")),
+        ("document", uri("renamed")),
+    ]
     assert set(marks(serve, second.cursor, root)) == {b"beta", b"renamed"}
     assert run(serve, second.cursor).items == []
 
@@ -218,7 +222,11 @@ def test_incomplete_discovery_defers_deletes_and_moves(root: Path) -> None:
     assert set(marks(serve, second.cursor, root)) == {b"alpha", b"beta"}
     # 子树恢复可读后（运行器以旧游标重跑）：发现完整，正常产出 move 与 delete
     third = run(serve, first.cursor)
-    assert third.kinds() == [("move", uri("alpha"), uri("renamed")), ("delete", uri("beta"))]
+    assert third.kinds() == [
+        ("move", uri("alpha"), uri("renamed")),
+        ("delete", uri("beta")),
+        ("document", uri("renamed")),  # move 的目标总是紧跟 document（§6.5，#178）
+    ]
 
 
 def test_unreadable_or_foreign_cursor_falls_back_to_full(root: Path) -> None:
@@ -303,6 +311,7 @@ def test_incremental_round_across_many_batches(root: Path) -> None:
         == [
             ("move", uri("alpha"), uri("alpha2")),
             ("delete", uri("beta")),
+            ("document", uri("alpha2")),  # move 的目标总是紧跟 document（§6.5，#178）
             ("document", uri("gamma")),
         ]
     )

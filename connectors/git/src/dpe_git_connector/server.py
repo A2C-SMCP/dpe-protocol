@@ -157,7 +157,8 @@ class _Round:
     """一轮的枚举状态：按产出顺序排好的步骤、批次位置与新游标的记录。
 
     步骤顺序：move → delete → 现存仓库（按身份字节序）→ 读不了的子树。move 排在目标仓库的
-    document 之前（目标内容也变了时，同一 URI 的 document 在 move 之后生效，§6.4 按序生效）。
+    document 之前（同一 URI 的 document 在 move 之后生效，§6.4 按序生效）。move 的目标不论内容
+    是否变化都紧跟着产出 document（§6.5，#178）。
     """
 
     steps: list[_Step]
@@ -172,6 +173,10 @@ class _Round:
     previous_limit: int | None = None
     #: 每个现存仓库用于比较的上一轮记录（改名的目标取其源的记录）；全量轮为空
     baseline: dict[bytes, RepoMark] = field(default_factory=dict)
+    #: 本轮 move 的目标仓库：不论内容是否变化都产出 document（§6.5，#178）——万一源已在早先
+    #: 一个未推进游标的轮里被本实例删除，运行器据此把目标建出来，而不是让 move 永久失败；
+    #: 内容未变时运行器判为 unchanged、不发写，代价很小
+    move_targets: set[bytes] = field(default_factory=set)
     #: 新游标的记录：随步骤推进逐个写入（见 ``Serve._source_item``）
     marks: dict[bytes, RepoMark] = field(default_factory=dict)
     #: 已记入新记录、但条目还可能在发送时转成 error 的文档：file_uri → 仓库标识
@@ -615,8 +620,9 @@ class Serve:
                 continue
             moves.append(_Step(item=Item("move", {"from_uri": from_uri, "to_uri": to_uri})))
             moved.add(from_key)
-            # 目标与源比较：内容未变只产 move，变了随后在目标 URI 上产出 document
+            # 目标以源的记录作比较基准（记录随之沿用），且总是紧跟着产出 document（#178）
             round_.baseline[target.identifier] = previous[from_key]
+            round_.move_targets.add(target.identifier)
         deletes: list[_Step] = []
         for key in gone:
             if key in moved:
@@ -742,12 +748,15 @@ class Serve:
         if round_.scanned is not None and round_.scanned[0] == round_.position:
             return round_.scanned[1]  # 上一批装不下而留下的同一次扫描结果
         previous = round_.baseline.get(entry.identifier)
+        always = entry.identifier in round_.move_targets  # move 的目标总是产出（#178）
         item, mark = self._mapper.scan(
             GitRepo(entry.path),
             entry,
             self._source.spec,
-            # 上限变了不按指纹跳过：同一状态的产出可能不同（#170）
-            unchanged_if=None if previous is None or round_.rescan else previous.fingerprint,
+            # move 目标总是产出（#178）；上限变了不按指纹跳过：同一状态的产出可能不同（#170）
+            unchanged_if=(
+                None if previous is None or always or round_.rescan else previous.fingerprint
+            ),
         )
         if mark is not None:
             assert item is not None

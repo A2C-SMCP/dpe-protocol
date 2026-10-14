@@ -20,6 +20,17 @@ remote 值作 ``expected_base`` 重提（文档已不存在即 ``if_absent`` 复
 冲突、move 的目标被占与源已不存在为条目失败（``retryable: false``）。**绝不 force**，失败的 move
 不退化为「在目标上 commit、再删除源」。
 
+**move 未达成之后的目标 document**（§7.2，#178）：插件在 move 之后紧跟目标的 document（§6.5）。
+本轮发出、尚未得到 ``moved`` 的 move 使其目标「未达成」（不从失败结果反推）；涉及未达成 URI 的
+写入（document、delete、以它为源或目标的 move）一律不发写、不另计失败——绝不借它们覆盖、删除或
+移走占用目标的文档；跳过的写入使它涉及的 URI 都未达成、永不解除，所以跳过总伴随一条未达成 move
+的失败，游标必然扣住。唯一的例外：目标上只有一条未达成的
+move，且它在判定期得出「源已不存在，目标未达成」（未发写）——这条 move 先不计失败，其后的目标
+document 以 ``if_absent`` 提交：目标由它建出（``created``）或已等于它（``achieved`` /
+``unchanged``）即按已达成计 ``moved``（波末以「确认不存在」清掉源可能残留的 L）；目标已被他人
+以别的内容建出则不覆盖、不重提，这条 move 计「目标已被占用」；否则轮末计失败——目标 document
+出现过失败或本轮中止时可重试。
+
 **远端失败分层**（§7.1）：
 - 401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级 ``remote_incompatible``；
 - 响应不是 DPE 报文（无 problem 体也无 ``DPE-Error-Code`` 的非 2xx，含 3xx；或 2xx 报文
@@ -59,6 +70,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -364,6 +376,12 @@ class _Round:
         self.item_failed = False
         #: 本次调用内是否有过保存失败（退出前须补存，见模块说明）
         self.save_failed = False
+        #: 本轮未达成的 move 数（按 to_uri；发出后尚未得到 moved 的，以及因涉及未达成目标而
+        #: 跳过的）：涉及这些目标的写入不发写（§7.2「move 未达成之后的目标 document」，#178）
+        self.open_moves: Counter[str] = Counter()
+        #: 其中判定期得出「源已不存在，目标未达成」的：to_uri → (失败, 涉及的 URI)。目标上只有
+        #: 这一条未达成的 move 时，其后的目标 document 以 if_absent 提交，以它的结果下结论
+        self.awaiting_target: dict[str, tuple[ItemFailure, dict[str, str | None]]] = {}
 
     # -------------------------------------------------------------- 事件与失败
 
@@ -547,7 +565,25 @@ class _Round:
         delete_base: dict[str, str | None] = {}
         move_base: dict[str, str | None] = {}
         fatal: RunFailure | None = None
+        # 涉及未达成 URI 的写入不发写；跳过的写入使它涉及的 URI 都未达成（永不解除），在等待
+        # 的 move 因此不再能由目标 document 解除、轮末计失败——跳过必然扣住游标。目标上只有
+        # 一条在等待目标 document 的 move 时，该 document 以 if_absent 提交、不按策略重提
+        # （§7.2，#178）
+        guarded = {
+            uri for uri in commits if self.open_moves[uri] == 1 and uri in self.awaiting_target
+        }
+        skipped = {uri for uri in commits if uri not in guarded and self.open_moves[uri]}
+        skipped |= {uri for uri in deletes if self.open_moves[uri]}
+        for move in moves:
+            if self.open_moves[move[0]] or self.open_moves[move[1]]:
+                skipped |= set(move)
+        commits = {uri: doc for uri, doc in commits.items() if uri not in skipped}
+        deletes = [uri for uri in deletes if uri not in skipped]
+        moves = [move for move in moves if move[0] not in skipped]
+        self.open_moves.update([to_uri for _, to_uri in moves] + sorted(skipped))
+        commit_base.update({uri: None for uri in guarded})
         while commits or deletes or moves:
+            cleared: list[str] = []
             retry_commits: dict[str, Document] = {}
             retry_deletes: list[str] = []
             retry_moves: list[tuple[str, str]] = []
@@ -555,15 +591,28 @@ class _Round:
             next_delete: dict[str, str | None] = {}
             next_move: dict[str, str | None] = {}
             if commits:
-                for result in await self.call(
-                    partial(self._push_subset, commits, commit_base), list(commits)
-                ):
+                landed = await self.call(
+                    partial(self._push_subset, commits, commit_base),
+                    list(commits),
+                )
+                for result in landed:
+                    target = result.file_uri in guarded
+                    if target and result.status == "conflict" and result.remote is not None:
+                        # if_absent 被拒、重读成功：目标仍被占用则不覆盖；重读已不存在（他人建出
+                        # 又删掉）则留到轮末、可重试。都不按策略重提
+                        if result.remote.doc_hash is not None:
+                            self.reject_target(result)
+                        else:
+                            self.awaiting_target[result.file_uri][0].retryable = True
+                        continue
                     settled = self.settle(result, self.policy.commit, attempts)
                     if isinstance(settled, RunFailure):
                         fatal = fatal or settled
                     elif settled is not None:
                         retry_commits[result.file_uri] = commits[result.file_uri]
                         next_commit[result.file_uri] = settled.base
+                    elif target and result.status in ("created", "achieved", "unchanged"):
+                        cleared.append(self.resolve_move_onto(result.file_uri))
             if deletes:
                 for result in await self.call(
                     partial(self._delete_subset, delete_base), list(deletes)
@@ -583,8 +632,14 @@ class _Round:
                         assert result.to_uri is not None
                         retry_moves.append((result.file_uri, result.to_uri))
                         next_move[result.file_uri] = settled.base
+                    elif result.status == "moved":
+                        assert result.to_uri is not None
+                        self.open_moves[result.to_uri] -= 1
             if fatal is not None:
                 raise fatal
+            if cleared:
+                # 全部结果入账之后才发（它可能抛出轮级失败）
+                await self.clear_absent_sources(sorted(set(cleared)))
             commits, deletes, moves = retry_commits, retry_deletes, retry_moves
             commit_base, delete_base, move_base = next_commit, next_delete, next_move
 
@@ -649,11 +704,83 @@ class _Round:
             # 目标被占、源已不存在且目标未达成：重跑不会自行消失（§7.2 永久冲突），不退化
             fallback = "DPE_ALREADY_EXISTS" if result.side == "to" else "DPE_NOT_FOUND"
             message = "move 目标已被占用" if result.side == "to" else "move 源已不存在，目标未达成"
-            return self.fail(
-                ItemFailure(_cas_code(result, fallback), message, source="remote"), uris
-            )
+            failure = ItemFailure(_cas_code(result, fallback), message, source="remote")
+            if result.side == "from" and result.to_uri is not None and result.precondition is None:
+                # 判定期失败（未发写）：判定时源不存在、目标不等于源的 base（通常也不存在）。
+                # 先不计失败，其后的目标 document 以 if_absent 把目标建出来即按已达成计（§7.2，
+                # #178）；写入期得到的「不存在」（判定时源仍在）不属于此列，照常失败
+                self.awaiting_target[result.to_uri] = (failure, uris)
+                return None
+            return self.fail(failure, uris)
         assert result.error is not None
         return self.fail(_classify_remote(result.error, unknown=result.unknown), uris)
+
+    def resolve_move_onto(self, to_uri: str) -> str:
+        """目标已由其后的 document 建出（或已等于它）：等待它的 move 按已达成计（§7.2，#178），
+        返回要清 L 的源。
+
+        源这时在 remote 上不存在，但同步状态里可能还留着它的 L（源是被他人删除的）：调用方在
+        波末以「确认不存在」为前置条件对源做一次 delete——源不存在即已达成、只清掉 L，不发写；
+        源在这期间被重新建出则判冲突、什么也不做（绝不删除）。
+        """
+        _, uris = self.awaiting_target.pop(to_uri)
+        self.open_moves[to_uri] -= 1
+        self.counts.moved += 1
+        source = uris["from_uri"]
+        assert source is not None
+        return source
+
+    def reject_target(self, result: PushResult) -> None:
+        """目标 document 以 if_absent 提交被拒：目标已被他人建出，等它的 move 计「目标已被
+        占用」（§7.2，#178）；目标仍未达成，此后涉及它的写入不发写。"""
+        _, uris = self.awaiting_target.pop(result.file_uri)
+        failure = ItemFailure(
+            _cas_code(result, "DPE_ALREADY_EXISTS"), "move 目标已被占用", source="remote"
+        )
+        self.fail(failure, uris)
+
+    async def clear_absent_sources(self, sources: list[str]) -> None:
+        """以「确认不存在」删除已不存在的源：只清掉同步状态里残留的 L，不发写。
+
+        读被确定拒绝时没能清掉 L：残留的 L 会让源端之后重现同一 URI 时误判冲突，所以给源记
+        一条条目失败（可重试与否随 remote 的裁决）、扣住游标——拒绝解除后，下一轮重放 move 时
+        再次达成（目标等于源的 base 时推送器直接判已达成，否则经紧跟的目标 document 按 §7.2
+        再次达成）并清掉 L。网络等轮级失败与状态保存失败照常终止本轮。
+        """
+        results = await self.call(
+            lambda subset: self.pusher.delete(subset, expected_base=dict.fromkeys(subset)),
+            sources,
+        )
+        for result in results:
+            if result.status != "failed":
+                continue  # 已达成即清掉 L；源被重新建出则判冲突、什么也不做（绝不删除）
+            assert result.error is not None
+            classified = _classify_remote(result.error, unknown=result.unknown)
+            if not isinstance(classified, ItemFailure):
+                raise classified
+            self.fail(
+                ItemFailure(
+                    classified.code,
+                    f"未能清除已不存在的源的同步状态：{classified.message}",
+                    source="remote",
+                    retryable=classified.retryable,
+                ),
+                {"file_uri": result.file_uri},
+            )
+
+    def settle_awaiting_moves(self, *, aborted: bool) -> None:
+        """轮末：目标没有由其后的 document 建出的 move，照常计条目失败（§7.2，#178）。可重试
+        与否随目标：本轮中止、目标上有可重试的条目失败（目标 document 下一轮可能落地），或写入
+        时遇到竞态，记为可重试；否则重跑结果相同，不可重试。"""
+        pending, self.awaiting_target = self.awaiting_target, {}
+        retryable = {
+            failure.file_uri
+            for failure in self.failures
+            if isinstance(failure, ItemFailure) and failure.retryable
+        }
+        for to_uri, (failure, uris) in pending.items():
+            failure.retryable = failure.retryable or aborted or to_uri in retryable
+            self.fail(failure, uris)
 
     def fail(self, failure: RunFailure, uris: Mapping[str, str | None]) -> RunFailure | None:
         if isinstance(failure, ItemFailure):
@@ -751,6 +878,8 @@ async def run_round(
     finally:
         pusher_log.removeHandler(rejected_reads)
         state.stage.close()
+    # 等待目标 document 的 move 在轮末下结论，先于轮结果判定（未达成的扣住游标）
+    state.settle_awaiting_moves(aborted=fatal is not None)
     if fatal is not None:
         state.record(fatal)
     if state.save_failed:

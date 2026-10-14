@@ -485,6 +485,524 @@ async def test_move_target_occupied_is_a_permanent_item_failure(tmp_path: Path) 
         assert await h.foreign.head(P + "b.md") == expected("B")
 
 
+# ------------------------------------------------------------ move 未达成后的目标 document（#178）
+
+_ERROR = {"kind": "error", "code": "internal", "message": "x", "retryable": False}
+
+
+def _move(source: str, target: str) -> dict[str, Any]:
+    return {"kind": "move", "from_uri": P + source, "to_uri": P + target}
+
+
+def _is_move(request: httpx.Request) -> bool:
+    return request.method == "POST" and request.url.path.endswith("/move")
+
+
+async def _deleted_in_a_failed_round(h: Harness) -> None:
+    """a 已同步；随后一轮删除 a，但同轮另有条目出错，游标停在 c1（§6.8）。"""
+    first = await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+    assert first.outcome == "succeeded"
+    held = await h.round(
+        {"batches": [[{"kind": "delete", "file_uri": P + "a.md"}, _ERROR]], "cursor": "c2"}
+    )
+    assert held.outcome == "partial" and h.store is not None and h.store.cursor == "c1"
+    assert await h.foreign.head(P + "a.md") is None  # 删除已生效
+
+
+def _synced(h: Harness) -> dict[str, str]:
+    snapshot = h.store.load(REMOTE) if h.store else None
+    assert snapshot is not None
+    return dict(snapshot.synced)
+
+
+async def test_move_after_own_delete_is_achieved_by_the_target_document(tmp_path: Path) -> None:
+    """§7.2：判定时源与目标都不存在的 move，其后的目标 document 以 if_absent 建出目标
+    （created）→ 这条 move 按已达成计（moved），本轮 succeeded、游标推进。"""
+    async with harness(tmp_path) as h:
+        await _deleted_in_a_failed_round(h)
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]], "cursor": "c3"}
+        )
+        assert result.outcome == "succeeded", codes(result)
+        assert result.counts.as_dict() == {
+            "created": 1,
+            "updated": 0,
+            "unchanged": 0,
+            "deleted": 0,
+            "moved": 1,
+            "failed": 0,
+        }
+        assert result.cursor_persisted and h.store is not None and h.store.cursor == "c3"
+        assert await h.foreign.head(P + "a.md") is None
+        assert await h.foreign.head(P + "b.md") == expected("A")
+        assert _synced(h) == {P + "b.md": expected("A")}
+
+
+async def test_move_onto_absent_target_without_target_document_still_fails(tmp_path: Path) -> None:
+    """没有给出目标的 document：轮末仍按「源已不存在，目标未达成」计条目失败、游标扣住。"""
+    async with harness(tmp_path) as h:
+        await _deleted_in_a_failed_round(h)
+        result = await h.round({"batches": [[_move("a.md", "b.md")]], "cursor": "c3"})
+        assert result.outcome == "partial"
+        assert codes(result) == ["DPE_NOT_FOUND"]
+        report = result.failures[0].to_report()
+        assert (report["from_uri"], report["to_uri"]) == (P + "a.md", P + "b.md")
+        assert result.counts.failed == 1 and not result.cursor_persisted
+
+
+async def test_move_whose_source_others_deleted_is_also_achieved(tmp_path: Path) -> None:
+    """判定只看 R：源被他人删除（本实例仍有源的 L）同样适用——目标由 document 建出即按已达成计，
+    并以「确认不存在」清掉源残留的 L（不发写）。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+        await h.foreign.delete(P + "a.md", expected("A"))
+        result = await h.round({"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]]})
+        assert result.outcome == "succeeded", codes(result)
+        assert (result.counts.moved, result.counts.created) == (1, 1)
+        assert _synced(h) == {P + "b.md": expected("A")}  # 源的 L 已清掉
+        assert await h.foreign.head(P + "a.md") is None
+
+
+async def test_target_document_does_not_overwrite_a_target_that_appeared(tmp_path: Path) -> None:
+    """判定时源已不存在、目标却已被他人建出：目标 document 以 if_absent 提交被拒，不覆盖、不按
+    策略重提（source_wins 也不例外），这条 move 计「目标已被占用」。"""
+    async with harness(tmp_path) as h:
+        await _deleted_in_a_failed_round(h)
+        await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]], "cursor": "c3"}
+        )
+        assert result.outcome == "partial"
+        assert codes(result) == ["DPE_ALREADY_EXISTS"]
+        assert result.counts.as_dict()["created"] == result.counts.as_dict()["updated"] == 0
+        assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()  # 未被覆盖
+
+
+async def test_target_document_after_occupied_target_is_not_written(tmp_path: Path) -> None:
+    """move 因目标被占用失败（源仍在）：其后的目标 document 不发写、不另计失败——绝不借它覆盖
+    占用目标的文档（§7.2「永久冲突」）。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+        await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+        result = await h.round({"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]]})
+        assert result.outcome == "partial"
+        assert codes(result) == ["DPE_ALREADY_EXISTS"]
+        assert result.counts.failed == 1 and result.counts.updated == 0
+        assert await h.foreign.head(P + "a.md") == expected("A")
+        assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()
+
+
+async def test_target_document_after_a_source_deleted_mid_write_is_not_written(
+    tmp_path: Path,
+) -> None:
+    """判定时源仍在、读写之间被他人删除（写入期得到「不存在」）：不属于「判定时源与目标都
+    不存在」，move 照常失败，其后的目标 document 不发写。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+
+        async def sweep() -> None:
+            await h.foreign.delete(P + "a.md", expected("A"))
+
+        made[0].before.append((_is_move, sweep))
+        result = await h.round({"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]]})
+        assert result.outcome == "partial"
+        assert codes(result) == ["DPE_NOT_FOUND"]
+        assert result.counts.created == 0
+        assert await h.foreign.head(P + "b.md") is None
+
+
+async def test_move_onto_a_target_already_equal_to_the_document_is_achieved(
+    tmp_path: Path,
+) -> None:
+    """判定时源已不存在、目标已被建成与目标 document 相同的内容（如另一写入者做了同一次改名）：
+    不发写，这条 move 按已达成计并清掉源残留的 L，不会每轮重复失败、永久扣住游标。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+        await h.foreign.delete(P + "a.md", expected("A"))
+        await h.foreign.commit(P + "b.md", _doc_of("A"), IfAbsent())
+        result = await h.round({"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]]})
+        assert result.outcome == "succeeded", codes(result)
+        assert (result.counts.moved, result.counts.unchanged) == (1, 1)
+        assert _synced(h) == {P + "b.md": expected("A")}
+
+
+async def test_target_document_after_a_move_whose_read_was_rejected_is_not_written(
+    tmp_path: Path,
+) -> None:
+    """move 的读被确定拒绝（逐条定位后记条目失败，没有推送结果）：同样是未达成，其后的目标
+    document 不发写——不得以「无 L，R 存在」覆盖占用目标的文档。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+        await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+        made[0].fail = _reject_reads_of({P + "a.md"}, _problem(403, "DPE_FORBIDDEN"))
+        result = await h.round({"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]]})
+        assert result.outcome == "partial"
+        assert codes(result) == ["DPE_FORBIDDEN"]
+        assert result.counts.updated == 0
+        assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()
+
+
+async def test_failure_while_clearing_the_source_keeps_the_wave_accounted(tmp_path: Path) -> None:
+    """目标建出后清源 L 的读遇到网络失败：同一波的其余结果先全部入账，再以轮级失败结束。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await _deleted_in_a_failed_round(h)
+
+        async def cut_reads() -> None:
+            def fail(request: httpx.Request) -> httpx.Response | None:
+                if _is_heads(request) or request.method == "HEAD":
+                    raise httpx.ConnectError("断网", request=request)
+                return None
+
+            made[0].fail = fail
+
+        made[0].after.append((_is_commit, cut_reads))
+        made[0].after.append((_is_commit, cut_reads))
+        result = await h.round(
+            {
+                "batches": [[_move("a.md", "b.md"), doc_item("b.md", "A"), doc_item("c.md", "C")]],
+                "cursor": "c3",
+            }
+        )
+        assert result.outcome == "failed"
+        assert result.fatal is not None and result.fatal.code == "remote_unavailable"
+        assert (result.counts.moved, result.counts.created) == (1, 2)
+
+
+async def test_writes_touching_an_unachieved_target_are_not_sent(tmp_path: Path) -> None:
+    """move 因目标被占用而失败：其后对目标的 delete、以它为源的 move 同样不发写，不删除也不
+    移走占用者。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+        await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        _move("a.md", "b.md"),
+                        {"kind": "delete", "file_uri": P + "b.md"},
+                        _move("b.md", "d.md"),
+                    ]
+                ]
+            }
+        )
+        assert codes(result) == ["DPE_ALREADY_EXISTS"]
+        assert (result.counts.deleted, result.counts.moved) == (0, 0)
+        assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()
+        assert await h.foreign.head(P + "d.md") is None
+
+
+async def test_target_document_before_the_move_is_written_normally(tmp_path: Path) -> None:
+    """目标 document 出现在 move 之前：那时还没有未达成的 move，按普通文档落地。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+        result = await h.round({"batches": [[doc_item("b.md", "A"), _move("a.md", "b.md")]]})
+        assert result.outcome == "succeeded", codes(result)
+        assert (result.counts.created, result.counts.moved) == (1, 1)
+        assert await h.foreign.head(P + "a.md") is None
+
+
+async def test_reread_failure_after_a_rejected_target_document_ends_the_round(
+    tmp_path: Path,
+) -> None:
+    """目标 document 的 if_absent 写入遇写后冲突、重读又断网：按读失败终止本轮（轮级），不把
+    网络失败当作目标被占用吞掉。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        hooks = made[0]
+        await _deleted_in_a_failed_round(h)
+
+        async def occupy_then_cut_reads() -> None:
+            await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+
+            def cut(request: httpx.Request) -> httpx.Response | None:
+                if request.method == "HEAD" or _is_heads(request):
+                    raise httpx.ConnectError("断网", request=request)
+                return None
+
+            hooks.fail = cut
+
+        hooks.before.append((_is_commit, occupy_then_cut_reads))
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]], "cursor": "c3"}
+        )
+        assert result.outcome == "failed"
+        assert result.fatal is not None and result.fatal.code == "remote_unavailable"
+        assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()
+
+
+async def test_move_rejudged_under_source_wins_awaits_the_target_document(
+    tmp_path: Path,
+) -> None:
+    """source_wins 下 move 写后冲突（源被改写）、重读时源已被删除：重新判定得出「源已不存在，
+    目标未达成」，同样由其后的目标 document 建出目标。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+
+        async def rewrite() -> None:
+            await h.foreign.commit(P + "a.md", _doc_of("theirs"), BaseHash(expected("A")))
+
+        async def remove() -> None:
+            await h.foreign.delete(P + "a.md", _doc_of("theirs").doc_hash())
+
+        made[0].before.append((_is_move, rewrite))
+        made[0].after.append((_is_move, remove))
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]]},
+            policy=ConflictPolicy(commit="source_wins"),
+        )
+        assert result.outcome == "succeeded", codes(result)
+        assert (result.counts.moved, result.counts.created) == (1, 1)
+        assert await h.foreign.head(P + "b.md") == expected("A")
+
+
+async def test_second_move_onto_the_same_target_is_skipped(tmp_path: Path) -> None:
+    """两条 move 指向同一个不存在的目标：第一条未达成时，第二条涉及未达成的目标、不发写，也使
+    其后的目标 document 不发写——两个源谁该达成无从判断，第一条照常计失败、游标扣住。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A"), doc_item("c.md", "C")]]})
+        await h.foreign.delete(P + "a.md", expected("A"))
+        await h.foreign.delete(P + "c.md", expected("C"))
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), _move("c.md", "b.md"), doc_item("b.md", "A")]]}
+        )
+        assert result.outcome == "partial"
+        assert codes(result) == ["DPE_NOT_FOUND"]
+        assert result.failures[0].to_report()["from_uri"] == P + "a.md"
+        assert (result.counts.moved, result.counts.created) == (0, 0)
+        assert await h.foreign.head(P + "b.md") is None
+
+
+async def test_writes_touching_an_awaiting_target_are_not_sent(tmp_path: Path) -> None:
+    """move 在等待目标 document 时，其后对目标的 delete、以它为源的 move 不发写：判定后目标
+    可能已被他人建出，不得删除或移走它。"""
+    async with harness(tmp_path) as h:
+        await _deleted_in_a_failed_round(h)
+        await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        _move("a.md", "b.md"),
+                        {"kind": "delete", "file_uri": P + "b.md"},
+                        _move("b.md", "d.md"),
+                    ]
+                ]
+            }
+        )
+        assert codes(result) == ["DPE_NOT_FOUND"]
+        assert (result.counts.deleted, result.counts.moved) == (0, 0)
+        assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()
+        assert await h.foreign.head(P + "d.md") is None
+
+
+async def test_skipped_move_also_holds_its_own_target(tmp_path: Path) -> None:
+    """move 因涉及未达成的目标而跳过：它自己的目标同样未达成，其后的目标 document 不覆盖
+    占用者。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("c.md", "C")]]})
+        await h.foreign.commit(P + "a.md", _doc_of("theirs"), IfAbsent())
+        await h.foreign.commit(P + "b.md", _doc_of("other"), IfAbsent())
+        result = await h.round(
+            {"batches": [[_move("c.md", "a.md"), _move("a.md", "b.md"), doc_item("b.md", "A")]]}
+        )
+        assert codes(result) == ["DPE_ALREADY_EXISTS"]
+        assert result.counts.updated == 0
+        assert await h.foreign.head(P + "a.md") == _doc_of("theirs").doc_hash()
+        assert await h.foreign.head(P + "b.md") == _doc_of("other").doc_hash()
+
+
+async def test_awaiting_move_is_retryable_when_the_target_document_failed(tmp_path: Path) -> None:
+    """目标 document 没能产出、可重试（插件暂时读不出目标）：等它的 move 下一轮可能达成，记为
+    可重试；目标的失败不可重试（如文档层校验）时，重跑结果相同，move 同样不可重试。"""
+    async with harness(tmp_path) as h:
+        await _deleted_in_a_failed_round(h)
+        unreadable = {
+            "kind": "error",
+            "file_uri": P + "b.md",
+            "code": "source_unavailable",
+            "message": "x",
+            "retryable": True,
+        }
+        result = await h.round({"batches": [[_move("a.md", "b.md"), unreadable]], "cursor": "c3"})
+        assert result.outcome == "partial"
+        moves = [f for f in result.failures if f.to_report().get("to_uri") == P + "b.md"]
+        assert [(f.code, f.retryable) for f in moves] == [("DPE_NOT_FOUND", True)]
+
+        broken = doc_item("b.md", "A")
+        broken["document"]["bogus"] = 1
+        result = await h.round({"batches": [[_move("a.md", "b.md"), broken]], "cursor": "c3"})
+        moves = [f for f in result.failures if f.to_report().get("to_uri") == P + "b.md"]
+        assert [(f.code, f.retryable) for f in moves] == [("DPE_NOT_FOUND", False)]
+
+
+async def test_writes_skipped_while_awaiting_keep_the_move_unresolved(tmp_path: Path) -> None:
+    """等待中的目标上有写入被跳过（这里是以它为源的 move）：跳过的写入使它涉及的 URI 都未达成，
+    其后的目标 document 不再解除等待的 move——跳过必然扣住游标，不会静默丢掉 d。"""
+    async with harness(tmp_path) as h:
+        await _deleted_in_a_failed_round(h)
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        _move("a.md", "b.md"),
+                        _move("b.md", "d.md"),
+                        doc_item("b.md", "A"),
+                        doc_item("d.md", "A"),
+                    ]
+                ],
+                "cursor": "c3",
+            }
+        )
+        assert result.outcome == "partial" and not result.cursor_persisted
+        assert codes(result) == ["DPE_NOT_FOUND"]
+        assert (result.counts.moved, result.counts.created) == (0, 0)
+
+
+async def test_target_created_then_removed_during_the_write_is_retryable(tmp_path: Path) -> None:
+    """目标 document 的 if_absent 写入时目标刚被他人建出、重读时又已删掉：不重提，等待的 move
+    轮末计失败但可重试（竞态，下一轮可能达成）。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await _deleted_in_a_failed_round(h)
+
+        async def occupy() -> None:
+            await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+
+        async def vacate() -> None:
+            await h.foreign.delete(P + "b.md", _doc_of("theirs").doc_hash())
+
+        made[0].before.append((_is_commit, occupy))
+        made[0].after.append((_is_commit, vacate))
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]], "cursor": "c3"}
+        )
+        assert result.outcome == "partial"
+        assert [(f.code, f.retryable) for f in result.failures] == [("DPE_NOT_FOUND", True)]
+        assert await h.foreign.head(P + "b.md") is None
+
+
+async def test_target_document_in_a_later_batch_achieves_the_move(tmp_path: Path) -> None:
+    """move 与目标 document 分处不同的 scan 批次（插件常见的产出顺序）：等待跨批保留，目标
+    建出后 move 照常按已达成计。"""
+    async with harness(tmp_path) as h:
+        await _deleted_in_a_failed_round(h)
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md")], [doc_item("b.md", "A")]], "cursor": "c3"}
+        )
+        assert result.outcome == "succeeded", codes(result)
+        assert (result.counts.moved, result.counts.created) == (1, 1)
+
+
+async def test_state_failure_at_the_target_document_leaves_the_move_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """目标 document 写入后状态保存失败：本轮以 state_unavailable 结束，等待的 move 记为可重试
+    （下一轮可能达成），不误报为永久冲突。"""
+    real = state_module._write_atomic
+    failures = {"left": 0}
+
+    def flaky(path: Path, data: Any) -> None:
+        if failures["left"] and path.name == "state.json":
+            failures["left"] -= 1
+            raise OSError("disk full")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "_write_atomic", flaky)
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await _deleted_in_a_failed_round(h)
+
+        async def arm() -> None:
+            failures["left"] = 1
+
+        made[0].after.append((_is_commit, arm))
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]], "cursor": "c3"}
+        )
+        assert result.outcome == "failed"
+        assert result.fatal is not None and result.fatal.code == "state_unavailable"
+        moves = [f for f in result.failures if f.to_report().get("to_uri") == P + "b.md"]
+        assert [(f.code, f.retryable) for f in moves] == [("DPE_NOT_FOUND", True)]
+
+
+async def test_source_state_that_cannot_be_cleared_holds_the_cursor(tmp_path: Path) -> None:
+    """目标建出后清源 L 的读被确定拒绝：残留的 L 会让源端之后重现同一 URI 时误判冲突，所以给源
+    记一条条目失败、扣住游标；拒绝解除后，下一轮重放 move 时清掉（目标等于源的 base：推送器
+    直接判已达成；目标内容不同：经紧跟的目标 document 再次达成）。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        await h.foreign.delete(P + "a.md", expected("A"))
+
+        async def deny_source() -> None:
+            made[0].fail = _reject_reads_of({P + "a.md"}, _problem(403, "DPE_FORBIDDEN"))
+
+        made[0].after.append((_is_commit, deny_source))
+        script = {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "A")]], "cursor": "c2"}
+        held = await h.round(script)
+        assert held.outcome == "partial" and not held.cursor_persisted
+        assert [(f.code, f.retryable) for f in held.failures] == [("DPE_FORBIDDEN", False)]
+        # 远端已达成（目标建出、move 计 moved），本地 L 没清掉另记一条：两件不同的事
+        assert (held.counts.moved, held.counts.created, held.counts.failed) == (1, 1, 1)
+        assert held.failures[0].to_report()["file_uri"] == P + "a.md"
+        assert P + "a.md" in _synced(h)
+
+        made[0].fail = None
+        rerun = await h.round(script)
+        assert rerun.outcome == "succeeded", codes(rerun)
+        assert _synced(h) == {P + "b.md": expected("A")}
+
+
+async def test_uncleared_source_state_heals_when_the_target_content_differs(
+    tmp_path: Path,
+) -> None:
+    """同上，但改名时内容也变了（目标 N ≠ 源的 L）：下一轮 move 再次等待，紧跟的目标
+    document 判已达成，move 再次达成并清掉源的 L。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        await h.foreign.delete(P + "a.md", expected("A"))
+
+        async def deny_source() -> None:
+            made[0].fail = _reject_reads_of({P + "a.md"}, _problem(403, "DPE_FORBIDDEN"))
+
+        made[0].after.append((_is_commit, deny_source))
+        script = {"batches": [[_move("a.md", "b.md"), doc_item("b.md", "B")]], "cursor": "c2"}
+        held = await h.round(script)
+        assert held.outcome == "partial" and P + "a.md" in _synced(h)
+
+        made[0].fail = None
+        rerun = await h.round(script)
+        assert rerun.outcome == "succeeded", codes(rerun)
+        assert (rerun.counts.moved, rerun.counts.unchanged) == (1, 1)
+        assert _synced(h) == {P + "b.md": expected("B")}
+
+
+async def test_awaiting_move_of_an_aborted_round_is_retryable(tmp_path: Path) -> None:
+    """本轮在目标 document 到来之前中止：等待中的 move 记为可重试，不误导为永久冲突。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await _deleted_in_a_failed_round(h)
+
+        def cut_commits(request: httpx.Request) -> httpx.Response | None:
+            if _is_commit(request):
+                raise httpx.ConnectError("断网", request=request)
+            return None
+
+        made[0].fail = cut_commits
+        result = await h.round(
+            {"batches": [[_move("a.md", "b.md"), doc_item("x.md", "X")]], "cursor": "c3"}
+        )
+        assert result.outcome == "failed"
+        assert result.fatal is not None and result.fatal.code == "remote_unavailable"
+        moves = [f for f in result.failures if f.to_report().get("to_uri") == P + "b.md"]
+        assert [(f.code, f.retryable) for f in moves] == [("DPE_NOT_FOUND", True)]
+
+
 # ---------------------------------------------------------------------- 游标与全量轮
 
 
