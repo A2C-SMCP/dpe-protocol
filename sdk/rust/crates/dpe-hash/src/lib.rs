@@ -55,8 +55,9 @@ pub use constants::{
 #[doc(hidden)]
 pub use contract1::__private;
 pub use contract1::{
-    blob_ref, children, content_hash, doc_hash, document_hashes, object_hash, page_hash,
-    page_hashes, parse_blob_ref, parse_hash, parse_hash_with, BlobHasher,
+    blob_ref, children, children_with, content_hash, doc_hash, doc_hash_with, document_hashes,
+    object_hash, object_hash_with, page_hash, page_hash_with, page_hashes, parse_blob_ref,
+    parse_hash, parse_hash_with, BlobHasher,
 };
 pub use depth::nesting_depth;
 pub use error::{Error, ErrorKind, Result};

@@ -15,6 +15,12 @@
 //! `contract` 参数用于契约 1 §6 的原位重算；`dpex` 只在显式传入时接受（见
 //! [`DRILL_CONTRACT`]）。校验顺序与 Python dpe-hash 逐函数一致（core §2.8），多处违例时
 //! 返回的错误码相同。
+//!
+//! 带子 hash 列表的入口另有 `_with` 变体（[`page_hash_with`] / [`doc_hash_with`] /
+//! [`object_hash_with`] / [`children_with`]），多一个 `contracts` 参数：本次校验接受的「受支持
+//! 契约」基准集合，缺省版本用 [`SUPPORTED_CONTRACTS`]。声明多契约的服务端（core §3.1）传自己的
+//! 声明集合，于是 dpe1 对象引用 dpex 子 hash 由「不受支持」改判契约混用——与 Python 侧的关键字
+//! 参数 `contracts` 对等（#157）。
 
 use std::fmt::Display;
 
@@ -117,16 +123,7 @@ pub fn parse_hash(value: &str) -> Result<(&str, &str)> {
 /// `contracts` 中出现本 crate 不认识的契约（不在 [`KNOWN_CONTRACTS`]）返回
 /// [`ErrorKind::ContractUnsupported`]。
 pub fn parse_hash_with<'a>(value: &'a str, contracts: &[&str]) -> Result<(&'a str, &'a str)> {
-    let mut unknown: Vec<&str> = contracts
-        .iter()
-        .copied()
-        .filter(|c| !KNOWN_CONTRACTS.contains(c))
-        .collect();
-    if !unknown.is_empty() {
-        unknown.sort_unstable();
-        unknown.dedup();
-        return Err(unsupported(format!("不支持的 hash 契约：{unknown:?}"), ""));
-    }
+    check_base_contracts(contracts)?;
     split_hash(value, |prefix| contracts.contains(&prefix), "")
 }
 
@@ -238,14 +235,33 @@ fn metadata_part(obj: &Map<String, Value>, field: &str, at: &str) -> Result<Stri
     }
 }
 
+/// 本次校验的「受支持契约」基准集合（`*_with` 入口的 `contracts`，与 [`parse_hash_with`] 的参数
+/// 校验同形）：出现本 crate 不认识的契约（不在 [`KNOWN_CONTRACTS`]）返回
+/// [`ErrorKind::ContractUnsupported`]。与 Python 侧 `_base_contracts` 对等。
+fn check_base_contracts(contracts: &[&str]) -> Result<()> {
+    let mut unknown: Vec<&str> = contracts
+        .iter()
+        .copied()
+        .filter(|c| !KNOWN_CONTRACTS.contains(c))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    unknown.dedup();
+    Err(unsupported(format!("不支持的 hash 契约：{unknown:?}"), ""))
+}
+
 /// 一个子对象 hash：必须是同一契约下的合法 hash 值（契约 1 §5）。
 ///
 /// 前缀不是受支持的契约 → [`ErrorKind::ContractUnsupported`]；是受支持的契约、但与本对象的
-/// 契约不同（契约混用）→ [`ErrorKind::Validation`]。「受支持」= [`SUPPORTED_CONTRACTS`] 加上
-/// 本次调用显式选择的契约：演练契约 dpex 只在被选中时才算受支持，因此 dpe1 对象引用 dpex 子
-/// hash 与生产服务端一样得到 `DPE_CONTRACT_UNSUPPORTED`。
-fn check_child_hash(item: &str, contract: &str, at: &str) -> Result<()> {
-    let accepted = |prefix: &str| prefix == contract || SUPPORTED_CONTRACTS.contains(&prefix);
+/// 契约不同（契约混用）→ [`ErrorKind::Validation`]。「受支持」= 基准集合 `contracts`（缺省
+/// [`SUPPORTED_CONTRACTS`]）加上本次调用显式选择的契约：演练契约 dpex 只在被选中或被声明时才算
+/// 受支持，因此默认基准下 dpe1 对象引用 dpex 子 hash 与生产服务端一样得到
+/// `DPE_CONTRACT_UNSUPPORTED`；声明了 dpex 的服务端（core §3.1）传入自己的声明集合，同一输入
+/// 改判契约混用（#157，与 Python 侧 `contracts` 参数对等）。
+fn check_child_hash(item: &str, contract: &str, contracts: &[&str], at: &str) -> Result<()> {
+    let accepted = |prefix: &str| prefix == contract || contracts.contains(&prefix);
     let (prefix, _) = split_hash(item, accepted, at)?;
     if prefix != contract {
         return Err(validation(
@@ -272,17 +288,18 @@ fn hash_list_part<'a>(hashes: impl IntoIterator<Item = &'a str>) -> String {
 }
 
 /// 线上原像中的子 hash 列表（JSON 值）：校验后返回其 JCS 片段。
-fn wire_hash_list(value: &Value, contract: &str, at: &str) -> Result<String> {
+fn wire_hash_list(value: &Value, contract: &str, contracts: &[&str], at: &str) -> Result<String> {
     let Value::Array(items) = value else {
         return Err(validation(
             format!("必须是 hash 值数组，实际为 {}", type_name(value)),
             at,
         ));
     };
+    check_base_contracts(contracts)?;
     let mut hashes = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
         let checked = match item {
-            Value::String(h) => check_child_hash(h, contract, "").map(|()| h.as_str()),
+            Value::String(h) => check_child_hash(h, contract, contracts, "").map(|()| h.as_str()),
             _ => Err(validation(
                 format!("hash 值必须是字符串，实际为 {}", type_name(item)),
                 "",
@@ -294,9 +311,15 @@ fn wire_hash_list(value: &Value, contract: &str, at: &str) -> Result<String> {
 }
 
 /// 逐层 API 传入的子 hash 列表：校验后返回其 JCS 片段。
-fn slice_hash_list<S: AsRef<str>>(hashes: &[S], contract: &str, at: &str) -> Result<String> {
+fn slice_hash_list<S: AsRef<str>>(
+    hashes: &[S],
+    contract: &str,
+    contracts: &[&str],
+    at: &str,
+) -> Result<String> {
+    check_base_contracts(contracts)?;
     for (i, h) in hashes.iter().enumerate() {
-        check_child_hash(h.as_ref(), contract, "")
+        check_child_hash(h.as_ref(), contract, contracts, "")
             .map_err(|e| e.under(&pointer(at, &[&i.to_string()])))?;
     }
     Ok(hash_list_part(hashes.iter().map(AsRef::as_ref)))
@@ -449,12 +472,13 @@ fn page_preimage(
     page: &Map<String, Value>,
     elements: &Value,
     contract: &str,
+    contracts: &[&str],
     at: &str,
 ) -> Result<String> {
     let mut parts = page_parts(page, at, true)?;
     parts.push((
         "elements",
-        wire_hash_list(elements, contract, &pointer(at, &["elements"]))?,
+        wire_hash_list(elements, contract, contracts, &pointer(at, &["elements"]))?,
     ));
     Ok(assemble(parts))
 }
@@ -463,12 +487,13 @@ fn document_preimage(
     document: &Map<String, Value>,
     pages: &Value,
     contract: &str,
+    contracts: &[&str],
     at: &str,
 ) -> Result<String> {
     let mut parts = document_parts(document, at, true)?;
     parts.push((
         "pages",
-        wire_hash_list(pages, contract, &pointer(at, &["pages"]))?,
+        wire_hash_list(pages, contract, contracts, &pointer(at, &["pages"]))?,
     ));
     Ok(assemble(parts))
 }
@@ -483,19 +508,19 @@ fn child_field(kind: ObjectKind) -> Option<&'static str> {
 }
 
 /// 线上原像的 JCS 原像（[`object_hash`] / [`children`] 共用）。
-fn preimage(obj: &Value, kind: ObjectKind, contract: &str) -> Result<String> {
+fn preimage(obj: &Value, kind: ObjectKind, contract: &str, contracts: &[&str]) -> Result<String> {
     check_depth(obj, child_field(kind))?;
     match kind {
         ObjectKind::Element => element_preimage(obj, ""),
         ObjectKind::Page => {
             let page = mapping(obj, "", "页对象")?;
             let elements = required(page, "elements", "", "页对象")?;
-            page_preimage(page, elements, contract, "")
+            page_preimage(page, elements, contract, contracts, "")
         }
         ObjectKind::Document => {
             let document = mapping(obj, "", "文档对象")?;
             let pages = required(document, "pages", "", "文档对象")?;
-            document_preimage(document, pages, contract, "")
+            document_preimage(document, pages, contract, contracts, "")
         }
     }
 }
@@ -521,13 +546,27 @@ pub fn page_hash<S: AsRef<str>>(
     element_hashes: &[S],
     contract: &str,
 ) -> Result<String> {
+    page_hash_with(page, element_hashes, contract, SUPPORTED_CONTRACTS)
+}
+
+/// 同 [`page_hash`]，但以 `contracts` 为本次校验的「受支持契约」基准集合（缺省版本用
+/// [`SUPPORTED_CONTRACTS`]）。声明多契约的服务端（core §3.1）传自己的声明集合，于是 dpe1 对象
+/// 引用 dpex 子 hash 由「不受支持」改判契约混用（[`ErrorKind::Validation`]）；`contracts` 中
+/// 出现本 crate 不认识的契约返回 [`ErrorKind::ContractUnsupported`]。与 Python 侧
+/// `page_hash(..., contracts=...)` 对等（#157）。
+pub fn page_hash_with<S: AsRef<str>>(
+    page: &(impl ToJson + ?Sized),
+    element_hashes: &[S],
+    contract: &str,
+    contracts: &[&str],
+) -> Result<String> {
     let salt = salt(contract)?;
     let page = page.to_json();
     check_depth(&page, Some("elements"))?;
     let mut parts = page_parts(mapping(&page, "", "页对象")?, "", false)?;
     parts.push((
         "elements",
-        slice_hash_list(element_hashes, contract, "/elements")?,
+        slice_hash_list(element_hashes, contract, contracts, "/elements")?,
     ));
     Ok(digest(&assemble(parts), contract, salt))
 }
@@ -541,11 +580,24 @@ pub fn doc_hash<S: AsRef<str>>(
     page_hashes: &[S],
     contract: &str,
 ) -> Result<String> {
+    doc_hash_with(document, page_hashes, contract, SUPPORTED_CONTRACTS)
+}
+
+/// 同 [`doc_hash`]，`contracts` 的含义同 [`page_hash_with`]。
+pub fn doc_hash_with<S: AsRef<str>>(
+    document: &(impl ToJson + ?Sized),
+    page_hashes: &[S],
+    contract: &str,
+    contracts: &[&str],
+) -> Result<String> {
     let salt = salt(contract)?;
     let document = document.to_json();
     check_depth(&document, Some("pages"))?;
     let mut parts = document_parts(mapping(&document, "", "文档对象")?, "", false)?;
-    parts.push(("pages", slice_hash_list(page_hashes, contract, "/pages")?));
+    parts.push((
+        "pages",
+        slice_hash_list(page_hashes, contract, contracts, "/pages")?,
+    ));
     Ok(digest(&assemble(parts), contract, salt))
 }
 
@@ -558,9 +610,24 @@ pub fn object_hash(
     kind: ObjectKind,
     contract: &str,
 ) -> Result<String> {
+    object_hash_with(obj, kind, contract, SUPPORTED_CONTRACTS)
+}
+
+/// 同 [`object_hash`]，`contracts` 的含义同 [`page_hash_with`]（元素对象没有子 hash 列表，
+/// 不使用它）。
+pub fn object_hash_with(
+    obj: &(impl ToJson + ?Sized),
+    kind: ObjectKind,
+    contract: &str,
+    contracts: &[&str],
+) -> Result<String> {
     let salt = salt(contract)?;
     let obj = obj.to_json();
-    Ok(digest(&preimage(&obj, kind, contract)?, contract, salt))
+    Ok(digest(
+        &preimage(&obj, kind, contract, contracts)?,
+        contract,
+        salt,
+    ))
 }
 
 /// 线上原像引用的下一层（先按 [`object_hash`] 的规则完整校验）。
@@ -572,9 +639,19 @@ pub fn children(
     kind: ObjectKind,
     contract: &str,
 ) -> Result<Vec<String>> {
+    children_with(obj, kind, contract, SUPPORTED_CONTRACTS)
+}
+
+/// 同 [`children`]，`contracts` 的含义同 [`page_hash_with`]。
+pub fn children_with(
+    obj: &(impl ToJson + ?Sized),
+    kind: ObjectKind,
+    contract: &str,
+    contracts: &[&str],
+) -> Result<Vec<String>> {
     salt(contract)?;
     let obj = obj.to_json();
-    preimage(&obj, kind, contract)?;
+    preimage(&obj, kind, contract, contracts)?;
     let field = match kind {
         ObjectKind::Element => {
             return Ok(match obj.get("blob") {
@@ -698,7 +775,9 @@ pub fn document_hashes(
 pub mod __private {
     use serde_json::Value;
 
-    use super::{document_preimage, element_preimage, mapping, page_preimage, Result};
+    use super::{
+        document_preimage, element_preimage, mapping, page_preimage, Result, SUPPORTED_CONTRACTS,
+    };
 
     /// 元素对象的原像。
     pub fn element_preimage_of(element: &Value) -> Result<String> {
@@ -711,7 +790,13 @@ pub mod __private {
         element_hashes: &Value,
         contract: &str,
     ) -> Result<String> {
-        page_preimage(mapping(page, "", "页对象")?, element_hashes, contract, "")
+        page_preimage(
+            mapping(page, "", "页对象")?,
+            element_hashes,
+            contract,
+            SUPPORTED_CONTRACTS,
+            "",
+        )
     }
 
     /// 文档对象（可带展开的 `pages`，其值被忽略）配合给定子 hash 的原像。
@@ -724,6 +809,7 @@ pub mod __private {
             mapping(document, "", "文档对象")?,
             page_hashes,
             contract,
+            SUPPORTED_CONTRACTS,
             "",
         )
     }
