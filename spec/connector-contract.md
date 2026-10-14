@@ -597,10 +597,21 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 
 **move 的目标已持有同一内容**：按上表源侧可以写入（「有 L，R == L」以 L 为 base，「无 L，R 存在」以 R 为 base），而运行器同时读到的目标 R 也等于这个 base 时，目标已经是 move 要达成的内容（例如早先一轮已把同一份内容提交到目标，而该轮未成功、游标未推进，§6.8）。运行器 MUST NOT 发出 move（服务端会以 `DPE_ALREADY_EXISTS` 拒绝，重放永不收敛），而是以该 base 为前置条件**删除源**（delete，仍经 CAS），成功即计 `moved`：这正是 core.md §5.2 为 move 定义的目标状态（源不存在、目标内容为 base）。意图与同步状态按 move 处理——两侧一起记意图，成功后条目从源迁到目标。为此运行器 MUST 在判定 move 时读取目标的 R（与源一起，可经同一次 `batch_head`）。删除请求得到 `DPE_PRECONDITION_FAILED`、`DPE_NOT_FOUND` 以外的错误时，按 delete 的常规归类（含结果未知时保留意图），不属于 move 的条目失败、不标侧别。判定只看目标的 R、不看目标侧的 L：目标的 R 等于 base 时，即使那是他人写下的同一内容也按本条处理——目标不被写入，同步状态随之记目标为 base，与 remote 一致。目标只被读取、不被写入，**不受任何前置条件保护**：在读到目标 R 与删除源之间，他人若删除或改写目标，源仍会被删除，remote 上该内容可能缺失；这一窗口与上表「读写之间的竞态窗口」同样短暂，但没有 CAS 兜底，其后果在下一次对目标的写入中按判定表以冲突上报（同步状态记目标为 base，而 R 已不同或不存在），不会被静默覆盖。
 
-**move 未达成之后的目标 document**：本轮发出、尚未得到 `moved` 的 move 使其 `to_uri` **未达成**（以此为准，不从失败结果反推）。其后涉及未达成 URI 的写入——`document`、`delete`、以它为源或为目标的 `move`——MUST NOT 落地，也不另计失败：否则「无 L，R 存在」会以 R 为 `base_hash` 覆盖、删除或移走占用目标的文档，正是下文「永久冲突」所禁止的。跳过的写入使它涉及的每个 URI 都未达成、本轮不再解除（跳过的 `move` 因此也使它自己的 `to_uri` 未达成），所以每次跳过都伴随一条未达成 move 的条目失败，游标随之扣住，下一轮重来。唯一的例外是目标 document：
+**move 未达成之后的目标 document**：本轮发出、尚未得到 `moved` 的 move 使其 `to_uri` **未达成**（以此为准，不从失败结果反推）。其后涉及未达成 URI 的写入——`document`、`delete`、以它为源或为目标的 `move`——MUST NOT 落地，也不另计失败：否则「无 L，R 存在」会以 R 为 `base_hash` 覆盖、删除或移走占用目标的文档，正是下文「永久冲突」所禁止的。跳过的写入使它涉及的每个 URI 都未达成、本轮不再解除（跳过的 `move` 因此也使它自己的 `to_uri` 未达成），所以每次跳过都伴随一条未达成 move 的条目失败，游标随之扣住，下一轮重来；运行器为每条跳过输出 `item.skipped`（§7.5）。
 
-- 目标上只有一条未达成的 move（没有因跳过而未达成），且它在判定（未发写）中得出「源已不存在，目标未达成」——判定时源不存在、目标不等于源的 base，通常目标也不存在；`source_wins` 下冲突重读后重新判定得出的同样算：运行器先不计这条 move 失败，以 `if_absent` 提交其后的目标 document，不按 `conflict_policy` 重提。目标由它建出（`created`）或已等于它（`achieved` / `unchanged`，如另一写入者做了同一次改名）时，这条 move 按已达成计 `moved`（同步状态去掉源、目标记为 N——源可能还留着 L 时以「确认不存在」清掉，不发写；清不掉（读被确定拒绝）时给源记一条条目失败（`code`、`retryable` 取 remote 的值）、扣住游标——残留的 L 会让源端之后重现同一 URI 时误判冲突；拒绝解除后，下一轮重放 move 时再次达成并清掉它），目标随之不再未达成；目标已被他人以别的内容建出、`if_absent` 被拒时，不覆盖，这条 move 按「目标已被占用」计条目失败；其余情况（本轮没有给出目标 document，或它没能落地）轮末计「源已不存在，目标未达成」——本轮目标上有可重试的条目失败（如插件暂时读不出目标）、`if_absent` 被拒而重读时目标已不存在（竞态），或本轮因轮级失败中止时记为可重试，下一轮可能达成；否则重跑结果相同，不可重试。判定只看 R，不论源是本实例自己删的还是他人删的：源已没有可保护的内容，整个过程不删除也不覆盖任何文档，`if_absent` 兜住竞态。
-- 同一目标有两条以上未达成的 move 时（如两个源都配成指向它），哪个源该达成无从判断，目标 document 同样不落地。
+唯一的例外是目标 document：目标上只有一条未达成的 move（没有因跳过而未达成），且它在判定（未发写）中得出「源已不存在，目标未达成」——判定时源不存在、目标不等于源的 base，通常目标也不存在；`source_wins` 下冲突重读后重新判定得出的同样算。运行器先不计这条 move 失败，以 `if_absent` 提交其后的目标 document，不按 `conflict_policy` 重提，按结局处置：
+
+| 情形 | 处置 | 计数 / `retryable` |
+| --- | --- | --- |
+| 目标由它建出（`created`），或已等于它（`achieved` / `unchanged`，如另一写入者做了同一次改名） | move 按已达成计；同步状态去掉源、目标记为 N——源可能还留着 L 时以「确认不存在」清掉，不发写；目标随之不再未达成 | move 计 `moved`，目标 document 照常计数 |
+| 同上，但清源时读被确定拒绝 | 残留的 L 会让源端之后重现同一 URI 时误判冲突：给源记一条条目失败、扣住游标；拒绝解除后，下一轮重放 move 时再次达成并清掉它 | move 仍计 `moved`；源的失败 `code`、`retryable` 取 remote 的值 |
+| `if_absent` 被拒，重读到目标已被他人以别的内容建出 | 不覆盖 | move 按「目标已被占用」计条目失败（`retryable: false`） |
+| `if_absent` 被拒，重读时目标已不存在（竞态） | 不重提，留到轮末 | 轮末计「源已不存在，目标未达成」，`retryable: true` |
+| 本轮没有给出目标 document，或它没能落地，或本轮因轮级失败中止 | 轮末下结论 | 计「源已不存在，目标未达成」；本轮目标上有可重试的条目失败（如插件暂时读不出目标），或本轮中止（目标 document 可能只是没来得及到）时 `retryable: true`，否则 false（重跑结果相同） |
+
+判定只看 R，不论源是本实例自己删的还是他人删的：源已没有可保护的内容，整个过程不删除也不覆盖任何文档，`if_absent` 兜住竞态。
+
+两个源都配成指向同一目标、第一条 move 未达成时，第二条 move 涉及未达成的目标而被跳过（上段），目标随之不止一条未达成的 move、不满足例外的前提，目标 document 同样不落地：哪个源该达成无从判断。（第一条已达成时，第二条照常发出，按「目标已被占用」处置。）
 
 **冲突处置**：运行器就是 core.md §5.2 所说的「上层」。它 MUST NOT 改用 force（move 本就不支持 force，core.md §4），MUST 重新读取冲突 URI 的当前状态后按下表决定，运行器实现的其他按 URI 缓存（若有）MUST NOT 影响本节的判定。重新提交以重读到的 doc_hash 为前置条件，仍经 CAS：同级写入之间经 CAS 的后写覆盖不属于静默覆盖（core.md §7 第 4 条）。
 
@@ -718,6 +729,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 | `plugin.exited` | `exit_code`、`signal`（可为 `null`） | 插件进程退出后 |
 | `round.started` | `cursor_given`（布尔：轮首 `scan` 是否带了游标） | 发出轮首 `scan` 前 |
 | `item.failed` | `failure`：§7.4 `failures` 元素，字段原样 | 每个失败发生时（任何层级；§7.2 持久化失败时被排除的条目不要求） |
+| `item.skipped` | `kind`（`document` / `delete` / `move`）；`file_uri`（document、delete）或 `from_uri` 与 `to_uri`（move）；`cause`：`{from_uri, to_uri}`，使它跳过的那条本轮发出、未达成的 move | 每条因 move 未达成而不发写的条目（§7.2「move 未达成之后的目标 document」），`warn` 级 |
 | `instance.deleted` | `found`（布尔：是否存在可删除的状态或登记，排他锁不计入，§5.1） | 删除（§5.1）完成时，`round` 为 `null` |
 | `round.finished` | `outcome`、`incremental`、`cursor_persisted`、`cursor_held_since`、`counts` | 本轮 `outcome` 最终确定后（同步一轮的调用恰好一条，字段 MUST 与轮报告一致） |
 | `plugin.stderr` | `line`、`truncated`（布尔） | 插件 stderr 每输出一行 |
@@ -725,6 +737,7 @@ delete 与 move 用同一张表（move 取 `from_uri` 的 L 与 R）。此外，
 - 运行器给出了游标而插件回退为全量轮（`incremental: false`，§6.8）时，`round.finished` MUST 为 `warn` 级；`outcome` 为 `partial` 或 `failed` 时 MUST 为 `warn` 或 `error` 级。
 - `plugin.stderr`：插件 stderr 按行转发；单行超过运行器的长度上限（SHOULD 不小于 8 KiB）时截断并标 `truncated: true`；非 UTF-8 字节以 U+FFFD 替换。转发前按 §4.3 脱敏。
 - 日志 MUST NOT 含凭证值与 `Authorization` 头（§4.3），SHOULD NOT 含 blob 字节与完整的元素内容。
+- `item.skipped` 不是失败：不对应报告元素，不计入 `counts` 与 `failures`——游标由 `cause` 那条 move 的条目失败扣住（§7.2）；那条 move 所在的推送器调用因持久化失败整批中止时，它不列入 `failures`、也不要求 `item.failed`（§7.2），本轮以 `state_unavailable` 失败，游标同样不推进。跳过链（跳过的写入使其 URI 未达成）一律追溯到最初发出、未达成的那条 move：一条写入涉及多个未达成 URI 时，取其中按 `file_uri` / `from_uri` / `to_uri` 顺序的第一个的根因；它涉及的 URI 已有根因的保留原根因，此前达成过的 URI 以本次为准。同一波内的事件按条目在流中的顺序输出。
 - 日志行顶层的 `level` 只表示日志级别；`item.failed` 的失败层级在 `failure.level`（§7.4），消费方可把 `failure` 原样当作报告元素处理。删除等非轮操作中的失败同样以 `item.failed` 记录，`round` 为 `null`。
 - 实现 MAY 增加事件与字段；日志的消费者 MUST 忽略不认识的事件与字段。
 
