@@ -2,7 +2,7 @@
 
 黑盒 HTTP 跑分器：对着任意实现了 [core.md](../spec/core.md) + [HTTP 绑定](../spec/bindings/http.md) 的 remote 跑一遍协议语义（CAS、暂存原子切换、delta 如实回报、错误格式等），供各服务端在自己的 CI 中执行。
 
-**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。全量 3/6（#56）已落地——求值顺序与校验顺序（传输层、uri、条件头、暂存上传的组合场景，报文校验先于授权）一章，以及经 HTTP 消费 `invalid_objects` / `nesting_depth` 向量一章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。全量 4/6（#57）已落地——安全与去重范围一章（内容存于他处仍按层列为缺失、上传状态只按本会话、无写授权一律 403、元素层与 blob 层的去重下界）。全量 5/6（#58）已落地——契约升级期一章（按请求契约给值、跨契约 If-Match、契约混用）。汇总回归（#59）随 M2 推进。`dpe-conformance` 发布在 PyPI，服务端仓库在 CI 中的用法见 [在 CI 中运行跑分器](ci.md)。
+**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。全量 3/6（#56）已落地——求值顺序与校验顺序（传输层、uri、条件头、暂存上传的组合场景，报文校验先于授权）一章，以及经 HTTP 消费 `invalid_objects` / `nesting_depth` 向量一章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。全量 4/6（#57）已落地——安全与去重范围一章（内容存于他处仍按层列为缺失、上传状态只按本会话、无写授权一律 403、元素层与 blob 层的去重下界）。全量 5/6（#58）已落地——契约升级期一章（按请求契约给值、跨契约 If-Match、契约混用）。全量 6/6（#59）已落地——收敛一致性一章（delta 与读回互证、增量写入收敛后等于全量推送），全量检查面至此完成：全部钩子配置时对参考服务端按两轮的并集零 skip（见 [在 CI 中运行跑分器](ci.md)）。`dpe-conformance` 发布在 PyPI，服务端仓库在 CI 中的用法见 [在 CI 中运行跑分器](ci.md)。
 
 ## 通用检查面
 
@@ -10,12 +10,12 @@
 - 暂存会话续期：每次成功的 negotiate / upload（含中间块）都把过期时间推后到「此刻 + staging_ttl」，并由 `expires_at` / `DPE-Session-Expires` 如实给出（必带，RFC 3339 UTC，以 `Z` 结尾）；`now ≥ expires_at` 即过期（配置了 `clock-advance` 钩子时，先推进到 `expires_at` 之前断言会话仍可用，再推进到不早于 `expires_at`——钩子只接受整秒，可能超调不到 1 秒——断言得到 `DPE_SESSION_EXPIRED`；未配置时该项显式 skip）；断点查询（`HEAD`）带 `DPE-Session-Expires` 但不续期；闲置超过 TTL 的会话返回 `DPE_SESSION_EXPIRED`；
 - 去重范围固定为本文档：只靠该文档当前状态（或本次暂存会话）即可得的对象不出现在缺失清单中；其他文档持有的对象一律视为缺失（不因它存在于别处而变化）；
 - 快路径 / 暂存路径的 commit 语义与原子性（分批期间读接口不可见中间态）；
-- delta 与 `get_skeleton` 读回结果互相印证（不制造伪变更）；
+- delta 与 `get_skeleton` 读回结果互相印证（不制造伪变更，plan §13 第 3 条）：delta 等于前后两次读回的元素 content_hash 多重集之差，重复元素按次数计，跨页移动与重排不算变化，未变的元素不出现在 added / removed 中；快路径与暂存路径同一口径；
 - `get_skeleton` 读回的内容与推送内容一致，不含任何服务端衍生数据；服务端回报的 doc_hash 等于按契约 1 对推送内容算出的值；
 - CAS 全矩阵（if_absent / base_hash / 缺前置 / force）与删除复活防护；
 - delete / move 语义（move 后目标 doc_hash 与源一致；move 缺 base_hash 返回 428）；
 - RFC 9457 错误格式与 `code` / `retryable` / `Retry-After`；每个 code 与 HTTP §5 的状态码一致；每个错误响应带与 `code` 相等的 `DPE-Error-Code` 头；
-- 增量推送、删除、move 收敛后与全量推送一致（判据 plan §13）。
+- 增量推送、删除、move 收敛后与全量推送一致（connector §8.3 判据 3 的服务端一侧，R = F(S)）：在一个命名空间上依次做快路径与暂存路径更新、同内容重推（`unchanged`、delta 为零）、删除、move 到刚被删除的 URI、在被移走的源 URI 上重建、改成与另一篇相同的内容；之后增量侧的 `list` 映射须等于按最终源状态计算的期望值，各篇骨架与全量推送到全新命名空间的结果逐字段相等——被删与被移走的文档不残留。「插件 + 运行器」组合的增量收敛由 dpe-run 的端到端测试覆盖。
 
 ## 字段不被静默丢弃（#4 A1 / A2）
 

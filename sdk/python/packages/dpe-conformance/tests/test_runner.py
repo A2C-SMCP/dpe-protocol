@@ -70,6 +70,7 @@ def test_sections_discovery() -> None:
         "capabilities",
         "commit",
         "contracts",
+        "convergence",
         "http_binding",
         "large",
         "order",

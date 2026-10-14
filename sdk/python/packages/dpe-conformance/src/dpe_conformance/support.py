@@ -257,6 +257,7 @@ def move(
 
 
 __all__ = [
+    "WRONG_HASH",
     "WireDocument",
     "assert_commit_success",
     "assert_doc_headers",
@@ -267,17 +268,23 @@ __all__ = [
     "build_document",
     "chunk_upload",
     "commit",
+    "commit_with_session",
     "delete",
+    "expected_delta",
     "expires_at_header",
     "has_dpe_vary",
+    "inside_scoped",
     "limits_of",
+    "list_all",
     "move",
     "negotiate",
     "optional_identity",
     "outside_scoped",
     "parse_rfc3339",
     "payload_limit_within_budget",
+    "seed",
     "session_of",
+    "skeleton_multiset",
     "stage_all",
     "text_element",
     "upload_blob",
@@ -529,3 +536,57 @@ def commit_with_session(
         headers=headers,
         json={"document": document.document, "staging_session": session_id},
     )
+
+
+# ------------------------------------------------- 读回、delta 与完整翻页（#59 追加；只追加）
+
+
+def skeleton_multiset(target: Target, uri: str, *, identity: Identity) -> Counter[str]:
+    """经 get_skeleton 读回并展开为元素 content_hash 多重集（delta 的计数单位，core §3.3）。"""
+    response = target.send("GET", "documents", identity=identity, params={"uri": uri})
+    assert response.status_code == 200, f"读回 {uri} 失败：{response.status_code}"
+    return Counter(h for page in response.json()["pages"] for h in page["elements"])
+
+
+def expected_delta(before: Counter[str], after: Counter[str]) -> dict[str, int]:
+    """core §3.3 的 delta：新旧元素多重集之差。
+
+    added = 新∖旧、removed = 旧∖新、retained = 交集，均按多重集计。
+    """
+    return {
+        "added": sum((after - before).values()),
+        "removed": sum((before - after).values()),
+        "retained": sum((after & before).values()),
+    }
+
+
+def list_all(
+    target: Target,
+    prefix: str,
+    *,
+    identity: Identity,
+    contract: str = dpe_hash.CONTRACT,
+    max_pages: int = 100,
+) -> dict[str, str]:
+    """``list`` 前缀下的全部条目（file_uri → doc_hash），翻页至 ``next_cursor`` 为空——不假定
+    服务端的分页大小（``list_page_max``）。逐条核对条目确以 ``prefix`` 开头（HTTP §4.4 的码点前缀
+    匹配），违例时给出明确原因。"""
+    out: dict[str, str] = {}
+    cursor: str | None = None
+    for _ in range(max_pages):
+        params = {"prefix": prefix} if cursor is None else {"prefix": prefix, "cursor": cursor}
+        response = target.send(
+            "GET", "documents", identity=identity, contract=contract, params=params
+        )
+        assert response.status_code == 200, f"list 返回 {response.status_code}"
+        body = response.json()
+        for entry in body["documents"]:
+            uri = entry["file_uri"]
+            assert uri.startswith(prefix), (
+                f"list 返回了不以前缀 {prefix!r} 开头的条目 {uri!r}（HTTP §4.4 码点前缀匹配）"
+            )
+            out[uri] = entry["doc_hash"]
+        cursor = body["next_cursor"]
+        if cursor is None:
+            return out
+    raise AssertionError(f"list 分页未在 {max_pages} 页内结束")

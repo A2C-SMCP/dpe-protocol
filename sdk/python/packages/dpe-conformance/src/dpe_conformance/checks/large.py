@@ -37,6 +37,7 @@ from dpe_conformance.support import (
     chunk_upload,
     commit_with_session,
     limits_of,
+    list_all,
     negotiate,
     session_of,
     stage_all,
@@ -376,13 +377,8 @@ def test_staging_is_invisible_to_reads(conformance_target: Target, full_identity
         "GET", "documents", identity=full_identity, params={"uri": uri}
     )
     assert_problem(skeleton, status=404, code="DPE_NOT_FOUND")
-    listed = conformance_target.send(
-        "GET", "documents", identity=full_identity, params={"prefix": namespace}
-    )
-    assert listed.status_code == 200
-    assert uri not in {entry["file_uri"] for entry in listed.json()["documents"]}, (
-        "暂存中的文档不得出现在 list 中（可见中间态即跑偏）"
-    )
+    listed = list_all(conformance_target, namespace, identity=full_identity)
+    assert uri not in listed, "暂存中的文档不得出现在 list 中（可见中间态即跑偏）"
 
     committed = commit_with_session(
         conformance_target,
