@@ -354,7 +354,8 @@ class _App:
                 raise _NotDpe(405, [("Allow", ", ".join(_METHODS[route]))])
             headers = _headers(scope)
             # 错误注入（#123）：命中探针的合法路由请求直接以注入的错误应答，不进入引擎；
-            # 位置在路由与方法判定之后、认证与请求体之前（限流/不可用按规范可在任何时刻发生）
+            # 位置在路由与方法判定之后、认证与请求体之前（限流/不可用按规范不在求值顺序之内，
+            # 且须早于请求产生任何效果）
             injected = self._injected_error(headers) if self.hooks is not None else None
             if injected is not None:
                 response = _problem(injected, route, if_match=False)
