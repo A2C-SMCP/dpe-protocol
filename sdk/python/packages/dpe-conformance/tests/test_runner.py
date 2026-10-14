@@ -69,6 +69,7 @@ def test_sections_discovery() -> None:
     assert list_sections() == (
         "capabilities",
         "commit",
+        "contracts",
         "http_binding",
         "large",
         "order",
