@@ -363,10 +363,11 @@ class Serve:
             # 发现不完整（读不了的目录，或读不出的新文件——不分暂时还是内容问题：内容问题也会
             # 消失，比如文件写到一半、或编码被改回去）：被藏起来的可能正是改名目标，推迟
             # delete / move。不推迟会怎样：本轮先 delete 了源，而本轮因 error 不推进游标；
-            # 下一轮以旧游标重判，目标读得出了、配成 move，源却已在 remote 上删掉——move
-            # 永久失败（§7.2「源已不存在、目标未达成」，#178 落地前）。摘要与某个消失文件
-            # 相同的新文件同样先不产出——否则它先被建出来，下一轮配成的 move 会撞上已存在的
-            # 目标
+            # 下一轮以旧游标重判，目标读得出了、配成 move，源却已在 remote 上删掉（运行器凭
+            # 紧跟的目标 document 能把目标建出来，§7.2「move 未达成之后的目标 document」，#178，但那
+            # 丢失了 move 保留学习产物的语义——推迟让它在发现完整的一轮里成为真正的 move）。
+            # 摘要与某个消失文件相同的新文件同样先不产出——否则它先被建出来，下一轮配成的
+            # move 会撞上已存在的目标
             gone_digests = {previous[key] for key in gone}
             for entry in appeared:
                 if digests.get(entry.identifier) in gone_digests:

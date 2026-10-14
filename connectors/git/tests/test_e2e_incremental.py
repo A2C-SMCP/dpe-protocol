@@ -215,3 +215,42 @@ def test_move_onto_a_target_created_by_a_failed_round(tmp_path: Path) -> None:
         listing = runner.listing("git://inc/")
         assert set(listing) == {"y"}  # 源已删、目标保留
         assert listing == runner.full_mapping()  # R = F(S)
+
+
+def test_move_after_own_delete_in_a_failed_round_converges(tmp_path: Path) -> None:
+    """本实例已删掉的文档在别处以相同内容重新出现（connector §7.2「move 未达成之后的
+    目标 document」，#178，#165 的对称情形）：
+
+    1. x、w 已同步；删掉 x，同轮 w 读不出（条目级 error，发现仍完整）→ delete x 已生效，但本轮
+       partial、游标不推进；
+    2. w 恢复，x 的克隆以 y 出现，下一轮仍从旧游标开始：x 消失、y 新出现且一一对应 → move x→y，
+       并紧跟 y 的 document（§6.5）；remote 上源与目标都不存在、本实例无 x 的 L → y 由 document
+       以 if_absent 建出，move 按已达成计 → succeeded，R = F(S)。
+    """
+    root = tmp_path / "root"
+    make_repo(root / "x", "共同的历史")
+    make_repo(root / "w", "另一个仓库")
+    run_git(tmp_path, "clone", "-q", str(root / "x"), str(tmp_path / "y-later"))
+    with reference_server() as remote:
+        runner = Runner(tmp_path, remote, root)
+        assert runner.incremental()["counts"]["created"] == 2
+        objects = root / "w" / ".git" / "objects"
+        objects.rename(objects.with_name("objects.away"))
+        shutil.rmtree(root / "x")
+        try:
+            partial = runner.incremental(expect=1)
+        finally:
+            objects.with_name("objects.away").rename(objects)
+        assert partial["outcome"] == "partial", partial
+        assert partial["counts"]["deleted"] == 1 and partial["cursor_persisted"] is False
+        assert set(runner.listing("git://inc/")) == {"w"}  # x 已在 remote 上删除
+
+        shutil.move(str(tmp_path / "y-later"), str(root / "y"))
+        converged = runner.incremental()
+        assert converged["outcome"] == "succeeded", converged
+        counts = converged["counts"]
+        assert (counts["moved"], counts["created"], counts["failed"]) == (1, 1, 0)
+        assert converged["cursor_persisted"] is True
+        listing = runner.listing("git://inc/")
+        assert set(listing) == {"w", "y"}
+        assert listing == runner.full_mapping()  # R = F(S)
