@@ -155,7 +155,7 @@ def fixture(tmp_path: Path) -> Iterator[Fixture]:
 
 def test_fixture_declares_every_table_scenario() -> None:
     """夹具的场景清单与 §8.4 表一一对应（新增场景须先进规范表，再进夹具与本文件）。"""
-    assert len(FIXTURE.SCENARIOS) == 21 and len(set(FIXTURE.SCENARIOS)) == 21
+    assert len(FIXTURE.SCENARIOS) == 22 and len(set(FIXTURE.SCENARIOS)) == 22
     manifest = json.loads((FIXTURE_DIR / "dpe-connector.json").read_text(encoding="utf-8"))
     assert (manifest["name"], manifest["version"]) == (FIXTURE.NAME, FIXTURE.VERSION)
 
@@ -356,6 +356,19 @@ def test_no_cursor(fixture: Fixture) -> None:
     second = fixture.run("no_cursor")
     assert second.code == 0, second.stderr
     assert second.events("round.started")[0]["cursor_given"] is False  # 下一轮不带游标
+
+
+def test_cursor_violation(fixture: Fixture) -> None:
+    """声明不支持游标却给出游标：协议违规、游标不缓存，下一轮同样不带——无视声明的运行器会把
+    它缓存并回传（no_cursor 验不出这一点，#191）。"""
+    for _ in range(2):
+        run = fixture.run("cursor_violation")
+        assert run.code == 2, run.stderr
+        assert run.report["outcome"] == "failed"
+        assert "protocol_error" in run.codes()
+        assert run.report["cursor_persisted"] is False
+        assert run.events("round.started")[0]["cursor_given"] is False
+        assert [e["level"] for e in run.events("round.finished")] == ["error"]
 
 
 # ---------------------------------------------------------------------- 环境
