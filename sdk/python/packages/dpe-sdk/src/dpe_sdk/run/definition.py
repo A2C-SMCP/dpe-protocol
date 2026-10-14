@@ -17,12 +17,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import urlsplit
 
 import dpe_hash
 from pydantic import Field, PrivateAttr, ValidationInfo, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
+from dpe_sdk.remote_url import check_remote_url
 from dpe_sdk.run._json import (
     ClosedModel,
     has_numeric_violation,
@@ -60,12 +60,8 @@ def _valid_id(id_: str) -> str:
 
 
 def _valid_url(url: str) -> str:
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ValueError("remote.url 须为 http(s) 绝对 URL")
-    if "@" in parts.netloc:
-        raise ValueError("remote.url 不得含 userinfo（凭证经 remote.credential 引用）")
-    return url
+    # §4.4：符合 HTTP 绑定 §1 的 remote URL 文法（与传输层同一个判定）
+    return check_remote_url(url)
 
 
 def _valid_prefix(prefix: str) -> str:

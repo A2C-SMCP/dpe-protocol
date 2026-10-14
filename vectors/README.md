@@ -1,6 +1,6 @@
 # 一致性向量
 
-向量是规范的组成部分：绝大多数是 [hash 契约 1](../spec/hash-contract-1.md) 的向量，`config_schema_patterns.json` 是 [connector 契约](../spec/connector-contract.md) §4.1.1（`config_schema` 的正则子集）的向量，`nesting_depth.json` 是 [core.md](../spec/core.md) §2.8（对象嵌套深度上界）的向量，两者与 hash 契约无关。全部由规范参考实现 `scripts/gen_vectors.py`（辅以 `scripts/pattern_subset.py`）生成；SDK 与任何服务端实现只**消费**向量（在各自 CI 中逐字节校验），不得生成或手改。
+向量是规范的组成部分：绝大多数是 [hash 契约 1](../spec/hash-contract-1.md) 的向量，`config_schema_patterns.json` 是 [connector 契约](../spec/connector-contract.md) §4.1.1（`config_schema` 的正则子集）的向量，`nesting_depth.json` 是 [core.md](../spec/core.md) §2.8（对象嵌套深度上界）的向量，`remote_url.json` 是 [HTTP 绑定](../spec/bindings/http.md) §1（remote URL 的文法）的向量，三者与 hash 契约无关。全部由规范参考实现 `scripts/gen_vectors.py`（辅以 `scripts/pattern_subset.py`）生成；SDK 与任何服务端实现只**消费**向量（在各自 CI 中逐字节校验），不得生成或手改。
 
 ```bash
 make vectors          # 重新生成（仅在规范变更时）
@@ -9,7 +9,7 @@ make check-vectors    # CI：校验已提交向量与生成器一致
 
 ## 文件格式
 
-每个 `*.json` 是一个向量，`kind` 六类：
+每个 `*.json` 是一个向量，`kind` 七类：
 
 - **`document`**：
   - `documents` 是一到多篇文档的 hash 输入：
@@ -44,6 +44,10 @@ make check-vectors    # CI：校验已提交向量与生成器一致
   - `invalid_patterns[]`：MUST 被拒绝；`reason` 是参考实现给出的原因标记，供人阅读，不作跨实现的断言。无法以普通字符串表达的输入（孤立代理项等，同 hash 向量的 `input_json` 约定）以 `pattern_json` 给出原始 JSON 文本，消费方用严格解析器读取；
   - `match_cases[]`：每条给出 `pattern`、`value` 与是否匹配的 `match`；无法以普通字符串表达的输入（孤立代理项等）以 `value_json` 给出原始 JSON 文本（同 `pattern_json` 的约定）。期望值是**手写**的规范语义，生成器只用参考匹配器交叉核对（不一致即生成失败），避免「翻译器自己验证自己」；消费方 MUST 逐条通过；
   - `schema_cases[]`：每条给出 `schema`（必填）与 `manifest_valid`（必填）；可另给 `config` 与 `config_valid`（两者必须成对出现，生成器断言其配对）。`manifest_valid` 由 §4.1.1 的**封闭关键字子集检查器**交叉核对（未列出的关键字、`$defs` 非根、`$ref` 非唯一形式（含前缀/解码边界）/目标不存在/`$defs` 引用成环、`items` 数组形式、schema 的展开深度（≤64：根计 1，schema 位置与 `$ref` 跳转各 +1、沿引用继续计）、清单文件的 JSON 嵌套深度（≤64；向量里的 `schema` 被包进清单对象，计数含包装层，含数据位置上的深度）、容器形状与 `type` 取值，以及 pattern 子集越界都判清单不合法；`const` / `default` / `examples` 内的同名键是数据）；`config_valid` 是手写期望，生成器不做 JSON Schema 求值。
+
+- **`remote_url`**（`remote_url.json`，规范依据 [HTTP 绑定](../spec/bindings/http.md) §1，与 hash 契约无关）：
+  - `valid[]`：MUST 被客户端接受的 remote URL（字符串）；
+  - `invalid[]`：每条给出 `input` 与 `reason`，`input` MUST 被拒绝；`reason` 是参考实现给出的原因标记，供人阅读，不作跨实现的断言。
 
 `manifest.json` 记录：
 - 契约版本；

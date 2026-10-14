@@ -53,11 +53,12 @@ fn synthetic_request(retry_safe: bool) -> Request {
     }
 }
 
-/// 一个**建连必失败**的 remote：端口 0 永远不会有监听者（内核分配的临时端口不可能是 0），
-/// 连接在连接阶段失败、不会碰到任何真实服务端——并行用例互不干扰（曾用「bind(0) 探端口再
-/// 释放」，释放的端口会被并行用例的假服务端抢去，造成串扰）。
+/// 一个**建连必失败**的 remote：端口 1（tcpmux）在测试机上没有监听者，且假服务端都绑定内核
+/// 分配的临时端口（bind(0)，不会落在 1），连接在连接阶段失败、不会碰到任何真实服务端——并行
+/// 用例互不干扰（曾用「bind(0) 探端口再释放」，释放的端口会被并行用例的假服务端抢去，造成
+/// 串扰）。曾用端口 0，但它不在 HTTP 绑定 §1 允许的端口范围（1–65535）内，构造客户端即被拒绝。
 fn refused_remote() -> String {
-    "http://127.0.0.1:0".to_owned()
+    "http://127.0.0.1:1".to_owned()
 }
 
 fn puts(server: &MockServer) -> Vec<Recorded> {
@@ -70,33 +71,25 @@ fn puts(server: &MockServer) -> Vec<Recorded> {
 
 // ---------------------------------------------------------------------- remote 校验
 
-#[test]
-fn remote_must_be_a_plain_http_base_url() {
-    for remote in [
-        "ftp://example.com/r",
-        "http://",
-        "https://example.com/r?a=1",
-        "https://example.com/r#f",
-        // 空定界符：解析后与「没有」不可区分，但原始串拼接会让首个请求错位，必须同样拒绝
-        "https://example.com/r?",
-        "https://example.com/r#",
-        "https://user:pw@example.com/r",
-        "not-a-url",
-    ] {
-        let error = DpeClient::new(remote).expect_err("remote 必须被拒绝");
-        assert_eq!(error.kind(), ErrorKind::InvalidArgument, "{remote}");
-    }
-}
+// remote URL 的接受与拒绝由向量逐例固定（remote_url_vectors.rs，HTTP 绑定 §1）
 
 #[tokio::test]
-async fn remote_trailing_slash_is_stripped_and_the_first_target_follows_it() {
+async fn remote_is_used_verbatim_and_the_first_target_follows_it() {
     let server = MockServer::start(vec![capabilities_reply(&["gzip"])]);
-    let client = DpeClient::new(format!("{}/", server.remote())).expect("remote 合法");
-    assert_eq!(client.remote(), server.remote());
+    let remote = format!("{}/r/a%2Fb", server.remote());
+    let client = DpeClient::new(remote.as_str()).expect("remote 合法");
+    assert_eq!(client.remote(), remote);
     assert_eq!(client.capabilities().await.expect("能力").protocol, "dpe/1");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].target, "/capabilities");
+    assert_eq!(requests[0].target, "/r/a%2Fb/capabilities");
+}
+
+#[test]
+fn remote_trailing_slash_is_rejected() {
+    // 尾部 `/` 不再归一（HTTP 绑定 §1 第 7 条）
+    let error = DpeClient::new("http://dpe.test/r/1/").expect_err("尾部 / 必须被拒绝");
+    assert_eq!(error.kind(), ErrorKind::InvalidArgument);
 }
 
 // ---------------------------------------------------------------------- capabilities 快照

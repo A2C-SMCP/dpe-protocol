@@ -10,7 +10,7 @@ import，不拉入 httpx）、增量推送（``dpe_sdk.pusher``，同样不在�
 
 from importlib.metadata import version
 
-from dpe_sdk import errors, media, protocol, wire
+from dpe_sdk import errors, media, protocol, remote_url, wire
 from dpe_sdk.errors import DpeError
 from dpe_sdk.models import Document, DocumentObject, ElementObject, Page, PageObject
 
@@ -27,5 +27,6 @@ __all__ = [
     "errors",
     "media",
     "protocol",
+    "remote_url",
     "wire",
 ]

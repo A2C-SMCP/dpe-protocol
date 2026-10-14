@@ -42,8 +42,9 @@
 //! 「响应不合规」如实上报，不静默出错。同理不开 http2，与 Python 侧（纯 HTTP/1.1）同形态。
 //!
 //! **remote**：一个客户端绑定一个 remote（HTTP 绑定 §1 的 base URL，如
-//! `https://example.com/anything/r/42`）；只接受 http / https、无查询串与片段（含裸 `?` /
-//! `#`）、不带凭证信息（凭证走 [`CredentialProvider`]），去尾部 `/`。capabilities 在客户端
+//! `https://example.com/anything/r/42`），按 HTTP 绑定 §1 的文法校验（[`crate::remote_url`]：
+//! http / https、规范化不动点、无查询串与片段、无 userinfo（凭证走 [`CredentialProvider`]）、
+//! 不以 `/` 结尾等），合法即原样使用。capabilities 在客户端
 //! 实例内快照一次（核心的契约与 limits 与它绑定；并发首次访问只协商一次），服务端变更能力后
 //! 应新建客户端。
 //!
@@ -70,6 +71,7 @@ use crate::protocol::{
     Negotiated, Operation, Precondition, ProtocolCore, Request, Response, Session, Step,
     TransportError, DEFAULT_MAX_RESENDS,
 };
+use crate::remote_url::check_remote_url;
 use crate::wire::{Capabilities, CommitResult, ListPage, MoveResult, Skeleton};
 
 /// 客户端缺省超时：连接与整个请求都受它约束（同 Python 侧的 30 秒）。
@@ -91,39 +93,11 @@ const MIN_COMPRESS_BYTES: usize = 1024;
 
 const JSON: &str = "application/json";
 
-/// 校验并归一化 remote：http / https、有 host、无查询串与片段（含裸定界符）、不带凭证信息，
-/// 去掉尾部 `/`（同 Python 的 `_remote_base`）。
-///
-/// 解析会把显式的空定界符（`…/r?`、`…/r#`）归一成「没有」，但拼 target 用的是原始串，
-/// 放行会让首个请求静默错位（`…/r?/capabilities` 被解析成 path=/r、query=/capabilities），
-/// 所以在原始串上直接拒绝任何 `?` / `#`（`%3F` 这类编码不在此列）。
+/// 按 HTTP 绑定 §1 的文法校验 remote，原样返回（下文路径直接拼在它之后；同 Python 的
+/// `_remote_base`）。
 fn remote_base(remote: &str) -> Result<String, Error> {
-    let base = remote.trim_end_matches('/');
-    if base.contains('?') || base.contains('#') {
-        return Err(Error::invalid_argument(format!(
-            "remote 不能带查询串或片段：{remote:?}"
-        )));
-    }
-    let url = reqwest::Url::parse(base).map_err(|error| {
-        Error::invalid_argument(format!("remote 不是合法的 URL：{remote:?}（{error}）"))
-    })?;
-    if url.scheme() != "http" && url.scheme() != "https" {
-        return Err(Error::invalid_argument(format!(
-            "remote 只接受 http / https，实际为 {:?}：{remote:?}",
-            url.scheme()
-        )));
-    }
-    if url.host_str().map_or(true, str::is_empty) {
-        return Err(Error::invalid_argument(format!(
-            "remote 缺少主机名：{remote:?}"
-        )));
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(Error::invalid_argument(format!(
-            "remote 不能带凭证信息（凭证走 CredentialProvider）：{remote:?}"
-        )));
-    }
-    Ok(base.to_owned())
+    check_remote_url(remote).map_err(|error| Error::invalid_argument(error.to_string()))?;
+    Ok(remote.to_owned())
 }
 
 /// 读取请求头（`Headers` 的读取本就大小写不敏感）。
@@ -280,7 +254,7 @@ impl DpeClient {
         DpeClientBuilder::new(remote)
     }
 
-    /// 归一化后的 remote（去尾部 `/`）。
+    /// remote（已通过 HTTP 绑定 §1 的文法，原样保存）。
     pub fn remote(&self) -> &str {
         &self.remote
     }
@@ -601,8 +575,8 @@ impl DpeClient {
 
 /// [`DpeClient`] 的构造器：remote 之外全部有缺省值。
 ///
-/// remote 在 [`build`](DpeClientBuilder::build) 时校验（http / https、有 host、无查询串与
-/// 片段、不带凭证信息），去尾部 `/`。
+/// remote 在 [`build`](DpeClientBuilder::build) 时按 HTTP 绑定 §1 的文法校验
+/// （[`crate::remote_url::check_remote_url`]）。
 pub struct DpeClientBuilder {
     remote: String,
     credential: Option<Arc<dyn CredentialProvider>>,

@@ -49,7 +49,7 @@ pub struct RemoteSpec {
 }
 
 impl RemoteSpec {
-    /// remote 的基 URL（http.md §1），已校验为 http(s) 且不含 userinfo。
+    /// remote 的基 URL，已按 HTTP 绑定 §1 的文法校验（同一 remote 只有这一种写法）。
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -589,76 +589,11 @@ fn conflict_action(
     }
 }
 
-/// `remote.url` 的检查（§4.4、http.md §1）：http(s) 绝对 URL、authority 存在且 host 非空、
-/// 不含 userinfo。
-///
-/// 只做这四条语义级判定：规范对 `remote.url` 目前只写了「base URL、不含 userinfo」，没有可判定
-/// 文法，收紧由 Issue #112 收口（gen_vectors 出向量，两个 SDK 一起收紧）。**不复刻 CPython
-/// `urlsplit` 的实现细节**——括号字面量的格式、IPvFuture、`%zone`、NFKC 同形检查，以及控制
-/// 字符与前导空白的清除，都是 CPython 的加固行为、不是规范；在 Rust 里逐条复制等于用实现倒逼
-/// 规范（CLAUDE.md：两份实现出现分歧时修规范，不互相对齐），且会随 CPython 补丁版本漂移。
-/// 因此在这些边缘输入上，两侧在 #112 落地前可能结果不同，且方向不一：Rust 不做清理也不做
-/// 字面量校验——会接受 CPython 拒绝的输入（如括号字面量格式非法、netloc 带 NFKC 分隔符
-/// 字符），也会拒绝 CPython 清理后接受的输入（如前导空白、制表符）。
+/// `remote.url` 的检查（§4.4）：符合 HTTP 绑定 §1 的 remote URL 文法（与传输层同一个判定）。
 ///
 /// 消息不回显 URL（可能含 userinfo 密码，形式恰是「凭证误写在 URL 里」，§4.3「不外泄」）。
 fn check_remote_url(url: &str) -> Result<(), InstanceFailure> {
-    let Some((scheme, rest)) = split_scheme(url) else {
-        return Err(invalid("remote.url 须为 http(s) 绝对 URL"));
-    };
-    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
-        return Err(invalid("remote.url 的方案必须是 http 或 https"));
-    }
-    let Some(authority) = rest.strip_prefix("//") else {
-        return Err(invalid("remote.url 须为绝对 URL（缺 authority）"));
-    };
-    let netloc = match authority.find(['/', '?', '#']) {
-        Some(end) => &authority[..end],
-        None => authority,
-    };
-    if netloc.contains('@') {
-        return Err(invalid(
-            "remote.url 不得含 userinfo（凭证经 remote.credential 引用）",
-        ));
-    }
-    if host_of(netloc).is_empty() {
-        return Err(invalid("remote.url 缺少 host"));
-    }
-    Ok(())
-}
-
-/// 取 netloc 中的 host：RFC 3986 §3.2 的结构切分——`[...]` 字面量取括号内，否则取第一个 `:`
-/// （port 分界）之前；不做字面量格式校验（文法见 #112）。
-fn host_of(netloc: &str) -> &str {
-    if let Some(bracketed) = netloc.strip_prefix('[') {
-        return match bracketed.find(']') {
-            Some(close) => &bracketed[..close],
-            None => bracketed,
-        };
-    }
-    match netloc.find(':') {
-        Some(colon) => &netloc[..colon],
-        None => netloc,
-    }
-}
-
-/// RFC 3986 §3.1 的 scheme 切分：首个 `:` 之前是
-/// `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` 才算 scheme，返回（scheme, `:` 后的部分）。
-fn split_scheme(url: &str) -> Option<(&str, &str)> {
-    let colon = url.find(':')?;
-    if colon == 0 {
-        return None;
-    }
-    let candidate = &url[..colon];
-    let mut characters = candidate.chars();
-    let first = characters.next()?;
-    if !first.is_ascii_alphabetic() {
-        return None;
-    }
-    if !characters.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
-        return None;
-    }
-    Some((candidate, &url[colon + 1..]))
+    crate::remote_url::check_remote_url(url).map_err(|error| invalid(error.to_string()))
 }
 
 /// 在 `PATH` 中查找可执行文件（与 `shutil.which` 同口径）：整个 `PATH` 为空视为找不到

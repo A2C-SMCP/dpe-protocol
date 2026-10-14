@@ -508,7 +508,6 @@ async def _run_locked(
         ),
     )
     # 先更新登记（含前缀变化与重叠检查），再写入新指纹（§4.4：更新登记在写新指纹之前完成）
-    # TODO(#112): remote.url 目前按字面比较（§3「remote.url 相同」）；#112 定稿后按其文法比较
     directory.register(
         definition.id, remote_url=definition.remote.url, uri_prefix=definition.uri_prefix
     )
