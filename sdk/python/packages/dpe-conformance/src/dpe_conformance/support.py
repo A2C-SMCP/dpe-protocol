@@ -479,3 +479,49 @@ def payload_limit_within_budget(target: Target, identity: Identity) -> int:
     if limit > PAYLOAD_BUDGET:
         pytest.skip(f"max_payload_bytes={limit} 超过本检查预算 {PAYLOAD_BUDGET}，不构造越界请求")
     return limit
+
+
+# ------------------------------------------------- 各章共用的铺垫（#57 追加；只追加）
+
+#: 合法但必然比较不上的 doc_hash（条件头与 base_hash 按值比较，core §5.2）
+WRONG_HASH = "dpe1:" + "0" * 64
+
+
+def seed(target: Target, uri: str, document: WireDocument, *, identity: Identity) -> WireDocument:
+    """以快路径新建一份文档（``If-None-Match: *``），供检查铺垫；返回该文档。"""
+    response = commit(target, uri, document, identity=identity, if_none_match_star=True)
+    assert response.status_code == 201, f"铺垫失败：{response.status_code} {response.text[:200]}"
+    return document
+
+
+def inside_scoped(scoped: Identity, name: str) -> str:
+    """scoped 身份**有写授权**的 URI（其可写前缀之下，每次唯一）。
+
+    注意它在测试命名空间（``uri-prefix``）之外：以此铺垫的文档留在操作者配置的 scoped 前缀下。
+    """
+    assert scoped.prefix is not None, "scoped 身份必须声明 prefix"
+    return f"{scoped.prefix}{uuid.uuid4().hex}/{name}"
+
+
+def commit_with_session(
+    target: Target,
+    uri: str,
+    document: WireDocument,
+    session_id: str,
+    *,
+    identity: Identity,
+    if_match: str | None = None,
+) -> httpx.Response:
+    """引用暂存会话的 commit（只带文档对象，HTTP §4.8）。
+
+    给出 ``if_match`` 时以它为前置条件更新，否则以 ``If-None-Match: *`` 新建。
+    """
+    headers = {"If-Match": f'"{if_match}"'} if if_match is not None else {"If-None-Match": "*"}
+    return target.send(
+        "PUT",
+        "documents",
+        identity=identity,
+        params={"uri": uri},
+        headers=headers,
+        json={"document": document.document, "staging_session": session_id},
+    )

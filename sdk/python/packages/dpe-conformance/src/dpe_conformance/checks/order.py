@@ -32,6 +32,7 @@ from dpe_hash import ElementObject
 from dpe_conformance.config import Identity
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
+    WRONG_HASH,
     WireDocument,
     assert_commit_success,
     assert_problem,
@@ -39,11 +40,13 @@ from dpe_conformance.support import (
     build_document,
     commit,
     delete,
+    inside_scoped,
     move,
     negotiate,
     optional_identity,
     outside_scoped,
     payload_limit_within_budget,
+    seed,
     session_of,
     text_element,
     upload_blob,
@@ -51,21 +54,12 @@ from dpe_conformance.support import (
 
 #: 不符合 core §1.1 文法的 URI（无 scheme）
 _BAD_URI = "zzz-no-scheme"
-#: 合法但必然比较不上的 doc_hash（条件头按值比较）
-_WRONG_HASH = "dpe1:" + "0" * 64
 #: 不是任何合法 hash / 引用的路径段（HTTP §4.7 路径 hash 的语法）
 _BAD_REF = "not-a-hash"
 
 
 def _document(text: str = "order") -> WireDocument:
     return build_document([[text_element(text)]])
-
-
-def _seed(target: Target, identity: Identity, uri: str, document: WireDocument) -> None:
-    response = commit(target, uri, document, identity=identity, if_none_match_star=True)
-    assert response.status_code == 201, (
-        f"预置文档失败：{response.status_code} {response.text[:200]}"
-    )
 
 
 def _open_session(target: Target, identity: Identity, name: str) -> str:
@@ -217,7 +211,7 @@ def _send_with_uri(
             identity=identity,
             contract=contract,
             params={"uri": uri},
-            headers={"If-Match": f'"{_WRONG_HASH}"'},
+            headers={"If-Match": f'"{WRONG_HASH}"'},
         )
         return response, True
     assert endpoint == "get_skeleton"
@@ -265,7 +259,7 @@ def test_move_uri_grammar_precedes_authorization(
         _BAD_URI,
         outside_scoped(conformance_target, scoped_identity, "move-to"),
         identity=scoped_identity,
-        base_hash=_WRONG_HASH,
+        base_hash=WRONG_HASH,
     )
     assert_problem(response, status=400, code="DPE_VALIDATION", documents_path=False)
 
@@ -296,7 +290,7 @@ def test_condition_syntax_is_not_bypassed_by_unchanged(
     DPE_VALIDATION，unchanged 不放行它。"""
     uri = conformance_target.uri("order/unchanged-syntax")
     document = _document("same")
-    _seed(conformance_target, full_identity, uri, document)
+    seed(conformance_target, uri, document, identity=full_identity)
     response = conformance_target.send(
         "PUT",
         "documents",
@@ -567,7 +561,7 @@ def _invalid_message(case: str, document: WireDocument) -> dict[str, Any]:
         bad = {"category": "NarrativeText", "text": "x", "text_as_html": "<p>x</p>"}
         return {"json": {**body, "objects": [bad]}, "headers": {"If-None-Match": "*"}}
     assert case == "force-with-condition"
-    return {"json": {**body, "force": True}, "headers": {"If-Match": f'"{_WRONG_HASH}"'}}
+    return {"json": {**body, "force": True}, "headers": {"If-Match": f'"{WRONG_HASH}"'}}
 
 
 @pytest.mark.parametrize("case", ["non-ijson", "envelope", "object", "force-with-condition"])
@@ -597,9 +591,9 @@ def test_valid_message_without_write_access_is_forbidden(
     文档状态的判定）。"""
     uri = outside_scoped(conformance_target, scoped_identity, f"forbidden-{state}")
     if state == "existing":
-        _seed(conformance_target, full_identity, uri, _document("seeded"))
+        seed(conformance_target, uri, _document("seeded"), identity=full_identity)
     response = commit(
-        conformance_target, uri, _document("other"), identity=scoped_identity, if_match=_WRONG_HASH
+        conformance_target, uri, _document("other"), identity=scoped_identity, if_match=WRONG_HASH
     )
     assert_problem(response, status=403, code="DPE_FORBIDDEN")
 
@@ -614,16 +608,10 @@ def test_move_envelope_precedes_authorization(
         outside_scoped(conformance_target, scoped_identity, "move-from"),
         outside_scoped(conformance_target, scoped_identity, "move-to"),
         identity=scoped_identity,
-        base_hash=_WRONG_HASH,
+        base_hash=WRONG_HASH,
         extra_body={"extra": 1},
     )
     assert_problem(response, status=400, code="DPE_VALIDATION", documents_path=False)
-
-
-def _inside_scoped(scoped: Identity, name: str) -> str:
-    """scoped 身份**有写授权**的 URI（其可写前缀之下）。"""
-    assert scoped.prefix is not None, "scoped 身份必须声明 prefix"
-    return f"{scoped.prefix}{uuid.uuid4().hex}/{name}"
 
 
 @pytest.mark.parametrize("unauthorized", ["source", "target", "both"])
@@ -639,13 +627,13 @@ def test_move_without_write_access_is_forbidden(
     def side(name: str, denied: bool) -> str:
         if denied:
             return outside_scoped(conformance_target, scoped_identity, name)
-        return _inside_scoped(scoped_identity, name)
+        return inside_scoped(scoped_identity, name)
 
     source = side("move-src", unauthorized in ("source", "both"))
     target = side("move-dst", unauthorized in ("target", "both"))
-    _seed(conformance_target, full_identity, source, _document("move"))
+    seed(conformance_target, source, _document("move"), identity=full_identity)
     response = move(
-        conformance_target, source, target, identity=scoped_identity, base_hash=_WRONG_HASH
+        conformance_target, source, target, identity=scoped_identity, base_hash=WRONG_HASH
     )
     assert_problem(response, status=403, code="DPE_FORBIDDEN", documents_path=False)
 
@@ -662,7 +650,7 @@ def test_inline_validation_precedes_precondition(
 ) -> None:
     """core §3.3：内联对象非法（第 1 步）+ 前置条件不满足（第 5 步）→ DPE_VALIDATION。"""
     uri = conformance_target.uri("order/inline-vs-precondition")
-    _seed(conformance_target, full_identity, uri, _document("v1"))
+    seed(conformance_target, uri, _document("v1"), identity=full_identity)
     body = _document("v2").commit_body()
     body["objects"] = [*body["objects"], _invalid_inline()]
     response = conformance_target.send(
@@ -670,7 +658,7 @@ def test_inline_validation_precedes_precondition(
         "documents",
         identity=full_identity,
         params={"uri": uri},
-        headers={"If-Match": f'"{_WRONG_HASH}"'},
+        headers={"If-Match": f'"{WRONG_HASH}"'},
         json=body,
     )
     assert_problem(response, status=400, code="DPE_VALIDATION")
@@ -681,13 +669,13 @@ def test_precondition_precedes_missing_content(
 ) -> None:
     """core §3.3：前置条件不满足（第 5 步）+ 内容缺失（第 6 步）→ DPE_PRECONDITION_FAILED。"""
     uri = conformance_target.uri("order/precondition-vs-missing")
-    _seed(conformance_target, full_identity, uri, _document("v1"))
+    seed(conformance_target, uri, _document("v1"), identity=full_identity)
     response = conformance_target.send(
         "PUT",
         "documents",
         identity=full_identity,
         params={"uri": uri},
-        headers={"If-Match": f'"{_WRONG_HASH}"'},
+        headers={"If-Match": f'"{WRONG_HASH}"'},
         json={"document": _document("v2").document},
     )
     assert_problem(response, status=412, code="DPE_PRECONDITION_FAILED")
@@ -699,7 +687,7 @@ def test_unchanged_does_not_bypass_inline_validation(
     """core §3.3：第 1 步先于第 4 步——内容未变但带非法内联对象 → DPE_VALIDATION。"""
     uri = conformance_target.uri("order/unchanged-invalid-inline")
     document = _document("same")
-    _seed(conformance_target, full_identity, uri, document)
+    seed(conformance_target, uri, document, identity=full_identity)
     body = document.commit_body()
     body["objects"] = [_invalid_inline()]
     response = conformance_target.send(
@@ -719,7 +707,7 @@ def test_unchanged_ignores_valid_redundant_inline(
     """core §3.3 第 4 步：内容未变时带合法但多余的内联对象 → 200 unchanged（不处理这些对象）。"""
     uri = conformance_target.uri("order/unchanged-redundant")
     document = _document("same")
-    _seed(conformance_target, full_identity, uri, document)
+    seed(conformance_target, uri, document, identity=full_identity)
     response = commit(
         conformance_target,
         uri,

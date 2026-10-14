@@ -24,6 +24,7 @@ from dpe_conformance.config import Identity
 from dpe_conformance.hooks import HookDriver, self_write_payload
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
+    WRONG_HASH,
     WireDocument,
     assert_commit_success,
     assert_problem,
@@ -31,20 +32,13 @@ from dpe_conformance.support import (
     commit,
     delete,
     move,
+    seed,
     text_element,
 )
-
-_WRONG_HASH = "dpe1:" + "0" * 64
 
 
 def _document() -> WireDocument:
     return build_document([[text_element("alpha"), text_element("beta")]], title="写操作样例")
-
-
-def _seed(target: Target, identity: Identity, uri: str, document: WireDocument) -> WireDocument:
-    response = commit(target, uri, document, identity=identity, if_none_match_star=True)
-    assert response.status_code == 201, f"铺垫失败：{response.status_code} {response.text[:200]}"
-    return document
 
 
 def _payload(uri: str, document: WireDocument, **extra: Any) -> dict[str, Any]:
@@ -80,7 +74,7 @@ def _head(target: Target, identity: Identity, uri: str) -> str | None:
 def test_delete_removes_document(conformance_target: Target, full_identity: Identity) -> None:
     """HTTP §4.9 + §3.3：带 ``If-Match`` 的 delete 成功 ``204``；此后 ``head`` 不再存在。"""
     uri = conformance_target.uri("write/delete")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     response = delete(conformance_target, uri, identity=full_identity, if_match=document.doc_hash)
     assert response.status_code == 204, f"delete 预期 204，实际 {response.status_code}"
     assert _head(conformance_target, full_identity, uri) is None, "删除后 head 不应存在"
@@ -89,7 +83,7 @@ def test_delete_removes_document(conformance_target: Target, full_identity: Iden
 def test_delete_retry_is_not_found(conformance_target: Target, full_identity: Identity) -> None:
     """CORE §5.2 + HTTP §5：删除后原样重试 → ``412`` + ``DPE_NOT_FOUND``（重试即成功）。"""
     uri = conformance_target.uri("write/delete-retry")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     first = delete(conformance_target, uri, identity=full_identity, if_match=document.doc_hash)
     assert first.status_code == 204, f"首次删除失败：{first.status_code}"
     retry = delete(conformance_target, uri, identity=full_identity, if_match=document.doc_hash)
@@ -103,7 +97,7 @@ def test_delete_wrong_base_hash_is_precondition_failed(
     内容未被删除（读回互证）。"""
     uri = conformance_target.uri("write/delete-mismatch")
     first = _document()
-    _seed(conformance_target, full_identity, uri, first)
+    seed(conformance_target, uri, first, identity=full_identity)
     changed = build_document([[text_element("changed")]])
     updated = commit(
         conformance_target, uri, changed, identity=full_identity, if_match=first.doc_hash
@@ -122,7 +116,7 @@ def test_delete_missing_precondition_is_required(
 ) -> None:
     """CORE §5.1：delete 不带任何前置条件 → ``428`` + ``DPE_PRECONDITION_REQUIRED``。"""
     uri = conformance_target.uri("write/delete-no-precondition")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     response = delete(conformance_target, uri, identity=full_identity)
     assert_problem(response, status=428, code="DPE_PRECONDITION_REQUIRED")
 
@@ -132,7 +126,7 @@ def test_delete_if_none_match_is_validation(
 ) -> None:
     """HTTP §3.2：delete 不接受 ``If-None-Match``（哪怕取值 ``*``）→ 400 + ``DPE_VALIDATION``。"""
     uri = conformance_target.uri("write/delete-if-none-match")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     response = delete(
         conformance_target, uri, identity=full_identity, headers={"If-None-Match": "*"}
     )
@@ -142,7 +136,7 @@ def test_delete_if_none_match_is_validation(
 def test_delete_absent_is_not_found(conformance_target: Target, full_identity: Identity) -> None:
     """HTTP §5：对从未存在的文档做带 ``If-Match`` 的 delete → ``412`` + ``DPE_NOT_FOUND``。"""
     uri = conformance_target.uri("write/delete-absent")
-    response = delete(conformance_target, uri, identity=full_identity, if_match=_WRONG_HASH)
+    response = delete(conformance_target, uri, identity=full_identity, if_match=WRONG_HASH)
     assert_problem(response, status=412, code="DPE_NOT_FOUND")
 
 
@@ -152,7 +146,7 @@ def test_deleted_document_stale_base_hash_does_not_resurrect(
     """CORE §5.1（「文档已删 → DPE_NOT_FOUND」）：删除后以旧 ``base_hash`` 的提交不得复活文档，
     即使内容与删除前完全相同——unchanged 只对存在的文档成立。"""
     uri = conformance_target.uri("write/resurrection")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     removed = delete(conformance_target, uri, identity=full_identity, if_match=document.doc_hash)
     assert removed.status_code == 204, f"铺垫失败：{removed.status_code}"
 
@@ -169,7 +163,7 @@ def test_recreated_document_accepts_old_base_hash(
     """CORE §5.1（ABA 无害）：删除后以相同内容重建，基于旧 doc_hash 的写入作用于新文档——
     防护的是「凭旧 base_hash 复活」，不是「重建后的正常 CAS 写入」。"""
     uri = conformance_target.uri("write/aba")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     removed = delete(conformance_target, uri, identity=full_identity, if_match=document.doc_hash)
     assert removed.status_code == 204, f"铺垫失败：{removed.status_code}"
     recreated = commit(
@@ -193,7 +187,7 @@ def test_move_moves_content(conformance_target: Target, full_identity: Identity)
     一致（file_uri 不进 hash，内容原样搬运）。"""
     source = conformance_target.uri("write/move-from")
     target_uri = conformance_target.uri("write/move-to")
-    document = _seed(conformance_target, full_identity, source, _document())
+    document = seed(conformance_target, source, _document(), identity=full_identity)
     response = move(
         conformance_target, source, target_uri, identity=full_identity, base_hash=document.doc_hash
     )
@@ -214,7 +208,7 @@ def test_move_retry_is_idempotent(conformance_target: Target, full_identity: Ide
     """CORE §5.2 第 4 步（「目标状态已达成即成功」）：首次成功后原样重试仍返回成功。"""
     source = conformance_target.uri("write/move-retry-from")
     target_uri = conformance_target.uri("write/move-retry-to")
-    document = _seed(conformance_target, full_identity, source, _document())
+    document = seed(conformance_target, source, _document(), identity=full_identity)
     first = move(
         conformance_target, source, target_uri, identity=full_identity, base_hash=document.doc_hash
     )
@@ -232,7 +226,7 @@ def test_move_retry_after_target_rewritten_is_not_found(
     """CORE §5.2：首次成功后目标被他人改写，重试 → ``404`` + ``DPE_NOT_FOUND``（如实上报）。"""
     source = conformance_target.uri("write/move-rewritten-from")
     target_uri = conformance_target.uri("write/move-rewritten-to")
-    document = _seed(conformance_target, full_identity, source, _document())
+    document = seed(conformance_target, source, _document(), identity=full_identity)
     first = move(
         conformance_target, source, target_uri, identity=full_identity, base_hash=document.doc_hash
     )
@@ -260,9 +254,9 @@ def test_move_wrong_base_hash_is_precondition_failed(
     ``DPE_PRECONDITION_FAILED``（请求体前置条件取 409，非 412）；源未被移动。"""
     source = conformance_target.uri("write/move-mismatch-from")
     target_uri = conformance_target.uri("write/move-mismatch-to")
-    document = _seed(conformance_target, full_identity, source, _document())
+    document = seed(conformance_target, source, _document(), identity=full_identity)
     response = move(
-        conformance_target, source, target_uri, identity=full_identity, base_hash=_WRONG_HASH
+        conformance_target, source, target_uri, identity=full_identity, base_hash=WRONG_HASH
     )
     assert_problem(response, status=409, code="DPE_PRECONDITION_FAILED", documents_path=False)
     assert _head(conformance_target, full_identity, source) == document.doc_hash, "源不应被移动"
@@ -274,12 +268,12 @@ def test_move_existing_target_is_already_exists(
     """CORE §5.2 第 5 步：目标已存在 → ``409`` + ``DPE_ALREADY_EXISTS``；两侧内容不变。"""
     source = conformance_target.uri("write/move-exists-from")
     target_uri = conformance_target.uri("write/move-exists-to")
-    source_document = _seed(conformance_target, full_identity, source, _document())
-    target_document = _seed(
+    source_document = seed(conformance_target, source, _document(), identity=full_identity)
+    target_document = seed(
         conformance_target,
-        full_identity,
         target_uri,
         build_document([[text_element("occupant")]]),
+        identity=full_identity,
     )
     response = move(
         conformance_target,
@@ -299,7 +293,7 @@ def test_move_missing_base_hash_is_required(
     """CORE §5.2 第 3 步：move 缺少 ``base_hash`` → ``428`` + ``DPE_PRECONDITION_REQUIRED``。"""
     source = conformance_target.uri("write/move-no-precondition-from")
     target_uri = conformance_target.uri("write/move-no-precondition-to")
-    _seed(conformance_target, full_identity, source, _document())
+    seed(conformance_target, source, _document(), identity=full_identity)
     response = move(conformance_target, source, target_uri, identity=full_identity)
     assert_problem(response, status=428, code="DPE_PRECONDITION_REQUIRED", documents_path=False)
 
@@ -311,7 +305,7 @@ def test_move_absent_source_is_not_found(
     source = conformance_target.uri("write/move-absent-from")
     target_uri = conformance_target.uri("write/move-absent-to")
     response = move(
-        conformance_target, source, target_uri, identity=full_identity, base_hash=_WRONG_HASH
+        conformance_target, source, target_uri, identity=full_identity, base_hash=WRONG_HASH
     )
     assert_problem(response, status=404, code="DPE_NOT_FOUND", documents_path=False)
 
@@ -321,10 +315,10 @@ def test_move_to_itself(conformance_target: Target, full_identity: Identity) -> 
     ``base_hash`` 相符取 ``DPE_ALREADY_EXISTS``、不符时 ``DPE_PRECONDITION_FAILED`` 优先；
     MUST NOT 当作「目标状态已达成」返回成功。"""
     uri = conformance_target.uri("write/move-itself")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     same = move(conformance_target, uri, uri, identity=full_identity, base_hash=document.doc_hash)
     assert_problem(same, status=409, code="DPE_ALREADY_EXISTS", documents_path=False)
-    mismatch = move(conformance_target, uri, uri, identity=full_identity, base_hash=_WRONG_HASH)
+    mismatch = move(conformance_target, uri, uri, identity=full_identity, base_hash=WRONG_HASH)
     assert_problem(mismatch, status=409, code="DPE_PRECONDITION_FAILED", documents_path=False)
 
 
@@ -342,7 +336,7 @@ def test_move_envelope_is_closed(
     400 + ``DPE_VALIDATION``。"""
     source = conformance_target.uri(f"write/move-envelope/{case}/from")
     target_uri = conformance_target.uri(f"write/move-envelope/{case}/to")
-    document = _seed(conformance_target, full_identity, source, _document())
+    document = seed(conformance_target, source, _document(), identity=full_identity)
     response = move(
         conformance_target,
         source,
@@ -389,7 +383,7 @@ def test_self_write_respects_cas(
     assert result.ok, f"self-write 钩子失败：{result.detail}"
 
     stale = build_document([[text_element("stale")]])
-    stale_result = self_write_hook.call(_payload(uri, stale, base_hash=_WRONG_HASH))
+    stale_result = self_write_hook.call(_payload(uri, stale, base_hash=WRONG_HASH))
     assert not stale_result.ok, f"陈旧 base_hash 的同级写入必须判失败：{stale_result.detail}"
     assert _head(conformance_target, full_identity, uri) == seeded.doc_hash, (
         "陈旧 base_hash 的同级写入不得改变内容"

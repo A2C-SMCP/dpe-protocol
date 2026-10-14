@@ -20,6 +20,7 @@ import pytest
 from dpe_conformance.config import Identity
 from dpe_conformance.plugin import Target
 from dpe_conformance.support import (
+    WRONG_HASH,
     WireDocument,
     assert_commit_success,
     assert_problem,
@@ -27,8 +28,6 @@ from dpe_conformance.support import (
     commit,
     text_element,
 )
-
-_WRONG_HASH = "dpe1:" + "0" * 64
 
 
 def _document() -> WireDocument:
@@ -93,7 +92,7 @@ def test_commit_unchanged_precedes_precondition(
     )
     assert first.status_code == 201, f"首次提交失败：{first.status_code}"
     response = commit(
-        conformance_target, uri, document, identity=full_identity, if_match=_WRONG_HASH
+        conformance_target, uri, document, identity=full_identity, if_match=WRONG_HASH
     )
     assert_commit_success(response, status=200, status_text="unchanged", doc_hash=document.doc_hash)
 
@@ -155,9 +154,7 @@ def test_commit_precondition_failed(conformance_target: Target, full_identity: I
     )
     assert first.status_code == 201, f"首次提交失败：{first.status_code}"
     changed = build_document([[text_element("changed")]])
-    response = commit(
-        conformance_target, uri, changed, identity=full_identity, if_match=_WRONG_HASH
-    )
+    response = commit(conformance_target, uri, changed, identity=full_identity, if_match=WRONG_HASH)
     assert_problem(response, status=412, code="DPE_PRECONDITION_FAILED")
 
 
@@ -171,7 +168,7 @@ def test_commit_if_match_on_absent_is_not_found(
         uri,
         _document(),
         identity=full_identity,
-        if_match=_WRONG_HASH,
+        if_match=WRONG_HASH,
     )
     assert_problem(response, status=412, code="DPE_NOT_FOUND")
 
@@ -204,7 +201,7 @@ def test_commit_missing_precondition(conformance_target: Target, full_identity: 
     [
         {"If-Match": "*"},
         {"If-Match": '"a", "b"'},
-        {"If-Match": f'"{_WRONG_HASH}"', "If-None-Match": "*"},
+        {"If-Match": f'"{WRONG_HASH}"', "If-None-Match": "*"},
         {"If-None-Match": '"x"'},
     ],
 )
@@ -235,7 +232,7 @@ def test_commit_force_with_condition_header(
         "documents",
         identity=full_identity,
         params={"uri": uri},
-        headers={"If-Match": f'"{_WRONG_HASH}"'},
+        headers={"If-Match": f'"{WRONG_HASH}"'},
         json={**_document().commit_body(), "force": True},
     )
     assert_problem(response, status=400, code="DPE_VALIDATION")

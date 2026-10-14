@@ -27,17 +27,10 @@ from dpe_conformance.support import (
     assert_head_error,
     assert_problem,
     build_document,
-    commit,
     has_dpe_vary,
+    seed,
     text_element,
 )
-
-
-def _seed(target: Target, identity: Identity, uri: str, document: WireDocument) -> WireDocument:
-    """建一份文档（If-None-Match: *），供读接口检查使用。"""
-    response = commit(target, uri, document, identity=identity, if_none_match_star=True)
-    assert response.status_code == 201, f"铺垫失败：{response.status_code} {response.text[:200]}"
-    return document
 
 
 def _document() -> WireDocument:
@@ -51,7 +44,7 @@ def _document() -> WireDocument:
 def test_head_reports_doc_hash(conformance_target: Target, full_identity: Identity) -> None:
     """HTTP §3.3：HEAD 成功时按声明契约给出权威 doc_hash 与 ETag；HEAD 无体。"""
     uri = conformance_target.uri("read/head")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     response = conformance_target.send(
         "HEAD", "documents", identity=full_identity, params={"uri": uri}
     )
@@ -98,7 +91,7 @@ def test_batch_head_positional_correspondence(
 ) -> None:
     """HTTP §4.2：``heads`` 与请求一一对应，不存在的文档为 ``null``；该端点不带 Vary。"""
     uri = conformance_target.uri("read/batch")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     absent = conformance_target.uri("read/batch-absent")
     response = conformance_target.send(
         "POST", "heads", identity=full_identity, json={"uris": [uri, absent]}
@@ -141,7 +134,7 @@ def test_get_skeleton_round_trip(conformance_target: Target, full_identity: Iden
     任何多出来的、缺掉的或被改写的字段都会改变 hash，因此这同时证明「不含服务端衍生数据」。
     """
     uri = conformance_target.uri("read/skeleton")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     response = conformance_target.send(
         "GET", "documents", identity=full_identity, params={"uri": uri}
     )
@@ -182,7 +175,7 @@ def test_get_skeleton_conditional_not_modified(
 ) -> None:
     """HTTP §3.3：``If-None-Match`` 命中当前 doc_hash → 304，空体，头齐（含 Vary 与 ETag）。"""
     uri = conformance_target.uri("read/conditional")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     response = conformance_target.send(
         "GET",
         "documents",
@@ -204,7 +197,7 @@ def test_get_skeleton_invalid_conditional_is_validation(
 ) -> None:
     """HTTP §3.3：``If-None-Match`` 的非法取值 → 400 + DPE_VALIDATION（排在「契约 → uri」之后）。"""
     uri = conformance_target.uri(f"read/conditional-invalid/{case}")
-    _seed(conformance_target, full_identity, uri, _document())
+    seed(conformance_target, uri, _document(), identity=full_identity)
     response = conformance_target.send(
         "GET",
         "documents",
@@ -223,7 +216,7 @@ def test_list_paginates_through_own_documents(
     expected: dict[str, str] = {}
     for name in ("one", "two", "three"):
         uri = f"{namespace}{name}"
-        document = _seed(conformance_target, full_identity, uri, _document())
+        document = seed(conformance_target, uri, _document(), identity=full_identity)
         expected[uri] = document.doc_hash
     seen: dict[str, str] = {}
     cursor: str | None = None
@@ -259,7 +252,7 @@ def test_list_prefix_matches_codepoints_not_segments(
     ab = f"{base}ab"
     inside = f"{base}a/x"
     for uri in (a, ab, inside):
-        _seed(conformance_target, full_identity, uri, _document())
+        seed(conformance_target, uri, _document(), identity=full_identity)
 
     def listed(prefix: str) -> set[str]:
         response = conformance_target.send(
@@ -287,7 +280,7 @@ def test_list_missing_prefix_lists_all(conformance_target: Target, full_identity
     skip 并计入计数。
     """
     uri = conformance_target.uri("read/all")
-    document = _seed(conformance_target, full_identity, uri, _document())
+    document = seed(conformance_target, uri, _document(), identity=full_identity)
     limits = conformance_target.send(
         "GET", "capabilities", contract=None, identity=full_identity
     ).json()["limits"]

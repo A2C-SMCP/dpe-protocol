@@ -43,7 +43,7 @@ uri-prefix = "dpe://conformance/"          # 测试 URI 命名空间（缺省值
 
 [identities.full]                          # 全量写权（core §8 安全检查的「有写授权」侧）
 env = "DPE_CONF_FULL_AUTH"
-[identities.scoped]                        # 仅前缀可写（服务端按该前缀授予写权）
+[identities.scoped]                        # 仅前缀可写（服务端按该前缀授予写权；检查会在该前缀下新建文档）
 authorization = "Bearer scoped"
 prefix = "dpe://acme/scoped/"
 [identities.no-force]                      # 无 force 权限（force 的 403 检查；需对测试
@@ -61,6 +61,8 @@ staging-ttl-seconds = 30                   # 服务端以短 TTL 运行时的声
 ```
 
 身份与钩子都是可选的：**未配置时，依赖它们的检查显式 skip 并计入计数**（`--counts-json` 的 `skipped`），CI 以执行数基线拦截「skip 太多」的假绿。
+
+配置 scoped 身份后，部分检查需要「scoped 有写权」的文档，会在它的可写前缀下（测试命名空间 `uri-prefix` 之外）新建文档，跑完不清理。请为 scoped 身份配置一个专供跑分的前缀。
 
 另有两类 skip 取决于服务端本身，同样如实计数：认证顺序的检查先发一个不带凭证的探针，只有服务端对它返回 `401` 时才执行（接受匿名请求的服务端无从观测「认证先于报文校验」）；一致性向量用例只在输入涉及的契约前缀于用例口径与服务端声明的 `hash_contracts` 中受支持与否一致时执行（见 [在 CI 中运行跑分器](https://github.com/A2C-SMCP/dpe-protocol/blob/main/conformance/ci.md)）。
 

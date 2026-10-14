@@ -103,7 +103,7 @@ def _cases(path: Path, outcome: str) -> set[tuple[str, str]]:
 
 
 def test_full_run_against_reference_server(tmp_path: Path) -> None:
-    """有配置：全部章节 233 条检查，执行 232 条（含经错误注入钩子构造的 429 / 503）；唯一的
+    """有配置：全部章节 248 条检查，执行 247 条（含经错误注入钩子构造的 429 / 503）；唯一的
     skip 是前提为「服务端未声明 dpe2」的那条向量用例，由只声明 dpe1 的第二轮执行。"""
     with reference_server(*_SERVER_ARGS) as server:
         config = _write_config(tmp_path, server.hooks)
@@ -122,9 +122,10 @@ def test_full_run_against_reference_server(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     data = json.loads(counts.read_text(encoding="utf-8"))
     totals = data["totals"]
-    assert (totals["executed"], totals["passed"], totals["skipped"]) == (232, 232, 1)
+    assert (totals["executed"], totals["passed"], totals["skipped"]) == (247, 247, 1)
     assert data["sections"]["smoke"]["executed"] == 3
     assert data["sections"]["order"]["executed"] == 52
+    assert data["sections"]["security"]["executed"] == 15
     assert data["sections"]["validation"]["executed"] == 8
     assert (data["sections"]["vectors"]["executed"], data["sections"]["vectors"]["skipped"]) == (
         62,
@@ -141,11 +142,11 @@ def test_full_run_against_reference_server(tmp_path: Path) -> None:
         "skipped": 0,
     }
     suite = _testsuite(junit)
-    assert suite.get("tests") == "233"
+    assert suite.get("tests") == "248"
     assert int(suite.get("failures", "0")) == 0
     assert _cases(junit, "skipped") == _NEEDS_NO_DPE2
     assert _cases(junit, "passed") >= _NEEDS_DPE2
-    assert "执行 232" in completed.stdout
+    assert "执行 247" in completed.stdout
 
 
 def test_single_contract_vectors_pass_covers_the_other_side(tmp_path: Path) -> None:
@@ -170,7 +171,7 @@ def test_single_contract_vectors_pass_covers_the_other_side(tmp_path: Path) -> N
 
 
 def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
-    """无配置：不依赖身份/钩子的检查执行（9 条）；其余显式 skip（224 条），
+    """无配置：不依赖身份/钩子的检查执行（9 条）；其余显式 skip（239 条），
     JUnit 与计数都有 skip。"""
     with reference_server() as server:
         junit = tmp_path / "junit.xml"
@@ -185,15 +186,15 @@ def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
         )
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (9, 224)
+    assert (totals["executed"], totals["skipped"]) == (9, 239)
     suite = _testsuite(junit)
-    assert suite.get("tests") == "233"
-    assert int(suite.get("skipped", "0")) == 224
+    assert suite.get("tests") == "248"
+    assert int(suite.get("skipped", "0")) == 239
 
 
 def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
-    """CWD 下的 dpe-conformance.toml 自动生效：给出 full 身份后 skip 数从 224
-    变 35（仅余钩子、scoped、匿名可访问时的认证顺序与只在声明 dpe2 时适用的向量用例）。"""
+    """CWD 下的 dpe-conformance.toml 自动生效：给出 full 身份后 skip 数从 239
+    变 47（仅余钩子、scoped、匿名可访问时的认证顺序与只在声明 dpe2 时适用的向量用例）。"""
     with reference_server() as server:
         (tmp_path / "dpe-conformance.toml").write_text(
             'schema = 1\n[identities.full]\nauthorization = "Bearer full-auth"\n',
@@ -203,7 +204,7 @@ def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
         completed = run_cli(server.url, "--counts-json", str(counts), cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (198, 35)
+    assert (totals["executed"], totals["skipped"]) == (201, 47)
 
 
 def test_budget_skips_are_counted(tmp_path: Path) -> None:
@@ -241,7 +242,7 @@ def test_remote_with_path_prefix(tmp_path: Path) -> None:
         completed = run_cli(server.url, "--counts-json", str(counts), cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
     totals = json.loads(counts.read_text(encoding="utf-8"))["totals"]
-    assert (totals["executed"], totals["skipped"]) == (9, 224)
+    assert (totals["executed"], totals["skipped"]) == (9, 239)
 
 
 def test_unknown_section_is_rejected(tmp_path: Path) -> None:

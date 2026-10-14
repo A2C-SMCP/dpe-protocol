@@ -73,6 +73,7 @@ def test_sections_discovery() -> None:
         "large",
         "order",
         "read",
+        "security",
         "smoke",
         "staging",
         "validation",
