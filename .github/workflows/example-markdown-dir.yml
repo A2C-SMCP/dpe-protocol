@@ -1,0 +1,47 @@
+# 示例插件（examples/markdown-dir，#53）的质量门禁：ruff / mypy --strict / pytest（含真实 dpe-run
+# + 参考服务端的端到端收敛用例）。它是与 sdk/python 独立的 uv 项目（运行时零依赖；测试依赖经
+# path 源指向 SDK 的成员包，自带 uv.lock），
+# 因此单独一个 job；paths 同时匹配 examples/markdown-dir/** 与 sdk/python/**——SDK 的协议行为一变，
+# 本 job 就会跑：锁文件里钉的是 SDK 的版本约束，SDK 升版后 --locked 失败即是「必须同步」的信号。
+name: example-markdown-dir
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/markdown-dir/**"
+      - "sdk/python/**"
+      - ".github/workflows/example-markdown-dir.yml"
+  pull_request:
+    paths:
+      - "examples/markdown-dir/**"
+      - "sdk/python/**"
+      - ".github/workflows/example-markdown-dir.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: examples/markdown-dir
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest

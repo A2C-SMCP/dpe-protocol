@@ -1,0 +1,25 @@
+{
+  "manifest_version": 1,
+  "name": "markdown-dir",
+  "version": "0.1.0",
+  "description": "示例插件（不发布、非官方）：把本地目录里的 Markdown 文件映射为 DPE 文档，引用的本地图片经 read_blob 投递；增量游标、删除与改名",
+  "protocol_versions": ["dpe-connector/1"],
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "root": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Markdown 文件所在的本地目录（递归，不跟随符号链接）"
+      },
+      "include_hidden": {
+        "type": "boolean",
+        "description": "是否包含以 . 开头的目录与文件（缺省 false）"
+      }
+    },
+    "required": ["root"],
+    "additionalProperties": false
+  },
+  "secrets": []
+}
