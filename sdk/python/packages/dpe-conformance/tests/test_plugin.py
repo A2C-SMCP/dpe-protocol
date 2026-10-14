@@ -29,8 +29,9 @@ def _target(recorded: list[httpx.Request]) -> Target:
 
 
 def test_with_trailing_slash() -> None:
+    # 合法的 remote URL 不以 / 结尾（HTTP 绑定 §1），插件启动时已复核
     assert _with_trailing_slash("http://dpe.test/r/1") == "http://dpe.test/r/1/"
-    assert _with_trailing_slash("http://dpe.test/r/1/") == "http://dpe.test/r/1/"
+    assert _with_trailing_slash("http://dpe.test") == "http://dpe.test/"
 
 
 def test_target_send_keeps_path_prefix_and_headers() -> None:

@@ -1,8 +1,9 @@
 """dpe-hash：DPE hash 契约的独立 hash 核心。
 
 零运行时依赖、纯 Python；内核与 dpe-sdk 都直接依赖本包，不另行维护 hash 实现。
-实现 hash 契约 1（spec/hash-contract-1.md）、file_uri 语法规范化（spec/core.md §1.1）与
-file_type 语法校验（core.md §2.5），并导出契约常量、三层对象类型与带规范错误码的异常。
+实现 hash 契约 1（spec/hash-contract-1.md）、file_uri 语法规范化（spec/core.md §1.1）、
+file_type 语法校验（core.md §2.5）与 remote URL 的文法判定（HTTP 绑定 §1），并导出契约常量、
+三层对象类型与带规范错误码的异常。
 """
 
 from importlib.metadata import version
@@ -52,6 +53,7 @@ from dpe_hash.models import (
     PageHashes,
     PageObject,
 )
+from dpe_hash.remote_url import RemoteUrlError, check_remote_url
 from dpe_hash.uri import normalize_file_uri
 
 __version__ = version("dpe-hash")
@@ -80,10 +82,12 @@ __all__ = [
     "PageFields",
     "PageHashes",
     "PageObject",
+    "RemoteUrlError",
     "UndefinedFieldError",
     "ValidationError",
     "__version__",
     "blob_ref",
+    "check_remote_url",
     "children",
     "content_hash",
     "doc_hash",

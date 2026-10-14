@@ -1,13 +1,13 @@
 # DPE v1 HTTP 绑定
 
-> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73、#81、#83、#97、#112、#127、#130、#171 修订
+> 状态：**定稿**（M1，2026-10-06；此后的变更经 Issue 修订并发布新文档版本）｜ 依据：[docs/plan/v1-plan.md](../../docs/plan/v1-plan.md) §9，经 Issue #4、#6（评审）、#30、#31、#39、#63、#70、#73、#81、#83、#97、#112、#127、#130、#171、#181 修订
 > 本文把 [core.md](../core.md) 的抽象操作映射到 HTTP。v1 只有这一种规范性绑定。
 
 ## 1. Remote 与路径
 
 一个 remote 就是一个 base URL（例如 `https://example.com/anything/r/42`），协议不关心其内部结构，**不使用**域名根路径下的 `.well-known`。下文所有路径都相对于 remote，remote 自身路径不带尾部 `/`。
 
-**remote URL 的文法**：SDK 与 connector 运行器接受的 remote URL MUST 同时满足下列各条，不满足即拒绝（在发出任何请求之前）。判定只依赖输入串本身，不依赖任何语言的 URL 库：
+**remote URL 的文法**：SDK、connector 运行器与一致性跑分器接受的 remote URL MUST 同时满足下列各条，不满足即拒绝（在发出任何请求之前）。判定只依赖输入串本身，不依赖任何语言的 URL 库：
 
 1. 是 core.md §1.1 的合法 URI，且已是其规范化不动点（`normalize_file_uri(u) == u`）。这一条同时要求：只含 ASCII（非 ASCII 主机名须先转为 IDNA A-label，路径中的非 ASCII 须按 UTF-8 百分号编码）、scheme 与 host 为小写、百分号三元组的 hex 为大写、表示 unreserved 字符的三元组不得出现；
 2. 形如 `scheme "://" authority path`，scheme 为 `http` 或 `https`；
@@ -19,7 +19,7 @@
 6. port 可省略；出现 `:` 时，其后 MUST 是 1–65535 的十进制数、无前导 `0`，且不是该 scheme 的默认端口（`http` 为 80，`https` 为 443）；
 7. path 为空，或是一个以上的 `"/" segment`（`segment = *pchar`，RFC 3986 §3.3）；path MUST NOT 以 `/` 结尾，MUST NOT 含点段（整段为 `.` 或 `..`）。
 
-这些规则消除了同一 URI 的写法差异（scheme 与 host 的大小写、unreserved 字符的百分号编码与三元组 hex 的大小写、默认端口、尾部 `/`、点段，以及同一 IP 地址的不同文本形式），因此两个 remote URL 是否相同按字节比较即可（如 connector 契约 §3、§4.4 的前缀重叠检查）。按 RFC 3986 本就不等价的 URI 仍是不同的 remote URL：路径中 reserved 字符编码与否（`/r%21` 与 `/r!`）、空段（`/a//b` 与 `/a/b`），即使某些服务端框架会把它们路由到同一处；指向同一服务器的不同主机名（DNS 别名）、主机名与其 IP 地址、IPv4 地址与其 IPv4 映射 IPv6 地址同样如此。这类重叠无法由字符串判定，由服务端的前缀授权兜底。客户端直接把下文路径拼接在 remote URL 之后发出请求，路径与端口不经 URL 库归一（URL 库会移除点段、去掉默认端口，使实际请求与拼接结果不一致）。一致性向量 `kind: "remote_url"`（`vectors/remote_url.json`）给出 MUST 接受与 MUST 拒绝的两组用例，SDK 与 connector 运行器 MUST 逐例通过。本文法只约束它们如何接受 remote URL；服务端不据此校验任何请求。
+这些规则消除了同一 URI 的写法差异（scheme 与 host 的大小写、unreserved 字符的百分号编码与三元组 hex 的大小写、默认端口、尾部 `/`、点段，以及同一 IP 地址的不同文本形式），因此两个 remote URL 是否相同按字节比较即可（如 connector 契约 §3、§4.4 的前缀重叠检查）。按 RFC 3986 本就不等价的 URI 仍是不同的 remote URL：路径中 reserved 字符编码与否（`/r%21` 与 `/r!`）、空段（`/a//b` 与 `/a/b`），即使某些服务端框架会把它们路由到同一处；指向同一服务器的不同主机名（DNS 别名）、主机名与其 IP 地址、IPv4 地址与其 IPv4 映射 IPv6 地址同样如此。这类重叠无法由字符串判定，由服务端的前缀授权兜底。客户端直接把下文路径拼接在 remote URL 之后发出请求，路径与端口不经 URL 库归一（URL 库会移除点段、去掉默认端口，使实际请求与拼接结果不一致）。一致性向量 `kind: "remote_url"`（`vectors/remote_url.json`）给出 MUST 接受与 MUST 拒绝的两组用例，SDK、connector 运行器与一致性跑分器 MUST 逐例通过（跑分器对不合法的被测 remote 不开跑：SDK 连不上的 remote 跑分全绿没有意义）。本文法只约束它们如何接受 remote URL；服务端不据此校验任何请求。
 
 | Core 操作 | HTTP |
 | --- | --- |

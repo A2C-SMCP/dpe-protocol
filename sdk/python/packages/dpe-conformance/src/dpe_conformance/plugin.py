@@ -86,6 +86,11 @@ class _State:
         url = os.environ.get(TARGET_ENV)
         if not url:
             raise pytest.UsageError(f"缺少环境变量 {TARGET_ENV}（应由 dpe-conformance CLI 设置）")
+        # CLI 已校验过；绕过 CLI 直接 `pytest -p dpe_conformance.plugin` 时在此复核（HTTP 绑定 §1）
+        try:
+            dpe_hash.check_remote_url(url)
+        except dpe_hash.RemoteUrlError as exc:
+            raise pytest.UsageError(f"{TARGET_ENV} 不符合 HTTP 绑定 §1 的文法：{exc}") from None
         config_path = os.environ.get(CONFIG_ENV) or None
         try:
             conformance_config = (
@@ -116,8 +121,11 @@ def _require_state() -> _State:
 
 
 def _with_trailing_slash(url: str) -> str:
-    """httpx 的 base_url 合并按 RFC 3986：前缀路径（如 /r/1）必须以 / 结尾才不被相对路径吞掉。"""
-    return url if url.endswith("/") else url + "/"
+    """httpx 的 base_url 合并按 RFC 3986：前缀路径（如 /r/1）必须以 / 结尾才不被相对路径吞掉。
+
+    合法的 remote URL 不以 ``/`` 结尾（HTTP 绑定 §1 第 7 条，``_State`` 已复核），直接补一个。
+    """
+    return url + "/"
 
 
 def pytest_configure(config: pytest.Config) -> None:

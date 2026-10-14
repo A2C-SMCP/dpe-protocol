@@ -1,7 +1,8 @@
-"""remote URL 的文法（HTTP 绑定 §1）：一致性向量 vectors/remote_url.json 逐例经三个入口断言。
+"""remote URL 的文法（HTTP 绑定 §1）：一致性向量 vectors/remote_url.json 逐例经 SDK 的两个入口断言。
 
-入口：``check_remote_url`` 本身、``DpeClient`` / ``AsyncDpeClient`` 构造（传输层）、实例定义的
-``remote.url``（connector 契约 §4.4，含报告用的 ``peek_identity``）。三者是同一个判定。
+入口：``DpeClient`` / ``AsyncDpeClient`` 构造（传输层）、实例定义的 ``remote.url``（connector
+契约 §4.4，含报告用的 ``peek_identity``）。判定函数本身在 dpe-hash（``tests/test_remote_url.py``
+逐例消费），``dpe_sdk.remote_url`` 只是重新导出。
 """
 
 from __future__ import annotations
@@ -11,8 +12,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+import dpe_hash
 import pytest
-from dpe_sdk.remote_url import check_remote_url
+from dpe_sdk import remote_url
 from dpe_sdk.run import InstanceFailure
 from dpe_sdk.run.definition import parse_definition, peek_identity
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
@@ -54,18 +56,9 @@ def _peek(tmp_path: Path, url: str) -> str | None:
     return identity.remote_url
 
 
-def test_valid_remote_url_is_accepted_verbatim(vector: dict[str, Any]) -> None:
-    for url in vector["valid"]:
-        assert check_remote_url(url) == url, url
-
-
-def test_invalid_remote_url_is_rejected(vector: dict[str, Any]) -> None:
-    for case in vector["invalid"]:
-        url = case["input"]
-        with pytest.raises(ValueError) as info:
-            check_remote_url(url)
-        # 消息不回显 URL（userinfo 里可能是凭证）
-        assert not url or url not in str(info.value), url
+def test_remote_url_module_reexports_dpe_hash() -> None:
+    assert remote_url.check_remote_url is dpe_hash.check_remote_url
+    assert remote_url.RemoteUrlError is dpe_hash.RemoteUrlError
 
 
 @pytest.mark.anyio

@@ -56,7 +56,7 @@ def synthetic_suite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _run(sections: list[str], counts_path: Path) -> tuple[int, dict[str, Any] | None, str | None]:
     code, counts, message = run_suite(
-        target="http://dpe.test/",
+        target="http://dpe.test",
         config_path=None,
         sections=sections,
         junit_xml=None,
@@ -126,6 +126,25 @@ def test_collection_errors_are_counted(synthetic_suite: Path, tmp_path: Path) ->
     assert counts["totals"]["executed"] == 0  # 收集错误时 pytest 不执行任何用例
 
 
+def test_plugin_rejects_invalid_target_when_cli_is_bypassed(
+    synthetic_suite: Path, tmp_path: Path
+) -> None:
+    """绕过 CLI 时插件复核 remote URL（HTTP 绑定 §1）：不合法即用法错误，一条用例都不跑。"""
+    (synthetic_suite / "good.py").write_text(
+        "def test_ok() -> None:\n    assert True\n", encoding="utf-8"
+    )
+    code, counts, message = run_suite(
+        target="http://dpe.test/",  # 尾部 / 不合法
+        config_path=None,
+        sections=["good"],
+        junit_xml=None,
+        counts_path=tmp_path / "counts.json",
+    )
+    assert code == 2
+    assert message is not None and "未完成" in message
+    assert counts is None
+
+
 def test_section_attribution_covers_package_sections(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -174,7 +193,7 @@ def test_run_suite_environment_is_isolated(tmp_path: Path, monkeypatch: pytest.M
     env = captured["env"]
     assert "PYTEST_ADDOPTS" not in env and "PYTEST_PLUGINS" not in env
     assert CONFIG_ENV not in env  # 调用方环境里的配置不得穿透
-    assert env[TARGET_ENV] == "http://dpe.test/"
+    assert env[TARGET_ENV] == "http://dpe.test"
     assert env[COUNTS_ENV] == str(counts_path)
     args = captured["args"]
     ini = args[args.index("-c") + 1]
@@ -183,7 +202,7 @@ def test_run_suite_environment_is_isolated(tmp_path: Path, monkeypatch: pytest.M
     config = tmp_path / "dpe-conformance.toml"
     config.write_text("schema = 1\n", encoding="utf-8")
     code, _, _ = run_suite(
-        target="http://dpe.test/",
+        target="http://dpe.test",
         config_path=config,
         sections=["smoke"],
         junit_xml=None,

@@ -1,7 +1,8 @@
 //! 消费向量 kind：HTTP 绑定 §1（remote URL 的文法）的 `vectors/remote_url.json`，`valid` 与
-//! `invalid` 两组逐条经三个入口断言：[`check_remote_url`] 本身、`DpeClient` 构造（传输层，随
-//! feature `http`）、实例定义的 `remote.url`（connector 契约 §4.4）。三者是同一个判定，与
-//! Python SDK 的 `tests/test_remote_url.py` 对等。
+//! `invalid` 两组逐条经 SDK 的两个入口断言：`DpeClient` 构造（传输层，随 feature `http`）与
+//! 实例定义的 `remote.url`（connector 契约 §4.4）。判定函数本身在 dpe-hash（其
+//! `tests/remote_url.rs` 逐例消费），`dpe_sdk::remote_url` 只是重新导出；与 Python SDK 的
+//! `tests/test_remote_url_entry_points.py` 对等。
 //!
 //! 跨 crate 登记标记（`sdk/rust/vector-consumers.json` → `dpe-hash/tests/vectors.rs` 的
 //! `all_vector_kinds_have_consumers` 核验本文件存在且带下行标记）：
@@ -12,7 +13,6 @@ mod common;
 
 use serde_json::{json, Value};
 
-use dpe_sdk::remote_url::check_remote_url;
 use dpe_sdk::run::definition::parse_definition;
 
 fn vector() -> Value {
@@ -57,19 +57,13 @@ fn definition(url: &str) -> Value {
 }
 
 #[test]
-fn valid_remote_urls_are_accepted() {
-    for url in valid() {
-        assert_eq!(check_remote_url(&url), Ok(()), "{url}");
-    }
-}
-
-#[test]
-fn invalid_remote_urls_are_rejected_without_echo() {
-    for url in invalid() {
-        let error = check_remote_url(&url).expect_err(&url);
-        // 消息不回显 URL（userinfo 里可能是凭证）
-        assert!(url.is_empty() || !error.to_string().contains(&url), "{url}");
-    }
+fn remote_url_module_reexports_dpe_hash() {
+    let check: fn(&str) -> Result<(), dpe_sdk::remote_url::RemoteUrlError> =
+        dpe_sdk::remote_url::check_remote_url;
+    assert_eq!(
+        check("https://h/r"),
+        dpe_hash::check_remote_url("https://h/r")
+    );
 }
 
 #[test]

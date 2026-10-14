@@ -253,9 +253,11 @@ def test_unknown_section_is_rejected(tmp_path: Path) -> None:
 
 
 def test_bad_remote_url_is_rejected(tmp_path: Path) -> None:
-    completed = run_cli("not-a-url", cwd=tmp_path)
+    # 独立进程的冒烟用例；逐例的接受 / 拒绝见 test_cli_remote_url.py（消费 vectors/remote_url.json）
+    completed = run_cli("https://user:secret@example.com/r/", cwd=tmp_path)
     assert completed.returncode == 2
-    assert "http(s)" in completed.stderr
+    assert "HTTP 绑定 §1" in completed.stderr
+    assert "secret" not in completed.stderr
 
 
 def test_summary_mentions_collection_errors(capsys: pytest.CaptureFixture[str]) -> None:

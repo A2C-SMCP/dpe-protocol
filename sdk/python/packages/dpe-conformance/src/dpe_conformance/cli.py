@@ -19,7 +19,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+
+import dpe_hash
 
 from dpe_conformance import __version__
 from dpe_conformance.config import ConfigError, find_config, load_config
@@ -33,7 +34,9 @@ def _parser() -> argparse.ArgumentParser:
         epilog=f"可用章节：{'、'.join(list_sections())}",
     )
     parser.add_argument(
-        "remote", metavar="REMOTE-URL", help="被测 remote 的 base URL（如 https://host/r/1）"
+        "remote",
+        metavar="REMOTE-URL",
+        help="被测 remote 的 base URL（如 https://host/r/1），须符合 HTTP 绑定 §1 的文法",
     )
     parser.add_argument(
         "--config",
@@ -60,9 +63,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
 
-    parsed = urlparse(args.remote)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return _fail(f"REMOTE-URL 必须是 http(s) 绝对 URL，实际 {args.remote!r}")
+    # 与 SDK 同一判定（HTTP 绑定 §1）：SDK 连不上的 remote 不开跑；消息不回显 URL（可能含凭证）
+    try:
+        dpe_hash.check_remote_url(args.remote)
+    except dpe_hash.RemoteUrlError as exc:
+        return _fail(f"REMOTE-URL 不符合 HTTP 绑定 §1 的文法：{exc}")
 
     try:
         config_path = find_config(args.config)

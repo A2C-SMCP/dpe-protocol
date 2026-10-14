@@ -1,7 +1,8 @@
 //! dpe-hash：DPE hash 契约的独立 hash 核心。
 //!
-//! 不绑定异步运行时、不含任何 I/O；实现 hash 契约 1（`spec/hash-contract-1.md`，`dpe1:`）与
-//! file_uri 语法规范化（`spec/core.md` §1.1），并导出契约常量、三层对象的类型化结构与带规范
+//! 不绑定异步运行时、不含任何 I/O；实现 hash 契约 1（`spec/hash-contract-1.md`，`dpe1:`）、
+//! file_uri 语法规范化（`spec/core.md` §1.1）与 remote URL 的文法判定（HTTP 绑定 §1，
+//! [`check_remote_url`]），并导出契约常量、三层对象的类型化结构与带规范
 //! 错误码的错误类型。一致性由仓库根目录 `vectors/` 的向量逐字节校验，与 Python dpe-hash
 //! 行为对等。
 //!
@@ -42,6 +43,7 @@ mod file_type;
 mod ijson;
 mod jcs;
 mod models;
+mod remote_url;
 mod uri;
 
 pub use constants::{
@@ -63,6 +65,7 @@ pub use models::{
     DocumentFields, DocumentHashes, DocumentObject, ElementObject, ExpandedDocument, ExpandedPage,
     JsonObject, ObjectKind, PageFields, PageHashes, PageObject, ToJson, UnknownObjectKind,
 };
+pub use remote_url::{check_remote_url, RemoteUrlError};
 pub use uri::normalize_file_uri;
 
 /// 本 crate 的版本，与 `dpe-sdk` 同版本（两个 crate 由 workspace 统一管理）。

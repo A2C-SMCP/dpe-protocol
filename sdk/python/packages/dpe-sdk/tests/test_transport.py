@@ -74,7 +74,7 @@ def _problem(code: str, status: int, **headers: str) -> httpx.Response:
 # ---------------------------------------------------------------------- remote
 
 
-# remote URL 的接受与拒绝由向量逐例固定（tests/test_remote_url.py，HTTP 绑定 §1）
+# remote URL 的接受与拒绝由向量逐例固定（tests/test_remote_url_entry_points.py，HTTP 绑定 §1）
 
 
 async def test_remote_must_be_a_string() -> None:
