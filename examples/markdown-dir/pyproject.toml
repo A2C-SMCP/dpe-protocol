@@ -1,0 +1,59 @@
+# 示例插件：dpe-run 的 Markdown 目录插件（connector 契约 §6）。不发布、不是官方 connector。
+# 独立 uv 项目（与 connectors/git 同样的组织方式）：运行时零依赖，只用标准库——示范「不用
+# SDK、任何语言都能写 connector」；测试依赖 dpe-sdk（运行器与参考服务端）与 dpe-hash
+# （端到端断言 blob 引用），经 path 源指向仓库内的成员包。
+[project]
+name = "dpe-markdown-dir"
+version = "0.1.0"
+description = "示例 dpe-run 插件：把本地目录里的 Markdown 文件映射为 DPE 文档（不发布）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+classifiers = ["Private :: Do Not Upload"]
+
+[project.scripts]
+dpe-markdown-dir = "dpe_markdown_dir.cli:main"
+
+[dependency-groups]
+dev = [
+    "dpe-sdk[server]>=0.3,<0.4",
+    "dpe-hash>=0.3,<0.4",
+    "pytest>=8.3",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+[tool.uv.sources]
+dpe-sdk = { path = "../../sdk/python/packages/dpe-sdk", editable = true }
+dpe-hash = { path = "../../sdk/python/packages/dpe-hash", editable = true }
+
+[tool.uv]
+required-version = ">=0.8"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dpe_markdown_dir"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# 文档与注释用中文（CLAUDE.md 约定），全角标点不是歧义字符
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib", "--strict-markers"]
+testpaths = ["tests"]
+pythonpath = ["tests"]
