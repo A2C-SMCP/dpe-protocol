@@ -2,6 +2,8 @@
 
 [DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），实现 file_uri 语法规范化、file_type 语法校验（`validate_file_type` / `is_valid_file_type`，core §2.5）、I-JSON 严格解析（`parse_ijson`，core §2.8 第 0 步）、remote URL 的文法判定（`check_remote_url` / `RemoteUrlError`，HTTP 绑定 §1）与 `Retry-After` 的解析（`retry_after_seconds` / `retry_after_seconds_at`，HTTP 绑定 §5，只接受 RFC 9110 文法；两者均由 dpe-sdk 重新导出），并导出契约常量（含嵌套深度上界 `MAX_NESTING_DEPTH` 与计数函数 `nesting_depth`）与 file_type 推荐登记表（`RECOMMENDED_FILE_TYPES`）。
 
+> **从 0.3 升级**：全部不兼容变更与行为变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处「升级须知」只是摘要。
+
 - 不绑定异步运行时、不含 I/O，仅依赖 `sha2`、`serde`、`serde_json` 与 `ryu`；
 - 逐字节通过规范仓库的一致性向量，与 Python [`dpe-hash`](https://pypi.org/project/dpe-hash/) 行为对等；
 - 规范与源码：<https://github.com/A2C-SMCP/dpe-protocol>。

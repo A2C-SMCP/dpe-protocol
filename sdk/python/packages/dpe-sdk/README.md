@@ -2,6 +2,8 @@
 
 [DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的 Python SDK：把结构化文档正确、增量、可靠地投递到任意 DPE 服务端。
 
+> **从 0.3 升级**：全部不兼容变更与行为变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处「升级须知」只是摘要。
+
 - sans-IO 协议核心 + httpx 传输适配（sync / async）；
 - 增量推送器 `StatefulPusher` / `AsyncStatefulPusher`（本地状态只作缓存，冲突如实上报、绝不自动 force）；
 - 只接受 remote URL 与可插拔的 `CredentialProvider`，不封装任何服务端私有端点；
@@ -121,7 +123,7 @@ with DpeClient("https://example.com/anything/r/42") as client:
 - **同步状态 + 意图日志**（§7.2）：同步状态（L）是每篇文档最近一次确认的 remote doc_hash，决定写入的前置条件（`if_absent` / `base_hash`）；写入前先把意图持久化到 `StateStore`（commit 记内容 hash、delete 记「不存在」、move **两侧一起**记），`save` 返回后才发写请求；结果确定即清除、只有结果未知（`unknown=True`）才保留，下一轮按意图对账恢复。缺省 `MemoryStateStore` 只在进程内、**不保证崩溃持久**；落盘实现属运行器的状态目录（契约 §4.4）；
 - **冲突如实上报**：`status == "conflict"`，带读到的（或冲突后重读的）remote 状态；**绝不自动 force、不自动重提**——`source_wins` / `report` 等策略与轮内重试上限归调用方（推送器不设 `retryable`、不在内部重试冲突，§7.1 的「超过重试上限取 true」由运行器计数），重提用 `expected_base` 覆盖前置条件（值为 `None` 表示确认「不存在」；move 以 `from_uri` 为键）；
 - **blob**：`push(..., blobs=lookup)` 把 `sha256:` 引用 → 字节来源（`BlobSource` 或 bytes）原样交给核心 `deliver`，服务端缺的 blob 按需上传；不给时缺字节如实报 `DPE_MISSING_CONTENT`（不解引用任何来源）；
-- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；逐条读都通过（拒绝与具体 URI 无关）时全部条目按逐条读到的值照常写入（connector §7.1，写入仍经 CAS）。两种情况都在 logger `dpe_sdk.pusher` 上记一条 warning（带原错误码与计数）；dpe-run 把它转成 `remote.batch_read_rejected` 事件（`code` / `entries` / `denied`）。网络失败、可重试错误耗尽、响应不是 DPE 报文与契约不兼容仍整批抛出。**升级须知**（0.4 起，不兼容）：以前这类拒绝整批抛出；dpe-run 不再自行逐条探测，事件字段由 `probes` / `localized` 改为 `denied`；
+- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；逐条读都通过（拒绝与具体 URI 无关）时全部条目按逐条读到的值照常写入（connector §7.1，写入仍经 CAS）。两种情况都在 logger `dpe_sdk.pusher` 上记一条 warning（带原错误码与计数）；dpe-run 把它转成 `remote.batch_read_rejected` 事件（`code` / `entries` / `denied`）。网络失败、可重试错误耗尽、响应不是 DPE 报文与契约不兼容仍整批抛出；
 - **先存、存成功才生效**：写前 `save` 失败时整批报错、未发写，本批意图不进入内存；任何一次 `save` 失败后 store 可能与内存不一致——继续用同一实例，`flush()` 补存成功前不要用同一 store 新建实例；
 - **错误与凭证**：复用 `DpeClient` 的传输层（gzip、`Retry-After`、`CredentialProvider` 全部适用）；失败按异常原类型如实回报（含服务端错误对象的 `code`），`unknown=True` 表示结果未确定——由核心的 `outcome_unknown` 判据给出（写请求任何一次尝试可能已到达服务端即未知，含「首发丢响应后重发得到 DPE 错误或建连失败」等序列），此时意图保留、下一轮对账恢复。
 
@@ -278,7 +280,7 @@ python -m dpe_sdk.run ...                           # 等价入口
 - **实例级校验与登记顺序**（§5.2）：清单、配置、调优参数与凭证都通过之后才读实例状态、登记前缀并写入内容身份指纹，未通过校验的新实例不留下任何状态；取锁后、读到状态前就结束的调用 `cursor_held_since` 为 `null`。
 - **`runner` 调优键**：`max_items`、`scan_timeout`、`blob_timeout`、`max_message_bytes`、`conflict_retries`（0–2）、`state_retries`；不认识的键忽略。
 - **`remote.url`**（#112）：按 HTTP 绑定 §1 的文法校验（与 `DpeClient` 构造同一个判定 `dpe_sdk.remote_url.check_remote_url`，即 dpe-hash 的同一函数），不合法即 `definition_invalid`；同一地址的写法差异已被文法消除，前缀登记按字符串相等比较 remote（DNS 别名等字符串无法判定的重叠由服务端前缀授权兜底）。
-  - **升级须知**（0.4 起，不兼容）：此前接受的写法——尾部 `/`（`DpeClient` 以前会去掉）、大写 scheme 或 host、显式默认端口、查询串或片段、点段、`127.1` 这类数字主机、非 RFC 5952 形式的 IPv6——现在构造客户端即报 `ValueError`，实例定义报 `definition_invalid`。`remote.url` 属于实例的内容身份（§1），改正它会使下一轮丢弃游标、同步状态与意图日志，以全量轮重新开始。
+  - **升级须知**（0.4 起，不兼容）：此前接受的写法——尾部 `/`（`DpeClient` 以前会去掉）、大写 scheme 或 host、显式默认端口、点段、`127.1` 这类数字主机、非 RFC 5952 形式的 IPv6——现在构造客户端即报 `ValueError`，实例定义报 `definition_invalid`；查询串或片段 `DpeClient` 以前就拒绝，只对实例定义是新拒绝。`remote.url` 属于实例的内容身份（§1），改正它会使下一轮丢弃游标、同步状态与意图日志，以全量轮重新开始。
 - **规范依据**：删除、`item.failed` 的 `failure` 嵌套与 `runner_internal_error` 见 #147（PR #150，已合入）。
 
 > 示例插件与端到端收敛测试尚在开发中（#53）。
