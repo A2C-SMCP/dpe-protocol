@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import io
 import os
+import signal
 import sys
 import traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, NoReturn
@@ -123,31 +125,135 @@ def main(
     stderr: IO[str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> int:
-    """命令行入口；返回退出码（§7.6）。"""
+    """命令行入口；返回退出码（§7.6）。
+
+    **信号**（#175）：整个调用期间由这里接管 SIGINT 与 SIGTERM，处理器从不抛出——只记下第一个
+    信号，并请求取消正在运行的那一轮（``_Interrupts``）。于是：取消只在下一次 ``await`` 生效，
+    同步部分（写报告、删除状态）不会被拦腰打断；第二个信号不会打断插件进程组的清理；报告写完
+    之后到进程退出前的信号也不会把进程直接杀掉。调用已经完成（报告已写出 / 删除已完成）就以
+    它的结果退出，否则不写报告、以 128 + 信号号退出（§7.6「被信号终止，没有报告」）。
+    """
     out = stdout or _utf8_lf(sys.stdout)
     err = stderr or _utf8_lf(sys.stderr)
     env = os.environ if environ is None else environ
+    interrupts = _Interrupts()
+    with _signals_handled(interrupts):
+        code = _run(argv, out, err, env, interrupts)
+    return code
+
+
+def _run(
+    argv: Sequence[str] | None,
+    out: IO[str],
+    err: IO[str],
+    env: Mapping[str, str],
+    interrupts: _Interrupts,
+) -> int:
     parser = _parser()
     try:
         args = parser.parse_args(argv)
     except _UsageError as exc:
         err.write(f"{parser.format_usage()}dpe-run: error: {exc}\n")
         return EXIT_USAGE
+    # 兜底的边界由结构给出（#175）：这里只兜进入 _sync 之前的阶段（状态目录定位）与删除流程；
+    # 同步一轮由 _sync 自己恰好收尾一次（_conclude 从不抛出），不再被这里包住、不会二次收尾。
+    # 兜底拿不到扩展过凭证的脱敏器，只记异常类型，不写 traceback 原文（§4.3）
     try:
-        # 状态目录的定位（如取不到 home 目录）同样在崩溃收尾之内
         state_dir = StateDirectory(args.state_dir or default_state_dir())
-        if args.delete:
-            return asyncio.run(_delete(args.definition, state_dir, err))
-        return asyncio.run(_sync(args.definition, state_dir, env, out, err))
     except Exception as exc:
-        # 进入 _sync 之前（状态目录定位）的缺陷，以及删除流程的缺陷：traceback 只进日志（单行）；
-        # 同步一轮仍尽力输出 failed 报告（§7.4「每次调用恰好一个报告」不因缺陷豁免，#147），
-        # 删除不输出报告。_sync 自己收尾（_conclude），不会把异常抛到这里
         log = NdjsonLog(err)
-        _log_crash(log, exc)
+        _log_crash(log, exc, detail=False)
         if args.delete:
             return EXIT_INTERNAL
+        # 同步一轮仍尽力输出 failed 报告（§7.4「每次调用恰好一个报告」不因缺陷豁免，#147）
         return _report_crash(out, log, exc)
+    if interrupts.received is not None:  # 还没开始做事就收到信号：不开始
+        return _interrupted(err, interrupts.received)
+    try:
+        if args.delete:
+            try:
+                return asyncio.run(
+                    _interruptible(_delete(args.definition, state_dir, err), interrupts)
+                )
+            except Exception as exc:  # 删除流程的缺陷：不输出报告
+                _log_crash(NdjsonLog(err), exc, detail=False)
+                return EXIT_INTERNAL
+        return asyncio.run(
+            _interruptible(_sync(args.definition, state_dir, env, out, err), interrupts)
+        )
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # 被取消：调用没有完成（完成了的会正常返回退出码），不写报告
+        return _interrupted(err, interrupts.received or signal.SIGINT)
+
+
+@dataclass
+class _Interrupts:
+    """本次调用收到的第一个信号，与取消正在运行的那一轮的入口（``_interruptible`` 登记）。"""
+
+    received: signal.Signals | None = None
+    cancel: Callable[[], None] | None = None
+
+    def on_signal(self, signum: int, frame: object) -> None:
+        """信号处理器：从不抛出；只有第一个信号请求取消，之后的只是重复请求、被忽略。"""
+        if self.received is not None:
+            return
+        self.received = signal.Signals(signum)
+        if self.cancel is not None:
+            self.cancel()
+
+
+@contextlib.contextmanager
+def _signals_handled(interrupts: _Interrupts) -> Iterator[None]:
+    """在调用期间接管 SIGINT / SIGTERM，结束时恢复原处理器（进程内多次调用 main 也安全）。
+    非主线程无法设置信号处理器：保持原样（由宿主进程自己的处理决定）。"""
+    previous: dict[signal.Signals, Any] = {}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        current = signal.getsignal(sig)
+        if current is None:
+            # 原处理器不是 Python 装的（嵌入式宿主用 C 装的）：恢复不了，就不接管，保持原样
+            continue
+        with contextlib.suppress(ValueError, OSError):  # 非主线程等
+            signal.signal(sig, interrupts.on_signal)
+            previous[sig] = current
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, handler)
+
+
+async def _interruptible(coro: Coroutine[Any, Any, int], interrupts: _Interrupts) -> int:
+    """运行一次调用，并登记「收到信号就取消它」的入口。
+
+    取消沿 ``async with`` / ``with`` 传播：插件宿主关闭插件（含进程组清理）、实例锁释放；
+    ``_sync`` 只捕获 ``Exception``，取消不当作本轮结果——不收尾、不写报告。取消经
+    ``call_soon_threadsafe`` 投递，只在下一次 ``await`` 时生效：同步部分照常做完，做完了的调用
+    正常返回它的退出码。
+    """
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    assert task is not None
+
+    def cancel() -> None:
+        loop.call_soon_threadsafe(task.cancel)  # 从信号处理器投递到事件循环，线程安全
+
+    interrupts.cancel = cancel
+    try:
+        if interrupts.received is not None:
+            # 登记之前已经收到：不开始这次调用（在任务内部 cancel 只置标记，coro 若一路不让出
+            # 就做完了，结果会被丢弃——可能已经写出报告，却以「被中断」退出）
+            coro.close()
+            raise asyncio.CancelledError
+        return await coro
+    finally:
+        interrupts.cancel = None
+
+
+def _interrupted(err: IO[str], sig: signal.Signals) -> int:
+    """被信号中断：只记一条日志（不打印多行 traceback），以 128 + 信号号退出（如 SIGINT 130）。"""
+    NdjsonLog(err).emit("runner.interrupted", "warn", {"signal": sig.name})
+    return 128 + int(sig)
 
 
 def _utf8_lf(stream: IO[str]) -> IO[str]:
@@ -432,13 +538,20 @@ def _internal_error(exc: BaseException) -> RoundFailure:
     )
 
 
-def _log_crash(log: NdjsonLog, exc: BaseException) -> None:
+def _log_crash(log: NdjsonLog, exc: BaseException, *, detail: bool = True) -> None:
     """未预期异常记为单条 NDJSON（``runner.crashed``），traceback 作为字段且经脱敏（§4.3、
-    §7.5）——不直接打印多行 traceback，以免破坏日志格式或泄露插件回显的凭证。"""
-    try:
-        text = "".join(traceback.format_exception(exc))
-    except Exception:  # 格式化本身出错：至少留下类型（emit 从不抛出）
+    §7.5）——不直接打印多行 traceback，以免破坏日志格式或泄露插件回显的凭证。
+
+    ``detail`` 为 false 时只记异常类型：用于拿不到扩展过凭证的脱敏器的兜底路径——异常消息
+    与 traceback 可能带着凭证原文，宁可少记也不外泄（#175）。
+    """
+    if not detail:
         text = type(exc).__name__
+    else:
+        try:
+            text = "".join(traceback.format_exception(exc))
+        except Exception:  # 格式化本身出错：至少留下类型（emit 从不抛出）
+            text = type(exc).__name__
     log.emit("runner.crashed", "error", {"traceback": text})
 
 
@@ -582,7 +695,7 @@ async def _delete(path: Path, directory: StateDirectory, err: IO[str]) -> int:
     """删除（§5.1 独立运行器的删除，#147）：只从定义取 ``id``；先取实例锁；不解析状态内容，
     直接移除状态，登记最后移除（与登记、重叠检查同用目录级锁）；幂等；不读写 remote；不输出
     轮报告。退出码：0 成功（含无可删除的状态）、2 ``state_unavailable``、3 定义不合法、
-    4 ``instance_busy``；运行器缺陷 70（在 ``main`` 中处理）。"""
+    4 ``instance_busy``；运行器缺陷 70、被信号中断 128 + 信号号（在 ``main`` 中处理）。"""
     log = NdjsonLog(err)
     try:
         instance_id = load_definition_id(path)

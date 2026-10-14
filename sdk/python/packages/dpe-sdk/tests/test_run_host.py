@@ -676,3 +676,25 @@ def test_close_is_final_no_signals_after_teardown(monkeypatch: pytest.MonkeyPatc
 
         host = run(scenario())
         assert host.failure is None
+
+
+def test_cancelled_caller_still_waits_for_process_group_cleanup() -> None:
+    """关闭进行中调用方被取消（运行器收到 SIGTERM）：仍等进程组清理做完再把取消抛出去——
+    提前返回会让实例锁在插件终止前释放，事件循环收尾时清理被取消，子进程成孤儿（§6.3，#175）。"""
+    lines: list[str] = []
+
+    async def scenario() -> bool:
+        host = await handshake("stubborn", on_stderr=lambda line, _: lines.append(line))
+        closing = asyncio.ensure_future(host.close())
+        await asyncio.sleep(0.2)  # 关闭已开始（shutdown 无响应，正在等宽限期）
+        closing.cancel()
+        try:
+            await closing
+        except asyncio.CancelledError:
+            return host._close_task is not None and host._close_task.done()
+        return False
+
+    assert run(scenario()) is True  # 取消照常抛出，但抛出时关闭已经做完
+    if os.name == "posix":
+        child = _child_pid(lines)
+        assert _wait_terminated(child), f"残留子进程 {child} 未被终止（仍在运行）"
