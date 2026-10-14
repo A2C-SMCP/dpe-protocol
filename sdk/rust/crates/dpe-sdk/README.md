@@ -47,7 +47,7 @@ assert_eq!(result.status.as_str(), "created");
 ```
 
 - 只接受 remote URL 与可插拔的 `CredentialProvider`（每个请求发送前取一次，轮换中的短时凭证在重发前会重新取）；
-- remote 按 HTTP 绑定 §1 的文法校验（`dpe_sdk::remote_url::check_remote_url`，与实例定义的 `remote.url` 同一个判定）：http / https、已是 core §1.1 规范化形式、无查询串与片段、无 userinfo、不写默认端口、路径不以 `/` 结尾且无点段；合法即原样使用。**升级须知**（0.4 起，不兼容）：此前构造时去掉的尾部 `/`，以及大写 scheme、显式默认端口、`127.1` 这类数字主机、非 RFC 5952 形式的 IPv6，现在都报 `InvalidArgument`；
+- remote 按 HTTP 绑定 §1 的文法校验（`dpe_sdk::remote_url::check_remote_url`，即 dpe-hash 的同一函数，与实例定义的 `remote.url` 同一个判定）：http / https、已是 core §1.1 规范化形式、无查询串与片段、无 userinfo、不写默认端口、路径不以 `/` 结尾且无点段；合法即原样使用。**升级须知**（0.4 起，不兼容）：此前构造时去掉的尾部 `/`，以及大写 scheme、显式默认端口、`127.1` 这类数字主机、非 RFC 5952 形式的 IPv6，现在都报 `InvalidArgument`；
 - 传输层只做 I/O：拼 URL、注入凭证、按策略 gzip（请求体，HTTP 绑定 §7）、把响应还原给核心；协议判定与写操作的重试全在 sans-IO 核心；
 - 例外只有三类：`retry_safe` 的请求遇网络失败、任何请求遇「确定未发出」的建连失败、按 `code` 判定的可重试错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，等 `Retry-After` 后原样重发，等待超过 300 秒不吸收）；
 - 缺省超时 30 秒、不跟随重定向、大 blob 的源读取进工作线程；`send` / `drive` 是公开的驱动缝；
