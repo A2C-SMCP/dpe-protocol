@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - "sdk/python/**"
+      - "conformance/connector-fixture/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
       - "scripts/pattern_subset.py"
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - "sdk/python/**"
+      - "conformance/connector-fixture/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
       - "scripts/pattern_subset.py"
@@ -76,8 +78,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run ruff check
-      - run: uv run ruff format --check
+      # 线协议夹具（§8.4）在 sdk/python 之外，由运行器测试驱动，一并检查
+      - run: uv run ruff check . ../../conformance/connector-fixture
+      - run: uv run ruff format --check . ../../conformance/connector-fixture
       - run: uv run mypy
       - run: uv run pytest
 
