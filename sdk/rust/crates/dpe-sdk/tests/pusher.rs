@@ -2142,6 +2142,220 @@ async fn move_target_occupied_is_failed_side_to() {
     assert_eq!(state(&store, &server).intents, BTreeMap::new());
 }
 
+// ---------------------------------------------------------------------- 目标已持有同一内容（#165）
+
+/// 源 A 为 v1（有 L），目标 B 也已是 v1：判定为删源路径。
+async fn same_content_on_both_sides(
+    fake: &Arc<Fake>,
+    client: &DpeClient,
+    store: &Arc<MemoryStateStore>,
+) -> String {
+    after_v1(fake, client, store).await;
+    let v1 = doc_hash(&text("v1"));
+    fake.set(B, Some(v1.clone()));
+    v1
+}
+
+#[tokio::test]
+async fn move_onto_target_holding_same_content_deletes_source() {
+    // 不发 move（会得 ALREADY_EXISTS、重放永不收敛），以 base 删除源 → Moved，条目迁到目标
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = same_content_on_both_sides(&fake, &client, &store).await;
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(Reply::new(204, ""), A, None)],
+    );
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Moved]);
+    assert!(results[0].error.is_none());
+    assert_eq!(results[0].to_uri.as_deref(), Some(B));
+    assert_eq!(
+        results[0].remote.as_ref().unwrap().doc_hash,
+        Some(v1.clone()),
+        "带读到的源侧 R"
+    );
+    assert_eq!(
+        results[0].precondition,
+        Some(Precondition::BaseHash(v1.clone()))
+    );
+    assert_eq!(count(&server, "POST", "/move"), 0, "不发 move");
+    assert_eq!(count(&server, "DELETE", "/documents"), 1, "只删源");
+    let delete = server
+        .requests()
+        .into_iter()
+        .find(|request| request.method == "DELETE")
+        .unwrap();
+    assert_eq!(
+        delete.header("if-match"),
+        Some(format!("\"{v1}\"").as_str()),
+        "删源的 CAS 用 base"
+    );
+    let snapshot = state(&store, &server);
+    assert_eq!(snapshot.synced, synced(&[(B, v1)]));
+    assert_eq!(snapshot.intents, BTreeMap::new());
+}
+
+#[tokio::test]
+async fn move_onto_same_content_without_sync_state_deletes_source() {
+    // 同步状态缺失（无 L）：以读到的源 R 为 base，目标同内容同样删源
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let v1 = doc_hash(&text("v1"));
+    fake.set(A, Some(v1.clone()));
+    fake.set(B, Some(v1.clone()));
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(Reply::new(204, ""), A, None)],
+    );
+    let store = Arc::new(MemoryStateStore::new());
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Moved]);
+    assert_eq!(count(&server, "POST", "/move"), 0);
+    assert_eq!(state(&store, &server).synced, synced(&[(B, v1)]));
+}
+
+#[tokio::test]
+async fn move_onto_same_content_source_rewritten_is_conflict_side_from() {
+    // 删源遇 412（源被他人改写）→ 冲突、问题在源侧，带重读到的源侧值
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    same_content_on_both_sides(&fake, &client, &store).await;
+    let theirs = doc_hash(&text("theirs"));
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(
+            problem("DPE_PRECONDITION_FAILED", 412),
+            A,
+            Some(theirs.clone()),
+        )],
+    );
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Conflict]);
+    assert_eq!(results[0].side, Some(Side::From));
+    assert_eq!(results[0].remote.as_ref().unwrap().doc_hash, Some(theirs));
+    assert_eq!(count(&server, "POST", "/move"), 0);
+    assert_eq!(state(&store, &server).intents, BTreeMap::new());
+}
+
+#[tokio::test]
+async fn move_onto_same_content_source_already_gone_is_moved() {
+    // 删源遇「不存在」→ move 的目标状态（源不存在、目标为 base）已达成 → Moved
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = same_content_on_both_sides(&fake, &client, &store).await;
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(problem("DPE_NOT_FOUND", 404), A, None)],
+    );
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Moved]);
+    assert_eq!(
+        results[0].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_NOT_FOUND"),
+        "原错误一并带上，同 delete 的已达成口径"
+    );
+    let snapshot = state(&store, &server);
+    assert_eq!(snapshot.synced, synced(&[(B, v1)]));
+    assert_eq!(snapshot.intents, BTreeMap::new());
+}
+
+#[tokio::test]
+async fn move_onto_same_content_conflict_whose_reread_is_absent_is_moved() {
+    // 删源遇 412、重读源已不存在（他人改写后又删除）→ move 的目标状态已达成 → Moved
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = same_content_on_both_sides(&fake, &client, &store).await;
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(problem("DPE_PRECONDITION_FAILED", 412), A, None)],
+    );
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Moved]);
+    assert_eq!(
+        results[0].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_PRECONDITION_FAILED")
+    );
+    assert_eq!(state(&store, &server).synced, synced(&[(B, v1)]));
+}
+
+#[tokio::test]
+async fn move_onto_same_content_other_delete_errors_carry_no_side() {
+    // 删源时 412 / 404 以外的错误按 delete 的常规归类、不带侧别（侧别专指 §7.2 的 move
+    // 条目失败）：结果未知保留两侧意图，已确定的失败清除意图
+    let fake = Fake::new();
+    let server = fake.server();
+    let dropping = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = same_content_on_both_sides(&fake, &dropping, &store).await;
+    fake.script(Route::Delete(A.into()), vec![reply(Reply::Close)]);
+    let results = pusher(&dropping, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+    assert_eq!(statuses(&results), [PushStatus::Failed]);
+    assert_eq!((results[0].side, results[0].unknown), (None, true));
+    assert_eq!(
+        state(&store, &server).intents,
+        intents(&[(A, None), (B, Some(v1.clone()))])
+    );
+
+    let fake = Fake::new();
+    let server = fake.server();
+    let rejecting = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    same_content_on_both_sides(&fake, &rejecting, &store).await;
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply(problem("DPE_FORBIDDEN", 403))],
+    );
+    let results = pusher(&rejecting, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+    assert_eq!(statuses(&results), [PushStatus::Failed]);
+    assert_eq!((results[0].side, results[0].unknown), (None, false));
+    assert_eq!(
+        results[0].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_FORBIDDEN")
+    );
+    assert_eq!(state(&store, &server).intents, BTreeMap::new());
+}
+
 #[tokio::test]
 async fn move_race_conflict_rereads_source() {
     let fake = Fake::new();

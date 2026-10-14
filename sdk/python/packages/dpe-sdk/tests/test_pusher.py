@@ -1177,6 +1177,82 @@ async def test_move_target_occupied_is_failed_side_to() -> None:
         assert state.intents == {}
 
 
+async def test_move_onto_target_holding_same_content_deletes_source() -> None:
+    """目标已持有与源相同的内容（如失败轮已建出目标，#165）：不发 move（会得 ALREADY_EXISTS、
+    重放永不收敛），以 base 为前置条件删除源 → ``moved``，条目迁到目标，意图清空。"""
+    store = MemoryStateStore()
+    target = "dpe://docs/same.md"
+    app = create_app(make_engine(), prefix=PREFIX)
+    async with (
+        in_process_client(transport=httpx.ASGITransport(app=app)) as (client, recorder),
+        AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign,
+    ):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({URI: _doc("v1"), target: _doc("v1")})
+        before = len(recorder.requests)
+
+        results = await pusher.move([(URI, target)])
+
+        assert [r.status for r in results] == ["moved"]
+        assert results[0].error is None
+        assert results[0].to_uri == target
+        assert results[0].remote is not None  # 源侧 R
+        assert results[0].remote.doc_hash == _doc("v1").doc_hash()
+        assert results[0].precondition == BaseHash(_doc("v1").doc_hash())
+        writes = recorder.requests[before:]
+        assert not any(_is_move(r) for r in writes)  # 不发 move
+        assert sum(1 for r in writes if _is_delete(r)) == 1  # 只删源
+        assert await foreign.head(URI) is None
+        assert await foreign.head(target) == _doc("v1").doc_hash()  # 目标保留、未被改写
+    state = await _state(store)
+    assert state.synced == {target: _doc("v1").doc_hash()}
+    assert state.intents == {}
+
+
+async def test_move_onto_same_content_without_sync_state_deletes_source() -> None:
+    """同步状态缺失（无 L）时以读到的源 R 为 base：目标同内容同样删源、判 ``moved``。"""
+    target = "dpe://docs/same.md"
+    app = create_app(make_engine(), prefix=PREFIX)
+    async with (
+        in_process_client(transport=httpx.ASGITransport(app=app)) as (client, recorder),
+        AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign,
+    ):
+        await AsyncStatefulPusher(client).push({URI: _doc("v1"), target: _doc("v1")})
+        store = MemoryStateStore()  # 状态丢失
+        before = len(recorder.requests)
+
+        results = await AsyncStatefulPusher(client, state=store).move([(URI, target)])
+
+        assert [r.status for r in results] == ["moved"]
+        assert not any(_is_move(r) for r in recorder.requests[before:])
+        assert await foreign.head(URI) is None
+    state = await _state(store)
+    assert state.synced == {target: _doc("v1").doc_hash()}
+
+
+async def test_move_source_rewritten_onto_target_with_their_content_is_conflict() -> None:
+    """源被他人改写（R ≠ L）时，即使目标恰好等于改写后的值，也是冲突（不删源、不发写）：
+    删源路径只在源可写入（R == base）时成立（#165）。"""
+    store = MemoryStateStore()
+    target = "dpe://docs/same.md"
+    app = create_app(make_engine(), prefix=PREFIX)
+    async with (
+        in_process_client(transport=httpx.ASGITransport(app=app)) as (client, recorder),
+        AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign,
+    ):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({URI: _doc("v1")})
+        await foreign.commit(URI, _doc("theirs"), BaseHash(_doc("v1").doc_hash()))
+        await foreign.commit(target, _doc("theirs"), IfAbsent())
+        before = len(recorder.requests)
+
+        results = await pusher.move([(URI, target)])
+
+        assert [r.status for r in results] == ["conflict"]
+        assert results[0].side == "from"
+        assert not any(_is_move(r) or _is_delete(r) for r in recorder.requests[before:])
+
+
 async def test_move_race_conflict_rereads_source() -> None:
     """竞态：源在写前被他人改写 → 412 → 重读源侧 → ``conflict``、``side="from"``。"""
     app = create_app(make_engine(), prefix=PREFIX)
@@ -1458,6 +1534,13 @@ async def _scenario(
     occupied = f"{base}/occupied.md"
     out.append([_view(r, base) for r in await driver.push({occupied: _doc("occupy")})])
     out.append([_view(r, base) for r in await driver.move([(moved_uri, occupied)])])
+    # 目标已持有与源相同的内容（#165）→ 不发 move、以 base 删源 → moved；源删除、目标保留
+    same_from, same_to = f"{base}/same-from.md", f"{base}/same-to.md"
+    pair = {same_from: _doc("same"), same_to: _doc("same")}
+    out.append([_view(r, base) for r in await driver.push(pair)])
+    out.append([_view(r, base) for r in await driver.move([(same_from, same_to)])])
+    assert await foreign.head(same_from) is None
+    assert await foreign.head(same_to) == _doc("same").doc_hash()
     # delete：成功 → 已达成（再删同 URI 零写入）
     out.append([_view(r, base) for r in await driver.delete([moved_uri])])
     out.append([_view(r, base) for r in await driver.delete([moved_uri])])
@@ -1749,6 +1832,131 @@ def _run_delete_race(
         )
         results = _raced(mode, url, store, race, lambda p: p.delete([uri]))
     return results, race.writes, store.load(url)
+
+
+def _run_delete_source_race(
+    mode: str, variant: str, url: str, base: str
+) -> tuple[list[PushResult], list[str | None], StateSnapshot | None, DpeClient]:
+    """#165 删源路径的写后竞态：源与目标同为 v1（目标已持有同一内容），删源请求发出前他人
+    改写源（412）、删除源（404），或改写后再删除（412、重读源不存在）。返回删除请求的
+    ``If-Match`` 以核对 CAS 用的是 base。"""
+    source, target = f"{base}/{variant}-src.md", f"{base}/{variant}-dst.md"
+    v1, theirs = _doc("v1").doc_hash(), _doc("theirs").doc_hash()
+    store = MemoryStateStore()
+    if_matches: list[str | None] = []
+
+    def is_delete(request: httpx.Request) -> bool:
+        if _is_delete(request):
+            if_matches.append(request.headers.get("if-match"))
+            return True
+        return False
+
+    foreign = DpeClient(url)
+    for uri in (source, target):
+        foreign.commit(uri, _doc("v1"), IfAbsent())
+    store.save(url, StateSnapshot(synced={source: v1, target: v1}))
+    if variant == "rewritten":
+        race = _Race(is_delete, lambda: foreign.commit(source, _doc("theirs"), BaseHash(v1)))
+    elif variant == "gone":
+        race = _Race(is_delete, lambda: foreign.delete(source, v1))
+    else:
+        assert variant == "rewritten_then_gone"
+        race = _Race(
+            is_delete,
+            lambda: foreign.commit(source, _doc("theirs"), BaseHash(v1)),
+            lambda: foreign.delete(source, theirs),
+        )
+    results = _raced(mode, url, store, race, lambda p: p.move([(source, target)]))
+    return results, if_matches, store.load(url), foreign
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("variant", ["rewritten", "gone", "rewritten_then_gone"])
+def test_move_onto_same_content_delete_source_races(mode: str, variant: str) -> None:
+    """#165 删源（以 base 为前置条件，仍经 CAS）的写后结局，同步/异步一致：
+    - 源被改写（412、重读源存在）→ 冲突、``side="from"``、带重读值，目标不受影响；
+    - 源已被删（404）或 412 后重读源不存在 → move 的目标状态已达成 → ``moved``，迁条目，
+      原错误一并带上（同 delete 的已达成口径）。"""
+    v1, theirs = _doc("v1").doc_hash(), _doc("theirs").doc_hash()
+    with spawn_server() as info:
+        url = info["url"]
+        results, if_matches, state, foreign = _run_delete_source_race(
+            mode, variant, url, f"dpe://delete-source/{mode}"
+        )
+        with foreign:
+            target = results[0].to_uri
+            assert target is not None
+            assert foreign.head(target) == v1  # 目标只读不写
+    assert if_matches == [f'"{v1}"']  # 删源的 CAS 用 base
+    assert state is not None and state.intents == {}
+    if variant == "rewritten":
+        assert [r.status for r in results] == ["conflict"]
+        assert results[0].side == "from"
+        assert isinstance(results[0].error, PreconditionFailedError)
+        assert results[0].remote is not None and results[0].remote.doc_hash == theirs
+        assert results[0].file_uri in state.synced  # 条目未迁移
+    else:
+        assert [r.status for r in results] == ["moved"]
+        expected = NotFoundError if variant == "gone" else PreconditionFailedError
+        assert isinstance(results[0].error, expected)  # 原错误保留，供归因
+        assert state.synced == {target: v1}
+
+
+async def test_move_onto_same_content_delete_source_other_errors_carry_no_side() -> None:
+    """删源时 412 / 404 以外的错误按 delete 的常规归类，**不带侧别**——侧别专指 §7.2 的
+    move 条目失败，运行器据此判永久失败；结果未知时两侧意图保留，已确定的失败清除意图。"""
+    target = "dpe://docs/same.md"
+    app = create_app(make_engine(), prefix=PREFIX)
+    # 结果未知：删源请求已送达、响应丢失
+    store = MemoryStateStore()
+    dropper = _DroppedResponses(httpx.ASGITransport(app=app), _is_delete)
+    async with in_process_client(transport=dropper) as (client, _):
+        pusher = AsyncStatefulPusher(client, state=store)
+        dropper.armed = False
+        await pusher.push({URI: _doc("v1"), target: _doc("v1")})
+        dropper.armed = True
+        unknown = await pusher.move([(URI, target)])
+    assert [(r.status, r.side, r.unknown) for r in unknown] == [("failed", None, True)]
+    state = await _state(store)
+    assert state.intents == {URI: None, target: _doc("v1").doc_hash()}  # 两侧意图保留
+
+    # 已确定的失败：删源得 403（服务端裁决，非 CAS）
+    store = MemoryStateStore()
+    rejecting = _RejectDeletes(httpx.ASGITransport(app=app))
+    async with in_process_client(transport=rejecting) as (client, _):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({"dpe://docs/b.md": _doc("w"), "dpe://docs/c.md": _doc("w")})
+        rejected = await pusher.move([("dpe://docs/b.md", "dpe://docs/c.md")])
+    assert [(r.status, r.side, r.unknown) for r in rejected] == [("failed", None, False)]
+    assert isinstance(rejected[0].error, ForbiddenError)
+    assert (await _state(store)).intents == {}
+
+
+class _RejectDeletes(httpx.AsyncBaseTransport):
+    """``DELETE documents`` 一律以 ``403 DPE_FORBIDDEN`` 应答（服务端裁决的已确定失败）。"""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if not _is_delete(request):
+            return await self._inner.handle_async_request(request)
+        body = {
+            "type": "urn:dpe:error:forbidden",
+            "title": "forbidden",
+            "status": 403,
+            "code": "DPE_FORBIDDEN",
+            "retryable": False,
+        }
+        return httpx.Response(
+            403,
+            headers={
+                "Content-Type": "application/problem+json",
+                "DPE-Error-Code": "DPE_FORBIDDEN",
+                "Vary": "DPE-Hash-Contract",
+            },
+            content=json.dumps(body).encode(),
+        )
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])

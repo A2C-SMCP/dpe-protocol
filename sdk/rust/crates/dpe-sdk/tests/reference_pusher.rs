@@ -252,6 +252,44 @@ async fn pusher_scenario_agrees_with_the_python_parity_run() {
             .side(Side::To)
             .error("DPE_ALREADY_EXISTS")]
     );
+    // 目标已持有与源相同的内容（#165）→ 不发 move、以 base 删源 → moved；源删除、目标保留
+    let (same_from, same_to) = (format!("{base}/same-from.md"), format!("{base}/same-to.md"));
+    let same = doc(&["same"]);
+    let results = pusher
+        .push(
+            &[
+                (same_from.clone(), same.clone()),
+                (same_to.clone(), same.clone()),
+            ],
+            &none(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        views(&results),
+        [
+            View::expect(Commit, &same_from, PushStatus::Created)
+                .pre(Precondition::IfAbsent)
+                .delta(1, 0, 0),
+            View::expect(Commit, &same_to, PushStatus::Created)
+                .pre(Precondition::IfAbsent)
+                .delta(1, 0, 0),
+        ]
+    );
+    let results = pusher
+        .move_documents(&[(same_from.clone(), same_to.clone())], &none())
+        .await
+        .unwrap();
+    assert_eq!(
+        views(&results),
+        [View::expect(Move, &same_from, PushStatus::Moved)
+            .pre(Precondition::BaseHash(doc_hash(&same)))
+            .remote(Some(doc_hash(&same)))
+            .to(&same_to)]
+    );
+    assert_eq!(foreign.head(&same_from).await.unwrap(), None);
+    assert_eq!(foreign.head(&same_to).await.unwrap(), Some(doc_hash(&same)));
     // ⑪ delete → deleted；⑫ 再删同 URI → 已达成（零写入）
     let results = pusher
         .delete(std::slice::from_ref(&moved), &none())

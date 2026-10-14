@@ -86,7 +86,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Literal, Protocol, TypeAlias
 
@@ -259,6 +259,8 @@ class _Plan:
     #: move：目标 uri（归一化）与本次使用的 base_hash（已达成 / 迁移条目时也用）
     to_uri: str | None = None
     base: str | None = None
+    #: move：目标已持有与源相同的内容（目标 R == base）——不发 move，以 base 删除源（§7.2，#165）
+    delete_source: bool = False
     #: action == "failed" 时的判定错误（未发写）
     error: Exception | None = None
 
@@ -278,6 +280,31 @@ class _Outcome:
     #: 冲突后的重读结果；``None`` 表示重读失败或未重读
     remote: RemoteState | None = None
     remote_error: Exception | None = None
+
+
+def _move_conflict(
+    error: Exception, remote: RemoteState | None, remote_error: Exception | None
+) -> _Outcome:
+    """move 的源被改写（CAS 412）：冲突、问题在源侧，带重读到的源侧状态（同步/异步共用）。"""
+    return _Outcome(
+        error=error, kind="conflict", side="from", remote=remote, remote_error=remote_error
+    )
+
+
+def _source_side(outcome: _Outcome) -> _Outcome:
+    """move 改为删源（#165）的结局：沿用 delete 的归类，只有 CAS 冲突标源侧（侧别专指 move 的
+    问题侧，其余错误不标，运行器据此分级）。"""
+    return replace(outcome, side="from") if outcome.kind == "conflict" else outcome
+
+
+def _reached_absent(outcome: _Outcome) -> bool:
+    """删除的写后结局是否就是「文档不存在」这一目标状态：服务端裁决不存在，或 CAS 冲突后重读
+    不存在（§7.2 冲突处置表 delete 行；move 改为删源时同理，#165）。"""
+    return outcome.kind == "achieved" or (
+        outcome.kind == "conflict"
+        and outcome.remote is not None
+        and outcome.remote.doc_hash is None
+    )
 
 
 def _matches_contract(value: str, contract: str) -> bool:
@@ -533,7 +560,9 @@ class _PusherBase:
 
         源已不存在而目标未达成／base 不可知 → 判定失败（条目失败，§7.2 列为不可由策略重判定）；
         调用方确认源「不存在」而实际存在 → 与确认矛盾，判冲突（同 commit / delete 的表口径）；
-        源被改写 → 冲突（``side="from"``）。
+        源被改写 → 冲突（``side="from"``）。源可写入且目标 R 也等于 base → 目标已持有同一内容：
+        仍是 ``write``，但置 ``delete_source``——不发 move（服务端会以 ALREADY_EXISTS 拒绝、重放
+        永不收敛），改为以 base 删除源（§7.2「move 的目标已持有同一内容」，#165）。
 
         源不存在且源无 L 时，以目标侧的 L 作 base 候选：迁移后的条目就是本实例完成过的 move
         （成功后条目已从源迁到目标；未确认的 to 侧意图也已由上面的对账并入），重放据此判已达成，
@@ -570,19 +599,9 @@ class _PusherBase:
                             ),
                         )
                     )
-            elif base is None:
-                plans.append(
-                    _Plan(
-                        "move",
-                        "write",
-                        from_uri,
-                        remote,
-                        precondition=BaseHash(from_head),
-                        to_uri=to_uri,
-                        base=from_head,
-                    )
-                )
-            elif from_head == base:
+            elif base is None or from_head == base:
+                # 无 L 时以读到的 R 为 base（§7.2「无 L，R 存在」的退化）
+                base = from_head
                 plans.append(
                     _Plan(
                         "move",
@@ -592,6 +611,7 @@ class _PusherBase:
                         precondition=BaseHash(base),
                         to_uri=to_uri,
                         base=base,
+                        delete_source=to_head == base,
                     )
                 )
             else:
@@ -773,12 +793,7 @@ class _PusherBase:
                 continue
             assert outcome is not None
             if outcome.error is not None:
-                reread_absent = (
-                    outcome.kind == "conflict"
-                    and outcome.remote is not None
-                    and outcome.remote.doc_hash is None
-                )
-                if outcome.kind == "achieved" or reread_absent:
+                if _reached_absent(outcome):
                     # 服务端裁决「文档不存在」、或 CAS 冲突后重读不存在＝目标状态已达成（§7.2
                     # 冲突处置表 delete 行，与策略无关）；原错误对象一并带上（含 code）供归因
                     self._confirm(uri, None)
@@ -836,10 +851,36 @@ class _PusherBase:
                 continue
             assert outcome is not None
             if outcome.error is not None:
-                results.append(self._outcome_failure(plan, outcome))
+                if plan.delete_source and _reached_absent(outcome):
+                    # 删源时服务端裁决「源不存在」、或 CAS 冲突后重读源不存在：move 的目标状态
+                    # （源不存在、目标为 base）已达成，同 delete 的口径；原错误一并带上供归因
+                    self._migrate(plan)
+                    results.append(
+                        PushResult(
+                            "move",
+                            uri,
+                            "moved",
+                            plan.precondition,
+                            remote=outcome.remote,
+                            to_uri=plan.to_uri,
+                            error=outcome.error,
+                        )
+                    )
+                else:
+                    results.append(self._outcome_failure(plan, outcome))
                 continue
+            # 写入成功：迁移条目；删源路径带判定时读到的源侧 R
             self._migrate(plan)
-            results.append(PushResult("move", uri, "moved", plan.precondition, to_uri=plan.to_uri))
+            results.append(
+                PushResult(
+                    "move",
+                    uri,
+                    "moved",
+                    plan.precondition,
+                    remote=plan.remote if plan.delete_source else None,
+                    to_uri=plan.to_uri,
+                )
+            )
         return results
 
 
@@ -926,7 +967,10 @@ class StatefulPusher(_PusherBase):
         - ``expected_base`` 以 ``from_uri`` 为键（值为 ``None`` 即确认源「不存在」）；
         - 同一 URI 在本批 from 与 to 中至多出现一次（链式、共用目标整批拒绝，保序拆批归调用方）；
         - 目标被占（``DPE_ALREADY_EXISTS``）为条目失败（``side="to"``），源被改写为冲突
-          （``side="from"``），都如实回报、绝不自动退化。
+          （``side="from"``），都如实回报、绝不自动退化；
+        - 例外：目标已持有与源相同的内容（读到的目标值等于 base）时不发 move，以 base 为前置条件
+          删除源，判 ``moved``（§7.2，#165）；删源遇源被改写为冲突（``side="from"``），遇源已不存在
+          为已达成。
         """
         contract = self._client.core().contract
         pairs, expected = self._prepare_moves(moves, expected_base, contract)
@@ -995,13 +1039,14 @@ class StatefulPusher(_PusherBase):
 
     def _move_one(self, plan: _Plan) -> _Outcome:
         assert plan.to_uri is not None and plan.base is not None  # write 计划必有
+        if plan.delete_source:
+            # 目标已持有同一内容（#165）：以 base 删除源，结局归类同 delete，冲突标源侧
+            return _source_side(self._delete_one(plan))
         try:
             self._client.move(plan.uri, plan.to_uri, plan.base)
         except PreconditionFailedError as exc:
             remote, re_error = self._re_read(plan.uri)  # 源被改写：重读源侧
-            return _Outcome(
-                error=exc, kind="conflict", side="from", remote=remote, remote_error=re_error
-            )
+            return _move_conflict(exc, remote, re_error)
         except AlreadyExistsError as exc:
             remote, re_error = self._re_read(plan.to_uri)  # 目标被占：重读目标侧
             return _Outcome(
@@ -1151,13 +1196,14 @@ class AsyncStatefulPusher(_PusherBase):
 
     async def _move_one(self, plan: _Plan) -> _Outcome:
         assert plan.to_uri is not None and plan.base is not None  # write 计划必有
+        if plan.delete_source:
+            # 目标已持有同一内容（#165）：以 base 删除源，结局归类同 delete，冲突标源侧
+            return _source_side(await self._delete_one(plan))
         try:
             await self._client.move(plan.uri, plan.to_uri, plan.base)
         except PreconditionFailedError as exc:
             remote, re_error = await self._re_read(plan.uri)  # 源被改写：重读源侧
-            return _Outcome(
-                error=exc, kind="conflict", side="from", remote=remote, remote_error=re_error
-            )
+            return _move_conflict(exc, remote, re_error)
         except AlreadyExistsError as exc:
             remote, re_error = await self._re_read(plan.to_uri)  # 目标被占：重读目标侧
             return _Outcome(

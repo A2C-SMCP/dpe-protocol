@@ -180,16 +180,14 @@ def test_incremental_rounds_converge_to_a_full_round(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="依赖 POSIX 权限位")
 def test_move_onto_a_target_created_by_a_failed_round(tmp_path: Path) -> None:
-    """钉住现状：目标文档在早先一个失败轮里已经建出（游标未推进），之后用旧游标配出的 move
-    撞上已存在的目标。
+    """目标文档在早先一个失败轮里已经建出（游标未推进），之后用旧游标配出的 move 撞上已存在的
+    目标——推送器写前判定发现目标已持有与源相同的内容，以 base 删源、判 moved，实例收敛
+    （connector §7.2「move 的目标已持有同一内容」，#165）。
 
     1. Y 是 X 的克隆（移动键相同）；某轮 Y 作为新文档 created，但同轮另一处出错（读不了的
        子树），本轮 partial、游标不推进；
     2. 删掉 X，下一轮仍从旧游标开始：X 消失、Y 新出现且一一对应 → move X→Y；remote 上源与
-       目标都在 → 目标被占（core §5.2 第 5 步）。
-
-    TODO(#165)：推送器写前判定 move 时，源与目标都等于 base（目标
-    已持有相同内容）则以 base 为前置条件删源、回报 moved。落地后把这里改为断言 moved 并收敛。
+       目标都在，且目标内容与源相同 → 不发 move，删源 → succeeded。
     """
     root = tmp_path / "root"
     make_repo(root / "x", "共同的历史")
@@ -208,7 +206,12 @@ def test_move_onto_a_target_created_by_a_failed_round(tmp_path: Path) -> None:
         assert partial["outcome"] == "partial" and partial["counts"]["created"] == 1
         assert partial["cursor_persisted"] is False
         shutil.rmtree(root / "x")
-        stuck = runner.incremental(expect=1)
-        assert stuck["outcome"] == "partial"
-        assert [f["code"] for f in stuck["failures"]] == ["DPE_ALREADY_EXISTS"]
-        assert set(runner.listing("git://inc/")) == {"x", "y"}  # 源没被删
+        # 前提：失败轮建出的 Y 与 X 内容相同（克隆、历史一致）。目标内容不同时仍是
+        # DPE_ALREADY_EXISTS 的条目失败，由两个 SDK 的推送器用例覆盖
+        converged = runner.incremental()
+        assert converged["outcome"] == "succeeded"
+        assert converged["counts"]["moved"] == 1
+        assert converged["cursor_persisted"] is True
+        listing = runner.listing("git://inc/")
+        assert set(listing) == {"y"}  # 源已删、目标保留
+        assert listing == runner.full_mapping()  # R = F(S)
