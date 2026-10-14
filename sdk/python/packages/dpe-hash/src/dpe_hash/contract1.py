@@ -19,10 +19,10 @@
 ``nesting_depth``——connector 契约 §4.1 / §4.4 的清单与实例定义（经 dpe-sdk 的 run 模块）直接
 复用它，不再各写一份。
 
-``contract`` 参数用于契约 1 §6 的原位重算；``dpe2`` 只在显式传入时接受（见 ``DRILL_CONTRACT``）。
+``contract`` 参数用于契约 1 §6 的原位重算；``dpex`` 只在显式传入时接受（见 ``DRILL_CONTRACT``）。
 带子 hash 列表的入口（``page_hash`` / ``doc_hash`` / ``object_hash`` / ``children``）另有可选的
 关键字参数 ``contracts``：本次校验接受的「受支持契约」基准集合，缺省 ``SUPPORTED_CONTRACTS``。
-声明多契约的服务端（core §3.1）传自己的声明集合，于是 dpe1 对象引用 dpe2 子 hash 由「不受支持」
+声明多契约的服务端（core §3.1）传自己的声明集合，于是 dpe1 对象引用 dpex 子 hash 由「不受支持」
 改判契约混用。
 """
 
@@ -74,8 +74,8 @@ __all__ = [
     "parse_hash",
 ]
 
-#: 各契约的摘要前缀字节：dpe2 = ASCII "dpe2" ‖ 原像（vectors/README.md）
-_SALT = {"dpe1": b"", DRILL_CONTRACT: b"dpe2"}
+#: 各契约的摘要前缀字节：dpex = ASCII "dpex" ‖ 原像（vectors/README.md）
+_SALT = {"dpe1": b"", DRILL_CONTRACT: b"dpex"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _BLOB_PREFIX = "sha256:"
 
@@ -242,7 +242,7 @@ def _metadata_part(obj: Mapping[str, Any], field: str, at: str) -> str:
 def _base_contracts(contracts: Collection[str]) -> frozenset[str]:
     """本次校验的「受支持契约」基准集合（``parse_hash`` 的参数校验同形）。
 
-    实际接受的集合是它与本次对象契约的并集（``_hash_list``）：演练契约 dpe2 只在被选为本次契约时
+    实际接受的集合是它与本次对象契约的并集（``_hash_list``）：演练契约 dpex 只在被选为本次契约时
     才算受支持；集合里出现本包不认识的契约直接拒绝。默认基准是 ``SUPPORTED_CONTRACTS``——
     向量与已发布行为因此不变；声明多契约的服务端（core §3.1）传入自己的声明集合，
     于是「受支持但与本对象不同」的契约按契约混用判 ``DPE_VALIDATION``。
@@ -261,7 +261,7 @@ def _hash_list(value: object, contract: str, at: str, contracts: Collection[str]
 
     接受集合 = ``contracts``（基准，缺省 ``SUPPORTED_CONTRACTS``）∪ {本次对象的契约}：前缀不在其中
     → ``ContractUnsupportedError``；在其中、但与本对象的契约不同（契约混用）→ ``ValidationError``。
-    基准确认了「同意接受哪些契约」，并集里加入本次契约则让演练契约 dpe2 在被选中时才算受支持。
+    基准确认了「同意接受哪些契约」，并集里加入本次契约则让演练契约 dpex 在被选中时才算受支持。
     """
     if isinstance(value, str) or not isinstance(value, (list, tuple)):
         raise ValidationError(f"必须是 hash 值数组，实际为 {type(value).__name__}", at)

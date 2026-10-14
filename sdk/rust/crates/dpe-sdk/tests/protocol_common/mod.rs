@@ -30,7 +30,7 @@ pub fn h2() -> String {
 
 /// 演练契约的 hash 字面量。
 pub fn h_drill() -> String {
-    format!("dpe2:{}", "3".repeat(64))
+    format!("dpex:{}", "3".repeat(64))
 }
 
 /// capabilities 响应体模板（`batch_head_max = 2`，便于测分批；与 Python 侧一致）。

@@ -119,7 +119,7 @@ def _raises(error: type[DpeHashError], code: str, path: str, fn: Any, *args: Any
             ContractUnsupportedError,
             "DPE_CONTRACT_UNSUPPORTED",
             "/elements/1",
-            {"elements": [H, "dpe2:" + "a" * 64]},
+            {"elements": [H, "dpex:" + "a" * 64]},
             "page",
         ),
         (ValidationError, "DPE_VALIDATION", "/elements/0", {"elements": ["dpe1:ABC"]}, "page"),
@@ -169,15 +169,15 @@ def test_child_hash_paths_in_layered_api() -> None:
 
 
 def test_mixed_contracts_rejected() -> None:
-    """dpe2 页对象引用 dpe1 元素：契约混用。"""
-    _raises(ValidationError, "DPE_VALIDATION", "/elements/0", page_hash, {}, [H], "dpe2")
+    """dpex 页对象引用 dpe1 元素：契约混用。"""
+    _raises(ValidationError, "DPE_VALIDATION", "/elements/0", page_hash, {}, [H], "dpex")
 
 
 def test_declared_contracts_turn_drill_child_into_mixed_reference() -> None:
     """``contracts`` 参数：声明的契约集合让「受支持但不同契约」按混用判（core §3.1、契约 1 §5）。
 
-    默认基准下 dpe1 对象引用 dpe2 子 hash 是「不受支持的契约」（与向量
-    ``page_child_hash_drill_contract_unsupported`` 同口径）；声明了 dpe2 的服务端下同一输入
+    默认基准下 dpe1 对象引用 dpex 子 hash 是「不受支持的契约」（与向量
+    ``page_child_hash_drill_contract_unsupported`` 同口径）；声明了 dpex 的服务端下同一输入
     是契约混用。
     """
     child = f"{DRILL_CONTRACT}:{'b' * 64}"
@@ -207,7 +207,7 @@ def test_contracts_parameter_threads_through_all_entries() -> None:
     for call in calls:
         with pytest.raises(ValidationError):
             call()
-    # 没有混用时，参数不影响结果（含 dpe2 对象引用 dpe1 子的既有混用判定）
+    # 没有混用时，参数不影响结果（含 dpex 对象引用 dpe1 子的既有混用判定）
     doc = {"file_type": "md", "pages": [H]}
     assert object_hash(doc, "document", "dpe1", contracts=declared) == object_hash(
         doc, "document", "dpe1"

@@ -1,7 +1,7 @@
 {
   "name": "upgrade_drill",
   "kind": "document",
-  "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpe2 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
+  "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpex 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
   "documents": {
     "doc": {
       "file_type": "md",
@@ -63,20 +63,20 @@
           }
         ]
       },
-      "dpe2": {
-        "doc_hash": "dpe2:286354ff81181a871342160b5a74eb29f325c65138004c4944bceb9c61855ffb",
+      "dpex": {
+        "doc_hash": "dpex:b77b5c5496eec237194716d82ed2f32cce470380aaa9f8b4efdf168c9e91c741",
         "pages": [
           {
-            "page_hash": "dpe2:fd0e86cd9ee277758330707c377c46a6f2f5fbc01c63cb97111c4eb2f96595c4",
+            "page_hash": "dpex:1935fb6d4491aa0b99a7c7fbc6c1f3de56c4f39c20febffb7ce8dd61acf49ef1",
             "elements": [
-              "dpe2:c21be9f00ed65d75aac63600c0ad4e8bd3f45a39928280b81c6c54de5a438b29",
-              "dpe2:0fba7f464605a04a14ebbbac90874a8b26181f3850c6efa0f048aeab85263b1b"
+              "dpex:681812fa3ce46d457e3515f4115a5661cd42a40f24e99fdbc806684cf060ff8d",
+              "dpex:20080bb409ee60a7ae7a84f3fa05546e26b6e5d528bc26c067165595982ab885"
             ]
           },
           {
-            "page_hash": "dpe2:ffef37019299cf7ade717a7b77de0e8909dc14d00663e0b2a33eed509740be4f",
+            "page_hash": "dpex:f9ceff4cab015302f34e8a900266091fd07ca82d5986442ce56f5714eb267ed7",
             "elements": [
-              "dpe2:e38ca4d24d0b695fcb40ff683736288f742b788286b49baf1b13fdc7d864eb5d"
+              "dpex:1ba3ebeaec69e32dba46bba4ac3d98bde5749d79bed98fb3d2eac8ae636e9c7c"
             ]
           }
         ]

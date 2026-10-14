@@ -229,16 +229,16 @@ async def test_if_none_match_compares_only_with_the_declared_contract() -> None:
     """GET 的 If-None-Match 只与**声明契约下**的 doc_hash 弱比较（§3.3），不像 If-Match 跨契约。"""
     async with remote(make_engine(contracts=("dpe1", dpe_hash.DRILL_CONTRACT))) as r:
         dpe1_hash = await _create(r)
-        dpe2_hash = inline(text_doc(["x"]), dpe_hash.DRILL_CONTRACT).doc_hash
-        assert dpe2_hash != dpe1_hash
-        # 声明 dpe2 时只认 dpe2 下的值：dpe1 的值不命中（否则会错误地 304）
-        stale, live = f'"{dpe1_hash}"', f'"{dpe2_hash}"'
-        other = await r.raw("GET", TARGET, contract="dpe2", headers={"If-None-Match": stale})
+        dpex_hash = inline(text_doc(["x"]), dpe_hash.DRILL_CONTRACT).doc_hash
+        assert dpex_hash != dpe1_hash
+        # 声明 dpex 时只认 dpex 下的值：dpe1 的值不命中（否则会错误地 304）
+        stale, live = f'"{dpe1_hash}"', f'"{dpex_hash}"'
+        other = await r.raw("GET", TARGET, contract="dpex", headers={"If-None-Match": stale})
         assert other.status_code == 200
-        same = await r.raw("GET", TARGET, contract="dpe2", headers={"If-None-Match": live})
+        same = await r.raw("GET", TARGET, contract="dpex", headers={"If-None-Match": live})
         assert same.status_code == 304
         # 对照：If-Match 跨契约匹配（core §5.1 的契约升级期），与 If-None-Match 相反
-        put = await r.raw("PUT", TARGET, headers={"If-Match": f'"{dpe2_hash}"'}, content=_body("y"))
+        put = await r.raw("PUT", TARGET, headers={"If-Match": f'"{dpex_hash}"'}, content=_body("y"))
         assert put.status_code == 200
 
 

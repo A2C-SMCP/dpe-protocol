@@ -297,10 +297,10 @@ fn write_operations_validate_uris_locally() {
 #[test]
 fn commit_under_drill_contract() {
     let mut caps_body = capabilities_body();
-    caps_body["hash_contracts"] = json!(["dpe1", "dpe2"]);
-    let c = core_from(caps_from(&caps_body).unwrap(), "dpe2").unwrap();
+    caps_body["hash_contracts"] = json!(["dpe1", "dpex"]);
+    let c = core_from(caps_from(&caps_body).unwrap(), "dpex").unwrap();
     let document = test_doc();
-    let expected = document.doc_hash("dpe2").unwrap();
+    let expected = document.doc_hash("dpex").unwrap();
     let response = json_response_with(
         201,
         json!({
@@ -318,7 +318,7 @@ fn commit_under_drill_contract() {
     assert_eq!(result.unwrap().doc_hash, expected);
     assert_eq!(
         server.requests[0].headers.get(CONTRACT_HEADER),
-        Some("dpe2")
+        Some("dpex")
     );
 }
 

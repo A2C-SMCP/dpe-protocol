@@ -20,6 +20,7 @@ Hash 契约定义**内容身份**的计算方式：给定一篇文档，任何�
 
 - hex MUST 为小写。带前缀的完整字符串才是 hash 值；比较、存储、传输 MUST 携带前缀。
 - 实现 MUST 拒绝无前缀或前缀未知的 hash 值（`DPE_CONTRACT_UNSUPPORTED`）。
+- **契约名**：hash 值的前缀就是契约名，与能力发现中声明的契约（core.md §3.1，capabilities 的 `hash_contracts`）同名。真实契约名形如 `dpe<N>`，`N` 为不带前导零的正整数，按契约版本依次分配（本文为 `dpe1`）。`dpex` 保留给仅用于测试的演练契约（定义见 vectors/README.md），**永不**分配给真实契约——同一个前缀始终只对应一种算法，看到前缀即知道算法。生产服务端 SHOULD NOT 声明 `dpex`；未声明时它与其他未知前缀一样被拒绝。
 
 ## 2. 输入：源即内容
 
@@ -117,6 +118,6 @@ doc_hash  = H(document)     document = { "file_type": …, "title"?: …, "doc_m
 - **升级对应规则**（#3 S8）：服务端按已存的（页序号, 页内序号）用新契约**逐对象原位重算**，MUST NOT 重新做差异配对；元素身份（学习产物的归属）保持不变。
 - **升级期的版本令牌**：doc_hash 同时是 CAS 令牌（core.md §5.1）。过渡期内，服务端 MUST 把同一内容在任一受支持契约下的 doc_hash 都视为该文档的当前版本（`If-Match` 按所带值的契约前缀比较、`unchanged` 按请求声明的契约判定），读接口按请求声明的契约返回值（core.md §3.1）；契约升级本身 MUST NOT 让任何写入者的前置条件失效，也 MUST NOT 让快路径筛选把未变内容判为变化。
 - 契约升级 MUST NOT 引起未变内容的重推或重学（判据见 plan §13-7）。
-- 向量包含契约升级演练：同一份内容同时给出 `dpe1` 与假想 `dpe2` 的期望值，两个契约下的逐页、逐元素结果按位置一一对应，即为对应关系断言（`dpe2` 定义见 vectors/README.md，仅用于测试）。
+- 向量包含契约升级演练：同一份内容同时给出 `dpe1` 与假想 `dpex` 的期望值，两个契约下的逐页、逐元素结果按位置一一对应，即为对应关系断言（`dpex` 定义见 vectors/README.md，仅用于测试）。
 
 实现方从既有 hash 规则迁移到本契约的对照，见 [docs/migration/kernel-to-dpe1.md](../docs/migration/kernel-to-dpe1.md)（非规范）。

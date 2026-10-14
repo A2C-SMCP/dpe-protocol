@@ -263,10 +263,11 @@ async def test_old_contract_state_entries_are_treated_as_missing() -> None:
         pusher = AsyncStatefulPusher(client, state=store)
         await pusher.push({URI: _doc("v1")})
         current = await _state(store)
-        # 伪造一条旧契约的同步状态：若被当成 L（base=dpe2:…），服务端按值比较必然 412
-        stale = "dpe2:" + "9" * 64
+        # 伪造一条非当前契约的同步状态（如升级前留下的旧契约值，这里借用演练契约 dpex 的前缀）：
+        # 若被当成 L，服务端按值比较必然 412
+        stale = "dpex:" + "9" * 64
         store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
-        # 新建推送器才会从 store 真载入这条旧契约条目（内存态只在构造时载入一次）
+        # 新建推送器才会从 store 真载入这条非当前契约的条目（内存态只在构造时载入一次）
         reloaded = AsyncStatefulPusher(client, state=store)
 
         changed = await reloaded.push({URI: _doc("v2")})

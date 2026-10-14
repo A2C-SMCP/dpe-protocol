@@ -12,7 +12,7 @@
 //! - [`document_hashes`]：展开视图一次算出三层；
 //! - [`children`]：对象引用的下一层（缺失清单）。
 //!
-//! `contract` 参数用于契约 1 §6 的原位重算；`dpe2` 只在显式传入时接受（见
+//! `contract` 参数用于契约 1 §6 的原位重算；`dpex` 只在显式传入时接受（见
 //! [`DRILL_CONTRACT`]）。校验顺序与 Python dpe-hash 逐函数一致（core §2.8），多处违例时
 //! 返回的错误码相同。
 
@@ -47,11 +47,11 @@ fn unsupported(message: impl Into<String>, path: impl Into<String>) -> Error {
     Error::new(ErrorKind::ContractUnsupported, message, path)
 }
 
-/// 各契约的摘要前缀字节：dpe2 = ASCII "dpe2" ‖ 原像（vectors/README.md）。
+/// 各契约的摘要前缀字节：dpex = ASCII "dpex" ‖ 原像（vectors/README.md）。
 fn salt(contract: &str) -> Result<&'static [u8]> {
     match contract {
         "dpe1" => Ok(b""),
-        DRILL_CONTRACT => Ok(b"dpe2"),
+        DRILL_CONTRACT => Ok(b"dpex"),
         _ => Err(unsupported(format!("不支持的 hash 契约：{contract:?}"), "")),
     }
 }
@@ -108,7 +108,7 @@ fn blob_hex<'a>(value: &'a str, at: &str) -> Result<&'a str> {
 /// 校验并拆分 hash 值，返回 `(契约, 64 位 hex)`；只接受 [`SUPPORTED_CONTRACTS`]。
 ///
 /// 无前缀或前缀不受支持返回 [`ErrorKind::ContractUnsupported`]（契约 1 §1）；摘要格式不对
-/// 返回 [`ErrorKind::Validation`]。升级演练用 [`parse_hash_with`] 显式放行 `dpe2`。
+/// 返回 [`ErrorKind::Validation`]。升级演练用 [`parse_hash_with`] 显式放行 `dpex`。
 pub fn parse_hash(value: &str) -> Result<(&str, &str)> {
     parse_hash_with(value, SUPPORTED_CONTRACTS)
 }
@@ -206,7 +206,7 @@ fn metadata_part(obj: &Map<String, Value>, field: &str, at: &str) -> Result<Stri
 ///
 /// 前缀不是受支持的契约 → [`ErrorKind::ContractUnsupported`]；是受支持的契约、但与本对象的
 /// 契约不同（契约混用）→ [`ErrorKind::Validation`]。「受支持」= [`SUPPORTED_CONTRACTS`] 加上
-/// 本次调用显式选择的契约：演练契约 dpe2 只在被选中时才算受支持，因此 dpe1 对象引用 dpe2 子
+/// 本次调用显式选择的契约：演练契约 dpex 只在被选中时才算受支持，因此 dpe1 对象引用 dpex 子
 /// hash 与生产服务端一样得到 `DPE_CONTRACT_UNSUPPORTED`。
 fn check_child_hash(item: &str, contract: &str, at: &str) -> Result<()> {
     let accepted = |prefix: &str| prefix == contract || SUPPORTED_CONTRACTS.contains(&prefix);

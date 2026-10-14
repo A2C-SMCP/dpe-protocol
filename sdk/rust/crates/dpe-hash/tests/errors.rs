@@ -97,7 +97,7 @@ fn object_hash_errors() {
             ContractUnsupported,
             "DPE_CONTRACT_UNSUPPORTED",
             "/elements/1",
-            json!({"elements": [h(), format!("dpe2:{}", "a".repeat(64))]}),
+            json!({"elements": [h(), format!("dpex:{}", "a".repeat(64))]}),
             Page,
         ),
         (
@@ -192,11 +192,11 @@ fn child_hash_paths_in_layered_api() {
     );
 }
 
-/// dpe2 页对象引用 dpe1 元素：契约混用。
+/// dpex 页对象引用 dpe1 元素：契约混用。
 #[test]
 fn mixed_contracts_rejected() {
     assert_err(
-        page_hash(&json!({}), &[h()], "dpe2"),
+        page_hash(&json!({}), &[h()], "dpex"),
         ErrorKind::Validation,
         V,
         "/elements/0",

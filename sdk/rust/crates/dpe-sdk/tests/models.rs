@@ -441,12 +441,12 @@ fn metadata_change_reflected_in_hash() {
 
 #[test]
 fn wire_contract_from_argument() {
-    // 子 hash 按显式 contract 校验：dpe2 只在显式传入时接受。
-    let child = format!("dpe2:{}", "0".repeat(64));
+    // 子 hash 按显式 contract 校验：dpex 只在显式传入时接受。
+    let child = format!("dpex:{}", "0".repeat(64));
     let err = PageObject::from_value(&json!({"elements": [child.clone()]}), CONTRACT).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::ContractUnsupported);
     let page = PageObject::from_value(&json!({"elements": [child]}), DRILL_CONTRACT).unwrap();
-    assert!(page.page_hash(DRILL_CONTRACT).unwrap().starts_with("dpe2:"));
+    assert!(page.page_hash(DRILL_CONTRACT).unwrap().starts_with("dpex:"));
 }
 
 // ---------------------------------------------------------------------------

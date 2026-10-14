@@ -9,7 +9,7 @@ $ pip install dpe-conformance==X.Y.Z   # X.Y.* 对应规范文档 X.Y.*
 $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.json
 ```
 
-- `REMOTE-URL` 须符合 HTTP 绑定 §1 的 remote URL 文法（与 SDK 同一判定，`dpe_hash.check_remote_url`）：不合法即以退出码 2 拒绝、不开跑，消息不回显 URL——SDK 连不上的 remote（如带查询串、尾部 `/`、大写 scheme）跑分全绿没有意义。**升级须知**（0.4 起，不兼容）：以前能跑的 `https://host/r/1/`（尾部 `/`）、`HTTPS://…`、显式 `:443` 等写法现在以退出码 2 拒绝，CI 里的 `REMOTE-URL` 须改成规范写法；
+- `REMOTE-URL` 须符合 HTTP 绑定 §1 的 remote URL 文法（与 SDK 同一判定，`dpe_hash.check_remote_url`）：不合法即以退出码 2 拒绝、不开跑，消息不回显 URL——SDK 连不上的 remote（如带查询串、尾部 `/`、大写 scheme）跑分全绿没有意义。**升级须知**（0.4 起，不兼容）：以前能跑的 `https://host/r/1/`（尾部 `/`）、`HTTPS://…`、显式 `:443` 等写法现在以退出码 2 拒绝，CI 里的 `REMOTE-URL` 须改成规范写法。**升级须知**（0.4 起，不兼容）：演练契约由 `dpe2` 改名为 `dpex`（契约 1 §1，#183），按旧文档同时声明 `dpe1` 与 `dpe2` 做演练的服务端须改为声明 `dpex`——否则契约升级期一章与以演练契约为用例契约的向量用例会被如实 skip（不报错），若 CI 没有守住执行数基线就察觉不到覆盖的丢失；
 - `--section NAME` 按章过滤（可重复；缺省全部章节；未知章节以退出码 2 拒绝——拼错章节名不会静默跑出一个「假绿」的空套件）；
 - `--junit-xml PATH` 输出 JUnit XML（CI 直接消费）；
 - `--counts-json PATH` 输出机器可读计数，供 CI 断言**执行数不低于基线**（防止因 skip 过多而假绿）：

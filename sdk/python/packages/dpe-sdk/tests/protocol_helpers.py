@@ -14,7 +14,7 @@ from dpe_sdk.wire import Capabilities
 
 H1 = "dpe1:" + "1" * 64
 H2 = "dpe1:" + "2" * 64
-H_DRILL = "dpe2:" + "3" * 64
+H_DRILL = "dpex:" + "3" * 64
 SESSION_EXPIRES = "2026-10-01T00:00:00Z"
 
 CAPABILITIES: dict[str, Any] = {

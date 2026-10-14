@@ -849,4 +849,4 @@ def test_deliver_validates_locally_without_requests() -> None:
     with pytest.raises(TypeError, match="前置条件"):
         next(core().deliver(URI, doc(["x"]), None))  # type: ignore[arg-type]
     with pytest.raises(dpe_hash.ContractUnsupportedError):
-        next(core().deliver(URI, doc(["x"]), BaseHash(H2.replace("dpe1", "dpe2"))))
+        next(core().deliver(URI, doc(["x"]), BaseHash(H2.replace("dpe1", "dpex"))))

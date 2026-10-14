@@ -159,7 +159,7 @@ def test_ijson_before_contract(body: bytes, code: str) -> None:
 
 def test_contract_before_envelope() -> None:
     engine = make_engine()
-    for contract in (None, "dpe9", "dpe2"):
+    for contract in (None, "dpe9", "dpex"):
         with pytest.raises(errors.ContractUnsupportedError):
             engine.commit("u", URI, b"[]", contract, None)
 
@@ -406,8 +406,8 @@ def test_base_hash_matches_any_supported_contract() -> None:
     engine = make_engine(contracts=("dpe1", dpe_hash.DRILL_CONTRACT))
     doc = text_doc(["x"])
     engine.commit("u", URI, inline(doc).body(), C, IfAbsent())
-    dpe2_hash = inline(doc, dpe_hash.DRILL_CONTRACT).doc_hash
-    result = engine.commit("u", URI, inline(text_doc(["y"])).body(), C, BaseHash(dpe2_hash))
+    dpex_hash = inline(doc, dpe_hash.DRILL_CONTRACT).doc_hash
+    result = engine.commit("u", URI, inline(text_doc(["y"])).body(), C, BaseHash(dpex_hash))
     assert result.status == "updated"
 
 

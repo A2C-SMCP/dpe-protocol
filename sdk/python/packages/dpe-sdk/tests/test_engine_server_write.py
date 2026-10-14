@@ -123,7 +123,7 @@ def test_same_level_write_then_source_overwrites_with_new_base_hash() -> None:
 
 
 def test_declared_contracts_classify_drill_child_as_mixed() -> None:
-    """声明 dpe1 + dpe2 的服务端：dpe1 页引用 dpe2 子 hash 是契约混用，不是「不受支持」。"""
+    """声明 dpe1 + dpex 的服务端：dpe1 页引用 dpex 子 hash 是契约混用，不是「不受支持」。"""
     engine = make_engine(contracts=("dpe1", dpe_hash.DRILL_CONTRACT))
     child = f"{dpe_hash.DRILL_CONTRACT}:{'a' * 64}"
     body = json.dumps(

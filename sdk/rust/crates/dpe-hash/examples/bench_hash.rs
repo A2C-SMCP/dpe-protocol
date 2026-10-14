@@ -2,7 +2,7 @@
 //! 供内核评估 TFROB-958 的迁移窗口）。
 //!
 //! 合成一篇 `--pages` × `--per-page` 个元素的文档（混合 category、带版面坐标 metadata），
-//! 分别在 dpe1 与升级演练契约 dpe2 下计时 `document_hashes`，按 Markdown 表格输出，
+//! 分别在 dpe1 与升级演练契约 dpex 下计时 `document_hashes`，按 Markdown 表格输出，
 //! CI 把输出写进 job summary。
 //!
 //! 用法：

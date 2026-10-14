@@ -1,4 +1,4 @@
-//! 一致性向量：dpe-hash 逐字节通过 vectors/ 全部向量，含 dpe2 升级演练、relations 与 preimages。
+//! 一致性向量：dpe-hash 逐字节通过 vectors/ 全部向量，含 dpex 升级演练、relations 与 preimages。
 
 mod common;
 
@@ -23,7 +23,7 @@ fn without(obj: &Value, field: &str) -> Value {
 
 fn digest(contract: &str, preimage: &str) -> String {
     let salt: &[u8] = if contract == DRILL_CONTRACT {
-        b"dpe2"
+        b"dpex"
     } else {
         b""
     };
@@ -220,7 +220,7 @@ fn vectors_cover_drill_contract() {
                 .any(|exp| exp.get(DRILL_CONTRACT).is_some())
         })
         .count();
-    assert!(drills > 0, "向量应包含 dpe2 升级演练（契约 1 §6）");
+    assert!(drills > 0, "向量应包含 dpex 升级演练（契约 1 §6）");
 }
 
 #[test]
@@ -268,7 +268,7 @@ fn all_vector_kinds_have_consumers() {
         .iter()
         .map(|v| v["kind"].as_str().unwrap().into())
         .collect();
-    // 本 crate 的测试逐类断言（含 dpe2 升级演练等的 document、jcs、uri、invalid，见本文件各测试）
+    // 本 crate 的测试逐类断言（含 dpex 升级演练等的 document、jcs、uri、invalid，见本文件各测试）
     let consumed: BTreeSet<String> = ["document", "jcs", "uri", "invalid"]
         .map(String::from)
         .into();

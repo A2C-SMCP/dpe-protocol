@@ -135,7 +135,7 @@ fn capabilities_tolerate_unknown_members() {
 #[test]
 fn contract_must_be_accepted_by_server_no_downgrade() {
     let mut body = capabilities_body();
-    body["hash_contracts"] = json!(["dpe2"]);
+    body["hash_contracts"] = json!(["dpex"]);
     let caps = caps_from(&body).unwrap();
     assert_eq!(
         expect_error(core_from(caps, "dpe1")).kind(),
@@ -152,9 +152,9 @@ fn contract_must_be_accepted_by_server_no_downgrade() {
 
     // 演练契约只在显式指定且服务端接受时使用
     let mut body = capabilities_body();
-    body["hash_contracts"] = json!(["dpe1", "dpe2"]);
+    body["hash_contracts"] = json!(["dpe1", "dpex"]);
     let caps = caps_from(&body).unwrap();
-    assert_eq!(core_from(caps.clone(), "dpe2").unwrap().contract(), "dpe2");
+    assert_eq!(core_from(caps.clone(), "dpex").unwrap().contract(), "dpex");
     assert_eq!(core_from(caps, "dpe1").unwrap().contract(), "dpe1");
 }
 
@@ -191,8 +191,8 @@ fn unknown_contract_and_protocol() {
 #[test]
 fn every_read_request_declares_the_contract_and_is_retry_safe() {
     let mut body = capabilities_body();
-    body["hash_contracts"] = json!(["dpe1", "dpe2"]);
-    let c = core_from(caps_from(&body).unwrap(), "dpe2").unwrap();
+    body["hash_contracts"] = json!(["dpe1", "dpex"]);
+    let c = core_from(caps_from(&body).unwrap(), "dpex").unwrap();
     let uris = vec!["a:1".to_owned()];
     let requests = [
         first_request(c.head("a:1")),
@@ -203,7 +203,7 @@ fn every_read_request_declares_the_contract_and_is_retry_safe() {
     for request in requests {
         assert_eq!(
             request.headers.get(CONTRACT_HEADER),
-            Some("dpe2"),
+            Some("dpex"),
             "{request:?}"
         );
         assert!(request.retry_safe, "{request:?}");
@@ -494,18 +494,18 @@ fn get_skeleton() {
 
 #[test]
 fn get_skeleton_under_drill_contract() {
-    let body = skeleton_body("dpe2", "a:1");
+    let body = skeleton_body("dpex", "a:1");
     let mut caps_body = capabilities_body();
-    caps_body["hash_contracts"] = json!(["dpe1", "dpe2"]);
-    let c = core_from(caps_from(&caps_body).unwrap(), "dpe2").unwrap();
+    caps_body["hash_contracts"] = json!(["dpe1", "dpex"]);
+    let c = core_from(caps_from(&caps_body).unwrap(), "dpex").unwrap();
     let (result, _) = run(c.get_skeleton("a:1").unwrap(), [json_ok(body.clone())]);
     assert!(result
         .unwrap()
         .expect("文档存在")
         .doc_hash
-        .starts_with("dpe2:"));
+        .starts_with("dpex:"));
 
-    // 同一份 dpe2 骨架交给 dpe1 核心：hash 不属于声明的契约
+    // 同一份 dpex 骨架交给 dpe1 核心：hash 不属于声明的契约
     let (result, _) = run(core("dpe1").get_skeleton("a:1").unwrap(), [json_ok(body)]);
     assert_eq!(expect_error(result).kind(), ErrorKind::UnexpectedResponse);
 }

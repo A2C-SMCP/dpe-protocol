@@ -188,7 +188,7 @@ clock = AdjustableClock()  # 可拨动的时钟：真实时间 + 可累计的偏
 engine = Engine(
     EngineConfig(
         clock=clock,  # ③ 会话过期与续期用它
-        contracts=("dpe1", "dpe2"),  # ④ 同时声明两个契约（契约升级期）
+        contracts=("dpe1", "dpex"),  # ④ 同时声明两个契约（契约升级期）
         session_id_factory=lambda: f"st-{next(counter)}",  # ⑤ 确定性且互不重复的会话 id
         authorizer=PrefixAuthorizer(  # ① 多身份与按 URI 前缀的写授权
             {"Bearer full": ("",), "Bearer limited": ("dpe://docs/a/",)},
@@ -207,7 +207,7 @@ app = create_app(engine, prefix="/r/1", hooks=HooksConfig(path="/__hooks__", clo
 | ② 服务端自身写入（core §2.4 同级写入） | `POST {hooks}/self-write` |
 | ③ 会话强制过期 | `POST {hooks}/expire-session` |
 | ③ 拨钟（精确断言续期与过期；参考服务端专有，跑分器不依赖它） | `POST {hooks}/clock/advance` |
-| ④ 同时声明 dpe1 与 dpe2 | `EngineConfig.contracts` |
+| ④ 同时声明 dpe1 与 dpex | `EngineConfig.contracts` |
 | ⑤ 可注入会话 id | `EngineConfig.session_id_factory` |
 
 ```bash
@@ -234,7 +234,7 @@ curl -X POST http://127.0.0.1:8000/__hooks__/clock/advance -d '{"advance_seconds
 
 ```bash
 python -m dpe_sdk.testing --port 0 --prefix /r/1 --hooks /__hooks__ \
-  --contract dpe1 --contract dpe2 \
+  --contract dpe1 --contract dpex \
   --grant 'Bearer full' '*' --grant 'Bearer limited' 'dpe://docs/a/' --force 'Bearer full' \
   --session-id-prefix st-test-
 # {"url": "http://127.0.0.1:PORT/r/1", "hooks": "http://127.0.0.1:PORT/__hooks__"}
