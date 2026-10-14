@@ -1,6 +1,7 @@
 """一轮编排（connector 契约 §6.4–§6.8、§7.1–§7.3）：脚本化插件（真实子进程）× 进程内参考服务端。
 
-插件行为由实例配置给出（``run_scan_plugin.py``）；协议路径经真实参考服务端
+插件行为由实例配置给出（§8.4 的线协议夹具 ``conformance/connector-fixture/``，脚本模式）；
+协议路径经真实参考服务端
 （``client_helpers.in_process_client``），``httpx`` transport 层只做故障注入（外部并发写入、
 响应丢失）。状态目录是真实的临时目录。
 """
@@ -44,11 +45,17 @@ from engine_helpers import make_engine
 
 pytestmark = pytest.mark.anyio
 
-PLUGIN = Path(__file__).with_name("run_scan_plugin.py")
+#: §8.4 的 connector 线协议夹具（仓库 conformance/connector-fixture/，脚本模式）
+PLUGIN = (
+    Path(__file__).resolve().parents[5]
+    / "conformance"
+    / "connector-fixture"
+    / "dpe_connector_fixture.py"
+)
 MANIFEST = parse_manifest(
     {
         "manifest_version": 1,
-        "name": "scan",
+        "name": "connector-fixture",
         "version": "1.0",
         "protocol_versions": ["dpe-connector/1"],
         "config_schema": {"type": "object"},

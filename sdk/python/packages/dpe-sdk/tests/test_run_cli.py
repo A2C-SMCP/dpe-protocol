@@ -24,7 +24,13 @@ from dpe_sdk.run import StateDirectory
 from dpe_sdk.transport import DpeClient
 from server_helpers import spawn_server
 
-PLUGIN = Path(__file__).with_name("run_scan_plugin.py")
+#: §8.4 的 connector 线协议夹具（仓库 conformance/connector-fixture/，脚本模式）
+PLUGIN = (
+    Path(__file__).resolve().parents[5]
+    / "conformance"
+    / "connector-fixture"
+    / "dpe_connector_fixture.py"
+)
 P = "dpe://cli/"
 SECRET = "remote-secret-value-0123456789"
 PLUGIN_SECRET = "plugin-secret-value-9876543210"
@@ -82,7 +88,7 @@ class Instance:
         self.state = state
         self.manifest: dict[str, Any] = {
             "manifest_version": 1,
-            "name": "scan",
+            "name": "connector-fixture",
             "version": "1.0",
             "protocol_versions": ["dpe-connector/1"],
             "config_schema": {"type": "object"},
@@ -161,7 +167,7 @@ def test_successful_round_reports_logs_and_exits_zero(
     assert report["report_version"] == 1
     assert report["instance"] == {"id": "inst", "uri_prefix": P}
     assert report["remote_url"] == server["url"]
-    assert report["plugin"] == {"name": "scan", "version": "1.0"}
+    assert report["plugin"] == {"name": "connector-fixture", "version": "1.0"}
     assert report["protocol_version"] == "dpe-connector/1"
     assert (report["outcome"], report["incremental"], report["cursor_persisted"]) == (
         "succeeded",
