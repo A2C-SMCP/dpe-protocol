@@ -31,8 +31,21 @@ from pathlib import Path
 from typing import Any
 
 from dpe_git_connector import PLUGIN_NAME, __version__
-from dpe_git_connector.cursor import decode_cursor, encode_cursor, source_digest
-from dpe_git_connector.gitrepo import GitError, GitRepo, RepoDir, discover_repos, looks_like_repo
+from dpe_git_connector.cursor import (
+    decode_cursor,
+    encode_cursor,
+    legacy_source_digest,
+    source_digest,
+)
+from dpe_git_connector.gitrepo import (
+    MIN_GIT_VERSION,
+    GitError,
+    GitRepo,
+    RepoDir,
+    discover_repos,
+    git_version,
+    looks_like_repo,
+)
 from dpe_git_connector.mapping import DocumentMapper, Item, Limits, RepoMark, RepoSpec
 
 __all__ = ["PROTOCOL_VERSION", "PROTOCOL_VERSIONS", "Serve"]
@@ -113,6 +126,11 @@ class _Source:
     spec: RepoSpec
     #: 数据源摘要（实例前缀 + 配置）：游标只在同一数据源下有效（``cursor``）
     digest: str = ""
+    #: 本次的远端单元素上限（``remote_limits.max_payload_bytes``）：与游标里记的不同时，本轮
+    #: 各仓库都重新扫描（``_Round.rescan``），仓库集合的增量判定照旧
+    limit: int | None = None
+    #: 按本次上限算出的 v1 游标摘要：只用于解释升级前留下的游标（``cursor`` 的 v1 兼容）
+    legacy_digest: str = ""
 
 
 @dataclass
@@ -145,6 +163,13 @@ class _Round:
     steps: list[_Step]
     #: 本轮是否基于运行器给出的游标增量枚举（§6.4 ``incremental``）
     incremental: bool = False
+    #: 远端上限与游标生成时不同：同一源状态下的产出可能变了，各仓库都不按指纹跳过（#170）
+    rescan: bool = False
+    #: 新游标要记的远端上限：缺省为本次上限；rescan 轮里任一仓库没能在新上限下产出（沿用了
+    #: 旧记录）时退回上一轮的上限——新游标不越过未产出的变更（§6.8），下一轮再重扫一次
+    limit: int | None = None
+    #: 上一轮游标记的上限（rescan 轮退回用）
+    previous_limit: int | None = None
     #: 每个现存仓库用于比较的上一轮记录（改名的目标取其源的记录）；全量轮为空
     baseline: dict[bytes, RepoMark] = field(default_factory=dict)
     #: 新游标的记录：随步骤推进逐个写入（见 ``Serve._source_item``）
@@ -178,7 +203,14 @@ class _Round:
         if previous is None:
             self.marks.pop(identifier, None)
         else:
-            self.marks[identifier] = previous
+            self.keep_previous(identifier, previous)
+
+    def keep_previous(self, identifier: bytes, previous: RepoMark) -> None:
+        """沿用一个仓库的上一轮记录（它本轮没能成功产出）。rescan 轮里这条记录不是在新上限下
+        得出的，新游标的上限随之退回上一轮的值（§6.8）。"""
+        self.marks[identifier] = previous
+        if self.rescan:
+            self.limit = self.previous_limit
 
     def next_token(self) -> str:
         self.issued += 1
@@ -306,6 +338,10 @@ class Serve:
         if isinstance(parsed, str):
             # schema 无法表达的语义约束在 initialize 拒绝（契约 §4.2、§6.3）
             return self._handshake_error(id_, -32005, parsed)
+        # 先查不依赖环境的配置，再查环境（git 版本），最后才用 git 校验数据源
+        refusal = _check_git_version()
+        if refusal is not None:
+            return self._handshake_error(id_, -32005, refusal)
         try:
             self._validate_source(parsed)
         except GitError as exc:
@@ -320,7 +356,9 @@ class Serve:
             parsed.repo_path,
             parsed.root_path,
             parsed.spec,
-            source_digest(uri_prefix, config, limits.max_payload_bytes),
+            source_digest(uri_prefix, config),
+            limits.max_payload_bytes,
+            legacy_source_digest(uri_prefix, config, limits.max_payload_bytes),
         )
         self._mapper = DocumentMapper(uri_prefix, limits)
         _log.info(
@@ -421,7 +459,7 @@ class Serve:
             result["next"] = round_.next_token()
             return _result(id_, result)
         # 结束批：给出新游标（§6.8）。信封预留只覆盖 "cursor":null，游标串的字节另计
-        cursor_value: str | None = encode_cursor(self._source.digest, round_.marks)
+        cursor_value: str | None = encode_cursor(self._source.digest, round_.limit, round_.marks)
         if used + _encoded_size(cursor_value) > self._budget(id_):
             if items:
                 # 本批放不下游标：以 next 结束本批，下一批单独给出空 items 与游标
@@ -445,6 +483,7 @@ class Serve:
         单仓库模式的标识取仓库目录名；root 模式重新发现仓库集合。
 
         **增量轮**（游标可解释）：现存仓库与上一轮的记录比较，状态指纹相同即跳过（``_source_item``）；
+        远端单元素上限与游标里记的不同时（``_Round.rescan``，#170）不按指纹跳过、逐个重扫，其余照旧；
         **消失的仓库**（上一轮有、本轮发现不到）表达为显式意图（§6.5：删除与移动 MUST 是显式
         条目）——只在 root 模式：
 
@@ -466,18 +505,41 @@ class Serve:
         else:
             assert self._source.root_path is not None
             entries, unreadable = discover_repos(self._source.root_path)
-        previous = None if cursor is None else decode_cursor(cursor, self._source.digest)
-        if cursor is not None and previous is None:
+        decoded = (
+            None
+            if cursor is None
+            else decode_cursor(
+                cursor,
+                self._source.digest,
+                legacy=(self._source.legacy_digest, self._source.limit),
+            )
+        )
+        if cursor is not None and decoded is None:
             _log.warning("游标无法解释（格式、版本或数据源不符），本轮回退为全量枚举")
         tail = [_Step(repo=entry) for entry in entries]
         tail += [_Step(unreadable=entry) for entry in unreadable]
-        if previous is None:
-            return _Round(tail)
+        if decoded is None:
+            return _Round(tail, limit=self._source.limit)
+        previous, previous_limit = decoded
+        rescan = previous_limit != self._source.limit
+        if rescan:
+            _log.info(
+                "远端单元素上限变化（%s → %s）：本轮各仓库重新扫描，删除与移动照常按增量判定",
+                previous_limit,
+                self._source.limit,
+            )
 
         current = {entry.identifier for entry in entries}
         baseline = {key: mark for key, mark in previous.items() if key in current}
         gone = sorted(key for key in previous if key not in current)
-        round_ = _Round([], incremental=True, baseline=baseline)
+        round_ = _Round(
+            [],
+            incremental=True,
+            rescan=rescan,
+            limit=self._source.limit,
+            previous_limit=previous_limit,
+            baseline=baseline,
+        )
         if not gone:
             round_.steps = tail
             return round_
@@ -684,14 +746,15 @@ class Serve:
             GitRepo(entry.path),
             entry,
             self._source.spec,
-            unchanged_if=None if previous is None else previous.fingerprint,
+            # 上限变了不按指纹跳过：同一状态的产出可能不同（#170）
+            unchanged_if=None if previous is None or round_.rescan else previous.fingerprint,
         )
         if mark is not None:
             assert item is not None
             round_.marks[entry.identifier] = mark
             round_.tentative[item.fields["file_uri"]] = entry.identifier
         elif previous is not None:
-            round_.marks[entry.identifier] = previous
+            round_.keep_previous(entry.identifier, previous)
         else:
             round_.marks.pop(entry.identifier, None)
         round_.scanned = (round_.position, item)
@@ -846,6 +909,28 @@ class Serve:
 #: 前缀结尾必须是的 URI 分隔字符：码点前缀匹配不识别段边界（契约 §6.5），前缀不带分隔符
 #: 时 ``prefix + path`` 会改写 authority 或上一个段（``git://docs`` + ``a.md`` → ``git://docsamd.md``）
 _PREFIX_END = frozenset("/?#")
+
+
+def _check_git_version() -> str | None:
+    """git 版本低于 ``MIN_GIT_VERSION`` 或无法确定时的拒绝理由（实例级，§7.1）；满足时为 ``None``。
+
+    低版本下 ``GIT_CONFIG_GLOBAL`` 不生效，使用者的全局配置会被静默读入、改变映射结果——
+    宁可在 initialize 明确拒绝，也不带着不可复现的产出继续。
+    """
+    required = ".".join(map(str, MIN_GIT_VERSION))
+    try:
+        version = git_version()
+    except GitError as exc:
+        return f"git 不可用：{exc}"
+    if version is None:
+        return f"无法确定 git 版本（需要 git ≥ {required}：更低版本不能隔离全局配置）"
+    if version < MIN_GIT_VERSION:
+        found = ".".join(map(str, version))
+        return (
+            f"git 版本过低：{found}，需要 ≥ {required}"
+            "（GIT_CONFIG_GLOBAL 自 2.32 起生效，更低版本会静默读入全局配置）"
+        )
+    return None
 
 
 def _check_prefix(prefix: str) -> None:
