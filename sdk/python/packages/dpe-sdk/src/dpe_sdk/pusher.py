@@ -77,6 +77,16 @@ delete 重读不存在记 ``deleted``（删条目、清意图），二者都带�
 否则判 ``failed``（``side="from"``；**即使 to 存在但 hash 不同也不是目标侧被占**——源已不在，
 失败原因在源侧）。
 
+**批量读被拒时逐条定位**（#145，connector §7.1）：判定前的 ``batch_head`` 被确定、不可重试地
+拒绝（如其中一个 URI 不在授权前缀内）时，推送器对本批每个 URI 各 ``head`` 一次（并发至多
+``concurrency``），只让读被拒的条目以该条 ``failed`` 返回（``error`` 是那次读的原错误，code
+原样，``side`` 为 ``None``），其余条目照常判定与写入；逐条读都通过（拒绝与具体 URI 无关）时，
+全部条目同样按逐条读到的值判定与写入（写入仍经 CAS）。两种情况都在 logger ``dpe_sdk.pusher``
+上记一条 warning（带原错误码与计数，``extra`` 中有 ``dpe_pusher`` / ``dpe_code`` /
+``dpe_entries`` / ``dpe_denied``，不带远端文本），使对一切批量读都拒绝的服务端可被察觉
+（connector §7.1）。定位在任何写入与意图持久化之前完成。网络失败、可重试错误
+耗尽与响应不是 DPE 报文仍整批抛出（定位过程中遇到同样整批抛出）。
+
 **快/暂存分界**：完全复用核心 ``deliver`` 的判据（inline 请求体 ≤
 ``capabilities.limits.max_payload_bytes`` 走快路径，否则 negotiate → upload → commit），
 本模块不引入任何阈值；``concurrency`` 只限制并发度（并发调用写操作，每条互不拖累）。
@@ -84,8 +94,9 @@ delete 重读不存在记 ``deleted``（删条目、清意图），二者都带�
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Literal, Protocol, TypeAlias
@@ -96,6 +107,8 @@ from dpe_hash import DpeHashError
 
 from dpe_sdk.errors import (
     AlreadyExistsError,
+    ContractUnsupportedError,
+    DpeError,
     NotFoundError,
     PreconditionFailedError,
 )
@@ -314,6 +327,74 @@ def _matches_contract(value: str, contract: str) -> bool:
     except DpeHashError:
         return False
     return True
+
+
+_log = logging.getLogger("dpe_sdk.pusher")
+# 库的惯例：不替使用方决定输出去向（未配置 logging 时不落到 stderr 的兜底输出）
+_log.addHandler(logging.NullHandler())
+
+
+def _determinate(exc: BaseException) -> bool:
+    """服务端确定、不可重试地拒绝了这次读（DPE 错误且 ``retryable`` 为假）。
+
+    契约不兼容除外：它不针对具体 URI，按 connector §7.1 是实例级，整批抛出，不逐条定位。
+    """
+    return (
+        isinstance(exc, DpeError)
+        and not exc.retryable
+        and not isinstance(exc, ContractUnsupportedError)
+    )
+
+
+def _entry_denials(
+    count: int, slots: Callable[[int], tuple[int, ...]], denied: Mapping[int, Exception]
+) -> dict[int, Exception]:
+    """按条目汇总读被拒的 URI：条目 ``i`` 涉及的 URI 下标为 ``slots(i)``，任一被拒即该条失败。"""
+    result: dict[int, Exception] = {}
+    for index in range(count):
+        for slot in slots(index):
+            if slot in denied:
+                result[index] = denied[slot]
+                break
+    return result
+
+
+def _merge(
+    count: int, failures: Mapping[int, PushResult], rest: Sequence[PushResult]
+) -> list[PushResult]:
+    """把读被拒的条目与其余条目的回报按输入顺序合并。"""
+    remaining = iter(rest)
+    return [failures[index] if index in failures else next(remaining) for index in range(count)]
+
+
+def _first_leaf(group: BaseExceptionGroup[BaseException]) -> BaseException:
+    """异常组里的第一个叶子异常（任务组可能嵌套）。"""
+    first = group.exceptions[0]
+    return _first_leaf(first) if isinstance(first, BaseExceptionGroup) else first
+
+
+def _located(
+    pusher: object, heads: Sequence[str | Exception | None], rejected: Exception
+) -> tuple[list[str | None], dict[int, Exception]]:
+    """逐条读的结果 → （读到的值，被拒的 URI 下标 → 原错误）。都读通时没有被拒的 URI，全部条目
+    按读到的值继续（connector §7.1）。批量读被拒这件事不被吞掉：记一条 warning（带原错误码与
+    计数，不带远端文本）。"""
+    denied = {index: head for index, head in enumerate(heads) if isinstance(head, Exception)}
+    values = [None if isinstance(head, Exception) else head for head in heads]
+    code = getattr(rejected, "code", None)
+    _log.warning(
+        "批量读被拒（%s），逐条读定位：%d 个 URI 中 %d 个读被拒",
+        code,
+        len(heads),
+        len(denied),
+        extra={
+            "dpe_pusher": pusher,
+            "dpe_code": code,
+            "dpe_entries": len(heads),
+            "dpe_denied": len(denied),
+        },
+    )
+    return values, denied
 
 
 class _PusherBase:
@@ -920,13 +1001,22 @@ class StatefulPusher(_PusherBase):
         entries, expected = self._prepare(documents, expected_base, contract)
         if not entries:
             return []
-        heads = self._client.batch_head([entry.uri for entry in entries])
-        plans = self._plan_commit(entries, heads, expected, contract)
-        self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
-        outcomes = self._run_all(plans, partial(self._commit_one, blobs=blobs))
-        results = self._finish_commit(plans, outcomes)
+        heads, denied = self._read([entry.uri for entry in entries])
+        failures = {
+            index: PushResult("commit", entries[index].uri, "failed", error=error)
+            for index, error in _entry_denials(len(entries), lambda i: (i,), denied).items()
+        }
+        kept = [index for index in range(len(entries)) if index not in failures]
+        results: list[PushResult] = []
+        if kept:
+            plans = self._plan_commit(
+                [entries[i] for i in kept], [heads[i] for i in kept], expected, contract
+            )
+            self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
+            outcomes = self._run_all(plans, partial(self._commit_one, blobs=blobs))
+            results = self._finish_commit(plans, outcomes)
         self._save()
-        return results
+        return _merge(len(entries), failures, results)
 
     def delete(
         self,
@@ -945,13 +1035,22 @@ class StatefulPusher(_PusherBase):
         normalized, expected = self._prepare_uris(uris, expected_base, contract)
         if not normalized:
             return []
-        heads = self._client.batch_head(normalized)
-        plans = self._plan_delete(normalized, heads, expected, contract)
-        self._persist({plan.uri: None for plan in plans if plan.action == "write"})
-        outcomes = self._run_all(plans, self._delete_one)
-        results = self._finish_delete(plans, outcomes)
+        heads, denied = self._read(normalized)
+        failures = {
+            index: PushResult("delete", normalized[index], "failed", error=error)
+            for index, error in _entry_denials(len(normalized), lambda i: (i,), denied).items()
+        }
+        kept = [index for index in range(len(normalized)) if index not in failures]
+        results: list[PushResult] = []
+        if kept:
+            plans = self._plan_delete(
+                [normalized[i] for i in kept], [heads[i] for i in kept], expected, contract
+            )
+            self._persist({plan.uri: None for plan in plans if plan.action == "write"})
+            outcomes = self._run_all(plans, self._delete_one)
+            results = self._finish_delete(plans, outcomes)
         self._save()
-        return results
+        return _merge(len(normalized), failures, results)
 
     def move(
         self,
@@ -976,20 +1075,68 @@ class StatefulPusher(_PusherBase):
         pairs, expected = self._prepare_moves(moves, expected_base, contract)
         if not pairs:
             return []
-        from_heads, to_heads = self._read_move_sides(pairs)
-        plans = self._plan_move(pairs, from_heads, to_heads, expected, contract)
-        self._persist(self._move_intents(plans))
-        outcomes = self._run_all(plans, self._move_one)
-        results = self._finish_move(plans, outcomes)
+        # 一次读全部 move 的两侧：先全部源、再全部目标（本批 URI 两两不同）
+        heads, denied = self._read([f for f, _ in pairs] + [t for _, t in pairs])
+        count = len(pairs)
+        failures = {
+            index: PushResult(
+                "move", pairs[index][0], "failed", to_uri=pairs[index][1], error=error
+            )
+            for index, error in _entry_denials(count, lambda i: (i, i + count), denied).items()
+        }
+        kept = [index for index in range(count) if index not in failures]
+        results: list[PushResult] = []
+        if kept:
+            plans = self._plan_move(
+                [pairs[i] for i in kept],
+                [heads[i] for i in kept],
+                [heads[i + count] for i in kept],
+                expected,
+                contract,
+            )
+            self._persist(self._move_intents(plans))
+            outcomes = self._run_all(plans, self._move_one)
+            results = self._finish_move(plans, outcomes)
         self._save()
-        return results
+        return _merge(count, failures, results)
 
-    def _read_move_sides(
-        self, pairs: Sequence[tuple[str, str]]
-    ) -> tuple[list[str | None], list[str | None]]:
-        """一次 ``batch_head`` 读全部 move 的两侧：先全部源、再全部目标（本批 URI 两两不同）。"""
-        heads = self._client.batch_head([f for f, _ in pairs] + [t for _, t in pairs])
-        return heads[: len(pairs)], heads[len(pairs) :]
+    def _read(self, uris: list[str]) -> tuple[list[str | None], dict[int, Exception]]:
+        """判定前的读：一次 ``batch_head``；被确定拒绝时逐 URI ``head`` 定位（模块说明）。
+
+        返回（读到的值，被拒的 URI 下标 → 原错误）；网络失败、可重试错误耗尽等整批抛出。
+        """
+        try:
+            return self._client.batch_head(uris), {}
+        except Exception as exc:
+            if not _determinate(exc):
+                raise
+            rejected = exc
+        workers = min(self._concurrency, len(uris))
+        heads: list[str | Exception | None] = [None] * len(uris)
+        if workers <= 1:
+            for index, uri in enumerate(uris):
+                heads[index] = self._probe(uri)
+            return _located(self, heads, rejected)
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            pending = {pool.submit(self._probe, uri): index for index, uri in enumerate(uris)}
+            for future in as_completed(pending):
+                heads[pending[future]] = future.result()
+        except BaseException:
+            # 第一个整批失败即取消排队中的读（同异步版与 Rust 版），不再向不可用的 remote 发请求
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown()
+        return _located(self, heads, rejected)
+
+    def _probe(self, uri: str) -> str | Exception | None:
+        """逐条定位的一次读：被确定拒绝时把错误作为结果返回，其余失败上抛（整批中止）。"""
+        try:
+            return self._client.head(uri)
+        except Exception as exc:
+            if _determinate(exc):
+                return exc
+            raise
 
     def _run_all(
         self, plans: Sequence[_Plan], worker: Callable[[_Plan], _Outcome]
@@ -1092,13 +1239,22 @@ class AsyncStatefulPusher(_PusherBase):
         entries, expected = self._prepare(documents, expected_base, contract)
         if not entries:
             return []
-        heads = await self._client.batch_head([entry.uri for entry in entries])
-        plans = self._plan_commit(entries, heads, expected, contract)
-        self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
-        outcomes = await self._run_all(plans, partial(self._commit_one, blobs=blobs))
-        results = self._finish_commit(plans, outcomes)
+        heads, denied = await self._read([entry.uri for entry in entries])
+        failures = {
+            index: PushResult("commit", entries[index].uri, "failed", error=error)
+            for index, error in _entry_denials(len(entries), lambda i: (i,), denied).items()
+        }
+        kept = [index for index in range(len(entries)) if index not in failures]
+        results: list[PushResult] = []
+        if kept:
+            plans = self._plan_commit(
+                [entries[i] for i in kept], [heads[i] for i in kept], expected, contract
+            )
+            self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
+            outcomes = await self._run_all(plans, partial(self._commit_one, blobs=blobs))
+            results = self._finish_commit(plans, outcomes)
         self._save()
-        return results
+        return _merge(len(entries), failures, results)
 
     async def delete(
         self,
@@ -1111,13 +1267,22 @@ class AsyncStatefulPusher(_PusherBase):
         normalized, expected = self._prepare_uris(uris, expected_base, contract)
         if not normalized:
             return []
-        heads = await self._client.batch_head(normalized)
-        plans = self._plan_delete(normalized, heads, expected, contract)
-        self._persist({plan.uri: None for plan in plans if plan.action == "write"})
-        outcomes = await self._run_all(plans, self._delete_one)
-        results = self._finish_delete(plans, outcomes)
+        heads, denied = await self._read(normalized)
+        failures = {
+            index: PushResult("delete", normalized[index], "failed", error=error)
+            for index, error in _entry_denials(len(normalized), lambda i: (i,), denied).items()
+        }
+        kept = [index for index in range(len(normalized)) if index not in failures]
+        results: list[PushResult] = []
+        if kept:
+            plans = self._plan_delete(
+                [normalized[i] for i in kept], [heads[i] for i in kept], expected, contract
+            )
+            self._persist({plan.uri: None for plan in plans if plan.action == "write"})
+            outcomes = await self._run_all(plans, self._delete_one)
+            results = self._finish_delete(plans, outcomes)
         self._save()
-        return results
+        return _merge(len(normalized), failures, results)
 
     async def move(
         self,
@@ -1130,20 +1295,58 @@ class AsyncStatefulPusher(_PusherBase):
         pairs, expected = self._prepare_moves(moves, expected_base, contract)
         if not pairs:
             return []
-        from_heads, to_heads = await self._read_move_sides(pairs)
-        plans = self._plan_move(pairs, from_heads, to_heads, expected, contract)
-        self._persist(self._move_intents(plans))
-        outcomes = await self._run_all(plans, self._move_one)
-        results = self._finish_move(plans, outcomes)
+        heads, denied = await self._read([f for f, _ in pairs] + [t for _, t in pairs])
+        count = len(pairs)
+        failures = {
+            index: PushResult(
+                "move", pairs[index][0], "failed", to_uri=pairs[index][1], error=error
+            )
+            for index, error in _entry_denials(count, lambda i: (i, i + count), denied).items()
+        }
+        kept = [index for index in range(count) if index not in failures]
+        results: list[PushResult] = []
+        if kept:
+            plans = self._plan_move(
+                [pairs[i] for i in kept],
+                [heads[i] for i in kept],
+                [heads[i + count] for i in kept],
+                expected,
+                contract,
+            )
+            self._persist(self._move_intents(plans))
+            outcomes = await self._run_all(plans, self._move_one)
+            results = self._finish_move(plans, outcomes)
         self._save()
-        return results
+        return _merge(count, failures, results)
 
-    async def _read_move_sides(
-        self, pairs: Sequence[tuple[str, str]]
-    ) -> tuple[list[str | None], list[str | None]]:
-        """``StatefulPusher._read_move_sides`` 的异步版本。"""
-        heads = await self._client.batch_head([f for f, _ in pairs] + [t for _, t in pairs])
-        return heads[: len(pairs)], heads[len(pairs) :]
+    async def _read(self, uris: list[str]) -> tuple[list[str | None], dict[int, Exception]]:
+        """``StatefulPusher._read`` 的异步版本（anyio 任务组 + 信号量限流）。"""
+        try:
+            return await self._client.batch_head(uris), {}
+        except Exception as exc:
+            if not _determinate(exc):
+                raise
+            rejected = exc
+        heads: list[str | Exception | None] = [None] * len(uris)
+        limiter = anyio.Semaphore(self._concurrency)
+
+        async def probe(index: int) -> None:
+            async with limiter:
+                try:
+                    heads[index] = await self._client.head(uris[index])
+                except Exception as exc:
+                    if not _determinate(exc):
+                        raise
+                    heads[index] = exc
+
+        try:
+            async with anyio.create_task_group() as group:
+                for index in range(len(uris)):
+                    group.start_soon(probe, index)
+        except BaseExceptionGroup as failures:
+            # 第一个整批失败即取消其余读；把原异常（而非任务组的异常组）交给调用方，与同步版一致
+            raise _first_leaf(failures) from None
+        return _located(self, heads, rejected)
 
     async def _run_all(
         self, plans: Sequence[_Plan], worker: Callable[[_Plan], Awaitable[_Outcome]]

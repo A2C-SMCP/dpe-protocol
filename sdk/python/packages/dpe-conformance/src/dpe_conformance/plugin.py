@@ -24,7 +24,7 @@ import json
 import os
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +32,14 @@ import dpe_hash
 import httpx
 import pytest
 
-from dpe_conformance.config import ConfigError, ConformanceConfig, Identity, load_config
+from dpe_conformance._env_transport import EnvProxyTransport
+from dpe_conformance.config import (
+    ConfigError,
+    ConformanceConfig,
+    HookEndpoint,
+    Identity,
+    load_config,
+)
 from dpe_conformance.hooks import HookDriver
 
 TARGET_ENV = "DPE_CONFORMANCE_TARGET"
@@ -101,10 +108,13 @@ class _State:
         counts = os.environ.get(COUNTS_ENV)
         self.counts_path = Path(counts) if counts else None
         self.rootpath = config.rootpath
+        transport = _proxy_transport(url, conformance_config)
         self.target = Target(
             base_url=url,
             config=conformance_config,
-            client=httpx.Client(base_url=_with_trailing_slash(url), timeout=REQUEST_TIMEOUT),
+            client=httpx.Client(
+                base_url=_with_trailing_slash(url), timeout=REQUEST_TIMEOUT, transport=transport
+            ),
             uri_prefix=f"{conformance_config.uri_prefix}{uuid.uuid4().hex[:8]}/",
         )
         self.outcomes: dict[str, str] = {}
@@ -118,6 +128,27 @@ _state: _State | None = None
 def _require_state() -> _State:
     assert _state is not None, "插件未经 pytest_configure 初始化"
     return _state
+
+
+def _proxy_transport(url: str, config: ConformanceConfig) -> EnvProxyTransport:
+    """代理只来自环境变量（#194）：对 target 与每个 HTTP 钩子的目的地预先套用规则，代理 URL
+    不合法即在配置阶段报错（消息只含变量名，不回显值），请求期不再遇到。"""
+    transport = EnvProxyTransport(os.environ)
+    base = httpx.URL(_with_trailing_slash(url))
+    hooks = [getattr(config, field.name) for field in fields(config)]
+    try:
+        targets = [base] + [
+            base.join(hook.http) for hook in hooks if isinstance(hook, HookEndpoint) and hook.http
+        ]
+    except httpx.InvalidURL:
+        # 不回显：钩子 URL 里可能带 userinfo
+        raise pytest.UsageError("配置不合法：某个 HTTP 钩子的 URL 无法解析") from None
+    try:
+        for target in targets:
+            transport.proxy_for(target)
+    except ValueError as exc:
+        raise pytest.UsageError(f"代理配置不合法：{exc}") from None
+    return transport
 
 
 def _with_trailing_slash(url: str) -> str:

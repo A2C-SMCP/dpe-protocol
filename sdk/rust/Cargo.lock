@@ -144,6 +144,7 @@ dependencies = [
  "dpe-hash",
  "flate2",
  "futures-util",
+ "log",
  "regex",
  "reqwest",
  "serde",
