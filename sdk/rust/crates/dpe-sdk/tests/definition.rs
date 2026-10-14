@@ -888,7 +888,8 @@ fn definition_json_depth_bound() {
     fn nested(levels: usize) -> Value {
         let mut node = json!({});
         for _ in 0..levels {
-            node = json!({"a": node});
+            // move 子值，不经 `json!` 插值递归复制整棵子树（#166）
+            node = Value::Object(Map::from_iter([("a".to_owned(), node)]));
         }
         node
     }

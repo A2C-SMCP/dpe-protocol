@@ -12,7 +12,7 @@ use dpe_hash::{
     children, content_hash, doc_hash, document_hashes, object_hash, page_hash, page_hashes,
     parse_ijson, ErrorKind, ObjectKind, MAX_NESTING_DEPTH,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use common::load;
 
@@ -76,7 +76,7 @@ fn nesting_depth_vector_both_entries() {
 fn nested_empty(levels: u32, leaf: Value) -> Value {
     let mut value = leaf;
     for _ in 1..levels {
-        value = json!({ "k": value });
+        value = Value::Object(Map::from_iter([("k".to_owned(), value)])); // move，不复制子树（#166）
     }
     value
 }
@@ -190,11 +190,13 @@ fn expanded_view_depth_is_per_object() {
 #[test]
 fn deep_object_entry_rejects_without_recursion() {
     // 远超上界（在解析防护上限之内构造）：对象级入口迭代判定，干净地报 DPE_VALIDATION
+    // 嵌套构造 move 子值，不经 `json!` 插值递归复制整棵子树（#166）
     let mut deep = json!({ "k": {} });
     for _ in 0..200 {
-        deep = json!({ "k": deep });
+        deep = Value::Object(Map::from_iter([("k".to_owned(), deep)]));
     }
-    let element = json!({ "category": "Title", "text": "x", "metadata": deep });
+    let mut element = json!({ "category": "Title", "text": "x" });
+    element["metadata"] = deep;
     let e = content_hash(&element, "dpe1").expect_err("超深应被拒绝");
     assert_eq!(e.code(), "DPE_VALIDATION");
     assert_eq!(e.path(), "");
