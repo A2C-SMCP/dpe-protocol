@@ -49,8 +49,12 @@ def build_document(
     file_type: str = "md",
     title: str | None = None,
     doc_metadata: Mapping[str, Any] | None = None,
+    contract: str = dpe_hash.CONTRACT,
 ) -> WireDocument:
     """由「每页一组元素对象（线上形态）」构造完整文档与全部期望 hash。
+
+    ``contract`` 指定子 hash 与期望 hash 所按的契约（契约升级期一章以第二契约构造请求体，#58）；
+    请求须以同一契约声明（``DPE-Hash-Contract``）。
 
     元素对象按原样参与 hash；``pages`` 的顺序即文档顺序（core.md §2.1：位置只由数组顺序
     表达）。页/文档的字段表见 hash-contract-1 §5：``title`` 缺省不进原像；两个 metadata
@@ -62,9 +66,9 @@ def build_document(
     for page_elements in pages:
         elements: list[dict[str, Any]] = [dict(element) for element in page_elements]
         content_hashes = [
-            dpe_hash.content_hash(cast(ElementObject, element)) for element in elements
+            dpe_hash.content_hash(cast(ElementObject, element), contract) for element in elements
         ]
-        page_hashes.append(dpe_hash.page_hash(PageFields(), content_hashes))
+        page_hashes.append(dpe_hash.page_hash(PageFields(), content_hashes, contract))
         objects.extend(elements)
         page_objects.append({"elements": content_hashes})
     # 文档字段（不含 pages——doc_hash 的子 hash 走第二个位置参数）与线上一并成形
@@ -78,7 +82,7 @@ def build_document(
         document=document,
         pages=page_objects,
         objects=objects,
-        doc_hash=dpe_hash.doc_hash(fields, page_hashes),
+        doc_hash=dpe_hash.doc_hash(fields, page_hashes, contract),
         page_hashes=page_hashes,
     )
 

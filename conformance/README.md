@@ -2,7 +2,7 @@
 
 黑盒 HTTP 跑分器：对着任意实现了 [core.md](../spec/core.md) + [HTTP 绑定](../spec/bindings/http.md) 的 remote 跑一遍协议语义（CAS、暂存原子切换、delta 如实回报、错误格式等），供各服务端在自己的 CI 中执行。
 
-**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。全量 3/6（#56）已落地——求值顺序与校验顺序（传输层、uri、条件头、暂存上传的组合场景，报文校验先于授权）一章，以及经 HTTP 消费 `invalid_objects` / `nesting_depth` 向量一章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。全量 4/6（#57）已落地——安全与去重范围一章（内容存于他处仍按层列为缺失、上传状态只按本会话、无写授权一律 403、元素层与 blob 层的去重下界）。其余全量（#58–#59）随 M2 推进。`dpe-conformance` 发布在 PyPI，服务端仓库在 CI 中的用法见 [在 CI 中运行跑分器](ci.md)。
+**当前状态**：骨架已落地（#26）——`dpe-conformance` CLI、中性配置与服务端钩子、JUnit XML 与「已执行 / 跳过」计数、冒烟章；子集 1（#27）已落地——capabilities / 读接口（head、batch_head、get_skeleton、list）/ commit 快路径与 CAS 基础 / 报文校验四章；全量 1/6（#54）已落地——大文档与逐层协商、暂存会话两章；全量 2/6（#55）已落地——写操作（delete / move 语义、CAS 与幂等重试、删除复活防护、同级写入）与 HTTP 绑定（条件头按值比较、响应头、HEAD 错误面、RFC 9457 与 code → 状态码逐码）两章；错误注入钩子（#123）已落地——`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE` 与「429/503 MUST 带 Retry-After」可经钩子黑盒覆盖。全量 3/6（#56）已落地——求值顺序与校验顺序（传输层、uri、条件头、暂存上传的组合场景，报文校验先于授权）一章，以及经 HTTP 消费 `invalid_objects` / `nesting_depth` 向量一章。入口在仓库的 `sdk/python/packages/dpe-conformance/`（用法与配置见该包 README）。全量 4/6（#57）已落地——安全与去重范围一章（内容存于他处仍按层列为缺失、上传状态只按本会话、无写授权一律 403、元素层与 blob 层的去重下界）。全量 5/6（#58）已落地——契约升级期一章（按请求契约给值、跨契约 If-Match、契约混用）。汇总回归（#59）随 M2 推进。`dpe-conformance` 发布在 PyPI，服务端仓库在 CI 中的用法见 [在 CI 中运行跑分器](ci.md)。
 
 ## 通用检查面
 
@@ -55,7 +55,12 @@
 
 ## 契约升级期
 
-- 服务端同时声明 dpe1 与 dpe2 时，以 `DPE-Hash-Contract: dpe1` 调用 `batch_head` 得到 dpe1 值，未变文档与本地值相等（不触发重推）；以 dpe2 调用得到 dpe2 值；两种前缀的 `If-Match` 都能匹配当前内容；响应带 `Vary: DPE-Hash-Contract`。
+- 服务端同时声明 dpe1 与 dpe2 时，以 `DPE-Hash-Contract: dpe1` 调用 `batch_head` 得到 dpe1 值，未变文档与本地值相等（不触发重推）；以 dpe2 调用得到 dpe2 值；两种前缀的 `If-Match` 都能匹配当前内容；`documents` 路径的响应带 `Vary: DPE-Hash-Contract`（`heads` 不带，HTTP §3.1）。
+- 读接口按请求契约给值：`list` 各条目的 `doc_hash`；`head` 与 `get_skeleton` 的 `DPE-Doc-Hash`、`ETag`、体内 `doc_hash` 以及骨架中的页 hash 与元素 hash 都按 `DPE-Hash-Contract` 给出。
+- 写入同理：以 dpe2 声明、请求体按 dpe2 计算的 commit，带 dpe1 的 `If-Match` 得 `updated`，回报按 dpe2 给值；提交与当前相同的内容得 `unchanged`，回报同样按请求契约。
+- GET 的 `If-None-Match` 只与请求契约下的当前值比较：以 dpe1 声明、写当前内容的 dpe2 值不命中（200，不是 304，HTTP §3.3）。
+- 契约混用：两个契约都已声明时，对象引用另一契约的子 hash 得 `DPE_VALIDATION`，不是 `DPE_CONTRACT_UNSUPPORTED`（core §2.8 第 4 步、契约 1 §5）。本项只要求服务端同时声明了两个契约（不需要计算期望值），对 dpe-hash 不认识的未来契约同样执行。
+- 其余各项需要计算期望值：服务端未同时声明主契约与 dpe-hash 能计算的第二契约（目前只有演练契约 dpe2）时如实 skip；真实服务端不声明演练契约，不因此判失败。
 
 ## HTTP 绑定（#4 B5 / B6）
 
