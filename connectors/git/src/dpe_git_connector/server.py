@@ -5,8 +5,9 @@ I/O 在 ``cli`` 里。协议要点：
 
 - **握手先行**：``initialize`` 必须是第一条消息，此前任何其他请求一律 ``-32600``；身份自报
   （``plugin.name`` / ``plugin.version``）由运行器与清单核对；
-- **全量枚举**：``capabilities.supports_cursor = false``——本包不产游标，结束批的 ``cursor`` 为
-  ``null``、``incremental`` 为 ``false``（契约 §6.8：无游标即每轮全量）；
+- **增量**（#66）：``capabilities.supports_cursor = true``。结束批给出游标（``cursor`` 模块），
+  下一轮据此只产出状态有变化的仓库，并把消失的仓库表达为 ``delete`` / ``move``（见
+  ``_open_round``）；游标解释不了时回退全量轮、``incremental: false``（§6.8）；
 - **续批**：``next`` 是不透明的批次 token（§6.4），只有**最近回出的那个值**合法——收到
   token 即意味着上一批也已收到，直接续批；未知与过期（回退、重复、陌生）一律 ``-32602``，
   运行器中止本轮并以原 cursor 重开（恢复路径是稳定重跑整轮，§6.8）；
@@ -30,8 +31,9 @@ from pathlib import Path
 from typing import Any
 
 from dpe_git_connector import PLUGIN_NAME, __version__
+from dpe_git_connector.cursor import decode_cursor, encode_cursor, source_digest
 from dpe_git_connector.gitrepo import GitError, GitRepo, RepoDir, discover_repos, looks_like_repo
-from dpe_git_connector.mapping import DocumentMapper, Item, Limits, RepoSpec
+from dpe_git_connector.mapping import DocumentMapper, Item, Limits, RepoMark, RepoSpec
 
 __all__ = ["PROTOCOL_VERSION", "PROTOCOL_VERSIONS", "Serve"]
 
@@ -41,6 +43,11 @@ PROTOCOL_VERSION = PROTOCOL_VERSIONS[0]
 
 #: 批次条目数的上界：超过它的批次即便再小也切分，避免超大文档挤占单条消息的处理时长
 _BATCH_MAX_ITEMS = 1000
+
+#: 单批里跳过（状态未变）的仓库数上限：跳过不产出条目，不受 max_items 约束；到达上限即以
+#: 空 items + next 结束本批（§6.4 允许空批），单个 scan 请求的工作量因此有界——仓库很多而
+#: 大多未变时，不让一个请求跑完整轮而撞上运行器的 scan 超时
+_BATCH_MAX_SKIPPED = 256
 
 #: batch token 的合法形态：十进制数字（``str.isdigit`` 会放行全角/上标数字，**不能**用它）
 _DECIMAL = re.compile(r"[0-9]+")
@@ -104,6 +111,8 @@ class _Source:
     repo_path: str | None
     root_path: str | None
     spec: RepoSpec
+    #: 数据源摘要（实例前缀 + 配置）：游标只在同一数据源下有效（``cursor``）
+    digest: str = ""
 
 
 @dataclass
@@ -116,15 +125,37 @@ class _Pending:
     position: int = 0
 
 
+@dataclass(frozen=True)
+class _Step:
+    """一轮里的一步：现成的条目（delete / move / error）、一个仓库，或读不了的子树。"""
+
+    item: Item | None = None
+    repo: RepoDir | None = None
+    unreadable: RepoDir | None = None
+
+
 @dataclass
 class _Round:
-    """一轮的枚举状态：仓库列表（按身份字节序）与批次位置。"""
+    """一轮的枚举状态：按产出顺序排好的步骤、批次位置与新游标的记录。
 
-    entries: list[RepoDir]
-    #: 发现层读不了的子树（在仓库条目之后逐个产出条目级 error，§6.5 不静默跳过）
-    unreadable: list[RepoDir] = field(default_factory=list)
-    #: 下一个待枚举的条目下标（`0..len(entries)` 枚举仓库，其后是 unreadable）
+    步骤顺序：move → delete → 现存仓库（按身份字节序）→ 读不了的子树。move 排在目标仓库的
+    document 之前（目标内容也变了时，同一 URI 的 document 在 move 之后生效，§6.4 按序生效）。
+    """
+
+    steps: list[_Step]
+    #: 本轮是否基于运行器给出的游标增量枚举（§6.4 ``incremental``）
+    incremental: bool = False
+    #: 每个现存仓库用于比较的上一轮记录（改名的目标取其源的记录）；全量轮为空
+    baseline: dict[bytes, RepoMark] = field(default_factory=dict)
+    #: 新游标的记录：随步骤推进逐个写入（见 ``Serve._source_item``）
+    marks: dict[bytes, RepoMark] = field(default_factory=dict)
+    #: 已记入新记录、但条目还可能在发送时转成 error 的文档：file_uri → 仓库标识
+    tentative: dict[str, bytes] = field(default_factory=dict)
+    #: 下一个待处理的步骤下标
     position: int = 0
+    #: 当前步骤已扫出的条目（本批装不下、留到下一批时复用，不重扫——同一轮内一个仓库
+    #: 只扫一次，产出与记录基于同一次扫描）；推进到下一步时清空
+    scanned: tuple[int, Item | None] | None = None
     #: 未发完的分段文档（同一时刻至多一个，§6.5）
     pending: _Pending | None = None
     #: 已回出的 ``next`` 计数：token 不透明（§6.4），回出的值即批次序号；
@@ -132,7 +163,22 @@ class _Round:
     issued: int = 0
 
     def total_sources(self) -> int:
-        return len(self.entries) + len(self.unreadable)
+        return len(self.steps)
+
+    def revert(self, file_uri: str) -> None:
+        """一篇已记入新记录的文档最终没能产出（转成了 error）：恢复上一轮的记录。
+
+        新游标 MUST NOT 越过本轮未能成功产出的变更（§6.8）：有旧记录就留旧记录（下一轮
+        仍与旧状态比较、重新产出），没有就不记（下一轮当作新仓库）。
+        """
+        identifier = self.tentative.pop(file_uri, None)
+        if identifier is None:
+            return
+        previous = self.baseline.get(identifier)
+        if previous is None:
+            self.marks.pop(identifier, None)
+        else:
+            self.marks[identifier] = previous
 
     def next_token(self) -> str:
         self.issued += 1
@@ -269,8 +315,14 @@ class Serve:
         self.plugin_name = PLUGIN_NAME
         self.plugin_version = __version__
         self.uri_prefix = uri_prefix
-        self._source = parsed
-        self._mapper = DocumentMapper(uri_prefix, _limits(params.get("remote_limits")))
+        limits = _limits(params.get("remote_limits"))
+        self._source = _Source(
+            parsed.repo_path,
+            parsed.root_path,
+            parsed.spec,
+            source_digest(uri_prefix, config, limits.max_payload_bytes),
+        )
+        self._mapper = DocumentMapper(uri_prefix, limits)
         _log.info(
             "initialize：repo=%s root=%s branches=%s since=%s prefix=%s",
             parsed.repo_path,
@@ -284,7 +336,7 @@ class Serve:
             {
                 "protocol_version": chosen,
                 "plugin": {"name": self.plugin_name, "version": self.plugin_version},
-                "capabilities": {"supports_cursor": False},
+                "capabilities": {"supports_cursor": True},
             },
         )
 
@@ -350,48 +402,205 @@ class Serve:
             cursor = params.get("cursor")
             if cursor is not None and not isinstance(cursor, str):
                 return self._sized_error(id_, -32602, "cursor 必须是字符串或 null")
-            if cursor is not None:
-                # 本插件不支持游标（capabilities.supports_cursor = false）：如实回退为全量轮
-                _log.warning("收到游标 %r 但本插件不支持游标，按全量枚举处理", cursor)
             try:
-                self._round = self._open_round()
+                self._round = self._open_round(cursor)
             except GitError as exc:
                 return self._sized_error(id_, -32003, str(exc), {"retryable": True})
             self._cancel_last = None  # 跨轮残留的 cancel id 只会误伤未来的请求
         max_items = _optional_positive_int(params.get("max_items")) or _BATCH_MAX_ITEMS
         try:
-            items = self._next_batch(max_items, id_)
+            items, used = self._next_batch(max_items, id_)
         except _BudgetTooSmall as exc:
             # 单条预算连最小条目都装不下：本轮失败，如实应答（§6.4：运行器中止本轮、退避重试）。
             # 轮状态保持原样：运行器若以同一 token 重试本批，结果确定不变（无半程副作用）。
             return self._sized_error(id_, -32602, str(exc))
         result: dict[str, Any] = {"items": items}
-        assert self._round is not None
-        if not self._round.exhausted():
-            result["next"] = self._round.next_token()
-        else:
-            # 结束批：无游标（§6.8），且本轮不是基于游标的增量枚举（§6.4）
-            result["cursor"] = None
-            result["incremental"] = False
-            self._round = None
+        round_ = self._round
+        assert round_ is not None
+        if not round_.exhausted():
+            result["next"] = round_.next_token()
+            return _result(id_, result)
+        # 结束批：给出新游标（§6.8）。信封预留只覆盖 "cursor":null，游标串的字节另计
+        cursor_value: str | None = encode_cursor(self._source.digest, round_.marks)
+        if used + _encoded_size(cursor_value) > self._budget(id_):
+            if items:
+                # 本批放不下游标：以 next 结束本批，下一批单独给出空 items 与游标
+                result["next"] = round_.next_token()
+                return _result(id_, result)
+            # 游标本身超过单条预算：本轮不提供游标（下一轮全量），不发超限消息（§6.5）
+            _log.warning("游标超过单条消息预算，本轮不提供游标（下一轮为全量枚举）")
+            cursor_value = None
+        result["cursor"] = cursor_value
+        result["incremental"] = round_.incremental
+        self._round = None
         return _result(id_, result)
 
-    def _open_round(self) -> _Round:
-        """开始一轮：重新解析数据源（§6.3 只对「内容身份变化」强制重启插件，跨轮重启是 MAY）。
+    def _budget(self, id_: Any) -> int:
+        """单条响应的条目预算：消息上限 − 信封预留 − 回显 id 的编码长度。"""
+        return self.max_message_bytes - _ENVELOPE_RESERVE - _encoded_size(id_)
 
-        单仓库模式的标识取仓库目录名（``file_uri`` 的仓库标识）；root 模式重新发现仓库集合
-        （新仓库出现即出现新文档、消失即消失——delete / move 意图归后续拆分，见 #66）。
+    def _open_round(self, cursor: str | None) -> _Round:
+        """开始一轮：重新发现数据源，按游标排好本轮的步骤（§6.3 跨轮重启是 MAY，不依赖进程内状态）。
+
+        单仓库模式的标识取仓库目录名；root 模式重新发现仓库集合。
+
+        **增量轮**（游标可解释）：现存仓库与上一轮的记录比较，状态指纹相同即跳过（``_source_item``）；
+        **消失的仓库**（上一轮有、本轮发现不到）表达为显式意图（§6.5：删除与移动 MUST 是显式
+        条目）——只在 root 模式：
+
+        - 消失的仓库与本轮新出现的仓库**移动键相同且一一对应**（根提交集合 + 默认分支名，#96）
+          → ``move``；同键多对多（如同一仓库的多份克隆同时改名）无法确定配对 → 按 delete + 新建；
+        - 其余消失的仓库 → ``delete``。
+
+        **发现不完整时不产出 delete / move**（fail-closed）：存在读不了的子树，或某个新出现的
+        仓库算不出移动键。被藏起来或算不出键的仓库可能正是移动目标；此时删了源，下一轮的
+        move 就永久失败。这类轮必然带 error 条目，运行器不推进游标（§6.8）；消失仓库的记录
+        原样带入新游标，新出现、且移动键与某个消失仓库相同的仓库也先不产出（以条目级 error
+        如实上报）——否则它先被建出来，下一轮配成的 move 会撞上已存在的目标。
         """
-        assert self._source is not None
+        assert self._source is not None and self._mapper is not None
         if self._source.repo_path is not None:
             name = os.path.basename(os.path.normpath(self._source.repo_path))
             entries = [RepoDir(path=self._source.repo_path, identifier=os.fsencode(name))]
-            return _Round(entries)
-        assert self._source.root_path is not None
-        entries, unreadable = discover_repos(self._source.root_path)
-        return _Round(entries, unreadable)
+            unreadable: list[RepoDir] = []
+        else:
+            assert self._source.root_path is not None
+            entries, unreadable = discover_repos(self._source.root_path)
+        previous = None if cursor is None else decode_cursor(cursor, self._source.digest)
+        if cursor is not None and previous is None:
+            _log.warning("游标无法解释（格式、版本或数据源不符），本轮回退为全量枚举")
+        tail = [_Step(repo=entry) for entry in entries]
+        tail += [_Step(unreadable=entry) for entry in unreadable]
+        if previous is None:
+            return _Round(tail)
 
-    def _next_batch(self, max_items: int, id_: Any) -> list[dict[str, Any]]:
+        current = {entry.identifier for entry in entries}
+        baseline = {key: mark for key, mark in previous.items() if key in current}
+        gone = sorted(key for key in previous if key not in current)
+        round_ = _Round([], incremental=True, baseline=baseline)
+        if not gone:
+            round_.steps = tail
+            return round_
+        if self._source.repo_path is not None:
+            # 单仓库模式的身份只随配置变化（游标随之失效）：正常走不到这里。防御性地保留记录，
+            # 并以条目级 error 如实上报——不静默（§6.5），本轮不会成为推进游标的成功轮
+            round_.marks.update({key: previous[key] for key in gone})
+            round_.steps = [self._unexpressible(gone), *tail]
+            return round_
+
+        appeared = [entry for entry in entries if entry.identifier not in previous]
+        keys: dict[bytes, str | None] = {}
+        held: dict[bytes, Item] = {}
+        for entry in appeared:
+            try:
+                keys[entry.identifier] = self._mapper.move_key_of(
+                    GitRepo(entry.path), self._source.spec
+                )
+            except Exception as exc:
+                file_uri = self._mapper.file_uri(entry)
+                held[entry.identifier] = (
+                    file_uri
+                    if isinstance(file_uri, Item)
+                    else self._mapper.repo_error(file_uri, exc)
+                )
+        intents: list[_Step] = []
+        if unreadable or held:
+            gone_keys = {previous[key].move_key for key in gone} - {None}
+            for entry in appeared:
+                if entry.identifier not in held and keys.get(entry.identifier) in gone_keys:
+                    held[entry.identifier] = self._deferred_move_target(entry)
+            round_.marks.update({key: previous[key] for key in gone})
+        else:
+            intents = self._intents(gone, previous, appeared, keys, round_)
+        round_.steps = intents + [
+            _Step(item=held[step.repo.identifier])
+            if step.repo is not None and step.repo.identifier in held
+            else step
+            for step in tail
+        ]
+        return round_
+
+    def _intents(
+        self,
+        gone: list[bytes],
+        previous: dict[bytes, RepoMark],
+        appeared: list[RepoDir],
+        keys: dict[bytes, str | None],
+        round_: _Round,
+    ) -> list[_Step]:
+        """发现完整时的 move 与 delete 步骤；配对成功的目标以源的记录作比较基准。"""
+        assert self._mapper is not None
+        sources: dict[str, list[bytes]] = {}
+        for key in gone:
+            source_key = previous[key].move_key
+            if source_key is not None:
+                sources.setdefault(source_key, []).append(key)
+        targets: dict[str, list[RepoDir]] = {}
+        for entry in appeared:
+            target_key = keys.get(entry.identifier)
+            if target_key is not None:
+                targets.setdefault(target_key, []).append(entry)
+        moves: list[_Step] = []
+        moved: set[bytes] = set()
+        for move_key, from_keys in sources.items():
+            to_entries = targets.get(move_key, [])
+            if len(from_keys) != 1 or len(to_entries) != 1:
+                continue  # 配对不唯一：按 delete + 新建
+            from_key, target = from_keys[0], to_entries[0]
+            from_uri = self._intent_uri(from_key)
+            to_uri = self._mapper.file_uri(target)
+            if from_uri is None or isinstance(to_uri, Item):
+                continue
+            moves.append(_Step(item=Item("move", {"from_uri": from_uri, "to_uri": to_uri})))
+            moved.add(from_key)
+            # 目标与源比较：内容未变只产 move，变了随后在目标 URI 上产出 document
+            round_.baseline[target.identifier] = previous[from_key]
+        deletes: list[_Step] = []
+        for key in gone:
+            if key in moved:
+                continue
+            file_uri = self._intent_uri(key)
+            if file_uri is None:
+                # 表达不了：留着记录、如实上报，不越过这个变更（§6.5 不静默、§6.8）
+                round_.marks[key] = previous[key]
+                deletes.append(self._unexpressible([key]))
+                continue
+            deletes.append(_Step(item=Item("delete", {"file_uri": file_uri})))
+        return moves + deletes
+
+    def _unexpressible(self, identifiers: list[bytes]) -> _Step:
+        """消失的仓库无法表达为 delete（防御性，正常走不到）：条目级 error 如实上报。"""
+        assert self._mapper is not None
+        return _Step(
+            item=self._mapper.error_item(
+                None,
+                "internal",
+                f"{len(identifiers)} 个消失的仓库无法表达为 delete（标识构造不出 file_uri）",
+                retryable=False,
+            )
+        )
+
+    def _intent_uri(self, identifier: bytes) -> str | None:
+        """上一轮记录里的仓库标识 → file_uri（它在上一轮已成功映射过，正常总能构造）。"""
+        assert self._mapper is not None
+        file_uri = self._mapper.file_uri(RepoDir(path="", identifier=identifier))
+        return None if isinstance(file_uri, Item) else file_uri
+
+    def _deferred_move_target(self, entry: RepoDir) -> Item:
+        """发现不完整时，可能是移动目标的新仓库先不产出：条目级 error（可重试）如实上报。"""
+        assert self._mapper is not None
+        file_uri = self._mapper.file_uri(entry)
+        if isinstance(file_uri, Item):
+            return file_uri
+        return self._mapper.error_item(
+            file_uri,
+            "source_unavailable",
+            "可能是改名后的仓库，但本轮发现不完整（有读不了的子树或算不出移动键的仓库），"
+            "推迟到发现完整的一轮再判定是否为移动",
+            retryable=True,
+        )
+
+    def _next_batch(self, max_items: int, id_: Any) -> tuple[list[dict[str, Any]], int]:
         """取下一批产出项：条目数与**累计紧凑编码字节（含条目间逗号）**都不超预算（至少一条）。
 
         预算 = 消息上限 − ``_ENVELOPE_RESERVE`` − 响应里回显的 ``id`` 的编码长度：预留覆盖
@@ -400,15 +609,17 @@ class Serve:
         之间的逗号在记账时就地计入（每条非首条 +1）。
 
         装不下的条目**不消费**（留到下一批从头枚举），保证批次推进与确定性；装不下的文档在
-        **页边界**分段（§6.5），已在途的分段文档优先发完（各段连续）。
+        **页边界**分段（§6.5），已在途的分段文档优先发完（各段连续）。未变的仓库不产出条目，
+        直接推进。返回（条目, 已用字节）——结束批据此判断能否放下游标。
         """
         assert self._source is not None and self._mapper is not None and self._round is not None
         round_ = self._round
         # 信封预留之外再扣掉响应里回显的 id 自身的编码长度：id 由运行器给出，可能很长
-        budget = self.max_message_bytes - _ENVELOPE_RESERVE - _encoded_size(id_)
+        budget = self._budget(id_)
         items: list[dict[str, Any]] = []
         total = 0
-        while len(items) < max_items:
+        skipped = 0
+        while len(items) < max_items and skipped < _BATCH_MAX_SKIPPED:
             if round_.pending is not None:
                 payload = self._pending_segment(budget - total - (1 if items else 0))
                 if payload is None:
@@ -422,6 +633,7 @@ class Serve:
                         # 载荷本身装不下：不放弃 pending（重试同 token 时状态确定不变），
                         # 也不发超限消息——本轮以 -32602 失败（§6.5 MUST NOT）
                         raise _BudgetTooSmall(_budget_message(self.max_message_bytes, budget))
+                    round_.revert(round_.pending.file_uri)  # 未能产出：新游标不越过它
                     self._round.pending = None  # 已决定放弃，剩余页不再产出
                     items.append(payload)
                     total += size
@@ -433,24 +645,57 @@ class Serve:
             if round_.position >= round_.total_sources():
                 break
             item = self._source_item(round_)
+            if item is None:
+                round_.position += 1  # 状态未变的仓库：不产出（记录已沿用）
+                round_.scanned = None
+                skipped += 1
+                continue
             payload = self._fit_item(item, budget - total - (1 if items else 0), at_head=not items)
             if payload is None:
                 assert items  # 批首必能推进一条（见 _fit_item），否则会空批死循环
                 break
+            if item.kind == "document" and payload["kind"] == "error":
+                round_.revert(item.fields["file_uri"])  # 装不下而转成 error：不越过它
             size = _encoded_size(payload) + (1 if items else 0)
             items.append(payload)
             total += size
             round_.position += 1
-        return items
+            round_.scanned = None
+        return items, total
 
-    def _source_item(self, round_: _Round) -> Item:
-        """当前条目位置的产出项：仓库 → 文档条目；发现层读不了的子树 → 条目级 error。"""
+    def _source_item(self, round_: _Round) -> Item | None:
+        """当前步骤的产出项；状态未变的仓库返回 ``None``（不产出）。
+
+        仓库步骤同时写入新游标的记录：未变沿用旧记录；产出 document 记新记录（发送时若转成
+        error 由 ``_Round.revert`` 恢复）；产出 error 保留旧记录——新游标不越过未产出的变更。
+        """
         assert self._source is not None and self._mapper is not None
-        if round_.position < len(round_.entries):
-            entry = round_.entries[round_.position]
-            return self._mapper.document(GitRepo(entry.path), entry, self._source.spec)
-        index = round_.position - len(round_.entries)
-        return self._mapper.unreadable_directory(round_.unreadable[index])
+        step = round_.steps[round_.position]
+        if step.item is not None:
+            return step.item
+        if step.unreadable is not None:
+            return self._mapper.unreadable_directory(step.unreadable)
+        entry = step.repo
+        assert entry is not None
+        if round_.scanned is not None and round_.scanned[0] == round_.position:
+            return round_.scanned[1]  # 上一批装不下而留下的同一次扫描结果
+        previous = round_.baseline.get(entry.identifier)
+        item, mark = self._mapper.scan(
+            GitRepo(entry.path),
+            entry,
+            self._source.spec,
+            unchanged_if=None if previous is None else previous.fingerprint,
+        )
+        if mark is not None:
+            assert item is not None
+            round_.marks[entry.identifier] = mark
+            round_.tentative[item.fields["file_uri"]] = entry.identifier
+        elif previous is not None:
+            round_.marks[entry.identifier] = previous
+        else:
+            round_.marks.pop(entry.identifier, None)
+        round_.scanned = (round_.position, item)
+        return item
 
     def _fit_item(self, item: Item, room: int, at_head: bool) -> dict[str, Any] | None:
         """把一条条目装进本批剩余空间：返回要发出的载荷，或 ``None``（本批不消费该条目）。

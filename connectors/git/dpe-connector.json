@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "git-connector",
   "version": "0.3.0-dev",
-  "description": "以 Git 仓库为内容源：把仓库提交历史映射为 DPE 文档（仓库=文档、默认分支按月分页、分支各一页、提交=元素），全量枚举",
+  "description": "以 Git 仓库为内容源：把仓库提交历史映射为 DPE 文档（仓库=文档、默认分支按月分页、分支各一页、提交=元素），增量游标只产出有变化的仓库，仓库删除与改名产出 delete / move",
   "protocol_versions": ["dpe-connector/1"],
   "config_schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",

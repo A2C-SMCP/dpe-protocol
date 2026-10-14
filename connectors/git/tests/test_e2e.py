@@ -72,7 +72,7 @@ async def handshake(
     )
     assert result.plugin.name == PLUGIN_NAME
     assert result.protocol_version == "dpe-connector/1"
-    assert result.capabilities.supports_cursor is False
+    assert result.capabilities.supports_cursor is True
 
 
 async def collect(
@@ -88,8 +88,8 @@ async def collect(
         items.extend(result["items"])
         token = result.get("next")
         if token is None:
-            # 结束批：本插件不支持游标（契约 §6.8）
-            assert result["cursor"] is None
+            # 结束批：全量轮（未带游标）给出新游标（契约 §6.8）
+            assert isinstance(result["cursor"], str)
             assert result["incremental"] is False
             break
     return items
