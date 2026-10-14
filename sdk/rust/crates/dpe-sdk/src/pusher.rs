@@ -68,6 +68,13 @@
 //! 推送器只如实上报单次结果。同一批 move 里任何 URI 在 from∪to 中至多出现一次（链式、共用
 //! 目标的生效依赖顺序，connector §6.5），保序拆批归调用方。
 //!
+//! **批量读被拒时逐条定位**（#145，connector §7.1）：判定前的 `batch_head` 被确定、不可重试地
+//! 拒绝（如其中一个 URI 不在授权前缀内）时，推送器对本批每个 URI 各 `head` 一次（并发至多
+//! `concurrency`），只让读被拒的条目以该条 `Failed` 返回（`error` 是那次读的原错误，code 原样，
+//! `side` 为 `None`），其余条目照常判定与写入；逐条读都通过（拒绝与具体 URI 无关）时，每条各
+//! 返回一份原错误的 `Failed`。定位在任何写入与意图持久化之前完成。网络失败、可重试错误耗尽
+//! 与不合规响应仍整批返回 `Err`（定位过程中遇到同样如此）。与 Python 侧行为对等。
+//!
 //! **快/暂存分界**：完全复用核心 `deliver` 的判据，本模块不引入任何阈值；`concurrency` 只限制
 //! 并发度（写操作在**同一个任务内**并发执行，每条互不拖累，不经 `tokio::spawn`；三个操作的
 //! future 本身是 `Send`，调用方可以整体交给 `tokio::spawn`）。
@@ -1122,8 +1129,8 @@ mod driver {
     use futures_util::stream::{self, StreamExt};
 
     use super::{
-        Action, MemoryStateStore, Outcome, OutcomeKind, Plan, PushResult, PusherState, Side,
-        StateStore,
+        Action, MemoryStateStore, Outcome, OutcomeKind, Plan, PushOp, PushResult, PushStatus,
+        PusherState, Side, StateStore,
     };
     use crate::errors::{Error, ErrorKind};
     use crate::http::DpeClient;
@@ -1133,6 +1140,38 @@ mod driver {
     /// 本批是否有发写的计划（收尾保存失败时据此置 `outcome_unknown`）。
     fn has_writes(plans: &[Plan<'_>]) -> bool {
         plans.iter().any(|plan| plan.action == Action::Write)
+    }
+
+    /// 服务端确定、不可重试地拒绝了这次读（带规范码且不可重试；不合规响应与传输错误不算）。
+    ///
+    /// 契约不兼容除外：它不针对具体 URI，按 connector §7.1 是实例级，整批返回，不逐条定位。
+    fn determinate(error: &Error) -> bool {
+        error.code().is_some()
+            && !error.is_retryable()
+            && error.kind() != ErrorKind::ContractUnsupported
+    }
+
+    /// 读被拒的条目的回报（`side` 为空：不是 move 的源/目标侧问题，按读失败归类）。
+    fn read_failure(op: PushOp, uri: &str, to_uri: Option<&str>, error: Error) -> PushResult {
+        let mut result = PushResult::new(op, uri, PushStatus::Failed);
+        result.to_uri = to_uri.map(str::to_owned);
+        result.error = Some(error);
+        result
+    }
+
+    /// 把读被拒的条目与其余条目的回报按输入顺序合并。
+    fn merge(
+        count: usize,
+        mut failures: HashMap<usize, PushResult>,
+        rest: Vec<PushResult>,
+    ) -> Vec<PushResult> {
+        let mut rest = rest.into_iter();
+        (0..count)
+            .map(|index| match failures.remove(&index) {
+                Some(failure) => failure,
+                None => rest.next().expect("其余回报与未失败的条目一一对应"),
+            })
+            .collect()
     }
 
     /// `push` 的 blob 来源在本批并发投递之间共享。
@@ -1161,7 +1200,9 @@ mod driver {
     /// - 写操作在**调用方的任务内**并发执行（至多 `concurrency` 条），不经 `tokio::spawn`；
     ///   操作的 future 是 `Send`（`push` 经 `SharedBlobs` 的 `Mutex` 共享 blob 来源），调用方
     ///   可以把整次操作交给 `tokio::spawn`；
-    /// - 批级失败（输入校验、`batch_head`、store 读写）以 `Err` 返回、不产生逐条回报；store 的
+    /// - 批级失败（输入校验、判定前读取的网络失败 / 可重试错误耗尽 / 不合规响应、store 读写）以
+    ///   `Err` 返回、不产生逐条回报；判定前的 `batch_head` 被确定拒绝时不在此列（逐条定位，见
+    ///   [模块说明](super)）；store 的
     ///   错误包装为 [`ErrorKind::StateStore`]，原错误经 `source()` 取回：
     ///   - 构造时载入失败：未发任何请求（`outcome_unknown()` 为假）；
     ///   - 写前持久化意图失败：写请求确定未发出（`outcome_unknown()` 为假），本批意图不进入
@@ -1302,16 +1343,36 @@ mod driver {
                 return Ok(Vec::new());
             }
             let uris: Vec<String> = entries.iter().map(|entry| entry.uri.clone()).collect();
-            let heads = self.client.batch_head(&uris).await?;
-            let plans = self
-                .state
-                .plan_commit(entries, &heads, &expected, &contract);
-            self.persist(PusherState::commit_intents(&plans))?;
-            let wrote = has_writes(&plans);
-            let outcomes = self.run_all(&plans, Some(&Mutex::new(blobs))).await;
-            let results = self.state.finish_commit(plans, outcomes);
+            let (heads, mut denied) = self.read(&uris).await?;
+            let count = entries.len();
+            let mut failures = HashMap::new();
+            let mut kept = Vec::new();
+            let mut kept_heads = Vec::new();
+            for (index, (entry, head)) in entries.into_iter().zip(heads).enumerate() {
+                match denied.remove(&index) {
+                    Some(error) => {
+                        failures
+                            .insert(index, read_failure(PushOp::Commit, &entry.uri, None, error));
+                    }
+                    None => {
+                        kept.push(entry);
+                        kept_heads.push(head);
+                    }
+                }
+            }
+            let mut wrote = false;
+            let mut results = Vec::new();
+            if !kept.is_empty() {
+                let plans = self
+                    .state
+                    .plan_commit(kept, &kept_heads, &expected, &contract);
+                self.persist(PusherState::commit_intents(&plans))?;
+                wrote = has_writes(&plans);
+                let outcomes = self.run_all(&plans, Some(&Mutex::new(blobs))).await;
+                results = self.state.finish_commit(plans, outcomes);
+            }
             self.save(wrote)?;
-            Ok(results)
+            Ok(merge(count, failures, results))
         }
 
         /// 删除一批文档（按 URI）：CAS 走 `If-Match`，返回与输入同序的逐条回报。
@@ -1330,16 +1391,34 @@ mod driver {
             if normalized.is_empty() {
                 return Ok(Vec::new());
             }
-            let heads = self.client.batch_head(&normalized).await?;
-            let plans = self
-                .state
-                .plan_delete(&normalized, &heads, &expected, &contract);
-            self.persist(PusherState::delete_intents(&plans))?;
-            let wrote = has_writes(&plans);
-            let outcomes = self.run_all(&plans, None).await;
-            let results = self.state.finish_delete(plans, outcomes);
+            let (heads, mut denied) = self.read(&normalized).await?;
+            let mut failures = HashMap::new();
+            let mut kept = Vec::new();
+            let mut kept_heads = Vec::new();
+            for (index, (uri, head)) in normalized.iter().zip(heads).enumerate() {
+                match denied.remove(&index) {
+                    Some(error) => {
+                        failures.insert(index, read_failure(PushOp::Delete, uri, None, error));
+                    }
+                    None => {
+                        kept.push(uri.clone());
+                        kept_heads.push(head);
+                    }
+                }
+            }
+            let mut wrote = false;
+            let mut results = Vec::new();
+            if !kept.is_empty() {
+                let plans = self
+                    .state
+                    .plan_delete(&kept, &kept_heads, &expected, &contract);
+                self.persist(PusherState::delete_intents(&plans))?;
+                wrote = has_writes(&plans);
+                let outcomes = self.run_all(&plans, None).await;
+                results = self.state.finish_delete(plans, outcomes);
+            }
             self.save(wrote)?;
-            Ok(results)
+            Ok(merge(normalized.len(), failures, results))
         }
 
         /// 按 URI 批量原子改名（`(from_uri, to_uri)` 序列）：CAS 走源文档的 `base_hash`。
@@ -1371,17 +1450,84 @@ mod driver {
                 .map(|(from, _)| from.clone())
                 .chain(pairs.iter().map(|(_, to)| to.clone()))
                 .collect();
-            let mut heads = self.client.batch_head(&sides).await?;
-            let to_heads = heads.split_off(pairs.len());
-            let plans = self
-                .state
-                .plan_move(&pairs, &heads, &to_heads, &expected, &contract);
-            self.persist(PusherState::move_intents(&plans))?;
-            let wrote = has_writes(&plans);
-            let outcomes = self.run_all(&plans, None).await;
-            let results = self.state.finish_move(plans, outcomes);
+            let (mut heads, mut denied) = self.read(&sides).await?;
+            let count = pairs.len();
+            let to_heads = heads.split_off(count);
+            let mut failures = HashMap::new();
+            let mut kept = Vec::new();
+            let mut kept_from = Vec::new();
+            let mut kept_to = Vec::new();
+            for (index, ((pair, from_head), to_head)) in
+                pairs.iter().zip(heads).zip(to_heads).enumerate()
+            {
+                // 任一侧读被拒都归到该 move
+                match denied
+                    .remove(&index)
+                    .or_else(|| denied.remove(&(index + count)))
+                {
+                    Some(error) => {
+                        failures.insert(
+                            index,
+                            read_failure(PushOp::Move, &pair.0, Some(&pair.1), error),
+                        );
+                    }
+                    None => {
+                        kept.push(pair.clone());
+                        kept_from.push(from_head);
+                        kept_to.push(to_head);
+                    }
+                }
+            }
+            let mut wrote = false;
+            let mut results = Vec::new();
+            if !kept.is_empty() {
+                let plans = self
+                    .state
+                    .plan_move(&kept, &kept_from, &kept_to, &expected, &contract);
+                self.persist(PusherState::move_intents(&plans))?;
+                wrote = has_writes(&plans);
+                let outcomes = self.run_all(&plans, None).await;
+                results = self.state.finish_move(plans, outcomes);
+            }
             self.save(wrote)?;
-            Ok(results)
+            Ok(merge(count, failures, results))
+        }
+
+        /// 判定前的读：一次 `batch_head`；被确定、不可重试地拒绝时逐 URI `head` 定位（至多
+        /// `concurrency` 个并发，同一任务内），返回（读到的值，被拒的 URI 下标 → 原错误）。逐条
+        /// 读都通过（拒绝与具体 URI 无关）时每个 URI 各记一份原批量错误。网络失败、可重试错误
+        /// 耗尽与不合规响应（含定位途中遇到的）整批返回 `Err`；此时尚未写入、未持久化意图。
+        async fn read(
+            &self,
+            uris: &[String],
+        ) -> Result<(Vec<Option<String>>, HashMap<usize, Error>), Error> {
+            let rejected = match self.client.batch_head(uris).await {
+                Ok(heads) => return Ok((heads, HashMap::new())),
+                Err(error) if determinate(&error) => error,
+                Err(error) => return Err(error),
+            };
+            let mut heads: Vec<Option<String>> = vec![None; uris.len()];
+            let mut denied = HashMap::new();
+            // 按下标迭代（同 run_all）：闭包只捕获下标，future 才能保持 Send（#131）
+            let mut probes = stream::iter(0..uris.len())
+                .map(|index| async move { (index, self.client.head(&uris[index]).await) })
+                .buffer_unordered(self.concurrency);
+            while let Some((index, outcome)) = probes.next().await {
+                match outcome {
+                    Ok(head) => heads[index] = head,
+                    Err(error) if determinate(&error) => {
+                        denied.insert(index, error);
+                    }
+                    // 丢弃 stream 即取消其余读
+                    Err(error) => return Err(error),
+                }
+            }
+            if denied.is_empty() {
+                denied = (0..uris.len())
+                    .map(|index| (index, rejected.protocol_copy()))
+                    .collect();
+            }
+            Ok((heads, denied))
         }
 
         /// 写前先把这一批意图持久化；`save` 返回 `Ok` 之后才替换内存状态，调用方随后才允许

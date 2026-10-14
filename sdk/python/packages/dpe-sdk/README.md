@@ -121,6 +121,7 @@ with DpeClient("https://example.com/anything/r/42") as client:
 - **同步状态 + 意图日志**（§7.2）：同步状态（L）是每篇文档最近一次确认的 remote doc_hash，决定写入的前置条件（`if_absent` / `base_hash`）；写入前先把意图持久化到 `StateStore`（commit 记内容 hash、delete 记「不存在」、move **两侧一起**记），`save` 返回后才发写请求；结果确定即清除、只有结果未知（`unknown=True`）才保留，下一轮按意图对账恢复。缺省 `MemoryStateStore` 只在进程内、**不保证崩溃持久**；落盘实现属运行器的状态目录（契约 §4.4）；
 - **冲突如实上报**：`status == "conflict"`，带读到的（或冲突后重读的）remote 状态；**绝不自动 force、不自动重提**——`source_wins` / `report` 等策略与轮内重试上限归调用方（推送器不设 `retryable`、不在内部重试冲突，§7.1 的「超过重试上限取 true」由运行器计数），重提用 `expected_base` 覆盖前置条件（值为 `None` 表示确认「不存在」；move 以 `from_uri` 为键）；
 - **blob**：`push(..., blobs=lookup)` 把 `sha256:` 引用 → 字节来源（`BlobSource` 或 bytes）原样交给核心 `deliver`，服务端缺的 blob 按需上传；不给时缺字节如实报 `DPE_MISSING_CONTENT`（不解引用任何来源）；
+- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；拒绝与具体 URI 无关时每条各返回一条原错误。网络失败、可重试错误耗尽与响应不是 DPE 报文仍整批抛出。**升级须知**（0.4 起，不兼容）：以前这类拒绝整批抛出；dpe-run 不再自行定位，也不再发 `remote.batch_read_rejected` 事件；
 - **先存、存成功才生效**：写前 `save` 失败时整批报错、未发写，本批意图不进入内存；任何一次 `save` 失败后 store 可能与内存不一致——继续用同一实例，`flush()` 补存成功前不要用同一 store 新建实例；
 - **错误与凭证**：复用 `DpeClient` 的传输层（gzip、`Retry-After`、`CredentialProvider` 全部适用）；失败按异常原类型如实回报（含服务端错误对象的 `code`），`unknown=True` 表示结果未确定——由核心的 `outcome_unknown` 判据给出（写请求任何一次尝试可能已到达服务端即未知，含「首发丢响应后重发得到 DPE 错误或建连失败」等序列），此时意图保留、下一轮对账恢复。
 

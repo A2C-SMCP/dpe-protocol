@@ -216,6 +216,26 @@ impl Error {
         Self::new(kind, message)
     }
 
+    /// 协议错误的一份副本（类别、消息、位置、可重试性、`Retry-After`、状态码与未知码原码），
+    /// 不带传输透传、原因链与会话等附加载荷。推送器在一次确定的批量读拒绝无法定位到具体 URI
+    /// 时，给每个条目各附一份（`Error` 不实现 `Clone`，#145）。
+    #[cfg(feature = "http")]
+    pub(crate) fn protocol_copy(&self) -> Error {
+        let mut copy = Self::new(self.kind, self.message.clone());
+        copy.path = self.path.clone();
+        copy.retryable = self.retryable;
+        copy.retry_after = self.retry_after;
+        copy.status = self.status;
+        if let Some(code) = self
+            .details
+            .as_deref()
+            .and_then(|details| details.unknown_code.clone())
+        {
+            copy.details_mut().unknown_code = Some(code);
+        }
+        copy
+    }
+
     /// 响应不是合规的 DPE 响应（[`ErrorKind::UnexpectedResponse`]）；`status` 是收到的
     /// HTTP 状态码（wire 层解析出的不合规响应此时还不知道状态码，传 `None`，由协议核心用
     /// [`Error::with_status`] 补上），`retry_after` 直接来自响应头（可能为 `None`）。

@@ -1163,8 +1163,8 @@ def _reject_reads_of(
 
 
 async def test_batch_read_rejection_is_localized_to_the_offending_entry(tmp_path: Path) -> None:
-    """服务端因其中一个 URI 拒绝整个 batch_head：逐条 head 定位，只有该条目失败，其余以一次
-    推送器调用照常落地，并发出 remote.batch_read_rejected 事件。"""
+    """服务端因其中一个 URI 拒绝整个 batch_head：推送器逐条 head 定位（#145），只有该条目失败，
+    其余照常落地；运行器把它当普通条目失败入账。"""
     made, wrap = _hooks()
     async with harness(tmp_path, wrap) as h:
         made[0].fail = _reject_reads_of({P + "bad.md"}, _problem(403, "DPE_FORBIDDEN"))
@@ -1175,15 +1175,11 @@ async def test_batch_read_rejection_is_localized_to_the_offending_entry(tmp_path
                 ]
             }
         )
-        rejected = [
-            fields for event, _, fields in h.events if event == "remote.batch_read_rejected"
-        ]
     assert result.outcome == "partial"
     assert codes(result) == ["DPE_FORBIDDEN"]
     assert result.failures[0].to_report()["file_uri"] == P + "bad.md"
+    assert result.failures[0].to_report()["source"] == "remote"
     assert result.counts.created == 2
-    # 定位后发一次事件，只带码与计数，不带远端文本（§4.3 不外泄）
-    assert rejected == [{"code": "DPE_FORBIDDEN", "entries": 3, "probes": 3, "localized": 1}]
 
 
 async def test_delete_and_move_read_rejection_is_localized(tmp_path: Path) -> None:
@@ -1249,8 +1245,9 @@ async def test_network_failure_while_localizing_aborts_without_writes(tmp_path: 
         assert await h.foreign.head(P + "a.md") is None
 
 
-async def test_subset_rejected_again_is_not_probed_twice(tmp_path: Path) -> None:
-    """每波至多定位一次：收窄后的子集再次被拒（拒绝与条目组合有关），各记一条原错误。"""
+async def test_located_entries_are_not_read_again(tmp_path: Path) -> None:
+    """定位后其余条目用逐条读到的值直接判定，不再发批量读：即便服务端拒绝一切多 URI 的批量读，
+    也只有真正读被拒的条目失败。"""
     made, wrap = _hooks()
     async with harness(tmp_path, wrap) as h:
         forbidden = _problem(403, "DPE_FORBIDDEN")
@@ -1269,11 +1266,10 @@ async def test_subset_rejected_again_is_not_probed_twice(tmp_path: Path) -> None
         result = await h.round(
             {"batches": [[doc_item("g1.md", "1"), doc_item("bad.md", "B"), doc_item("g2.md", "2")]]}
         )
-        events = [event for event, _, _ in h.events if event == "remote.batch_read_rejected"]
-    assert codes(result) == ["DPE_FORBIDDEN", "DPE_FORBIDDEN", "DPE_FORBIDDEN"]
-    uris = [f.to_report()["file_uri"] for f in result.failures]
-    assert uris == [P + "bad.md", P + "g1.md", P + "g2.md"]
-    assert len(events) == 1 and heads_seen["n"] == 2  # 原批量 + 收窄后的一次
+    assert codes(result) == ["DPE_FORBIDDEN"]
+    assert result.failures[0].to_report()["file_uri"] == P + "bad.md"
+    assert result.counts.created == 2
+    assert heads_seen["n"] == 1  # 只有最初那一次批量读
 
 
 async def test_read_rejection_during_conflict_resubmission_is_localized(tmp_path: Path) -> None:

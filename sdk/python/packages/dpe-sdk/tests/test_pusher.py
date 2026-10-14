@@ -11,6 +11,7 @@ import contextlib
 import gzip
 import json
 import threading
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from itertools import chain
 from typing import Any, Protocol
@@ -24,11 +25,14 @@ from client_helpers import PREFIX, REMOTE, ClientRecorder, in_process_client
 from dpe_sdk.credentials import StaticCredentialProvider
 from dpe_sdk.errors import (
     AlreadyExistsError,
+    ContractUnsupportedError,
     ForbiddenError,
     MissingContentError,
     NotFoundError,
     PreconditionFailedError,
     RateLimitedError,
+    UnavailableError,
+    UnexpectedResponseError,
 )
 from dpe_sdk.models import Document
 from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent
@@ -42,6 +46,7 @@ from dpe_sdk.pusher import (
 from dpe_sdk.testing import PrefixAuthorizer, create_app
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
 from engine_helpers import make_engine, text_doc
+from protocol_helpers import CAPABILITIES
 from server_helpers import spawn_server
 
 pytestmark = pytest.mark.anyio
@@ -2028,3 +2033,276 @@ def test_reread_achieved_parity_between_sync_and_async() -> None:
             out.append([_view(r, base) for r in results])
             views[mode] = out
     assert views["sync"] == views["async"]
+
+
+# ---------------------------------------------------------------------- 批量读被拒（#145）
+
+_ALLOWED = "dpe://allowed/"
+_SECRET = "dpe://secret/"
+
+
+def _problem_response(status: int, code: str) -> httpx.Response:
+    return httpx.Response(
+        status,
+        headers={"content-type": "application/problem+json", "DPE-Error-Code": code},
+        json={
+            "type": "about:blank",
+            "title": code,
+            "status": status,
+            "code": code,
+            "retryable": False,
+            "detail": "拒绝",
+        },
+    )
+
+
+class _RejectReads(httpx.AsyncBaseTransport):
+    """读被拒的服务端：含 ``secret`` 中任一 URI 的批量读整体被拒，单篇读该 URI 同样被拒；
+    ``all_batches`` 时一切批量读都被拒（拒绝与具体 URI 无关），``cut_heads`` 时单篇读断网。"""
+
+    def __init__(
+        self,
+        inner: httpx.AsyncBaseTransport,
+        secret: set[str],
+        *,
+        all_batches: bool = False,
+        cut_heads: bool = False,
+        invalid: frozenset[str] = frozenset(),
+        head_reply: httpx.Response | None = None,
+        batch_reply: httpx.Response | None = None,
+        head_delay: float = 0.0,
+    ) -> None:
+        self._inner = inner
+        self._secret = secret
+        self._all_batches = all_batches
+        self._cut_heads = cut_heads
+        self._invalid = invalid  # 单篇读得到 400 DPE_VALIDATION（与 secret 的 403 区分来源）
+        self._head_reply = head_reply  # 单篇读一律以此应答（可重试耗尽、非 DPE 响应）
+        self._batch_reply = batch_reply  # 批量读一律以此应答
+        self._head_delay = head_delay
+        self.batch_reads = 0
+        self.single_reads = 0
+        self.in_flight = 0
+        self.peak = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/heads"):
+            self.batch_reads += 1
+            if self._batch_reply is not None:
+                return self._batch_reply
+            denied = self._secret | self._invalid
+            if self._all_batches or any(uri.encode() in request.content for uri in denied):
+                return _problem_response(403, "DPE_FORBIDDEN")
+        if request.method == "HEAD" and request.url.path.endswith("/documents"):
+            self.single_reads += 1
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+            try:
+                if self._head_delay:
+                    await anyio.sleep(self._head_delay)
+            finally:
+                self.in_flight -= 1
+            if self._cut_heads:
+                raise httpx.ConnectError("断网", request=request)
+            if self._head_reply is not None:
+                return self._head_reply
+            uri = request.url.params.get("uri")
+            if uri in self._secret:
+                return httpx.Response(403, headers={"DPE-Error-Code": "DPE_FORBIDDEN"})
+            if uri in self._invalid:
+                return httpx.Response(400, headers={"DPE-Error-Code": "DPE_VALIDATION"})
+        return await self._inner.handle_async_request(request)
+
+
+def _rejecting(secret: set[str], **options: Any) -> _RejectReads:
+    return _RejectReads(
+        httpx.ASGITransport(app=create_app(make_engine(), prefix=PREFIX)), secret, **options
+    )
+
+
+async def test_batch_read_rejection_fails_only_the_offending_entry() -> None:
+    """批量读因其中一个 URI 被拒：只有该条 failed（原错误、code 原样、side 为空），其余照常写入。"""
+    store = MemoryStateStore()
+    transport = _rejecting({_SECRET + "b.md"})
+    async with in_process_client(transport=transport) as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+        results = await pusher.push(
+            {
+                _ALLOWED + "a.md": _doc("A"),
+                _SECRET + "b.md": _doc("B"),
+                _ALLOWED + "c.md": _doc("C"),
+            }
+        )
+        assert [r.status for r in results] == ["created", "failed", "created"]
+        assert results[1].file_uri == _SECRET + "b.md"
+        assert isinstance(results[1].error, ForbiddenError)
+        assert results[1].error.code == "DPE_FORBIDDEN"
+        assert results[1].side is None and results[1].unknown is False
+        assert len(_commits(recorder)) == 2
+    assert transport.batch_reads == 1 and transport.single_reads == 3
+    state = await _state(store)
+    assert set(state.synced) == {_ALLOWED + "a.md", _ALLOWED + "c.md"}
+    assert state.intents == {}
+
+
+async def test_unlocalizable_batch_rejection_fails_every_entry() -> None:
+    """批量读被拒、逐条读都通过（拒绝与具体 URI 无关）：每条各返回一条原错误，零写入。"""
+    transport = _rejecting(set(), all_batches=True)
+    async with in_process_client(transport=transport) as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=MemoryStateStore())
+        results = await pusher.push({_ALLOWED + "a.md": _doc("A"), _ALLOWED + "b.md": _doc("B")})
+        assert [r.status for r in results] == ["failed", "failed"]
+        assert all(isinstance(r.error, ForbiddenError) for r in results)
+        assert _commits(recorder) == []
+
+
+async def test_network_failure_while_locating_raises_the_whole_batch() -> None:
+    """定位时断网：整批抛出（与批量读断网相同），没有任何写入与意图。"""
+    store = MemoryStateStore()
+    transport = _rejecting({_SECRET + "b.md"}, cut_heads=True)
+    async with in_process_client(transport=transport) as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+        with pytest.raises(httpx.ConnectError):
+            await pusher.push({_ALLOWED + "a.md": _doc("A"), _SECRET + "b.md": _doc("B")})
+        assert _commits(recorder) == []
+    assert (await _state(store)).intents == {}
+
+
+async def test_delete_and_move_read_rejection_is_located() -> None:
+    """delete 与 move 同样逐条定位；move 任一侧被拒都归到该 move（带 to_uri、side 为空）。"""
+    store = MemoryStateStore()
+    engine = make_engine()
+    async with in_process_client(engine) as (client, _):
+        seed = AsyncStatefulPusher(client, state=store)
+        await seed.push({_ALLOWED + n: _doc(n) for n in ("d1.md", "d2.md", "m1.md", "m2.md")})
+    transport = _RejectReads(
+        httpx.ASGITransport(app=create_app(engine, prefix=PREFIX)),
+        {_ALLOWED + "d2.md", _SECRET + "t.md"},
+    )
+    async with in_process_client(transport=transport) as (client, _):
+        pusher = AsyncStatefulPusher(client, state=store)
+        deleted = await pusher.delete([_ALLOWED + "d1.md", _ALLOWED + "d2.md"])
+        moved = await pusher.move(
+            [(_ALLOWED + "m1.md", _SECRET + "t.md"), (_ALLOWED + "m2.md", _ALLOWED + "n2.md")]
+        )
+    assert [r.status for r in deleted] == ["deleted", "failed"]
+    assert isinstance(deleted[1].error, ForbiddenError)
+    assert [r.status for r in moved] == ["failed", "moved"]
+    assert moved[0].to_uri == _SECRET + "t.md" and moved[0].side is None
+    assert isinstance(moved[0].error, ForbiddenError)
+
+
+def test_sync_pusher_locates_rejected_reads() -> None:
+    """同步推送器：语义与异步版本相同（线程池定位）。被测服务端：读 secret 前缀一律 403，
+    其余文档都不存在（delete 即已达成，不发写）。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=CAPABILITIES)
+        if request.method == "POST" and request.url.path.endswith("/heads"):
+            uris = json.loads(request.content)["uris"]
+            if any(uri.startswith(_SECRET) for uri in uris):
+                return _problem_response(403, "DPE_FORBIDDEN")
+            return httpx.Response(200, json={"heads": [None] * len(uris)})
+        if request.method == "HEAD" and request.url.path.endswith("/documents"):
+            if request.url.params["uri"].startswith(_SECRET):
+                return httpx.Response(403, headers={"DPE-Error-Code": "DPE_FORBIDDEN"})
+            return httpx.Response(404, headers={"DPE-Error-Code": "DPE_NOT_FOUND"})
+        raise AssertionError(f"不应发出 {request.method} {request.url}")
+
+    with DpeClient("http://dpe.test/r/1", transport=httpx.MockTransport(handler)) as client:
+        pusher = StatefulPusher(client, state=MemoryStateStore())
+        results = pusher.delete([_ALLOWED + "a.md", _SECRET + "b.md", _ALLOWED + "c.md"])
+    assert [r.status for r in results] == ["deleted", "failed", "deleted"]
+    assert isinstance(results[1].error, ForbiddenError)
+
+
+async def test_locating_respects_the_concurrency_limit() -> None:
+    """逐条定位的并发至多 ``concurrency``。"""
+    transport = _rejecting({_SECRET + "x.md"}, head_delay=0.02)
+    uris = {_ALLOWED + f"{i}.md": _doc(str(i)) for i in range(7)} | {_SECRET + "x.md": _doc("x")}
+    async with in_process_client(transport=transport) as (client, _):
+        pusher = AsyncStatefulPusher(client, state=MemoryStateStore(), concurrency=2)
+        results = await pusher.push(uris)
+    assert [r.status for r in results].count("failed") == 1
+    assert transport.single_reads == 8 and 1 < transport.peak <= 2
+
+
+@pytest.mark.parametrize(
+    ("reply", "error"),
+    [
+        (
+            httpx.Response(
+                503,
+                headers={"DPE-Error-Code": "DPE_UNAVAILABLE", "Retry-After": "0"},
+            ),
+            UnavailableError,
+        ),
+        (httpx.Response(502, text="bad gateway"), UnexpectedResponseError),
+    ],
+)
+async def test_round_level_failures_while_locating_raise_the_whole_batch(
+    reply: httpx.Response, error: type[Exception]
+) -> None:
+    """定位时遇到可重试错误耗尽或不是 DPE 报文的响应：同断网一样整批抛出、零写入。"""
+    transport = _rejecting({_SECRET + "b.md"}, head_reply=reply)
+    async with in_process_client(transport=transport) as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=MemoryStateStore())
+        with pytest.raises(error):
+            await pusher.push({_ALLOWED + "a.md": _doc("A"), _SECRET + "b.md": _doc("B")})
+        assert _commits(recorder) == []
+
+
+async def test_contract_rejection_is_not_located() -> None:
+    """契约不兼容不针对具体 URI（connector §7.1 实例级）：整批抛出，不逐条读。"""
+    transport = _rejecting(set(), batch_reply=_problem_response(400, "DPE_CONTRACT_UNSUPPORTED"))
+    async with in_process_client(transport=transport) as (client, _):
+        pusher = AsyncStatefulPusher(client, state=MemoryStateStore())
+        with pytest.raises(ContractUnsupportedError):
+            await pusher.push({_ALLOWED + "a.md": _doc("A"), _ALLOWED + "b.md": _doc("B")})
+    assert transport.single_reads == 0
+
+
+async def test_move_with_both_sides_denied_reports_the_source_error() -> None:
+    """move 的源与目标都读被拒：取源侧的错误（两个 SDK 同一口径）。"""
+    store = MemoryStateStore()
+    engine = make_engine()
+    async with in_process_client(engine) as (client, _):
+        await AsyncStatefulPusher(client, state=store).push({_SECRET + "m.md": _doc("m")})
+    transport = _RejectReads(
+        httpx.ASGITransport(app=create_app(engine, prefix=PREFIX)),
+        {_SECRET + "m.md"},
+        invalid=frozenset({_SECRET + "t.md"}),
+    )
+    async with in_process_client(transport=transport) as (client, _):
+        pusher = AsyncStatefulPusher(client, state=store)
+        moved = await pusher.move(
+            [(_SECRET + "m.md", _SECRET + "t.md"), (_ALLOWED + "z.md", _ALLOWED + "w.md")]
+        )
+    assert moved[0].status == "failed"
+    assert isinstance(moved[0].error, ForbiddenError)  # 源侧 403，而不是目标侧的 400
+
+
+def test_sync_locating_stops_issuing_reads_after_a_round_level_failure() -> None:
+    """同步版：定位时断网即取消排队中的读（同异步版与 Rust 版），不再向不可用的 remote 发请求。"""
+    seen = {"head": 0}
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=CAPABILITIES)
+        if request.method == "POST" and request.url.path.endswith("/heads"):
+            return _problem_response(403, "DPE_FORBIDDEN")
+        with lock:
+            seen["head"] += 1
+        time.sleep(0.05)  # 让失败晚于排队：断言测的是取消排队中的读，而不是线程抢跑的快慢
+        raise httpx.ConnectError("断网", request=request)
+
+    uris = [_ALLOWED + f"{i}.md" for i in range(40)]
+    with DpeClient(
+        "http://dpe.test/r/1", transport=httpx.MockTransport(handler), max_retries=0
+    ) as client:
+        pusher = StatefulPusher(client, state=MemoryStateStore(), concurrency=2)
+        with pytest.raises(httpx.ConnectError):
+            pusher.delete(uris)
+    assert seen["head"] <= 4  # 至多已在途的两条及其各自的一次尝试，远少于 40
