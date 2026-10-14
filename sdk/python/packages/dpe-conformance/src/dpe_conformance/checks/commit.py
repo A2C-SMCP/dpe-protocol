@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
-
 import dpe_hash
 import pytest
 
@@ -26,6 +24,8 @@ from dpe_conformance.support import (
     assert_problem,
     build_document,
     commit,
+    expected_delta,
+    skeleton_multiset,
     text_element,
 )
 
@@ -35,14 +35,6 @@ def _document() -> WireDocument:
         [[text_element("alpha"), text_element("beta", metadata={"revision": 1})]],
         title="commit 样例",
     )
-
-
-def _readback_multiset(target: Target, identity: Identity, uri: str) -> Counter[str]:
-    """经 get_skeleton 读回并展开为元素 content_hash 多重集（delta 的印证基准，CORE §3.3）。"""
-    response = target.send("GET", "documents", identity=identity, params={"uri": uri})
-    assert response.status_code == 200, f"读回失败：{response.status_code}"
-    body = response.json()
-    return Counter(h for page in body["pages"] for h in page["elements"])
 
 
 def test_commit_create(conformance_target: Target, full_identity: Identity) -> None:
@@ -121,7 +113,7 @@ def test_commit_update_delta_matches_readback(
         conformance_target, uri, before_document, identity=full_identity, if_none_match_star=True
     )
     assert first.status_code == 201, f"首次提交失败：{first.status_code}"
-    before = _readback_multiset(conformance_target, full_identity, uri)
+    before = skeleton_multiset(conformance_target, uri, identity=full_identity)
 
     after_document = build_document([[text_element("a"), text_element("c")]])
     response = commit(
@@ -134,12 +126,8 @@ def test_commit_update_delta_matches_readback(
     body = assert_commit_success(
         response, status=200, status_text="updated", doc_hash=after_document.doc_hash
     )
-    after = _readback_multiset(conformance_target, full_identity, uri)
-    expected = {
-        "added": sum((after - before).values()),
-        "removed": sum((before - after).values()),
-        "retained": sum((after & before).values()),
-    }
+    after = skeleton_multiset(conformance_target, uri, identity=full_identity)
+    expected = expected_delta(before, after)
     assert body["delta"] == expected, (
         f"delta 与读回结果不符：服务端报 {body['delta']!r}，按读回多重集计算 {expected!r}"
     )

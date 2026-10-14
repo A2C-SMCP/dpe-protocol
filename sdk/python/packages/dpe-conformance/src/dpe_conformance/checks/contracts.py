@@ -29,6 +29,7 @@ from dpe_conformance.support import (
     build_document,
     commit,
     has_dpe_vary,
+    list_all,
     seed,
     text_element,
 )
@@ -221,9 +222,10 @@ def test_list_answers_in_the_requested_contract(
     )
     assert response.status_code == 200, f"list 返回 {response.status_code}"
     assert has_dpe_vary(response), "list 响应带 Vary: DPE-Hash-Contract（HTTP §3.1）"
-    body = response.json()
-    assert body["next_cursor"] is None, "两条目不应分页"
-    listed = {entry["file_uri"]: entry["doc_hash"] for entry in body["documents"]}
+    # 内容按完整翻页核对（不假定服务端的分页大小）
+    listed = list_all(
+        conformance_target, namespace, identity=full_identity, contract=other_contract
+    )
     assert listed == expected, f"list 须按请求契约给值：{listed!r}"
 
 
