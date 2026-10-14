@@ -31,7 +31,9 @@ __all__ = [
     "EXIT_USAGE",
     "NdjsonLog",
     "build_report",
+    "encode_report",
     "exit_code",
+    "write_report",
 ]
 
 EXIT_SUCCEEDED = 0
@@ -89,6 +91,7 @@ def build_report(
     cursor_held_since: str | None,
     counts: RoundCounts,
     failures: Sequence[RunFailure],
+    omitted: int = 0,
 ) -> dict[str, Any]:
     """§7.4 的轮报告（字段齐全；失败过多时截断并给出被省略的条数）。"""
     report: dict[str, Any] = {
@@ -106,14 +109,22 @@ def build_report(
         "counts": counts.as_dict(),
         "failures": [failure.to_report() for failure in failures[:_MAX_REPORTED_FAILURES]],
     }
-    if len(failures) > _MAX_REPORTED_FAILURES:
-        report["failures_truncated"] = len(failures) - _MAX_REPORTED_FAILURES
+    # 超出上限的、以及调用方省略的（收尾缺陷时的精简报告，#169）都只计数（§7.4）
+    truncated = max(0, len(failures) - _MAX_REPORTED_FAILURES) + omitted
+    if truncated:
+        report["failures_truncated"] = truncated
     return report
 
 
-def write_report(stream: IO[str], report: dict[str, Any]) -> None:
-    """单行紧凑 JSON（UTF-8、LF 结尾）写到 stdout；stdout 不输出其他内容。"""
-    stream.write(json.dumps(report, ensure_ascii=False, separators=(",", ":")) + "\n")
+def encode_report(report: dict[str, Any]) -> str:
+    """轮报告的单行紧凑 JSON（含 LF 结尾）。序列化与写出分开：调用方先确认报告能编码，再
+    发出 ``round.finished`` 并写出——编码失败（运行器缺陷）时还没有任何输出。"""
+    return json.dumps(report, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
+
+
+def write_report(stream: IO[str], line: str) -> None:
+    """把 ``encode_report`` 的结果写到 stdout（UTF-8、LF 结尾）；stdout 不输出其他内容。"""
+    stream.write(line)
     stream.flush()
 
 
@@ -135,7 +146,38 @@ class NdjsonLog:
         self.round = uuid.uuid4().hex
         return self.round
 
-    def emit(self, event: str, level: LogLevel, fields: dict[str, Any] | None = None) -> None:
+    def emit(
+        self,
+        event: str,
+        level: LogLevel,
+        fields: dict[str, Any] | None = None,
+        *,
+        trusted: bool = False,
+    ) -> None:
+        """写一条日志；**从不抛出**（#169）。``trusted`` 表示字段全由运行器生成（枚举、布尔、
+        时间戳、整数，不含任何外来文本），无须经脱敏器——如 ``round.finished``，它因此与轮报告
+        始终一致（§7.5），不受脱敏器自身缺陷影响。
+
+        日志是观测通道：它自身出错不得改变本轮的结果、报告与退出码，也不得让收尾再来一次。
+        字段渲染失败（脱敏或序列化的缺陷）时改写一条只含信封与 ``render_error`` 的行——事件
+        不静默消失，缺陷类型可见；流写入失败（采集端关掉管道、流对象自身出错）则放弃这一行。
+        """
+        try:
+            text = self._render(event, level, fields, redact=not trusted)
+        except Exception as exc:
+            try:
+                # 只含异常类型名（不含任何输入内容），无须再经脱敏器——它可能正是出错的那一环
+                fallback = {"render_error": type(exc).__name__}
+                text = self._render(event, level, fallback, redact=False)
+            except Exception:
+                return
+        with contextlib.suppress(Exception):
+            self._stream.write(text)
+            self._stream.flush()
+
+    def _render(
+        self, event: str, level: LogLevel, fields: dict[str, Any] | None, *, redact: bool = True
+    ) -> str:
         line: dict[str, Any] = {
             "ts": utc_now(),
             "level": level,
@@ -146,12 +188,9 @@ class NdjsonLog:
         if fields:
             # 附加字段不得覆盖日志行自己的字段（item.failed 的失败元素整体嵌套在 failure 里，
             # 其中的 level 是失败层级，与日志级别不同，#147）
-            extra = self.redactor.redact_json(fields)
+            extra = self.redactor.redact_json(fields) if redact else fields
             line.update({k: v for k, v in extra.items() if k not in line})
-        # 日志通道坏了（如采集端关掉管道）不得改变本轮的结果、报告与退出码
-        with contextlib.suppress(OSError, ValueError):
-            self._stream.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n")
-            self._stream.flush()
+        return json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n"
 
     def failure(self, failure: RunFailure) -> None:
         """记一条失败（任何层级都用 ``item.failed``，§7.5）；失败元素（§7.4）整体嵌套在

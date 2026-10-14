@@ -439,7 +439,7 @@ def test_runner_crash_reports_redacts_and_exits_70(
     assert run.report["cursor_held_since"] == run.report["started_at"]
     crashed = run.events("runner.crashed")
     assert len(crashed) == 1 and "ValueError" in crashed[0]["traceback"]
-    finished = run.events("round.finished")  # 由 _finish 按最终结果发出恰好一条
+    finished = run.events("round.finished")  # 由 _conclude 按最终结果发出恰好一条
     assert len(finished) == 1 and finished[0]["level"] == "error"
     assert all(line.startswith("{") for line in run.stderr.splitlines())  # 仍是 NDJSON
     assert SECRET not in run.stdout + run.stderr
@@ -974,3 +974,184 @@ def test_fallback_to_full_round_is_a_warning(instance: Instance) -> None:
     assert run.code == 0 and run.report["incremental"] is False
     _finished_matches_report(run)
     assert run.events("round.finished")[0]["level"] == "warn"
+
+
+# ---------------------------------------------------------------------- 收尾的窄窗口（#169）
+
+
+def test_report_write_crash_emits_round_finished_once(instance: Instance) -> None:
+    """写报告时出了 OSError / ValueError 以外的缺陷：仍是恰好一条 round.finished，不补写第二份
+    报告（§7.5、§7.4），退出 74（报告写不出）。"""
+    import io
+
+    from dpe_sdk.run.cli import main
+
+    class Broken(io.StringIO):
+        def write(self, text: str) -> int:
+            raise RuntimeError("写报告时的缺陷")
+
+    err = io.StringIO()
+    instance.script({"batches": [[]], "cursor": "c1"})
+    code = main(
+        ["--state-dir", str(instance.state), str(instance.write())],
+        stdout=Broken(),
+        stderr=err,
+        environ=instance.environ,
+    )
+    assert code == 74
+    assert err.getvalue().count('"event":"round.finished"') == 1
+    assert '"event":"runner.crashed"' in err.getvalue()  # 运行器缺陷记进日志，不静默
+
+
+def test_unserializable_report_is_one_crash_report(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """报告本身序列化失败（运行器缺陷）：尚未输出任何东西，以同一日志与本轮已落盘的事实再收尾
+    一次——唯一一份报告与一条 round.finished，实例与轮标识不丢，游标如实为已持久化，退出 70。"""
+    from dpe_sdk.run.report import build_report as real
+
+    calls = {"n": 0}
+
+    def broken(**kwargs: Any) -> Any:
+        calls["n"] += 1
+        report = real(**kwargs)
+        if calls["n"] == 1:
+            report["bad"] = object()  # 第一次（正常收尾）不可序列化，兜底那次正常
+        return report
+
+    monkeypatch.setattr("dpe_sdk.run.cli.build_report", broken)
+    instance.script({"batches": [[]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 70 and run.codes() == ["runner_internal_error"]
+    _finished_matches_report(run)
+    assert run.report["instance"]["id"] == "inst"
+    assert run.report["cursor_persisted"] is True and run.report["cursor_held_since"] is None
+    assert run.report["incremental"] is False  # 已收到结束批：如实保留（§7.3）
+    assert "failures_truncated" not in run.report  # 成功轮本无失败明细，没有省略
+    assert run.events("round.finished")[0]["round"] is not None
+
+
+def test_crash_after_the_cursor_was_saved_reports_it_as_saved(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_round 收尾落盘（游标已持久化）之后、返回之前出缺陷：failed、70，但 cursor_persisted
+    如实为 true、扣住记录按 succeeded 清除（§7.3 例外、§7.4）。"""
+    from dpe_sdk.run import InstanceStore
+
+    real = InstanceStore.finish_round
+
+    def then_crash(self: InstanceStore, **kwargs: Any) -> Any:
+        real(self, **kwargs)
+        raise RuntimeError("收尾落盘之后的缺陷")
+
+    monkeypatch.setattr(InstanceStore, "finish_round", then_crash)
+    instance.script({"batches": [[]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 70 and run.report["outcome"] == "failed"
+    assert run.report["cursor_persisted"] is True
+    assert run.report["cursor_held_since"] is None
+    assert run.report["incremental"] is False  # 结束批已收到：取自结束批（§7.3）
+    _finished_matches_report(run)
+    assert StateDirectory(instance.state).open_instance("inst", _identity(instance)).cursor == "c1"
+
+
+def test_broken_log_stream_never_duplicates_round_finished(instance: Instance) -> None:
+    """日志流的 flush 抛出意外异常（行已写出）：不改变结果，也不经兜底再发一次。"""
+    import io
+
+    from dpe_sdk.run.cli import main
+
+    class FlakyFlush(io.StringIO):
+        def flush(self) -> None:
+            raise RuntimeError("日志流自身出错")
+
+    err, out = FlakyFlush(), io.StringIO()
+    instance.script({"batches": [[]], "cursor": "c1"})
+    code = main(
+        ["--state-dir", str(instance.state), str(instance.write())],
+        stdout=out,
+        stderr=err,
+        environ=instance.environ,
+    )
+    assert code == 0 and json.loads(out.getvalue())["outcome"] == "succeeded"
+    assert err.getvalue().count('"event":"round.finished"') == 1
+
+
+def test_report_that_cannot_be_prepared_twice_still_finishes_once(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """报告两次都构造不出（运行器缺陷）：不写报告（74），仍恰好一条 round.finished。"""
+
+    def broken(**kwargs: Any) -> Any:
+        raise RuntimeError("报告构造缺陷")
+
+    monkeypatch.setattr("dpe_sdk.run.cli.build_report", broken)
+    instance.script({"batches": [[]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 74 and run.stdout == ""
+    finished = run.events("round.finished")
+    assert len(finished) == 1 and finished[0]["outcome"] == "failed"
+    assert finished[0]["cursor_persisted"] is True and finished[0]["round"] is not None
+
+
+def test_defect_while_holding_the_cursor_is_reported(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """轮未开始而写扣住记录时出运行器缺陷：记为 runner_internal_error（70），报告照常取本轮
+    计算出的 cursor_held_since（§7.4）。"""
+    from dpe_sdk.run import state as state_module
+
+    assert instance.run({"batches": [[]], "cursor": "c1"}).code == 0
+    real = state_module._write_atomic
+
+    def broken(path: Path, data: Any) -> None:
+        if path.name == "state.json" and data.get("held_since"):
+            raise TypeError("记录写入缺陷")
+        real(path, data)
+
+    monkeypatch.setattr(state_module, "_write_atomic", broken)
+    instance.definition["remote"] = {"url": "http://127.0.0.1:9/r/1"}  # 读到状态后 remote 不可达
+    run = _main_in_process(instance)
+    assert run.code == 70
+    assert run.codes() == ["remote_unavailable", "runner_internal_error"]
+    assert run.report["cursor_held_since"] == run.report["started_at"]
+    _finished_matches_report(run)
+
+
+def test_log_rendering_defect_never_breaks_the_finish(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """日志字段渲染出缺陷（脱敏器出错）：日志从不抛出——改写一条带 render_error 的行，事件
+    不静默消失；结果、报告与退出码不变，round.finished 恰好一条。"""
+    from dpe_sdk.run.secrets import Redactor
+
+    def broken(self: Redactor, value: Any) -> Any:
+        raise RuntimeError("脱敏缺陷")
+
+    monkeypatch.setattr(Redactor, "redact_json", broken)
+    instance.script({"batches": [[]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 0 and run.report["outcome"] == "succeeded"
+    _finished_matches_report(run)  # round.finished 的字段由运行器生成，不经脱敏器，始终一致
+
+
+def test_crash_report_counts_the_failure_details_it_omits(
+    instance: Instance, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """收尾准备出缺陷时精简报告省略失败明细：以 failures_truncated 如实计数（§7.4）。"""
+    from dpe_sdk.run.report import build_report as real
+
+    calls = {"n": 0}
+
+    def broken(**kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("某条失败明细序列化缺陷")
+        return real(**kwargs)
+
+    monkeypatch.setattr("dpe_sdk.run.cli.build_report", broken)
+    error = {"kind": "error", "code": "internal", "message": "x", "retryable": False}
+    instance.script({"batches": [[error, error]], "cursor": "c1"})
+    run = _main_in_process(instance)
+    assert run.code == 70 and run.codes() == ["runner_internal_error"]
+    assert run.report["failures_truncated"] == 2 and run.report["counts"]["failed"] == 2

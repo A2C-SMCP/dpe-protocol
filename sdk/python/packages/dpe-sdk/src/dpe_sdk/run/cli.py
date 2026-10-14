@@ -54,6 +54,7 @@ from dpe_sdk.run.report import (
     EXIT_USAGE,
     NdjsonLog,
     build_report,
+    encode_report,
     exit_code,
     write_report,
 )
@@ -62,6 +63,7 @@ from dpe_sdk.run.round import (
     Outcome,
     RoundCounts,
     RoundOptions,
+    RoundProgress,
     finished_level,
     negotiate_capabilities,
     run_round,
@@ -80,10 +82,6 @@ __all__ = ["main"]
 
 #: 轮报告本身写不出（如 stdout 已关闭）：§7.6「其他非零退出码」，不用 70（同 BSD ``EX_IOERR``）
 EXIT_REPORT_UNWRITABLE = 74
-
-
-class _ReportUnwritable(Exception):
-    """轮报告写不出——不是运行器缺陷，也不再尝试补写报告。"""
 
 
 #: 单条消息上限相对远端 ``max_payload_bytes`` 的余量（JSON 转义与信封，§6.2 SHOULD 留余量）
@@ -141,12 +139,10 @@ def main(
         if args.delete:
             return asyncio.run(_delete(args.definition, state_dir, err))
         return asyncio.run(_sync(args.definition, state_dir, env, out, err))
-    except _ReportUnwritable:
-        return EXIT_REPORT_UNWRITABLE
     except Exception as exc:
-        # 进入 _sync 之前（状态目录定位）或其收尾本身的缺陷，以及删除流程的缺陷：traceback 只进
-        # 日志（单行）；同步一轮仍尽力输出 failed 报告（§7.4「每次调用恰好一个报告」不因缺陷
-        # 豁免，#147），删除不输出报告。定义解析之后的缺陷由 _sync 自己收尾（带实例信息与脱敏器）
+        # 进入 _sync 之前（状态目录定位）的缺陷，以及删除流程的缺陷：traceback 只进日志（单行）；
+        # 同步一轮仍尽力输出 failed 报告（§7.4「每次调用恰好一个报告」不因缺陷豁免，#147），
+        # 删除不输出报告。_sync 自己收尾（_conclude），不会把异常抛到这里
         log = NdjsonLog(err)
         _log_crash(log, exc)
         if args.delete:
@@ -220,11 +216,14 @@ class _Outcome:
     plugin: dict[str, str] | None = None
     protocol_version: str | None = None
     outcome: Outcome = "failed"
-    incremental: bool | None = None
     cursor_persisted: bool = False
     cursor_held_since: str | None = None
     counts: RoundCounts = field(default_factory=RoundCounts)
     failures: list[RunFailure] = field(default_factory=list)
+    #: 报告中省略的失败明细数（收尾缺陷时的精简报告），计入 failures_truncated
+    omitted: int = 0
+    #: run_round 就地记下的已确定事实（结束批的 incremental），中途中断时同样可取
+    progress: RoundProgress = field(default_factory=RoundProgress)
     #: 轮首 scan 是否带了游标（round.finished 的日志级别据此判断）
     cursor_given: bool = False
     #: 已打开的实例状态（轮开始前失败时用它维护 cursor_held_since）
@@ -232,10 +231,25 @@ class _Outcome:
     #: run_round 是否已正常返回（其结果已入账，游标与 cursor_held_since 已由它落盘）
     round_finished: bool = False
 
+    @property
+    def incremental(self) -> bool | None:
+        """§7.3：取自结束批（唯一来源是 ``progress``）；未收到结束批为 ``None``。"""
+        return self.progress.incremental
 
-def _finish(result: _Outcome, out: IO[str], log: NdjsonLog) -> int:
-    """outcome 已最终确定：发出本次调用唯一的 ``round.finished``（字段取自报告，§7.5），写出
-    轮报告，按全部失败给出退出码（§7.6）。"""
+
+@dataclass(frozen=True)
+class _Prepared:
+    """收尾要输出的全部内容，在任何输出之前算好。"""
+
+    line: str
+    code: int
+    level: LogLevel
+    fields: dict[str, Any]
+
+
+def _prepare(result: _Outcome) -> _Prepared:
+    """按最终结果算出轮报告的编码、退出码（§7.6）与 ``round.finished`` 的级别和字段（取自
+    报告，§7.5）。只计算、不输出：这里的任何缺陷都发生在输出之前。"""
     identity = result.identity
     report = build_report(
         instance_id=identity.id,
@@ -251,22 +265,81 @@ def _finish(result: _Outcome, out: IO[str], log: NdjsonLog) -> int:
         cursor_held_since=result.cursor_held_since,
         counts=result.counts,
         failures=result.failures,
+        omitted=result.omitted,
     )
-    log.emit(
-        "round.finished",
-        finished_level(
+    return _Prepared(
+        line=encode_report(report),
+        code=exit_code(result.outcome, result.failures),
+        level=finished_level(
             result.outcome, cursor_given=result.cursor_given, incremental=result.incremental
         ),
-        {
-            key: report[key]
-            for key in ("outcome", "incremental", "cursor_persisted", "cursor_held_since", "counts")
-        },
+        fields={key: report[key] for key in _FINISHED_FIELDS},
     )
+
+
+_FINISHED_FIELDS = ("outcome", "incremental", "cursor_persisted", "cursor_held_since", "counts")
+
+
+def _conclude(result: _Outcome, out: IO[str], log: NdjsonLog) -> int:
+    """一次「同步一轮」调用的唯一收尾：恰好一条 ``round.finished``、至多一份轮报告（§7.4、
+    §7.5），返回退出码（§7.6）。
+
+    分两段（#169）：先 ``_prepare`` 算好全部输出，再一次性输出。准备阶段出缺陷时还没有任何
+    输出——记日志，改用只保留已确定事实的精简结果再准备一次（``_crash_outcome``）；再失败就
+    只尽力发出 ``round.finished``、不写报告（74）。输出一旦开始，任何异常都不再引起第二次
+    收尾：写不出报告即 74（§7.6 此时不用 70），属运行器缺陷的同时记日志。
+    """
     try:
-        write_report(out, report)
-    except (OSError, ValueError) as exc:
-        raise _ReportUnwritable() from exc
-    return exit_code(result.outcome, result.failures)
+        prepared = _prepare(result)
+    except Exception as exc:
+        _log_crash(log, exc)
+        failed = _crash_outcome(result, exc)
+        try:
+            prepared = _prepare(failed)
+        except Exception as again:
+            _log_crash(log, again)
+            log.emit("round.finished", "error", _minimal_finished(failed), trusted=True)
+            return EXIT_REPORT_UNWRITABLE
+    log.emit("round.finished", prepared.level, prepared.fields, trusted=True)
+    try:
+        write_report(out, prepared.line)
+    except (OSError, ValueError):  # stdout 已关闭等
+        return EXIT_REPORT_UNWRITABLE
+    except Exception as exc:  # 运行器自身的缺陷：记日志，不静默
+        _log_crash(log, exc)
+        return EXIT_REPORT_UNWRITABLE
+    return prepared.code
+
+
+def _crash_outcome(result: _Outcome, exc: BaseException) -> _Outcome:
+    """收尾准备阶段出缺陷时的精简结果：保留实例信息与本轮已确定的事实（``incremental``、
+    计数、游标是否已持久化、扣住记录，§7.3 的例外须如实取值），失败明细（最可能是出问题的
+    那部分）只列这一个运行器缺陷。"""
+    return _Outcome(
+        started_at=result.started_at,
+        identity=result.identity,
+        plugin=result.plugin,
+        protocol_version=result.protocol_version,
+        progress=result.progress,
+        cursor_persisted=result.cursor_persisted,
+        cursor_held_since=result.cursor_held_since,
+        counts=result.counts,
+        cursor_given=result.cursor_given,
+        failures=[_internal_error(exc)],
+        # 省略的明细如实计数（§7.4 failures_truncated），不让 counts 与 failures 看似矛盾
+        omitted=len(result.failures) + result.omitted,
+    )
+
+
+def _minimal_finished(result: _Outcome) -> dict[str, Any]:
+    """两次准备都失败时 ``round.finished`` 的字段：不经报告构造，只用已确定的简单值。"""
+    return {
+        "outcome": "failed",
+        "incremental": result.incremental,
+        "cursor_persisted": result.cursor_persisted,
+        "cursor_held_since": result.cursor_held_since,
+        "counts": result.counts.as_dict(),
+    }
 
 
 def _failed(result: _Outcome, log: NdjsonLog, failure: RunFailure) -> None:
@@ -287,7 +360,7 @@ async def _sync(
     except Exception as exc:
         _log_crash(log, exc)
         _failed(result, log, _internal_error(exc))
-    return _finish(result, out, log)
+    return _conclude(result, out, log)
 
 
 async def _sync_steps(
@@ -336,6 +409,10 @@ async def _sync_steps(
             # 轮未开始（实例级或轮级失败在 run_round 之前）或中途崩溃：已取得锁，同样维护
             # cursor_held_since（§7.4）。本轮已正常收尾时它已由 run_round 落盘，不再改写
             result.cursor_held_since = _hold(result, log)
+        if result.store is not None:
+            # 游标是否已持久化只有一个来源：收尾落盘本身（#169）。正常收尾、返回之前才中断
+            # （§7.3 的例外）都如实取它；轮未开始或中途失败时 hold 按失败轮收尾，必为 false
+            result.cursor_persisted = result.store.cursor_persisted
 
 
 def _report_crash(out: IO[str], log: NdjsonLog, exc: BaseException) -> int:
@@ -344,10 +421,7 @@ def _report_crash(out: IO[str], log: NdjsonLog, exc: BaseException) -> int:
     时退出 74（§7.6：此时不用 70）。"""
     result = _Outcome(started_at=utc_now())
     result.failures.append(_internal_error(exc))
-    try:
-        return _finish(result, out, log)
-    except _ReportUnwritable:
-        return EXIT_REPORT_UNWRITABLE
+    return _conclude(result, out, log)
 
 
 def _internal_error(exc: BaseException) -> RoundFailure:
@@ -361,11 +435,11 @@ def _internal_error(exc: BaseException) -> RoundFailure:
 def _log_crash(log: NdjsonLog, exc: BaseException) -> None:
     """未预期异常记为单条 NDJSON（``runner.crashed``），traceback 作为字段且经脱敏（§4.3、
     §7.5）——不直接打印多行 traceback，以免破坏日志格式或泄露插件回显的凭证。"""
-    log.emit(
-        "runner.crashed",
-        "error",
-        {"traceback": "".join(traceback.format_exception(exc))},
-    )
+    try:
+        text = "".join(traceback.format_exception(exc))
+    except Exception:  # 格式化本身出错：至少留下类型（emit 从不抛出）
+        text = type(exc).__name__
+    log.emit("runner.crashed", "error", {"traceback": text})
 
 
 def _hold(result: _Outcome, log: NdjsonLog) -> str | None:
@@ -388,6 +462,11 @@ def _hold(result: _Outcome, log: NdjsonLog) -> str | None:
         failure.redact(log.redactor)
         log.emit("state.held_write_failed", "warn", {"failure": failure.to_report()})
         return store.reported_held_since  # 本轮计算出的值
+    except Exception as exc:
+        # 写记录时的运行器缺陷：如实记为 runner_internal_error，报告照常取本轮计算出的值
+        _log_crash(log, exc)
+        _failed(result, log, _internal_error(exc))
+        return store.reported_held_since
 
 
 async def _run_locked(
@@ -484,16 +563,15 @@ async def _run_locked(
                 redact=redactor,
                 counts=result.counts,
                 failures=result.failures,
+                progress=result.progress,
             )
             # 一返回就入账。此后关闭插件或客户端时才出的运行器缺陷（§7.3 的例外）：outcome
             # 改记 failed、退出 70；counts、cursor_persisted 与按 succeeded 清除的
-            # cursor_held_since 照实保留，不再改写 held 记录；round.finished 由 _finish 按最终
+            # cursor_held_since 照实保留，不再改写 held 记录；round.finished 由 _conclude 按最终
             # 结果发出
             result.round_finished = True
             result.started_at = round_result.started_at
             result.outcome = round_result.outcome
-            result.incremental = round_result.incremental
-            result.cursor_persisted = round_result.cursor_persisted
             result.cursor_held_since = round_result.cursor_held_since
             # 计数与失败已就地累计在 result 上；cursor_given 已由 round.started 事件记下
 

@@ -40,7 +40,7 @@ from typing import IO, Any
 import dpe_hash
 
 from dpe_sdk.pusher import StateSnapshot
-from dpe_sdk.run.errors import InstanceFailure, RoundFailure, RunFailure
+from dpe_sdk.run.errors import InstanceFailure, RoundFailure
 
 __all__ = [
     "InstanceLock",
@@ -242,6 +242,8 @@ class InstanceStore:
         self._reported_held_since: str | None = None
         #: 收尾写失败时，这次写是否承载了一个不同于已存值的游标（是即游标未落盘，fail-closed）
         self._cursor_lost = False
+        #: 本轮收尾是否持久化了插件给出的新游标（§7.4 cursor_persisted 的唯一来源）
+        self._cursor_persisted = False
         #: 打开时是否按缓存丢失处理（首次、内容不可识别或内容身份变化）——本轮必为全量轮
         self.reset = reset
 
@@ -317,14 +319,25 @@ class InstanceStore:
         """本轮的收尾落盘（``finish_round``）是否已执行过——此后不再以 ``hold`` 改写记录。"""
         return self._round_closed
 
-    def finish_round(self, *, succeeded: bool, cursor: str | None, started_at: str) -> str | None:
+    def finish_round(
+        self,
+        *,
+        succeeded: bool,
+        cursor: str | None,
+        started_at: str,
+        keep_cached: bool = False,
+    ) -> str | None:
         """一轮收尾的唯一一次落盘：游标与 ``cursor_held_since`` 一并写入，返回报告应给出的
         ``cursor_held_since``。
 
-        - ``succeeded`` 时以 ``cursor`` 为收尾后应保存的游标（§6.8：插件的新游标，或插件未给出
-          新游标时由调用方传回的已缓存游标；``None`` 即不缓存、下一轮全量）并清空
-          ``held_since``；否则游标保持不变，``held_since`` 没有时以本轮 ``started_at`` 为起点
-          （§7.4）。只在已取得实例锁的轮上调用（``instance_busy`` 不读写该记录）。
+        - ``succeeded`` 时以插件给出的 ``cursor`` 为新游标并清空 ``held_since``；``cursor`` 为
+          ``None`` 时，``keep_cached``（插件支持游标）保留已缓存的游标（§6.8：丢弃它会让下一轮
+          退化为全量、此前的删除与移动无从表达），否则不缓存。未成功时游标保持不变，
+          ``held_since`` 没有时以本轮 ``started_at`` 为起点（§7.4）。只在已取得实例锁的轮上
+          调用（``instance_busy`` 不读写该记录）。
+        - 本轮是否持久化了新游标由 ``cursor_persisted`` 给出：成功轮、插件给了游标、且它已在
+          磁盘上（写成功，或与已存值相同无须重写）。轮后才出运行器缺陷时，调用方据此如实报告
+          （§7.3 的例外，#169）。
         - 同步状态与意图由推送器在本轮内逐次保存，早于这次写入：游标不会先于同步状态前进。
         - 内容没有变化时不写。写失败抛 ``state_unavailable``，并由本方法区分两种情形（§7.2）：
           这次写承载了不同于已存值的游标（``cursor_lost`` 为真）——游标未落盘，调用方使本轮
@@ -333,25 +346,35 @@ class InstanceStore:
           ``reported_held_since``。
         """
         if succeeded:
-            state = dataclasses.replace(self._state, cursor=cursor, held_since=None)
+            kept = self._state.cursor if cursor is None and keep_cached else cursor
+            state = dataclasses.replace(self._state, cursor=kept, held_since=None)
         elif self._state.held_since is None:
             state = dataclasses.replace(self._state, held_since=started_at)
         else:
             state = self._state
-        cursor_changes = succeeded and cursor != self._state.cursor
+        cursor_changes = succeeded and state.cursor != self._state.cursor
         self._reported_held_since = state.held_since
         self._cursor_lost = False
+        self._cursor_persisted = succeeded and cursor is not None
         self._round_closed = True
         if state != self._state:
             try:
                 self._commit(state)
-            except RunFailure:
+            except BaseException:
+                # 写盘失败（含运行器自身的缺陷，不只是 state_unavailable）：新游标没落盘就不得
+                # 报告为已持久化（§7.4）；只是扣住记录写不进去时游标本来就在盘上
                 if cursor_changes:
                     # 游标没落盘：本轮按失败轮计，记录取既有起点或本轮起点
                     self._cursor_lost = True
+                    self._cursor_persisted = False
                     self._reported_held_since = self._state.held_since or started_at
                 raise
         return state.held_since
+
+    @property
+    def cursor_persisted(self) -> bool:
+        """本轮收尾是否持久化了插件给出的新游标（§7.4；见 ``finish_round``）。"""
+        return self._cursor_persisted
 
     @property
     def cursor_lost(self) -> bool:
