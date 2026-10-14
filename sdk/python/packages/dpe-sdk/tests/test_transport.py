@@ -705,6 +705,7 @@ async def test_not_sent_classifies_connect_failures() -> None:
     """公开的「确定未发出」判定：建连失败为真（写操作调用方据此清除待定意图），其余为假。"""
     assert transport_module.not_sent(httpx.ConnectError("refused"))
     assert transport_module.not_sent(httpx.ConnectTimeout("timed out"))
+    assert transport_module.not_sent(httpx.ProxyError("403 Forbidden"))  # 隧道被拒（#132）
     assert not transport_module.not_sent(httpx.ReadTimeout("lost"))
     assert not transport_module.not_sent(httpx.RemoteProtocolError("closed"))
     assert not transport_module.not_sent(ValueError("local"))
