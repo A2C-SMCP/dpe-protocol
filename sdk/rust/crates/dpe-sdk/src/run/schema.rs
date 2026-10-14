@@ -394,7 +394,7 @@ fn eval_node(
         if passed != 1 {
             return Err(ConfigFailure::new(
                 path,
-                format!("oneOf 恰需一个分支通过（通过 {passed} 个）"),
+                "oneOf 恰需一个分支通过".to_string(),
             ));
         }
     }
@@ -425,29 +425,19 @@ fn eval_node(
                 matched = true;
                 eval(sub, value, &child, defs)?;
             }
-            for (pattern, original, sub) in &node.pattern_properties {
+            for (pattern, _, sub) in &node.pattern_properties {
                 if pattern.is_match(name) {
                     matched = true;
-                    let result = eval(sub, value, &child, defs);
-                    if let Err(failure) = result {
-                        return Err(ConfigFailure::new(
-                            &failure.path,
-                            format!(
-                                "（属性 {name:?} 匹配 pattern {original:?}）{}",
-                                failure.message
-                            ),
-                        ));
-                    }
+                    // 位置（指针里的键）已足够定位；不再把实例里的属性名当名字写出（#156）
+                    eval(sub, value, &child, defs)?;
                 }
             }
             if !matched {
                 if let Some(additional) = &node.additional_properties {
                     match additional.as_ref() {
                         Compiled::Bool(false) => {
-                            return Err(ConfigFailure::new(
-                                &child,
-                                format!("出现未允许的属性 {name:?}"),
-                            ));
+                            // 位置是所在对象：被拒的键未通过校验，不作为名字写出（#156）
+                            return Err(ConfigFailure::new(path, "出现未允许的属性".to_string()));
                         }
                         other => eval(other, value, &child, defs)?,
                     }
@@ -457,9 +447,10 @@ fn eval_node(
         if let Some(sub) = &node.property_names {
             for name in map.keys() {
                 if let Err(failure) = eval(sub, &Value::String(name.clone()), path, defs) {
+                    // 未通过 propertyNames 的名字不写出（#156）
                     return Err(ConfigFailure::new(
                         &failure.path,
-                        format!("属性名 {name:?}：{}", failure.message),
+                        format!("属性名：{}", failure.message),
                     ));
                 }
             }
@@ -468,7 +459,7 @@ fn eval_node(
             if (map.len() as u64) < min {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("属性个数少于 minProperties（{} < {min}）", map.len()),
+                    format!("属性个数少于 minProperties（{min}）"),
                 ));
             }
         }
@@ -476,7 +467,7 @@ fn eval_node(
             if (map.len() as u64) > max {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("属性个数多于 maxProperties（{} > {max}）", map.len()),
+                    format!("属性个数多于 maxProperties（{max}）"),
                 ));
             }
         }
@@ -505,7 +496,7 @@ fn eval_node(
             if (items.len() as u64) < min {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("数组长度少于 minItems（{} < {min}）", items.len()),
+                    format!("数组长度少于 minItems（{min}）"),
                 ));
             }
         }
@@ -513,7 +504,7 @@ fn eval_node(
             if (items.len() as u64) > max {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("数组长度多于 maxItems（{} > {max}）", items.len()),
+                    format!("数组长度多于 maxItems（{max}）"),
                 ));
             }
         }
@@ -525,7 +516,7 @@ fn eval_node(
                     if json_equal(&items[i], &items[j]) {
                         return Err(ConfigFailure::new(
                             path,
-                            format!("数组元素 {i} 与 {j} 重复（uniqueItems）"),
+                            "数组含重复元素（uniqueItems）".to_string(),
                         ));
                     }
                 }
@@ -537,7 +528,7 @@ fn eval_node(
             if !pattern.is_match(text) {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("值 {text:?} 与 pattern {original:?} 不匹配"),
+                    format!("值与 pattern {original:?} 不匹配"),
                 ));
             }
         }
@@ -546,7 +537,7 @@ fn eval_node(
             if length < min {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("字符串长度少于 minLength（{length} < {min}）"),
+                    format!("字符串长度少于 minLength（{min}）"),
                 ));
             }
         }
@@ -554,7 +545,7 @@ fn eval_node(
             if length > max {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("字符串长度多于 maxLength（{length} > {max}）"),
+                    format!("字符串长度多于 maxLength（{max}）"),
                 ));
             }
         }
@@ -566,7 +557,7 @@ fn eval_node(
             if value < min {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("数值小于 minimum（{value} < {min}）"),
+                    format!("数值小于 minimum（{min}）"),
                 ));
             }
         }
@@ -574,7 +565,7 @@ fn eval_node(
             if value > max {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("数值大于 maximum（{value} > {max}）"),
+                    format!("数值大于 maximum（{max}）"),
                 ));
             }
         }
@@ -582,7 +573,7 @@ fn eval_node(
             if value <= min {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("数值不大于 exclusiveMinimum（{value} <= {min}）"),
+                    format!("数值不大于 exclusiveMinimum（{min}）"),
                 ));
             }
         }
@@ -590,7 +581,7 @@ fn eval_node(
             if value >= max {
                 return Err(ConfigFailure::new(
                     path,
-                    format!("数值不小于 exclusiveMaximum（{value} >= {max}）"),
+                    format!("数值不小于 exclusiveMaximum（{max}）"),
                 ));
             }
         }

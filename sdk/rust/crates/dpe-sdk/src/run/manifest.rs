@@ -398,11 +398,14 @@ fn parse_secret(index: usize, item: &Value) -> Result<SecretDeclaration, Instanc
     }
     if name.starts_with("DPE_") {
         return Err(invalid(format!(
-            "凭证名 {name:?} 不得以 DPE_ 开头（保留给运行器）"
+            "secrets[{index}].name 不得以 DPE_ 开头（保留给运行器）"
         )));
     }
     if is_base_env_name(&name) {
-        return Err(invalid(format!("凭证名 {name:?} 不得与基础环境变量同名")));
+        // 按下标定位：未通过校验的凭证名不当作名字写出（全大写的令牌恰能通过正则，#156）
+        return Err(invalid(format!(
+            "secrets[{index}].name 不得与基础环境变量同名"
+        )));
     }
     let description = match map.get("description") {
         Some(Value::String(text)) => Some(text.clone()),
