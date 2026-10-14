@@ -106,6 +106,7 @@ __all__ = [
     "Outcome",
     "RoundCounts",
     "RoundOptions",
+    "RoundProgress",
     "RoundResult",
     "finished_level",
     "negotiate_capabilities",
@@ -180,6 +181,16 @@ class RoundResult:
     fatal: RunFailure | None = None
     #: 轮首 ``scan`` 是否带了游标（``round.started`` 的 ``cursor_given``；日志级别据此判断）
     cursor_given: bool = False
+
+
+@dataclass
+class RoundProgress:
+    """一轮进行中已经确定的事实，由调用方传入、``run_round`` 就地记下（同 ``counts`` /
+    ``failures``）。运行器缺陷使 ``run_round`` 中途抛出时，调用方据此如实报告（§7.3 的例外：
+    ``incremental`` 取自结束批，收到即确定，#169）。"""
+
+    #: 结束批的 ``incremental``；未收到结束批为 ``None``
+    incremental: bool | None = None
 
 
 def finished_level(outcome: Outcome, *, cursor_given: bool, incremental: bool | None) -> LogLevel:
@@ -767,6 +778,7 @@ async def run_round(
     clock: Callable[[], str] = utc_now,
     counts: RoundCounts | None = None,
     failures: list[RunFailure] | None = None,
+    progress: RoundProgress | None = None,
 ) -> RoundResult:
     """执行一轮（§6.4–§6.8）：``host`` 已完成 initialize，``pusher`` 以 ``store`` 为状态存储。
 
@@ -783,6 +795,7 @@ async def run_round(
     if failures:
         raise ValueError("failures 必须是空列表（就地累计本轮）")
     options = options or RoundOptions()
+    progress = progress if progress is not None else RoundProgress()
     started_at = clock()
     state = _Round(
         host=host,
@@ -803,6 +816,7 @@ async def run_round(
     try:
         await negotiate_capabilities(pusher.client)
         final = await state.run(cursor)
+        progress.incremental = final.incremental  # 收到结束批即确定（§7.3），唯一来源
         if final.cursor is not None and not supports_cursor:
             raise ProtocolFailure("插件声明不支持游标，却在结束批给出了游标（§6.8）")
         if final.incremental and cursor is None:
@@ -829,18 +843,18 @@ async def run_round(
             )
 
     # §7.3：取自结束批；未收到结束批为 null
-    incremental = final.incremental if final is not None else None
+    incremental = progress.incremental
     outcome: Outcome = (
         "failed" if fatal is not None else "partial" if state.item_failed else "succeeded"
     )
     new_cursor = final.cursor if final is not None and supports_cursor else None
-    # 收尾后应保存的游标（§6.8）：插件给了新游标就用它；支持游标的插件给 null（本轮不提供
-    # 游标）时保留已缓存的游标——丢弃它会让下一轮退化为全量轮、此前的删除与移动无从表达；
-    # 不支持游标的实例不缓存
-    kept_cursor = new_cursor if new_cursor is not None or not supports_cursor else store.cursor
     try:
+        # 支持游标的插件给 null 时保留已缓存的游标（§6.8）；不支持游标的实例不缓存
         held_since = store.finish_round(
-            succeeded=outcome == "succeeded", cursor=kept_cursor, started_at=started_at
+            succeeded=outcome == "succeeded",
+            cursor=new_cursor,
+            started_at=started_at,
+            keep_cached=supports_cursor,
         )
     except RunFailure as failure:
         held_since = store.reported_held_since  # 报告照常取本轮计算出的值（§7.4）
@@ -854,9 +868,9 @@ async def run_round(
             # failures，只记日志（§7.2）
             failure.redact(state.redact)
             state.emit("state.held_write_failed", "warn", {"failure": failure.to_report()})
-    # 新游标与已持久化的值相同（未重写）同样算已持久化：磁盘上本来就是它；结束批 cursor 为
-    # null 的轮为 false（保留的旧游标不是本轮持久化的，§7.4）
-    cursor_persisted = outcome == "succeeded" and new_cursor is not None
+    # 唯一来源是收尾落盘本身（§7.4）：新游标与已存值相同（未重写）同样算已持久化；结束批
+    # cursor 为 null 的轮为 false（保留的旧游标不是本轮持久化的）
+    cursor_persisted = store.cursor_persisted  # 非成功轮由 finish_round 给出 false
 
     return RoundResult(
         outcome=outcome,

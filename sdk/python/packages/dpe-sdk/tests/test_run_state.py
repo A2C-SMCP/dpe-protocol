@@ -265,3 +265,68 @@ def test_crash_before_the_identity_switch_is_retried_on_next_start(tmp_path: Pat
     retried = directory.open_instance("a", identity(config={"repo": "y"}))
     assert retried.reset and retried.cursor is None  # 重新切换，旧游标不生效
     assert directory.open_instance("a", identity()).cursor == "old-cursor"  # 磁盘未被改动
+
+
+def test_finish_round_reports_whether_a_new_cursor_was_persisted(tmp_path: Path) -> None:
+    """cursor_persisted 以收尾落盘为准（§7.4，#169）；插件给 null 时按 keep_cached 保留（§6.8）。"""
+    store = StateDirectory(tmp_path).open_instance("a", identity())
+    store.finish_round(succeeded=True, cursor="c1", started_at="t", keep_cached=True)
+    assert store.cursor == "c1" and store.cursor_persisted
+    store.finish_round(succeeded=True, cursor="c1", started_at="t", keep_cached=True)
+    assert store.cursor_persisted  # 与已存值相同：无须重写，同样算已持久化
+    store.finish_round(succeeded=True, cursor=None, started_at="t", keep_cached=True)
+    assert store.cursor == "c1" and not store.cursor_persisted  # 保留旧游标，不是本轮持久化的
+    store.finish_round(succeeded=False, cursor="c2", started_at="t", keep_cached=True)
+    assert store.cursor == "c1" and not store.cursor_persisted
+    store.finish_round(succeeded=True, cursor=None, started_at="t")
+    assert store.cursor is None and not store.cursor_persisted  # 不支持游标：不缓存
+
+
+def test_cursor_not_persisted_when_its_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = StateDirectory(tmp_path).open_instance("a", identity())
+
+    def broken(path: Path, data: Any) -> None:
+        raise OSError("磁盘只读")
+
+    monkeypatch.setattr(state_module, "_write_atomic", broken)
+    with pytest.raises(RoundFailure):
+        store.finish_round(succeeded=True, cursor="c1", started_at="t", keep_cached=True)
+    assert store.cursor_lost and not store.cursor_persisted
+
+
+def test_defect_while_writing_never_reports_an_unsaved_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写盘时出运行器自身的缺陷（不只是 OSError）：新游标没落盘就不报已持久化（§7.4）。"""
+    store = StateDirectory(tmp_path).open_instance("a", identity())
+    store.finish_round(succeeded=True, cursor="c1", started_at="t")
+
+    def broken(path: Path, data: Any) -> None:
+        raise TypeError("序列化缺陷")
+
+    monkeypatch.setattr(state_module, "_write_atomic", broken)
+    with pytest.raises(TypeError):
+        store.finish_round(succeeded=True, cursor="c2", started_at="t", keep_cached=True)
+    assert store.round_closed and not store.cursor_persisted
+    assert store.reported_held_since == "t"
+
+
+def test_held_clear_failure_keeps_cursor_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """游标不变、只是扣住记录的清除写不进去：游标本就在盘上，仍算已持久化（§7.4）。"""
+    store = StateDirectory(tmp_path).open_instance("a", identity())
+    store.finish_round(succeeded=True, cursor="c1", started_at="t0")
+    store.finish_round(succeeded=False, cursor=None, started_at="t1")  # 扣住
+    real = state_module._write_atomic
+
+    def no_writes(path: Path, data: Any) -> None:
+        raise OSError("磁盘只读")
+
+    monkeypatch.setattr(state_module, "_write_atomic", no_writes)
+    with pytest.raises(RoundFailure):
+        store.finish_round(succeeded=True, cursor="c1", started_at="t2", keep_cached=True)
+    assert not store.cursor_lost and store.cursor_persisted
+    monkeypatch.setattr(state_module, "_write_atomic", real)
