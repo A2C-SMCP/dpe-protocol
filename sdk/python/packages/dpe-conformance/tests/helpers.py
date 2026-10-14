@@ -10,7 +10,7 @@ import json
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,10 +50,13 @@ def reference_server(*extra: str) -> Iterator[ReferenceServer]:
             proc.kill()
 
 
-def run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    *args: str, cwd: Path, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """以独立进程运行 ``python -m dpe_conformance <args>``；``cwd`` 之外不读任何环境配置。
 
-    ``cwd`` 是显式的：配置文件缺省就在 CWD 下发现，测试必须落在自己的临时目录里。
+    ``cwd`` 是显式的：配置文件缺省就在 CWD 下发现，测试必须落在自己的临时目录里。``env`` 给出时
+    作为子进程的完整环境（缺省继承当前进程）。
     """
     return subprocess.run(
         [sys.executable, "-m", "dpe_conformance", *args],
@@ -61,4 +64,5 @@ def run_cli(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        env=None if env is None else dict(env),
     )

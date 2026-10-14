@@ -9,14 +9,10 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import socket
-import socketserver
-import threading
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -24,6 +20,7 @@ from dpe_sdk import protocol as protocol_module
 from dpe_sdk._proxy import _check_proxy_url, proxy_for
 from dpe_sdk.protocol import Request
 from dpe_sdk.transport import AsyncDpeClient, DpeClient, not_sent
+from proxy_helpers import ProxyServer, start_proxy
 from server_helpers import spawn_server
 
 CASES = Path(__file__).resolve().parents[4] / "testdata" / "proxy_env.json"
@@ -81,87 +78,9 @@ def test_unsupported_scheme_message_does_not_echo_credentials() -> None:
     assert "s3cr3t" not in str(excinfo.value)
 
 
-# ---------------------------------------------------------------------- 本地代理
-
-
-class _Handler(socketserver.StreamRequestHandler):
-    server: _ProxyServer
-
-    def handle(self) -> None:
-        while True:
-            line = self.rfile.readline()
-            if not line:
-                return
-            headers: list[bytes] = []
-            while (header := self.rfile.readline()) not in (b"\r\n", b"\n", b""):
-                headers.append(header)
-            method, target, _ = line.decode("latin-1").split(" ", 2)
-            self.server.seen.append(f"{method} {target}")
-            if method == "CONNECT":  # 隧道一律拒绝：请求随后才会经隧道发出
-                self.wfile.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-                return
-            length = 0
-            for header in headers:
-                name, _, value = header.decode("latin-1").partition(":")
-                if name.strip().lower() == "content-length":
-                    length = int(value)
-            body = self.rfile.read(length)
-            if self.server.mode == "bad_gateway":
-                self.wfile.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-                continue
-            self._forward(method, target, headers, body)
-            return
-
-    def _forward(self, method: str, target: str, headers: list[bytes], body: bytes) -> None:
-        """明文转发：绝对形式的请求目标改写为原始形式，带 ``Connection: close`` 交给上游。"""
-        parts = urlsplit(target)
-        path = parts.path + (f"?{parts.query}" if parts.query else "")
-        kept = [
-            h
-            for h in headers
-            if h.split(b":", 1)[0].strip().lower() not in (b"connection", b"proxy-connection")
-        ]
-        request = (
-            f"{method} {path} HTTP/1.1\r\n".encode()
-            + b"".join(kept)
-            + b"Connection: close\r\n\r\n"
-            + body
-        )
-        assert parts.hostname is not None and parts.port is not None
-        with socket.create_connection((parts.hostname, parts.port), timeout=10) as upstream:
-            upstream.sendall(request)
-            while chunk := upstream.recv(65536):
-                self.wfile.write(chunk)
-
-
-class _ProxyServer(socketserver.ThreadingTCPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-    def __init__(self, mode: str) -> None:
-        super().__init__(("127.0.0.1", 0), _Handler)
-        self.mode = mode
-        self.seen: list[str] = []
-
-    @property
-    def url(self) -> str:
-        return f"http://127.0.0.1:{self.server_address[1]}"
-
-
-def _start(mode: str) -> Iterator[_ProxyServer]:
-    server = _ProxyServer(mode)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        server.server_close()
-
-
 @pytest.fixture
-def proxy() -> Iterator[_ProxyServer]:
-    yield from _start("forward")
+def proxy() -> Iterator[ProxyServer]:
+    yield from start_proxy("forward")
 
 
 @pytest.fixture
@@ -180,7 +99,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_env_proxy_is_used(
-    monkeypatch: pytest.MonkeyPatch, proxy: _ProxyServer, remote: str
+    monkeypatch: pytest.MonkeyPatch, proxy: ProxyServer, remote: str
 ) -> None:
     monkeypatch.setenv("HTTP_PROXY", proxy.url)
     with DpeClient(remote) as client:
@@ -190,7 +109,7 @@ def test_env_proxy_is_used(
 
 @pytest.mark.anyio
 async def test_env_proxy_is_used_by_async_client(
-    monkeypatch: pytest.MonkeyPatch, proxy: _ProxyServer, remote: str
+    monkeypatch: pytest.MonkeyPatch, proxy: ProxyServer, remote: str
 ) -> None:
     monkeypatch.setenv("http_proxy", proxy.url)
     async with AsyncDpeClient(remote) as client:
@@ -199,7 +118,7 @@ async def test_env_proxy_is_used_by_async_client(
 
 
 def test_no_proxy_connects_directly(
-    monkeypatch: pytest.MonkeyPatch, proxy: _ProxyServer, remote: str
+    monkeypatch: pytest.MonkeyPatch, proxy: ProxyServer, remote: str
 ) -> None:
     monkeypatch.setenv("HTTP_PROXY", proxy.url)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
@@ -211,7 +130,7 @@ def test_no_proxy_connects_directly(
 @pytest.mark.anyio
 @pytest.mark.parametrize("client_type", ["sync", "async"])
 async def test_system_proxy_settings_are_ignored(
-    monkeypatch: pytest.MonkeyPatch, proxy: _ProxyServer, remote: str, client_type: str
+    monkeypatch: pytest.MonkeyPatch, proxy: ProxyServer, remote: str, client_type: str
 ) -> None:
     """模拟「系统设了代理、环境变量没设」：httpx 缺省会经 ``getproxies()`` 读到它（macOS /
     Windows 的系统代理设置即由此进入），客户端仍然直连。"""
@@ -233,7 +152,7 @@ async def test_system_proxy_settings_are_ignored(
 
 
 def test_empty_uppercase_no_proxy_falls_back_to_lowercase(
-    monkeypatch: pytest.MonkeyPatch, proxy: _ProxyServer, remote: str
+    monkeypatch: pytest.MonkeyPatch, proxy: ProxyServer, remote: str
 ) -> None:
     """空的大写 ``NO_PROXY`` 视为未设置，取小写 ``no_proxy`` → 直连（与 Rust 侧
     ``reqwests_own_proxy_detection_is_off`` 同一用例）。"""
@@ -256,7 +175,7 @@ def test_unreachable_proxy_is_not_sent(monkeypatch: pytest.MonkeyPatch, remote: 
 @pytest.mark.anyio
 @pytest.mark.parametrize("client_type", ["sync", "async"])
 async def test_rejected_tunnel_is_not_sent(
-    monkeypatch: pytest.MonkeyPatch, proxy: _ProxyServer, client_type: str
+    monkeypatch: pytest.MonkeyPatch, proxy: ProxyServer, client_type: str
 ) -> None:
     """HTTPS 经代理、隧道被拒（CONNECT 应答 403）：请求还没到 remote，判为确定未发出；
     传输层按「确定未发出」原样重发（每次都先建隧道）。失败发生在 TLS 之前，不需要证书。"""
@@ -277,7 +196,7 @@ async def test_rejected_tunnel_is_not_sent(
 def test_bad_gateway_from_forwarding_proxy_is_a_response(monkeypatch: pytest.MonkeyPatch) -> None:
     """明文 HTTP 经代理转发时，代理的 502 是普通响应，不是 ``ProxyError``、不判为确定未发出
     （代理可能已把请求转给了 remote）。"""
-    for server in _start("bad_gateway"):
+    for server in start_proxy("bad_gateway"):
         monkeypatch.setenv("HTTP_PROXY", server.url)
         with DpeClient("http://dpe.invalid/r/1", max_retries=0) as client:
             response = client.send(Request("GET", "capabilities", retry_safe=True))

@@ -34,6 +34,17 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 
 `executed` = 取得通过/失败结论的用例（即 `passed + failed`）；`errors` 与 `collection_errors` 单列。退出码：`0` 全部通过（skip 不算失败），`1` 有失败，`2` 用法/配置/运行故障（含「没有任何检查被执行」）。
 
+## 代理
+
+跑分器**只从环境变量取代理**（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`），从不读操作系统的代理设置（macOS / Windows 的系统代理、PAC 都不看）。规则与 Python / Rust SDK 相同、共用一张用例表（`sdk/testdata/proxy_env.json`），详见 `dpe-sdk` README 传输一节的「代理只来自环境变量」。要点：
+
+- 按**每个请求的目的地**判定：被测服务端与 HTTP 钩子（可在另一个 origin）各自套用规则，例如钩子地址可以经 `NO_PROXY` 直连而 target 走代理；
+- 大写变量优先，空值视为未设置；`NO_PROXY` 支持 `*`、域名及子域、IP 与 CIDR；
+- 代理 URL 按固定文法校验（只支持 `http://` / `https://`，密码里的 `@` 写成 `%40`）；不合法时在发出任何请求之前以退出码 `2` 结束，报错只含变量名、不回显值；
+- 关闭代理：不设这些变量，或设 `NO_PROXY=*`。
+
+**升级须知**（0.4 起，行为变化）：以前在 macOS / Windows 上环境变量为空时会悄悄走系统代理（连本机回环地址也会），现在改为直连；需要经代理访问被测服务端时请设置上述环境变量。
+
 ## 配置
 
 可选配置文件（TOML，封闭 schema，未知键一律拒绝），缺省在 CWD 下找 `dpe-conformance.toml`，或以 `--config` 指定。**凭证不进命令行与日志**，只放上 `Authorization` 请求头；身份建议经 `env` 引用环境变量，`authorization` 字面量仅限低权限/一次性测试凭证。
