@@ -159,14 +159,24 @@ def test_all_vector_kinds_have_consumers(vectors_dir: Path) -> None:
     ``tests/test_nesting_depth_entry_points.py``（文本入口与参考服务端）；``remote_url``（HTTP 绑定
     §1 的 remote URL 文法）的消费方在本包的 ``tests/test_remote_url.py``（判定函数），以及
     ``dpe-sdk`` 的 ``tests/test_remote_url_entry_points.py`` 与 ``dpe-conformance`` 的
-    ``tests/test_cli_remote_url.py``（入口）。
+    ``tests/test_cli_remote_url.py``（入口）；``retry_after``（HTTP 绑定 §5）的消费方在本包的
+    ``tests/test_retry_after.py``。
     """
     kinds = {
         json.loads(f.read_text(encoding="utf-8"))["kind"]
         for f in vectors_dir.glob("*.json")
         if f.name != "manifest.json"
     }
-    assert kinds == {"document", "jcs", "uri", "invalid", "nesting_depth", "pattern", "remote_url"}
+    assert kinds == {
+        "document",
+        "jcs",
+        "uri",
+        "invalid",
+        "nesting_depth",
+        "pattern",
+        "remote_url",
+        "retry_after",
+    }
 
 
 def test_jcs_numbers_ignore_decimal_context(vectors_dir: Path) -> None:

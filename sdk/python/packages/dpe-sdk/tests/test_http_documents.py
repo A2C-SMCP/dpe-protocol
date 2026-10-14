@@ -428,7 +428,7 @@ class _Down(Engine):
 
 
 class _DownForever(Engine):
-    """retry_after 非有限值（无法用秒数表达的等待）：不能退化成缺头或非法值（#45 交接）。"""
+    """retry_after 非有限值（无限期）：给 86400，不能退化成缺头、非法值或 1（§5，#109）。"""
 
     def capabilities(self) -> Capabilities:
         raise errors.UnavailableError("无限期维护", retry_after=math.inf)
@@ -436,12 +436,12 @@ class _DownForever(Engine):
 
 @pytest.mark.parametrize(
     ("engine", "status", "retry_after"),
-    [(_Limited(), 429, "1"), (_Down(), 503, None), (_DownForever(), 503, "1")],
+    [(_Limited(), 429, "1"), (_Down(), 503, None), (_DownForever(), 503, "86400")],
 )
 async def test_retry_after_is_never_omitted(
     engine: Engine, status: int, retry_after: str | None
 ) -> None:
-    """429 / 503 MUST 带 ``Retry-After``，不可缺省；无提示值与提示值非有限时都给 1（§5）。
+    """429 / 503 MUST 带 ``Retry-After``，不可缺省；无提示值给 1，无限期给 86400（§5）。
 
     有提示值时规范只要求它是个可用的秒数，取整方式未定义，故只断言形态。
     """

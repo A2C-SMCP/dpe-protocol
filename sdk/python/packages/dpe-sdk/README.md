@@ -55,7 +55,7 @@ with DpeClient(
 - **remote**：按 HTTP 绑定 §1 的文法校验（`dpe_sdk.remote_url.check_remote_url`，即 dpe-hash 的同一函数：http / https、已是 core §1.1 规范化形式、无查询串与片段、不带凭证信息（凭证走 `CredentialProvider`）、不写默认端口、路径不以 `/` 结尾且无点段），合法即原样使用；capabilities 在实例内快照一次，服务端变更能力后新建客户端；
 - **凭证**：`CredentialProvider`（`dpe_sdk.credentials`）在每个请求发送前调用一次（传输层内部的重发同样重新取，轮换中的短时凭证在长等待后仍可用），返回 `Authorization` 头的完整值（含方案名）；SDK 不感知鉴权方案，也不解释凭证内容；
 - **gzip**：服务端 capabilities 声明 `gzip`、请求体是 `application/json`、不小于 1024 字节且不是分块请求（带 `Content-Range`）时才压缩；分块上传按规范（§7）MUST NOT 压缩；
-- **重试**：传输层只自行重发三类——`retry_safe` 的请求（只读操作与断点查询，含走 POST 的 `batch_head`）遇上的网络失败、任何请求上确定未发出的建连失败、以及可重试的 DPE 错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，按 `code` 的 `retryable` 判定）按 `Retry-After`（秒数或 HTTP 日期）等待后原样重发（等待上限 5 分钟，更长则抛给调用方）。写请求可能已发出后的超时与响应丢失一律抛回核心，由核心按 core §5.2 处理，**绝不自动 force**；
+- **重试**：传输层只自行重发三类——`retry_safe` 的请求（只读操作与断点查询，含走 POST 的 `batch_head`）遇上的网络失败、任何请求上确定未发出的建连失败、以及可重试的 DPE 错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，按 `code` 的 `retryable` 判定）按 `Retry-After`（秒数或 HTTP 日期）等待后原样重发（等待上限 5 分钟，更长则抛给调用方）。`Retry-After` 只按 RFC 9110 文法解析（HTTP 绑定 §5，`dpe_hash.retry_after_seconds`，`dpe_sdk.protocol` 重新导出）。**升级须知**（0.4 起，不兼容）：以前经 `email.utils` 接受的宽松日期（时区缩写、`+0000` 偏移、小写月份、多余空格等）现在视同没有提示（`None`）；首尾只去 SP / HTAB，NBSP 等 Unicode 空白不再去掉；rfc850 的两位年份改按 50 年规则解释；畸形时区不再漏出 `OverflowError`。参考服务端对无限期不可用改发 `Retry-After: 86400`（以前是 1）。写请求可能已发出后的超时与响应丢失一律抛回核心，由核心按 core §5.2 处理，**绝不自动 force**；
 - **异常**：httpx 的连接失败、超时等异常原样抛出、按类型区分，不包装成协议错误；
 - **依赖边界**：`dpe-hash` 保持零依赖；httpx 是 `dpe-sdk` 的运行时依赖，且 `dpe_sdk` 顶层不 import 传输模块（按需 `from dpe_sdk.transport import …`）。
 

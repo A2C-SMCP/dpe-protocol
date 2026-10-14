@@ -110,7 +110,7 @@
   },
   "provenance": {
     "generator": "scripts/gen_vectors.py",
-    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpex 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1"
+    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpex 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1，retry_after 的规范依据是 HTTP 绑定 §5"
   },
   "files": [
     {
@@ -232,6 +232,10 @@
     {
       "name": "remote_url.json",
       "sha256": "d942c675e2647acd11f798131851f49ee75eb6220366f4aaafcab4d23e9d9725"
+    },
+    {
+      "name": "retry_after.json",
+      "sha256": "91f9501b40b5552f8682d56eab8f970464d3ade25bd3f8eab7d38081a2bcc08f"
     },
     {
       "name": "table_formula_html.json",

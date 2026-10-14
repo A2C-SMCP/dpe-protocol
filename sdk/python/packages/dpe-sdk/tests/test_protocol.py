@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -497,20 +496,11 @@ def test_success_body_not_json() -> None:
 # ---------------------------------------------------------------------- Retry-After
 
 
-def test_retry_after_seconds() -> None:
+def test_retry_after_seconds_is_dpe_hash_reexport() -> None:
+    """解析在 dpe-hash（与跑分器共用，向量逐例见 dpe-hash 的 tests/test_retry_after.py）。"""
+    assert retry_after_seconds is dpe_hash.retry_after_seconds
     now = datetime(2026, 10, 8, 12, 0, 0, tzinfo=UTC)
-    assert retry_after_seconds(None) is None
-    assert retry_after_seconds(" 120 ") == 120.0
     assert retry_after_seconds("Thu, 08 Oct 2026 12:00:30 GMT", now=now) == 30.0
-    assert retry_after_seconds("Thu, 08 Oct 2026 11:00:00 GMT", now=now) == 0.0
-    for bad in ["", "-1", "1.5", "soon", "٣"]:
-        assert retry_after_seconds(bad, now=now) is None
-    # 合法但无法表示的秒数仍是「等待很久」，不是「没有提示」
-    assert retry_after_seconds("9" * 400) == math.inf
-    assert retry_after_seconds("9" * 5000) == math.inf
-    # 不带时区的 now 按 UTC 理解
-    naive = datetime(2026, 10, 8, 12, 0, 0)
-    assert retry_after_seconds("Thu, 08 Oct 2026 12:00:30 GMT", now=naive) == 30.0
 
 
 # ---------------------------------------------------------------------- 驱动约定

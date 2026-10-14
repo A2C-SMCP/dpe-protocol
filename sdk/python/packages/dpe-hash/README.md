@@ -38,6 +38,7 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 | `jcs(value)` | RFC 8785 规范化字符串 |
 | `normalize_file_uri(uri)` | file_uri 的语法规范化（core.md §1.1），身份的比较形式；非法输入抛 `ValidationError`（`DPE_VALIDATION`） |
 | `check_remote_url(url)` | remote URL 的文法判定（HTTP 绑定 §1），合法时原样返回；不合法抛 `RemoteUrlError`（`ValueError` 的子类，是调用方的配置错误、没有规范错误码，不属于 `DpeHashError`），消息不回显 URL。dpe-sdk 与 dpe-conformance 共用这一判定 |
+| `retry_after_seconds(value, *, now=None)` | `Retry-After` 字段值换算成等待秒数（HTTP 绑定 §5，只接受 RFC 9110 文法）；不合文法或缺省为 `None`（视同没有提示），合法但无法表示的 delay-seconds 为 `math.inf`；任何输入都不抛异常。dpe-sdk 与 dpe-conformance 共用 |
 | `validate_file_type(value)` / `is_valid_file_type(value)` | file_type 的语法校验（core.md §2.5，开放取值）：前者不合语法抛 `FileTypeInvalidError`（`DPE_VALIDATION`），后者只返回布尔值 |
 | `nesting_depth(value, child_field=None)` | JSON 值的嵌套深度（core.md §2.8 第 0 步，全协议唯一定义）；清单与实例定义等载体同样用它 |
 
