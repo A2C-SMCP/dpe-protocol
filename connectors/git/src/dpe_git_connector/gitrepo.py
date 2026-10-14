@@ -9,6 +9,7 @@
   文档的默认分支随运行环境漂移、制造伪变更（显式配置的 ``default_branch`` 优先）；
 - ``git log -z --format=…``：提交**集合**与元数据——git 的输出次序不进内容，页内元素序由本
   模块的 ``order_commits`` 按自有规则给出（只依赖提交图；跨 git 版本稳定）；
+- ``git rev-list --max-parents=0``：根提交集合（仓库改名的配对判据，见 ``server``）；
 - ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）。
 
 ``-z`` 与 ``%x00`` 分隔是必需的：提交说明原样进 DPE，NUL 不能出现在提交消息与 ident 里，用它
@@ -19,7 +20,11 @@
 
 子进程环境显式构造：``GIT_TERMINAL_PROMPT=0``（不交互，不挂住插件）、``GIT_OPTIONAL_LOCKS=0``
 （只读访问不写 ``.git``）、清空全局配置（``GIT_CONFIG_GLOBAL`` / ``GIT_CONFIG_NOSYSTEM``）并清掉
-会改写仓库发现的继承变量，使结果只由仓库自身决定。**不接触任何凭证**：本连接器以本机 git 的
+会改写仓库发现的继承变量，使结果只由仓库自身决定。**不应用本地的对象替换**
+（``GIT_NO_REPLACE_OBJECTS``、``GIT_GRAFT_FILE`` 指向空文件）：``refs/replace`` 与
+``info/grafts`` 是本机对提交图的改写，不是源内容（同不做 mailmap）；否则它们会在 tip 不变时
+改变映射结果，增量游标也看不出来。浅克隆的边界无法关闭（那是克隆可见的全部历史），由
+``shallow_boundary`` 计入仓库状态。**不接触任何凭证**：本连接器以本机 git 的
 方式读取使用者配置的本地仓库路径，不代为访问远端。
 """
 
@@ -42,6 +47,7 @@ __all__ = [
     "first_parent_chain",
     "looks_like_repo",
     "order_commits",
+    "root_commits",
 ]
 
 #: git 命令的超时（秒）：枚举必须是有界的，插件不因数据源卡死而挂住整轮
@@ -221,6 +227,14 @@ def order_commits(records: Sequence[CommitRecord], order_from: str) -> list[Comm
     return ordered
 
 
+def root_commits(records: Sequence[CommitRecord]) -> tuple[str, ...]:
+    """提交集合中的根提交（无父提交），按 SHA 升序——与 ``GitRepo.root_commits`` 同一口径。
+
+    浅克隆的边界提交在 git 的输出里同样没有父提交（cauterize），两条路径都把它当作根。
+    """
+    return tuple(sorted(record.sha for record in records if not record.parents))
+
+
 def first_parent_chain(records: Sequence[CommitRecord], tip: str) -> list[str]:
     """``tip`` 的 first-parent 链（旧在前，根端在首个）——按月分页的骨架。
 
@@ -342,6 +356,31 @@ class GitRepo:
             f"git merge-base --is-ancestor 失败（退出码 {completed.returncode}）：{message}"
         )
 
+    def shallow_boundary(self) -> tuple[str, ...]:
+        """浅克隆的边界提交（按 SHA 升序；非浅克隆为空）。
+
+        边界决定克隆可见的历史：``git fetch --deepen`` 会在 tip 不变时改变提交集合，所以它
+        属于仓库状态（``mapping.RepoState``），必须进指纹。
+        """
+        relative = self._run("rev-parse", "--git-path", "shallow").strip()
+        path = Path(self.path) / relative
+        try:
+            raw = path.read_text(encoding="ascii")
+        except FileNotFoundError:
+            return ()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise GitError(f"读取浅克隆边界失败：{path}（{exc}）") from None
+        return tuple(sorted(line.strip().lower() for line in raw.splitlines() if line.strip()))
+
+    def root_commits(self, tip: str) -> tuple[str, ...]:
+        """``tip`` 可达的根提交（按 SHA 升序）：不读提交说明，比 ``log`` 便宜。
+
+        与纯函数 ``root_commits(self.log(tip))`` 结果相同（测试钉住）；只用于给本轮新出现的
+        仓库计算移动键——那时还没有读它的提交日志。
+        """
+        raw = self._run("rev-list", "--max-parents=0", "--end-of-options", tip)
+        return tuple(sorted(line.strip().lower() for line in raw.splitlines() if line.strip()))
+
     # ------------------------------------------------------------------ 提交图读取
 
     def log(self, *revisions: str) -> list[CommitRecord]:
@@ -354,6 +393,10 @@ class GitRepo:
         raw = self._run_bytes(
             "log",
             "-z",
+            # 输出编码钉死为 UTF-8、不混入签名校验：仓库自己的 i18n.logOutputEncoding /
+            # log.showSignature 是本机配置，不得改变映射（状态指纹看不出这类变化）
+            "--encoding=UTF-8",
+            "--no-show-signature",
             f"--format={_LOG_FORMAT}",
             "--end-of-options",
             *revisions,
@@ -426,6 +469,9 @@ def _git_env() -> dict[str, str]:
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
+    # 本机对提交图的改写（replace / grafts）不是源内容：映射只由对象本身决定
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_GRAFT_FILE"] = os.devnull
     # 清掉会改写仓库发现的继承变量（git hook 等场景会带进来），使结果只由 repo 与仓库自身决定
     for name in (
         "GIT_DIR",
@@ -435,5 +481,8 @@ def _git_env() -> dict[str, str]:
         "GIT_OBJECT_DIRECTORY",
     ):
         env.pop(name, None)
-    # 插件进程的环境由运行器构造（§4.3）；这里只保留其 PATH/凭据类变量，不额外清理
+    # 插件进程的环境由运行器构造（§4.3）；这里只保留其 PATH/凭据类变量，不额外清理。
+    # 命令行级配置（GIT_CONFIG_COUNT 系列，部署方经 plugin.env 注入）保留：system / global
+    # 已关闭，它是 safe.directory（跨 uid 的仓库）唯一能生效的作用域；会改变映射的输出项由
+    # 命令参数显式钉死（log 的 --encoding / --no-show-signature），不靠清理环境
     return env

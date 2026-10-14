@@ -22,8 +22,10 @@ from dpe_git_connector.mapping import (
     DocumentMapper,
     Limits,
     RepoSpec,
+    RepoState,
     build_file_uri,
     month_partition,
+    move_key,
 )
 
 pytestmark = requires_git
@@ -460,3 +462,122 @@ def test_remote_limit_guard_reports_error(tmp_path: Path) -> None:
     assert item.kind == "error"
     assert item.fields["code"] == "content_invalid"
     assert "max_payload_bytes" in item.fields["message"]
+
+
+# --------------------------------------------------------------------------- 增量（#66）
+
+
+def test_fingerprint_tracks_exactly_the_mapping_inputs(tmp_path: Path) -> None:
+    """状态指纹：同一状态稳定；新提交、跟踪分支建删、since 指向的 tag 移动、默认分支名变化
+    都改变它。"""
+    repo = FixtureRepo(tmp_path / "repo")
+    first = repo.commit("一", date="2026-01-06T10:00:00+00:00")
+    repo.set_origin_head("main")
+    run_git(repo.root, "tag", "start", first)
+    mapper = DocumentMapper(PREFIX)
+    git = GitRepo(str(repo.root))
+
+    def fingerprint(spec: RepoSpec) -> str:
+        return mapper.resolve(git, spec).fingerprint()
+
+    spec = RepoSpec(branches=("dev",), since="start")
+    base = fingerprint(spec)
+    assert fingerprint(spec) == base
+
+    repo.branch("dev")
+    run_git(repo.root, "update-ref", "refs/remotes/origin/dev", "HEAD")
+    with_branch = fingerprint(spec)
+    assert with_branch != base  # 跟踪分支出现（新增一页）
+
+    repo.checkout("main")
+    second = repo.commit("二", date="2026-02-06T10:00:00+00:00")
+    run_git(repo.root, "update-ref", "refs/remotes/origin/main", second)
+    with_commit = fingerprint(spec)
+    assert with_commit != with_branch
+
+    run_git(repo.root, "tag", "-f", "start", second)
+    assert fingerprint(spec) != with_commit  # since 解析出的提交变了：历史起点变了
+
+    run_git(repo.root, "update-ref", "-d", "refs/remotes/origin/dev")
+    run_git(repo.root, "branch", "-D", "dev")
+    assert fingerprint(spec) != with_commit
+
+    renamed = fingerprint(RepoSpec(default_branch="main", since="start"))
+    run_git(repo.root, "branch", "-m", "main", "trunk")
+    run_git(repo.root, "update-ref", "refs/remotes/origin/trunk", second)
+    assert fingerprint(RepoSpec(default_branch="trunk", since="start")) != renamed
+
+
+def test_scan_skips_unchanged_and_reports_marks(tmp_path: Path) -> None:
+    repo = FixtureRepo(tmp_path / "repo")
+    repo.commit("一", date="2026-01-06T10:00:00+00:00")
+    repo.set_origin_head("main")
+    mapper = DocumentMapper(PREFIX)
+    git = GitRepo(str(repo.root))
+    entry = RepoDir(path=str(repo.root), identifier=b"repo")
+    item, mark = mapper.scan(git, entry, RepoSpec())
+    assert item is not None and item.kind == "document" and mark is not None
+    assert mark.move_key == move_key("main", [repo.sha("main")])
+    assert mapper.scan(git, entry, RepoSpec(), unchanged_if=mark.fingerprint) == (None, None)
+    assert mapper.move_key_of(git, RepoSpec()) == mark.move_key  # 两条路径同一个键
+
+
+def test_empty_repository_has_no_move_key(tmp_path: Path) -> None:
+    repo = FixtureRepo(tmp_path / "void")
+    mapper = DocumentMapper(PREFIX)
+    git = GitRepo(str(repo.root))
+    assert mapper.resolve(git, RepoSpec()) == RepoState(default_name=None)
+    assert mapper.move_key_of(git, RepoSpec()) is None
+    assert move_key("main", []) is None
+
+
+def test_shallow_deepen_changes_the_fingerprint(tmp_path: Path) -> None:
+    """浅克隆 deepen：tip 不变而可见历史变多——指纹必须变化，文档随之重新产出。"""
+    source = FixtureRepo(tmp_path / "source")
+    for month in (1, 2, 3):
+        source.commit(f"第 {month} 个", date=f"2026-0{month}-06T10:00:00+00:00")
+    clone = tmp_path / "clone"
+    run_git(tmp_path, "clone", "-q", "--depth", "1", "--no-local", str(source.root), str(clone))
+    mapper = DocumentMapper(PREFIX)
+    git = GitRepo(str(clone))
+    entry = RepoDir(path=str(clone), identifier=b"clone")
+    shallow_item, shallow_mark = mapper.scan(git, entry, RepoSpec())
+    assert shallow_mark is not None and shallow_item is not None
+    run_git(clone, "fetch", "-q", "--deepen=2")
+    deep_item, deep_mark = mapper.scan(git, entry, RepoSpec(), shallow_mark.fingerprint)
+    assert deep_mark is not None and deep_item is not None  # 未被当作「没变」跳过
+    assert len(deep_item.fields["pages"]) == 3 > len(shallow_item.fields["pages"])
+
+
+def test_replace_refs_do_not_change_the_mapping(tmp_path: Path) -> None:
+    """``refs/replace`` 是本机对提交图的改写，不是源内容：映射不受它影响。"""
+    repo = FixtureRepo(tmp_path / "repo")
+    first = repo.commit("原来的说明", date="2026-01-06T10:00:00+00:00")
+    repo.set_origin_head("main")
+    other = FixtureRepo(tmp_path / "other")
+    other.commit("替换后的说明", date="2026-01-06T10:00:00+00:00")
+    mapper = DocumentMapper(PREFIX)
+    entry = RepoDir(path=str(repo.root), identifier=b"repo")
+    before = mapper.document(GitRepo(str(repo.root)), entry, RepoSpec())
+    run_git(repo.root, "fetch", "-q", str(other.root), "main")
+    run_git(repo.root, "replace", first, "FETCH_HEAD")
+    after = mapper.document(GitRepo(str(repo.root)), entry, RepoSpec())
+    assert after == before
+
+
+def test_local_log_config_does_not_change_the_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """仓库本地或命令行级的 i18n.logOutputEncoding 不改变映射（状态指纹看不出它们）。"""
+    repo = FixtureRepo(tmp_path / "repo")
+    # 说明须能用 Latin-1 表达：表达不了时 git 原样输出 UTF-8，测不出重新编码
+    repo.commit("Änderung der Übersicht", date="2026-01-06T10:00:00+00:00")
+    repo.set_origin_head("main")
+    mapper = DocumentMapper(PREFIX)
+    entry = RepoDir(path=str(repo.root), identifier=b"repo")
+    before = mapper.document(GitRepo(str(repo.root)), entry, RepoSpec())
+    assert before.kind == "document"
+    run_git(repo.root, "config", "i18n.logOutputEncoding", "ISO-8859-1")
+    run_git(repo.root, "config", "log.showSignature", "true")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'i18n.logoutputencoding'='ISO-8859-1'")
+    assert mapper.document(GitRepo(str(repo.root)), entry, RepoSpec()) == before

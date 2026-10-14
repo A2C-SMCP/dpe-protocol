@@ -15,11 +15,18 @@ from conftest import History, ReposRoot
 from helpers import FixtureRepo, requires_git
 
 from dpe_git_connector import PLUGIN_NAME, __version__
+from dpe_git_connector.cursor import decode_cursor
 from dpe_git_connector.server import Serve
 
 pytestmark = requires_git
 
 PREFIX = "git://s/"
+
+
+def serve_digest(serve: Serve) -> str:
+    """该 ``Serve`` 的数据源摘要（解释它给出的游标用）。"""
+    assert serve._source is not None
+    return serve._source.digest
 
 
 def initialize_params(config: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -73,8 +80,9 @@ def collect(serve: Serve, **first: Any) -> tuple[list[dict[str, Any]], int]:
         items.extend(result["items"])
         batches += 1
         if "next" not in result:
-            assert result["cursor"] is None
-            assert result["incremental"] is False
+            # 结束批：总给出新游标（§6.8）；未带游标的轮是全量轮
+            assert isinstance(result["cursor"], str)
+            assert result["incremental"] is (first.get("cursor") is not None)
             return items, batches
         params = {"next": result["next"]}
 
@@ -93,7 +101,7 @@ def test_initialize_handshake_shape(history: History) -> None:
         "result": {
             "protocol_version": "dpe-connector/1",
             "plugin": {"name": PLUGIN_NAME, "version": __version__},
-            "capabilities": {"supports_cursor": False},
+            "capabilities": {"supports_cursor": True},
         },
     }
 
@@ -188,7 +196,7 @@ def test_scan_emits_one_document_per_repository(history: History) -> None:
         {"ref": "main", "period": "2026-03"},
         {"ref": "dev"},
     ]
-    assert result["cursor"] is None
+    assert isinstance(result["cursor"], str)
     assert result["incremental"] is False
     assert "next" not in result
 
@@ -359,8 +367,9 @@ def test_continuation_budget_shrink_degrades_to_item_error(tmp_path: Path) -> No
     assert [item["kind"] for item in result["items"]] == ["error"]
     assert result["items"][0]["code"] == "content_invalid"
     assert "分段" in result["items"][0]["message"]
-    # 该文档失败不扣住本轮：同一响应即结束轮（§6.8）
-    assert result["cursor"] is None and result["incremental"] is False
+    # 该文档失败不扣住本轮：同一响应即结束轮（§6.8）；新游标不记录这篇未能产出的文档
+    assert result["incremental"] is False
+    assert decode_cursor(result["cursor"], serve_digest(serve)) == {}
 
 
 def test_scan_batches_by_max_items(repos_root: ReposRoot) -> None:
@@ -394,8 +403,8 @@ def test_next_token_semantics(repos_root: ReposRoot) -> None:
     assert response["error"]["code"] == -32602
 
 
-def test_cursor_without_round_is_accepted_as_full(history: History) -> None:
-    """带 cursor（缓存丢失等）但本插件不支持游标：如实按全量枚举处理（§6.8）。"""
+def test_unreadable_cursor_falls_back_to_full(history: History) -> None:
+    """解释不了的游标（陌生格式）：回退全量枚举并标 incremental: false，不报错（§6.8）。"""
     serve = initialized_serve({"repo": str(history.path)})
     result = scan(serve, params={"cursor": "c-1"})
     assert result["incremental"] is False

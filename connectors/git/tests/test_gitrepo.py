@@ -19,6 +19,7 @@ from dpe_git_connector.gitrepo import (
     first_parent_chain,
     looks_like_repo,
     order_commits,
+    root_commits,
 )
 
 pytestmark = requires_git
@@ -389,3 +390,37 @@ def test_inherited_git_env_does_not_redirect_repo(tmp_path: Path, monkeypatch: A
     monkeypatch.setenv("GIT_DIR", str(other.root / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(other.root))
     assert GitRepo(str(target.root)).resolve_branch("main") == target.sha("main")
+
+
+def test_root_commits_agree_between_log_and_rev_list(tmp_path: Path) -> None:
+    """两条根提交路径（纯函数 / ``git rev-list --max-parents=0``）结果一致：多根合并、浅克隆。"""
+    repo = simple_repo(tmp_path / "multi")
+    run_git(repo.root, "checkout", "-q", "--orphan", "other")
+    run_git(repo.root, "rm", "-rq", "--cached", ".")
+    other_root = repo.commit("另一个根", date="2026-01-07T10:00:00+00:00", files={"o.txt": "o\n"})
+    repo.checkout("main")
+    run_git(
+        repo.root,
+        "-c",
+        "commit.gpgsign=false",
+        "merge",
+        "-q",
+        "--no-ff",
+        "--allow-unrelated-histories",
+        "-m",
+        "合并无关历史",
+        "other",
+    )
+    git = GitRepo(str(repo.root))
+    tip = git.resolve_ref("main")
+    assert tip is not None
+    roots = git.root_commits(tip)
+    assert len(roots) == 2 and other_root in roots
+    assert roots == root_commits(git.log(tip))
+
+    shallow = tmp_path / "shallow"
+    run_git(tmp_path, "clone", "-q", "--depth", "1", "--no-local", str(repo.root), str(shallow))
+    git = GitRepo(str(shallow))
+    tip = git.resolve_ref("HEAD")
+    assert tip is not None
+    assert git.root_commits(tip) == root_commits(git.log(tip)) == (tip,)  # 浅边界即根

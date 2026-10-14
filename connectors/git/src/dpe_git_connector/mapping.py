@@ -24,18 +24,28 @@
   时间戳不合规（``GitContentError``——同样扫描重跑不会成功），或按固定预算切分后仍超过远端
   ``max_payload_bytes``（部署配置问题，不静默按远端值重新切分）。
 
-本模块只做全量枚举：增量游标与删除 / 移动意图归后续拆分（#66）。仓库集合与单仓库映射在这里
-已经分开（``RepoDir`` 进、条目出）：仓库消失 / 改名由发现层（``gitrepo.discover_repos`` 的结果
-集合）在上层表达 delete / move，本模块的映射规则不需要为它改动。
+**增量**（#66）：映射是「仓库状态」的纯函数——默认分支名与 tip、``since`` 解析出的提交、
+各跟踪分支的 tip（提交按 SHA 不可变，配置与映射规则版本由运行器的内容身份承担）。``resolve``
+一次解析出这组值，``RepoState.fingerprint`` 是它的摘要：指纹与上一轮相同即文档相同，``scan``
+直接跳过、不读提交日志；不同则用**同一次解析出的 tip** 映射整篇文档（避免两次解析之间仓库被
+推送造成指纹与内容不符）。仓库消失 / 改名由 ``server`` 在仓库集合层面表达 delete / move，
+改名的配对判据「根提交集合 + 默认分支名」由 ``move_key`` 给出（#96）。
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from dpe_hash import ContractUnsupportedError, ElementObject, ValidationError, normalize_file_uri
+from dpe_hash import (
+    ContractUnsupportedError,
+    ElementObject,
+    ValidationError,
+    jcs,
+    normalize_file_uri,
+)
 
 from dpe_git_connector.extractors import commit_elements, element_bytes
 from dpe_git_connector.gitrepo import (
@@ -46,15 +56,19 @@ from dpe_git_connector.gitrepo import (
     RepoDir,
     first_parent_chain,
     order_commits,
+    root_commits,
 )
 
 __all__ = [
     "DocumentMapper",
     "Item",
     "Limits",
+    "RepoMark",
     "RepoSpec",
+    "RepoState",
     "build_file_uri",
     "month_partition",
+    "move_key",
 ]
 
 #: RFC 3986 unreserved —— 这些字节照原样进 URI（其余一律百分号编码）
@@ -107,6 +121,54 @@ class RepoSpec:
     branches: tuple[str, ...] = ()
     #: 历史起点提交（含起点；仅单仓库模式允许）
     since: str | None = None
+
+
+def _digest(value: Any) -> str:
+    """游标里的摘要：JCS 后取 sha256，截断为 128 位（只用于比较相等，不是内容 hash）。"""
+    return hashlib.sha256(jcs(value).encode("utf-8")).hexdigest()[:32]
+
+
+@dataclass(frozen=True)
+class RepoState:
+    """一次解析出的仓库状态：映射只依赖它（与配置），指纹相同即文档相同。
+
+    ``default_name`` 为 ``None`` 表示空仓库（没有任何 ref，零页文档）。``branches`` 是按名字
+    字节序排列的跟踪分支与其 tip（解析不到为 ``None``，不产该页）。
+    """
+
+    default_name: str | None
+    default_tip: str | None = None
+    #: ``since`` 解析出的提交：配置可以写会移动的 tag / 分支名，必须按解析结果比较
+    since: str | None = None
+    branches: tuple[tuple[str, str | None], ...] = ()
+    #: 浅克隆的边界：tip 不变时它变化（``fetch --deepen``）同样改变可见的提交集合
+    shallow: tuple[str, ...] = ()
+
+    def fingerprint(self) -> str:
+        return _digest(
+            {
+                "default": self.default_name,
+                "tip": self.default_tip,
+                "since": self.since,
+                "branches": [[name, tip] for name, tip in self.branches],
+                "shallow": list(self.shallow),
+            }
+        )
+
+
+def move_key(default_name: str | None, roots: Sequence[str]) -> str | None:
+    """改名的配对键（#96）：默认分支名 + 根提交集合。没有根提交（空仓库）不参与配对。"""
+    if default_name is None or not roots:
+        return None
+    return _digest({"default": default_name, "roots": sorted(roots)})
+
+
+@dataclass(frozen=True)
+class RepoMark:
+    """游标里一个仓库的记录：状态指纹与移动键（``server`` 的轮间对比只用这两项）。"""
+
+    fingerprint: str
+    move_key: str | None
 
 
 def _month(committed_at: str) -> str:
@@ -181,28 +243,31 @@ class DocumentMapper:
         self.limits = limits or Limits()
 
     def document(self, repo: GitRepo, entry: RepoDir, spec: RepoSpec) -> Item:
-        """枚举一个仓库 → ``document`` 条目；失败给 ``error`` 条目。"""
+        """枚举一个仓库 → ``document`` 条目；失败给 ``error`` 条目（全量，不比较指纹）。"""
+        item, _ = self.scan(repo, entry, spec)
+        assert item is not None  # 未给上一轮指纹：不会被跳过
+        return item
+
+    def scan(
+        self, repo: GitRepo, entry: RepoDir, spec: RepoSpec, unchanged_if: str | None = None
+    ) -> tuple[Item | None, RepoMark | None]:
+        """枚举一个仓库：返回（条目, 新的游标记录）。
+
+        - 状态指纹等于 ``unchanged_if``（上一轮的指纹）：``(None, None)``——文档未变，不产出；
+        - 映射成功：``document`` 条目与本次的 ``RepoMark``；
+        - 失败：``error`` 条目与 ``None``（调用方保留旧记录，新游标不越过未产出的变更，§6.8）。
+        """
+        file_uri = self.file_uri(entry)
+        if isinstance(file_uri, Item):
+            return file_uri, None
         try:
-            file_uri = build_file_uri(self.prefix, entry.identifier)
-        except (ValueError, ValidationError, ContractUnsupportedError) as exc:
-            return self.error_item(None, "content_invalid", f"file_uri 不合法：{exc}", False)
-        if not file_uri.startswith(self.prefix):
-            # 标识由前缀拼接而来，正常不会越界；防御性上报（契约 §6.5 要求不静默忽略）
-            return self.error_item(file_uri, "internal", "file_uri 越出实例前缀", retryable=False)
-        try:
-            pages = self._pages(repo, spec)
-        except GitContentError as exc:
-            # 内容类失败（非 UTF-8 的说明 / 作者、非法时间戳）：映射不出合法 DPE 内容，
-            # 同样扫描重跑也不会成功——content_invalid、不可重试（§6.5 定义）
-            return self.error_item(file_uri, "content_invalid", str(exc), retryable=False)
-        except GitError as exc:
-            return self.error_item(file_uri, "source_unavailable", str(exc), retryable=True)
+            state = self.resolve(repo, spec)
+            fingerprint = state.fingerprint()
+            if fingerprint == unchanged_if:
+                return None, None
+            pages, roots = self._pages(repo, state)
         except Exception as exc:
-            # 条目级兜底：任何未预期的解析异常（超大字段、解析器内部错误）都不得带崩进程——
-            # 崩了会让每轮都以 plugin_crashed 收场、实例永不收敛（§8.1-5）
-            return self.error_item(
-                file_uri, "internal", f"映射时发生未预期错误：{type(exc).__name__}: {exc}", False
-            )
+            return self.repo_error(file_uri, exc), None
         oversize = self._oversize(pages)
         if oversize is not None:
             return self.error_item(
@@ -211,14 +276,47 @@ class DocumentMapper:
                 "元素按固定预算切分后仍超过远端 max_payload_bytes"
                 f"（{oversize} 字节 > {self.limits.max_payload_bytes}）",
                 retryable=False,
-            )
-        return Item(
+            ), None
+        item = Item(
             kind="document",
             fields={
                 "file_uri": file_uri,
                 "document": {"file_type": "git_repo"},
                 "pages": pages,
             },
+        )
+        return item, RepoMark(fingerprint, move_key(state.default_name, roots))
+
+    def move_key_of(self, repo: GitRepo, spec: RepoSpec) -> str | None:
+        """本轮新出现的仓库的移动键（还没读它的提交日志：只解析状态与根提交）。"""
+        state = self.resolve(repo, spec)
+        if state.default_tip is None:
+            return None
+        return move_key(state.default_name, repo.root_commits(state.default_tip))
+
+    def file_uri(self, entry: RepoDir) -> str | Item:
+        """仓库标识 → ``file_uri``；不合法时给条目级 ``error``。"""
+        try:
+            file_uri = build_file_uri(self.prefix, entry.identifier)
+        except (ValueError, ValidationError, ContractUnsupportedError) as exc:
+            return self.error_item(None, "content_invalid", f"file_uri 不合法：{exc}", False)
+        if not file_uri.startswith(self.prefix):
+            # 标识由前缀拼接而来，正常不会越界；防御性上报（契约 §6.5 要求不静默忽略）
+            return self.error_item(file_uri, "internal", "file_uri 越出实例前缀", retryable=False)
+        return file_uri
+
+    def repo_error(self, file_uri: str, exc: Exception) -> Item:
+        """读取或映射一个仓库时的失败 → 条目级 ``error``（读取类与内容类分开，§6.5）。"""
+        if isinstance(exc, GitContentError):
+            # 内容类失败（非 UTF-8 的说明 / 作者、非法时间戳）：映射不出合法 DPE 内容，
+            # 同样扫描重跑也不会成功——content_invalid、不可重试（§6.5 定义）
+            return self.error_item(file_uri, "content_invalid", str(exc), retryable=False)
+        if isinstance(exc, GitError):
+            return self.error_item(file_uri, "source_unavailable", str(exc), retryable=True)
+        # 条目级兜底：任何未预期的解析异常（超大字段、解析器内部错误）都不得带崩进程——
+        # 崩了会让每轮都以 plugin_crashed 收场、实例永不收敛（§8.1-5）
+        return self.error_item(
+            file_uri, "internal", f"映射时发生未预期错误：{type(exc).__name__}: {exc}", False
         )
 
     def error_item(
@@ -241,27 +339,23 @@ class DocumentMapper:
         子树里是否藏着仓库无从得知，因此不假装知道：如实上报该路径（身份 = 前缀 + 相对路径），
         其余仓库照常枚举。权限修好后重跑即可成功，故 ``retryable: true``。
         """
-        try:
-            file_uri = build_file_uri(self.prefix, entry.identifier)
-        except (ValueError, ValidationError, ContractUnsupportedError) as exc:
-            return self.error_item(None, "content_invalid", f"file_uri 不合法：{exc}", False)
+        file_uri = self.file_uri(entry)
+        if isinstance(file_uri, Item):
+            return file_uri
         return self.error_item(
             file_uri, "source_unavailable", f"无法读取（发现层）：{entry.path}", retryable=True
         )
 
-    def _pages(self, repo: GitRepo, spec: RepoSpec) -> list[dict[str, Any]]:
-        """一个仓库的全部页对象（月页在前、分支页在后）。"""
+    def resolve(self, repo: GitRepo, spec: RepoSpec) -> RepoState:
+        """解析仓库状态（映射的全部输入）：不读提交日志，每轮对每个仓库都执行。"""
         repo.open()
         if not repo.has_refs():
             # 空仓库（没有任何 ref）：零页文档（契约 1 §5 允许空文档），不是错误
-            return []
+            return RepoState(default_name=None)
         default_name = repo.default_branch(spec.default_branch)
         default_tip = repo.resolve_branch(default_name)
         if default_tip is None:
             raise GitError(f"默认分支 {default_name!r} 无法解析为提交")
-        records = repo.log(default_tip)  # 只取集合；次序由 order_commits 自己规定
-        ordered = order_commits(records, default_tip)
-        chain = first_parent_chain(records, default_tip)
         since_sha: str | None = None
         if spec.since is not None:
             since_sha = repo.resolve_ref(spec.since)
@@ -269,23 +363,40 @@ class DocumentMapper:
                 raise GitError(f"since 无法解析为提交：{spec.since}")
             if not repo.is_ancestor(since_sha, default_tip):
                 raise GitError(f"since 不是默认分支 {default_name!r} 的祖先：{spec.since}")
+        tracked = sorted(
+            {name for name in spec.branches if name != default_name},
+            key=lambda name: name.encode("utf-8"),
+        )
+        return RepoState(
+            default_name=default_name,
+            default_tip=default_tip,
+            since=since_sha,
+            # 解析不到（未建或已删）记 None：不产该页，也不是错误——与「删除分支 = 删页」一致
+            branches=tuple((name, repo.resolve_branch(name)) for name in tracked),
+            shallow=repo.shallow_boundary(),
+        )
+
+    def _pages(
+        self, repo: GitRepo, state: RepoState
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
+        """按已解析的状态给出全部页对象（月页在前、分支页在后）与默认分支的根提交。"""
+        if state.default_name is None or state.default_tip is None:
+            return [], ()
+        default_name, default_tip = state.default_name, state.default_tip
+        records = repo.log(default_tip)  # 只取集合；次序由 order_commits 自己规定
+        ordered = order_commits(records, default_tip)
+        chain = first_parent_chain(records, default_tip)
 
         pages: list[dict[str, Any]] = []
-        for month, month_records in sorted(month_partition(chain, ordered, since_sha).items()):
+        for month, month_records in sorted(month_partition(chain, ordered, state.since).items()):
             pages.append(
                 {
                     "page_metadata": {"ref": default_name, "period": month},
                     "elements": _elements(month_records),
                 }
             )
-        tracked = sorted(
-            {name for name in spec.branches if name != default_name},
-            key=lambda name: name.encode("utf-8"),
-        )
-        for name in tracked:
-            tip = repo.resolve_branch(name)
+        for name, tip in state.branches:
             if tip is None:
-                # 解析不到（未建或已删）：不产该页，也不是错误——与「删除分支 = 删页」一致
                 continue
             pages.append(
                 {
@@ -294,7 +405,7 @@ class DocumentMapper:
                     "elements": _elements(order_commits(repo.log(f"{default_tip}..{tip}"), tip)),
                 }
             )
-        return pages
+        return pages, root_commits(records)
 
     def _oversize(self, pages: list[dict[str, Any]]) -> int | None:
         """仍超远端 ``max_payload_bytes`` 的元素字节数（守卫；不据此重新切分）。"""
