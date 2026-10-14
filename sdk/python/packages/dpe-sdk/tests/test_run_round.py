@@ -509,6 +509,15 @@ async def _deleted_in_a_failed_round(h: Harness) -> None:
     assert await h.foreign.head(P + "a.md") is None  # 删除已生效
 
 
+def _skipped(h: Harness) -> list[tuple[str, dict[str, Any]]]:
+    """本次 harness 中的 ``item.skipped`` 事件（§7.5，#197）：(级别, 字段)。"""
+    return [(level, fields) for event, level, fields in h.events if event == "item.skipped"]
+
+
+def _cause(source: str, target: str) -> dict[str, str]:
+    return {"from_uri": P + source, "to_uri": P + target}
+
+
 def _synced(h: Harness) -> dict[str, str]:
     snapshot = h.store.load(REMOTE) if h.store else None
     assert snapshot is not None
@@ -536,6 +545,60 @@ async def test_move_after_own_delete_is_achieved_by_the_target_document(tmp_path
         assert await h.foreign.head(P + "a.md") is None
         assert await h.foreign.head(P + "b.md") == expected("A")
         assert _synced(h) == {P + "b.md": expected("A")}
+        assert _skipped(h) == []  # 例外路径不是跳过
+
+
+async def test_skipped_event_cites_the_current_unachieved_move(tmp_path: Path) -> None:
+    """同一 URI 先由一条 move 达成、后又被另一条 move 未达成：跳过事件的 cause 指向后者，不指向
+    早已达成的旧 move（#197）。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A"), doc_item("c.md", "C")]]})
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        _move("a.md", "b.md"),  # 达成
+                        _move("c.md", "b.md"),  # b 已被占：未达成
+                        doc_item("b.md", "B"),
+                    ]
+                ]
+            }
+        )
+        assert codes(result) == ["DPE_ALREADY_EXISTS"]
+        assert [fields for _, fields in _skipped(h)] == [
+            {"kind": "document", "file_uri": P + "b.md", "cause": _cause("c.md", "b.md")}
+        ]
+
+
+async def test_skipped_events_follow_the_stream_order(tmp_path: Path) -> None:
+    """同一波内的跳过事件按条目在流中的顺序输出（不按种类分组）；一条写入涉及多个未达成 URI 时，
+    cause 取 from_uri 的根因（§7.5，#197）。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A"), doc_item("c.md", "C")]]})
+        await h.foreign.commit(P + "b.md", _doc_of("theirs"), IfAbsent())
+        await h.foreign.commit(P + "d.md", _doc_of("other"), IfAbsent())
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        _move("a.md", "b.md"),  # b 被占：未达成
+                        _move("c.md", "d.md"),  # d 被占：未达成
+                        _move("b.md", "y.md"),  # 与下一条同一波：move 在前
+                        doc_item("d.md", "D"),
+                        _move("d.md", "b.md"),  # 两侧都未达成
+                        doc_item("b.md", "B"),  # b 已有根因 a→b：保留，不被 d→b 改写
+                    ]
+                ]
+            }
+        )
+        assert codes(result) == ["DPE_ALREADY_EXISTS", "DPE_ALREADY_EXISTS"]
+        a_b, c_d = _cause("a.md", "b.md"), _cause("c.md", "d.md")
+        assert [fields for _, fields in _skipped(h)] == [
+            {"kind": "move", "from_uri": P + "b.md", "to_uri": P + "y.md", "cause": a_b},
+            {"kind": "document", "file_uri": P + "d.md", "cause": c_d},
+            {"kind": "move", "from_uri": P + "d.md", "to_uri": P + "b.md", "cause": c_d},
+            {"kind": "document", "file_uri": P + "b.md", "cause": a_b},
+        ]
 
 
 async def test_move_onto_absent_target_without_target_document_still_fails(tmp_path: Path) -> None:
@@ -590,6 +653,13 @@ async def test_target_document_after_occupied_target_is_not_written(tmp_path: Pa
         assert result.counts.failed == 1 and result.counts.updated == 0
         assert await h.foreign.head(P + "a.md") == expected("A")
         assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()
+        # 跳过可观测（§7.5，#197）：不是失败，不计数
+        assert _skipped(h) == [
+            (
+                "warn",
+                {"kind": "document", "file_uri": P + "b.md", "cause": _cause("a.md", "b.md")},
+            )
+        ]
 
 
 async def test_target_document_after_a_source_deleted_mid_write_is_not_written(
@@ -797,6 +867,11 @@ async def test_writes_touching_an_awaiting_target_are_not_sent(tmp_path: Path) -
         assert (result.counts.deleted, result.counts.moved) == (0, 0)
         assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()
         assert await h.foreign.head(P + "d.md") is None
+        cause = _cause("a.md", "b.md")
+        assert [fields for _, fields in _skipped(h)] == [
+            {"kind": "delete", "file_uri": P + "b.md", "cause": cause},
+            {"kind": "move", "from_uri": P + "b.md", "to_uri": P + "d.md", "cause": cause},
+        ]
 
 
 async def test_skipped_move_also_holds_its_own_target(tmp_path: Path) -> None:
@@ -813,6 +888,12 @@ async def test_skipped_move_also_holds_its_own_target(tmp_path: Path) -> None:
         assert result.counts.updated == 0
         assert await h.foreign.head(P + "a.md") == _doc_of("theirs").doc_hash()
         assert await h.foreign.head(P + "b.md") == _doc_of("other").doc_hash()
+        # 跳过链追溯到最初未达成的那条 move（c→a）
+        cause = _cause("c.md", "a.md")
+        assert [fields for _, fields in _skipped(h)] == [
+            {"kind": "move", "from_uri": P + "a.md", "to_uri": P + "b.md", "cause": cause},
+            {"kind": "document", "file_uri": P + "b.md", "cause": cause},
+        ]
 
 
 async def test_awaiting_move_is_retryable_when_the_target_document_failed(tmp_path: Path) -> None:

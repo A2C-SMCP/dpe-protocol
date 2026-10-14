@@ -269,7 +269,7 @@ dpe-run [--state-dir DIR] --delete instance.json   # 删除实例：注销登记
 python -m dpe_sdk.run ...                           # 等价入口
 ```
 
-- **同步一轮**：解析实例定义 → 取实例锁（取不到退出 4）→ 本地可判定的实例级校验（清单、配置 schema、`runner` 调优参数、remote 凭证引用、插件凭证与命令）→ 读实例状态 → 前缀登记（重叠检查先于任何网络请求）→ 写入内容身份指纹 → 取 remote 能力（401、不兼容为已登记实例的实例级失败）→ 按 §4.3 构造的环境启动插件并握手 → 跑一轮。stdout 恰好输出一行 §7.4 轮报告；stderr 输出 §7.5 NDJSON 日志（`item.failed` 的失败元素嵌套在 `failure` 里）；凭证值在报告与日志中一律脱敏。
+- **同步一轮**：解析实例定义 → 取实例锁（取不到退出 4）→ 本地可判定的实例级校验（清单、配置 schema、`runner` 调优参数、remote 凭证引用、插件凭证与命令）→ 读实例状态 → 前缀登记（重叠检查先于任何网络请求）→ 写入内容身份指纹 → 取 remote 能力（401、不兼容为已登记实例的实例级失败）→ 按 §4.3 构造的环境启动插件并握手 → 跑一轮。stdout 恰好输出一行 §7.4 轮报告；stderr 输出 §7.5 NDJSON 日志（`item.failed` 的失败元素嵌套在 `failure` 里；因 move 未达成而不发写的条目输出 `item.skipped`，带导致跳过的那条 move 作 `cause`，不计数，#197）；凭证值在报告与日志中一律脱敏。
   - 每次调用在 outcome 最终确定后输出恰好一条 `round.finished`，字段与报告一致（含实例级失败与 `instance_busy`）；轮标识自取得实例锁起生成，`plugin.started` 与启动期的 `plugin.stderr` 归入本轮，取锁之前与删除操作的事件 `round` 为 `null`。
   - 实例定义不合法时，报告与日志的实例信息逐个成员取值：只有缺失或不合法的成员（`id`、`uri_prefix`、`remote.url`）为 `null`，不合法的 `remote.url` 不回显。
   - 支持游标的插件在成功轮给出 `cursor: null` 时保留已缓存的游标（下一轮仍从它增量开始），本轮 `cursor_persisted` 为 `false`；不支持游标的插件不缓存游标。

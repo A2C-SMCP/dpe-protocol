@@ -24,12 +24,13 @@ remote 值作 ``expected_base`` 重提（文档已不存在即 ``if_absent`` 复
 本轮发出、尚未得到 ``moved`` 的 move 使其目标「未达成」（不从失败结果反推）；涉及未达成 URI 的
 写入（document、delete、以它为源或目标的 move）一律不发写、不另计失败——绝不借它们覆盖、删除或
 移走占用目标的文档；跳过的写入使它涉及的 URI 都未达成、永不解除，所以跳过总伴随一条未达成 move
-的失败，游标必然扣住。唯一的例外：目标上只有一条未达成的
-move，且它在判定期得出「源已不存在，目标未达成」（未发写）——这条 move 先不计失败，其后的目标
-document 以 ``if_absent`` 提交：目标由它建出（``created``）或已等于它（``achieved`` /
-``unchanged``）即按已达成计 ``moved``（波末以「确认不存在」清掉源可能残留的 L）；目标已被他人
-以别的内容建出则不覆盖、不重提，这条 move 计「目标已被占用」；否则轮末计失败——目标 document
-出现过失败或本轮中止时可重试。
+的失败，游标必然扣住。每条跳过输出 ``item.skipped``（§7.5，带根因 move，#197）。
+
+唯一的例外：目标上只有一条未达成的 move，且它在判定期得出「源已不存在，目标未达成」（未发写）。
+这条 move 先不计失败，其后的目标 document 以 ``if_absent`` 提交：目标由它建出（``created``）
+或已等于它（``achieved`` / ``unchanged``）即按已达成计 ``moved``（波末以「确认不存在」清掉源
+可能残留的 L）；目标已被他人以别的内容建出则不覆盖、不重提，这条 move 计「目标已被占用」；否则
+轮末计失败——目标 document 出现过失败或本轮中止时可重试。
 
 **远端失败分层**（§7.1）：
 - 401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级 ``remote_incompatible``；
@@ -284,6 +285,10 @@ def _cas_code(result: PushResult, fallback: str) -> str:
 # ---------------------------------------------------------------------- 落地波次
 
 
+#: 波内操作的种类，也是 ``item.skipped`` 的 ``kind``（§7.5）
+_SkipKind = Literal["document", "delete", "move"]
+
+
 @dataclass
 class _Wave:
     """一波 URI 两两不同的落地操作（按流中顺序收集）。"""
@@ -292,6 +297,8 @@ class _Wave:
     deletes: list[str] = field(default_factory=list)
     moves: list[tuple[str, str]] = field(default_factory=list)
     uris: set[str] = field(default_factory=set)
+    #: 各操作在流中的顺序：(种类, 涉及的 URI)，供 ``item.skipped`` 按流序输出（§7.5）
+    order: list[tuple[_SkipKind, dict[str, str]]] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return bool(self.uris)
@@ -382,6 +389,9 @@ class _Round:
         #: 其中判定期得出「源已不存在，目标未达成」的：to_uri → (失败, 涉及的 URI)。目标上只有
         #: 这一条未达成的 move 时，其后的目标 document 以 if_absent 提交，以它的结果下结论
         self.awaiting_target: dict[str, tuple[ItemFailure, dict[str, str | None]]] = {}
+        #: 未达成 URI → 使它未达成的那条发出过的 move（from_uri, to_uri）：跳过链一律追溯到它，
+        #: 作为 ``item.skipped`` 的 ``cause``（§7.5，#197）
+        self.unachieved_cause: dict[str, tuple[str, str]] = {}
 
     # -------------------------------------------------------------- 事件与失败
 
@@ -504,10 +514,13 @@ class _Round:
             wave.uris |= uris
             if isinstance(op, DeleteItem):
                 wave.deletes.append(op.file_uri)
+                wave.order.append(("delete", {"file_uri": op.file_uri}))
             elif isinstance(op, MoveItem):
                 wave.moves.append((op.from_uri, op.to_uri))
+                wave.order.append(("move", {"from_uri": op.from_uri, "to_uri": op.to_uri}))
             else:
                 wave.commits[op[1]] = op[2]
+                wave.order.append(("document", {"file_uri": op[1]}))
         if wave:
             await self.flush_wave(wave)
 
@@ -572,14 +585,17 @@ class _Round:
         guarded = {
             uri for uri in commits if self.open_moves[uri] == 1 and uri in self.awaiting_target
         }
-        skipped = {uri for uri in commits if uri not in guarded and self.open_moves[uri]}
-        skipped |= {uri for uri in deletes if self.open_moves[uri]}
-        for move in moves:
-            if self.open_moves[move[0]] or self.open_moves[move[1]]:
-                skipped |= set(move)
+        skipped: set[str] = set()
+        for kind, uris in wave.order:  # 按流序（§7.5）
+            if kind == "document" and uris["file_uri"] in guarded:
+                continue
+            if any(self.open_moves[uri] for uri in uris.values()):
+                skipped |= self.skip(kind, uris)
         commits = {uri: doc for uri, doc in commits.items() if uri not in skipped}
         deletes = [uri for uri in deletes if uri not in skipped]
         moves = [move for move in moves if move[0] not in skipped]
+        for move in moves:
+            self.mark_cause(move[1], move)
         self.open_moves.update([to_uri for _, to_uri in moves] + sorted(skipped))
         commit_base.update({uri: None for uri in guarded})
         while commits or deletes or moves:
@@ -642,6 +658,26 @@ class _Round:
                 await self.clear_absent_sources(sorted(set(cleared)))
             commits, deletes, moves = retry_commits, retry_deletes, retry_moves
             commit_base, delete_base, move_base = next_commit, next_delete, next_move
+
+    def mark_cause(self, uri: str, cause: tuple[str, str]) -> None:
+        """``uri`` 即将未达成：此刻它不是未达成时以 ``cause`` 为根因（此前达成过的旧根因作废），
+        已是未达成时保留最先的根因。"""
+        if not self.open_moves[uri]:
+            self.unachieved_cause[uri] = cause
+
+    def skip(self, kind: _SkipKind, uris: dict[str, str]) -> set[str]:
+        """一条涉及未达成 URI 的写入不发写（§7.2）：输出 ``item.skipped``（§7.5，#197），并让它
+        涉及的 URI 都追溯到同一条根因 move；返回这些 URI。跳过不是失败，不计数。"""
+        blocked = next(uri for uri in uris.values() if self.open_moves[uri])
+        cause = self.unachieved_cause[blocked]
+        for uri in uris.values():
+            self.mark_cause(uri, cause)
+        self.emit(
+            "item.skipped",
+            "warn",
+            {"kind": kind, **uris, "cause": {"from_uri": cause[0], "to_uri": cause[1]}},
+        )
+        return set(uris.values())
 
     def settle(
         self,
