@@ -40,6 +40,17 @@ fn manifest_with(schema: Value) -> Manifest {
     parse_manifest(&with_config_schema(schema)).expect("清单应有效")
 }
 
+/// 以移动构造 JSON 对象。`json!` 对插值表达式会经 `to_value` 把整棵子树递归复制一遍：逐层嵌套时
+/// 总量 O(n²)，深层时在 debug 默认测试线程栈上溢出（#166）。嵌套构造一律把子值 move 进来。
+fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
+    Value::Object(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
 fn code_of(data: &Value) -> &'static str {
     parse_manifest(data).expect_err("清单应不合法").code()
 }
@@ -329,7 +340,7 @@ fn chained_defs(n: usize, layers: usize) -> Value {
             json!({"type": "string", "pattern": "^a$"})
         };
         for _ in 0..layers {
-            node = json!({"allOf": [node]});
+            node = object([("allOf", Value::Array(vec![node]))]);
         }
         defs.insert(format!("d{i}"), node);
     }
@@ -368,14 +379,17 @@ fn manifest_json_depth_bound() {
     fn nested_properties(levels: usize) -> Value {
         let mut node = json!({"type": "object"});
         for _ in 0..levels {
-            node = json!({"type": "object", "properties": {"a": node}});
+            node = object([
+                ("type", json!("object")),
+                ("properties", object([("a", node)])),
+            ]);
         }
         node
     }
     fn nested_array(levels: usize) -> Value {
         let mut node = json!("x");
         for _ in 0..levels {
-            node = json!([node]);
+            node = Value::Array(vec![node]);
         }
         node
     }
@@ -388,22 +402,25 @@ fn manifest_json_depth_bound() {
     assert_eq!(1 + dpe_hash::nesting_depth(&over, None), 66);
     assert_eq!(code_of(&with_config_schema(over)), "manifest_invalid");
 
-    let ok_array = json!({"type": "object", "default": nested_array(62)});
+    let ok_array = object([("type", json!("object")), ("default", nested_array(62))]);
     assert_eq!(1 + dpe_hash::nesting_depth(&ok_array, None), 64);
     manifest_with(ok_array);
-    let over_array = json!({"type": "object", "default": nested_array(63)});
+    let over_array = object([("type", json!("object")), ("default", nested_array(63))]);
     assert_eq!(1 + dpe_hash::nesting_depth(&over_array, None), 65);
     assert_eq!(code_of(&with_config_schema(over_array)), "manifest_invalid");
 }
 
 #[test]
 fn deeply_nested_schema_and_config_are_classified() {
-    // 深度取 1000（远深于上界 64）：serde_json 对内存值（`Value`）的构造与析构是递归的，
-    // 深度需留在测试线程 2 MiB 栈的余量内；清单校验自身的 JSON 深度判定、越界数值扫描与
-    // 配置求值都是迭代/有界实现，不随输入深度递归。
+    // 1000 轮（2000 层，远深于上界 64）：清单校验自身的 JSON 深度判定、越界数值扫描与配置求值
+    // 都是迭代/有界实现，不随输入深度递归。构造用 move（见 `object`），不经 `json!` 插值复制；
+    // `Value` 的析构与 clone 仍是递归的，轮数须留在默认测试线程栈的余量内。
     let mut deep = json!({"type": "object"});
     for _ in 0..1000 {
-        deep = json!({"type": "object", "properties": {"a": deep}});
+        deep = object([
+            ("type", json!("object")),
+            ("properties", object([("a", deep)])),
+        ]);
     }
     assert_eq!(code_of(&with_config_schema(deep)), "manifest_invalid");
 
@@ -412,7 +429,7 @@ fn deeply_nested_schema_and_config_are_classified() {
     let manifest = manifest_with(json!({"type": "object"}));
     let mut config = json!({});
     for _ in 0..1000 {
-        config = json!({"a": config});
+        config = object([("a", config)]);
     }
     validate_config(&manifest, &config).unwrap();
 }
