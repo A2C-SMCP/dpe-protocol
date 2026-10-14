@@ -6,6 +6,7 @@
       "crates/dpe-hash/tests/remote_url.rs",
       "crates/dpe-sdk/tests/remote_url_vectors.rs"
     ],
+    "retry_after": ["crates/dpe-hash/tests/retry_after.rs"],
     "nesting_depth": [
       "crates/dpe-hash/tests/nesting_depth.rs",
       "crates/dpe-sdk/tests/nesting_depth.rs"

@@ -112,6 +112,8 @@ _DECIMAL = re.compile(r"[0-9]+")
 #: 十进制数值的上限：字节数与条数都按有符号 64 位表示，超出即不是可表示的值（也避开 int()
 #: 对超长十进制串的位数上限，它会抛 ValueError 而不是协议错误）
 _DECIMAL_MAX = 2**63 - 1
+#: 无限期不可用时的 Retry-After（HTTP 绑定 §5：足够大的 delay-seconds，不得用 1 表达无限期）
+_RETRY_AFTER_INDEFINITE = 86400
 
 #: path 中无需百分号编码的字符（RFC 3986 §3.3 的 pchar 去掉 pct-encoded，加上 "/"）
 _PATH_SAFE = "/:@!$&'()*+,;=-._~"
@@ -982,7 +984,12 @@ def _problem(
         headers.append((UPLOAD_OFFSET_HEADER, str(exc.offset)))
     if status in (429, 503):
         delay = exc.retry_after
-        seconds = 1 if delay is None or not math.isfinite(delay) else max(0, math.ceil(delay))
+        if delay is None:
+            seconds = 1  # 预期很快恢复、但给不出具体时间（§5）
+        elif not math.isfinite(delay):
+            seconds = _RETRY_AFTER_INDEFINITE
+        else:
+            seconds = max(0, math.ceil(delay))
         headers.append(("Retry-After", str(seconds)))
     return _Response(status, headers, _dumps(problem))
 

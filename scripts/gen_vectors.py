@@ -610,6 +610,158 @@ def check_remote_url(url: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Retry-After 的解析（http.md §5，RFC 9110 §10.2.3 / §5.6.7）：只用整数日历运算
+# ---------------------------------------------------------------------------
+
+_DIGITS = frozenset("0123456789")
+_DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_DAY_NAMES_LONG = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_MONTHS = {
+    name: i + 1
+    for i, name in enumerate(
+        ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    )
+}
+
+
+def _days_from_civil(year: int, month: int, day: int) -> int:
+    """公历日期 → 距 1970-01-01 的天数（Howard Hinnant 的 days_from_civil）。"""
+    year -= month <= 2
+    era = year // 400  # Python 的 // 向下取整，无须 C++ 写法里的 year - 399 修正
+    yoe = year - era * 400
+    doy = (153 * (month + (-3 if month > 2 else 9)) + 2) // 5 + day - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+
+
+def _days_in_month(year: int, month: int) -> int:
+    if month == 2:
+        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+        return 29 if leap else 28
+    return 30 if month in (4, 6, 9, 11) else 31
+
+
+def _fixed_digits(text: str, width: int) -> int | None:
+    if len(text) != width or not all(ch in _DIGITS for ch in text):
+        return None
+    return int(text)
+
+
+def _time_of_day(text: str) -> tuple[int, int, int] | None:
+    parts = text.split(":")
+    if len(parts) != 3:
+        return None
+    hour, minute, second = (_fixed_digits(part, 2) for part in parts)
+    if hour is None or minute is None or second is None:
+        return None
+    if hour > 23 or minute > 59 or second > 60:
+        return None
+    return hour, minute, second
+
+
+def _instant(year: int, month: int, day: int, time: tuple[int, int, int]) -> int | None:
+    if not 1 <= day <= _days_in_month(year, month):
+        return None
+    hour, minute, second = time
+    return _days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second
+
+
+def _imf_fixdate(text: str) -> int | None:
+    parts = text.split(" ")
+    if len(parts) != 6 or parts[5] != "GMT" or not parts[0].endswith(","):
+        return None
+    weekday, day, month, year, time = parts[0][:-1], parts[1], parts[2], parts[3], parts[4]
+    d, y, t = _fixed_digits(day, 2), _fixed_digits(year, 4), _time_of_day(time)
+    if weekday not in _DAY_NAMES or month not in _MONTHS or d is None or y is None or t is None:
+        return None
+    return _instant(y, _MONTHS[month], d, t)
+
+
+def _rfc850_year(year2: int, now: int, month: int, day: int, time: tuple[int, int, int]) -> int:
+    """50 年规则：末两位为 year2、且时刻不晚于「now 加 50 年」（逐字段比较）的最晚年份。"""
+    days, seconds = divmod(now, 86400)
+    # 由天数反推日期：在候选年份附近线性查找即可（参考实现求简明，不求快）
+    now_year = 1970 + days // 366
+    while _days_from_civil(now_year + 1, 1, 1) <= days:
+        now_year += 1
+    while _days_from_civil(now_year, 1, 1) > days:
+        now_year -= 1
+    now_month = 1
+    while now_month < 12 and _days_from_civil(now_year, now_month + 1, 1) <= days:
+        now_month += 1
+    now_day = days - _days_from_civil(now_year, now_month, 1) + 1
+    now_time = (seconds // 3600, seconds % 3600 // 60, seconds % 60)
+    limit = (now_year + 50, now_month, now_day, now_time)
+
+    def within(year: int) -> bool:
+        return (year, month, day, time) <= limit
+
+    year = (now_year + 50) // 100 * 100 + year2
+    while not within(year):
+        year -= 100
+    return year
+
+
+def _rfc850_date(text: str, now: int) -> int | None:
+    parts = text.split(" ")
+    if len(parts) != 4 or parts[3] != "GMT" or not parts[0].endswith(","):
+        return None
+    if parts[0][:-1] not in _DAY_NAMES_LONG:
+        return None
+    date = parts[1].split("-")
+    if len(date) != 3:
+        return None
+    d, y2, t = _fixed_digits(date[0], 2), _fixed_digits(date[2], 2), _time_of_day(parts[2])
+    if date[1] not in _MONTHS or d is None or y2 is None or t is None:
+        return None
+    month = _MONTHS[date[1]]
+    return _instant(_rfc850_year(y2, now, month, d, t), month, d, t)
+
+
+def _asctime_date(text: str) -> int | None:
+    parts = text.split(" ")
+    if len(parts) == 5:
+        weekday, month, day_text, time, year = parts
+        d = _fixed_digits(day_text, 2)
+    elif len(parts) == 6 and parts[2] == "":
+        weekday, month, _, day_text, time, year = parts
+        d = _fixed_digits(day_text, 1)
+    else:
+        return None
+    y, t = _fixed_digits(year, 4), _time_of_day(time)
+    if weekday not in _DAY_NAMES or month not in _MONTHS or d is None or y is None or t is None:
+        return None
+    return _instant(y, _MONTHS[month], d, t)
+
+
+def retry_after_seconds(value: str, now: int) -> float | None:
+    """http.md §5 的 Retry-After 解析：等待秒数；不合文法为 None，无法表示的 delay-seconds 为 inf。"""
+    text = value.strip(" \t")
+    if text and all(ch in _DIGITS for ch in text):
+        try:
+            return float(int(text))
+        except (ValueError, OverflowError):  # 超过 int 位数上限 / float 溢出
+            return math.inf
+    when = _imf_fixdate(text)
+    if when is None:
+        when = _rfc850_date(text, now)
+    if when is None:
+        when = _asctime_date(text)
+    if when is None:
+        return None
+    return float(max(0, when - now))
+
+
+def _rfc3339_seconds(text: str) -> int:
+    """向量里的时刻（``YYYY-MM-DDTHH:MM:SSZ``）→ Unix 秒；只为生成向量，不是被测实现。"""
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z", text)
+    if match is None:
+        raise AssertionError(f"向量时刻不是 RFC 3339 UTC：{text!r}")
+    y, mo, d, h, mi, sec = (int(g) for g in match.groups())
+    return _days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + sec
+
+
+# ---------------------------------------------------------------------------
 # 三层对象（线上原像）的规范化
 # ---------------------------------------------------------------------------
 
@@ -3724,6 +3876,139 @@ def remote_url_vector() -> dict[str, Any]:
     }
 
 
+# Retry-After 的解析（http.md §5，Issue #109）：期望值手写，生成器用参考实现交叉核对。
+# expect：秒数（int）、None（视同没有提示）、"infinity"，或 ("at", RFC 3339 时刻)——由时刻减 now 得秒数
+_NOW = "2026-10-08T12:00:00Z"  # 星期四
+RETRY_AFTER_CASES: tuple[tuple[str, str, Any], ...] = (
+    # delay-seconds
+    ("120", _NOW, 120),
+    ("0", _NOW, 0),
+    ("0005", _NOW, 5),
+    (" 120\t", _NOW, 120),  # 首尾 OWS（SP / HTAB）
+    ("\t120", _NOW, 120),
+    ("99999999999999999999", _NOW, 99999999999999999999),
+    ("1" + "0" * 400, _NOW, "infinity"),  # 合法但无法表示：仍是「等很久」
+    ("9" * 5000, _NOW, "infinity"),
+    ("", _NOW, None),
+    ("  ", _NOW, None),
+    ("-5", _NOW, None),
+    ("+5", _NOW, None),
+    ("1.5", _NOW, None),
+    ("1e3", _NOW, None),
+    ("12 0", _NOW, None),
+    ("1_0", _NOW, None),
+    ("٨", _NOW, None),  # 非 ASCII 数字
+    (" 120", _NOW, None),  # NBSP 不是 OWS
+    ("\u000b120", _NOW, None),  # VT 不是 OWS
+    ("120\r", _NOW, None),
+    # IMF-fixdate
+    ("Thu, 08 Oct 2026 12:00:30 GMT", _NOW, 30),
+    ("Fri, 09 Oct 2026 12:00:00 GMT", _NOW, 86400),
+    ("Mon, 08 Oct 2026 12:00:30 GMT", _NOW, 30),  # 星期名不与日期核对
+    ("Thu, 08 Oct 2026 12:00:00 GMT", _NOW, 0),
+    ("Wed, 08 Oct 2025 12:00:00 GMT", _NOW, 0),  # 已过去
+    ("Tue, 29 Feb 2028 12:00:00 GMT", _NOW, ("at", "2028-02-29T12:00:00Z")),
+    ("Thu, 08 Oct 2026 12:00:60 GMT", _NOW, 60),  # 闰秒
+    (" Thu, 08 Oct 2026 12:00:30 GMT ", _NOW, 30),
+    ("thu, 08 Oct 2026 12:00:30 GMT", _NOW, None),  # 区分大小写
+    ("Thu, 08 oct 2026 12:00:30 GMT", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30 gmt", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30 UTC", _NOW, None),  # 时区只认 GMT
+    ("Thu, 08 Oct 2026 12:00:30 +0000", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30 EST", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30", _NOW, None),
+    ("Thu,  08 Oct 2026 12:00:30 GMT", _NOW, None),  # SP 个数是文法的一部分
+    ("Thu, 8 Oct 2026 12:00:30 GMT", _NOW, None),
+    ("Thu 08 Oct 2026 12:00:30 GMT", _NOW, None),
+    ("Thursday, 08 Oct 2026 12:00:30 GMT", _NOW, None),
+    ("Thu, 08 Oct 26 12:00:30 GMT", _NOW, None),
+    ("Thu, 31 Nov 2026 12:00:00 GMT", _NOW, None),  # 日期不存在
+    ("Mon, 29 Feb 2027 12:00:00 GMT", _NOW, None),
+    ("Thu, 08 Oct 2026 24:00:00 GMT", _NOW, None),
+    ("Thu, 08 Oct 2026 12:60:00 GMT", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:61 GMT", _NOW, None),
+    ("Thu, 08 Oct 2026 12:0:30 GMT", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30.5 GMT", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30 GMT\r", _NOW, None),
+    # rfc850-date
+    ("Thursday, 08-Oct-26 12:00:30 GMT", _NOW, 30),
+    ("Thursday, 08-Oct-76 12:00:00 GMT", _NOW, ("at", "2076-10-08T12:00:00Z")),  # 恰好 50 年
+    ("Thursday, 08-Oct-76 12:00:01 GMT", _NOW, 0),  # 多 1 秒即读作 1976
+    ("Friday, 09-Oct-76 12:00:00 GMT", _NOW, 0),
+    ("Wednesday, 07-Oct-76 12:00:00 GMT", _NOW, ("at", "2076-10-07T12:00:00Z")),
+    ("Thursday, 08-Oct-75 12:00:00 GMT", _NOW, ("at", "2075-10-08T12:00:00Z")),
+    ("Thursday, 08-Oct-77 12:00:00 GMT", _NOW, 0),
+    ("Saturday, 01-Jan-00 00:00:00 GMT", "1999-12-31T23:59:59Z", 1),  # 世纪交替：00 读作 2000
+    ("Monday, 01-Jan-01 00:00:00 GMT", "2090-01-01T00:00:00Z", ("at", "2101-01-01T00:00:00Z")),
+    ("Thu, 08-Oct-26 12:00:30 GMT", _NOW, None),  # rfc850 用完整星期名
+    ("thursday, 08-Oct-26 12:00:30 GMT", _NOW, None),
+    ("Thursday, 08-oct-26 12:00:30 GMT", _NOW, None),
+    ("Thursday, 8-Oct-26 12:00:30 GMT", _NOW, None),
+    ("Thursday, 08-Oct-2026 12:00:30 GMT", _NOW, None),
+    ("Thursday, 08 Oct 26 12:00:30 GMT", _NOW, None),
+    ("Thursday, 08-Oct-26 12:00:30 UTC", _NOW, None),
+    ("Thursday, 31-Sep-26 12:00:00 GMT", _NOW, None),
+    # asctime-date
+    ("Thu Oct  8 12:00:30 2026", _NOW, 30),
+    ("Thu Oct 08 12:00:30 2026", _NOW, 30),
+    ("  Thu Oct  8 12:00:30 2026", _NOW, 30),  # 首部 OWS 先去掉，不影响日前的双 SP
+    ("Thu Oct 8 12:00:30 2026", _NOW, None),
+    ("Thu Oct   8 12:00:30 2026", _NOW, None),
+    ("Thu Oct  08 12:00:30 2026", _NOW, None),
+    ("Thursday Oct  8 12:00:30 2026", _NOW, None),
+    ("Thu, Oct  8 12:00:30 2026", _NOW, None),
+    ("Thu Oct  8 12:00:30 2026 GMT", _NOW, None),
+    ("Thu oct  8 12:00:30 2026", _NOW, None),
+    ("Sat Feb 29 12:00:00 2027", _NOW, None),
+    ("Tuesday, 29-Feb-00 00:00:00 GMT", "2060-01-01T00:00:00Z", None),  # 选出 2100，无 2 月 29 日
+    ("Tuesday, 01-Jan-70 00:00:10 GMT", "1969-12-31T23:59:59Z", 11),  # 纪元前的 now
+    ("Thursday, 01-Jan-70 00:00:00 GMT", "1900-03-01T00:00:00Z", 0),  # 读作 1870，已过去
+    ("Saturday, 01-Jan-10 00:00:00 GMT", "1900-03-01T00:00:00Z", ("at", "1910-01-01T00:00:00Z")),
+    # 其他
+    ("Thu,\t08 Oct 2026 12:00:30 GMT", _NOW, None),  # 日期内部只认 SP
+    ("Thu Oct  8 12:00:30  2026", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30 GMT extra", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00:30 GMT,", _NOW, None),
+    ("Thu, 08 Oct 2026 12:00 GMT", _NOW, None),
+    ("Thu, 08 October 2026 12:00:30 GMT", _NOW, None),
+    ("GMT", _NOW, None),
+    ("tomorrow", _NOW, None),
+    ("2026-10-08T12:00:30Z", _NOW, None),  # RFC 3339 不是 HTTP-date
+)
+
+
+def retry_after_vector() -> dict[str, Any]:
+    """构建 retry_after 向量；每条用参考实现核对手写期望，不一致即失败。"""
+    cases: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for value, now, expect in RETRY_AFTER_CASES:
+        if (value, now) in seen:
+            raise AssertionError(f"retry_after: 用例重复 {value!r} @ {now}")
+        seen.add((value, now))
+        now_seconds = _rfc3339_seconds(now)
+        if isinstance(expect, tuple):
+            expect = _rfc3339_seconds(expect[1]) - now_seconds
+            assert expect > 0, value
+        got = retry_after_seconds(value, now_seconds)
+        if expect == "infinity":
+            ok = got == math.inf
+        elif expect is None:
+            ok = got is None
+        else:
+            ok = got == float(expect)
+        if not ok:
+            raise AssertionError(f"retry_after {value!r} @ {now}: 期望 {expect!r}，实得 {got!r}")
+        cases.append({"input": value, "now": now, "seconds": expect})
+    return {
+        "name": "retry_after",
+        "kind": "retry_after",
+        "spec": "spec/bindings/http.md",
+        "section": "§5",
+        "description": "HTTP 绑定 §5：Retry-After 按 RFC 9110 §10.2.3 / §5.6.7 的文法解析——seconds 为等待秒数，null 为视同没有提示，\"infinity\" 为合法但无法表示的 delay-seconds",
+        "cases": cases,
+    }
+
+
 def build_files() -> dict[str, str]:
     """返回 {相对路径: 文件内容}，内容确定性。"""
     files: dict[str, str] = {}
@@ -3832,6 +4117,7 @@ def build_files() -> dict[str, str]:
     files["config_schema_patterns.json"] = dump_json(pattern_vector())
     files["nesting_depth.json"] = dump_json(depth_vector())
     files["remote_url.json"] = dump_json(remote_url_vector())
+    files["retry_after.json"] = dump_json(retry_after_vector())
 
     manifest = {
         "contract": "dpe1",
@@ -3843,7 +4129,7 @@ def build_files() -> dict[str, str]:
         },
         "provenance": {
             "generator": "scripts/gen_vectors.py",
-            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpex 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1",
+            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpex 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1，retry_after 的规范依据是 HTTP 绑定 §5",
         },
         "files": [
             {

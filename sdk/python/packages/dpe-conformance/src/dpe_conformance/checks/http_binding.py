@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -390,15 +389,9 @@ def test_code_status_precondition_required(
 
 
 def _assert_retry_after_syntax(value: str) -> None:
-    """``Retry-After`` 的语法（RFC 9110 §10.2.3，与 #109 对齐）：``delay-seconds``（1*DIGIT）
-    或 HTTP-date；语义（等待时长、取整方式）不在规范内，不在这里断言。"""
-    if value.isascii() and value.isdigit():
-        return
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        when = None
-    assert when is not None, (
+    """``Retry-After`` 的语法（HTTP 绑定 §5，RFC 9110 §10.2.3）：按 SDK 同一判定
+    （``dpe_hash.retry_after_seconds``）能解析出提示；等待时长与取整方式不在这里断言。"""
+    assert dpe_hash.retry_after_seconds(value) is not None, (
         f"Retry-After 既不是 delay-seconds 也不是 HTTP-date（RFC 9110 §10.2.3）：{value!r}"
     )
 

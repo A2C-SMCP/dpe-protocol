@@ -60,16 +60,16 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any, BinaryIO, TypeAlias, TypeVar, cast
 from urllib.parse import quote
 
 import dpe_hash
-from dpe_hash import DpeHashError
+
+# Retry-After 的解析（HTTP 绑定 §5）在 dpe-hash，与跑分器共用；此处重新导出，公开路径不变
+from dpe_hash import DpeHashError, retry_after_seconds
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
@@ -349,32 +349,6 @@ async def adrive(op: Operation[_T], send: Callable[[Request], Awaitable[Response
         return cast(_T, stop.value)
     finally:
         op.close()
-
-
-def retry_after_seconds(value: str | None, *, now: datetime | None = None) -> float | None:
-    """``Retry-After`` 头（RFC 9110 §10.2.3）换算成秒：delta-seconds 或 HTTP-date（相对 ``now``，
-    缺省为当前 UTC 时间，已过去的时刻为 0）；缺省或无法解析时为 ``None``。合法但大到无法表示的
-    秒数为 ``math.inf``：它仍是「等待很久」的提示，不能退化成「没有提示」。"""
-    if value is None:
-        return None
-    text = value.strip()
-    if text.isascii() and text.isdigit():
-        # 超长数字串：int() 超出位数上限抛 ValueError，float() 溢出抛 OverflowError
-        try:
-            return float(int(text))
-        except (ValueError, OverflowError):
-            return math.inf
-    try:
-        when = parsedate_to_datetime(text)
-    except (TypeError, ValueError):
-        return None
-    now = now or datetime.now(UTC)
-    # 不带时区的时刻一律按 UTC 理解（HTTP-date 本身就是 GMT）
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=UTC)
-    return max(0.0, (when - now).total_seconds())
 
 
 def _query(**params: str | None) -> str:
