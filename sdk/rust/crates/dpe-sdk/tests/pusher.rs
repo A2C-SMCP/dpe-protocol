@@ -16,8 +16,8 @@
 mod http_common;
 mod protocol_common;
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -88,6 +88,18 @@ struct Fake {
     peak: AtomicUsize,
     /// capabilities 的 `max_payload_bytes`（缺省大，走快路径）。
     max_payload_bytes: Mutex<u64>,
+    /// 读被拒的 URI（#145）：含其中任一 URI 的批量读整体 403，单篇读该 URI 同样 403。
+    denied_reads: Mutex<HashSet<String>>,
+    /// 一切批量读都 403（拒绝与具体 URI 无关，#145）。
+    reject_all_batches: AtomicBool,
+    /// 单篇读得到 400 `DPE_VALIDATION` 的 URI（与 `denied_reads` 的 403 区分来源，#145）。
+    invalid_reads: Mutex<HashSet<String>>,
+    /// 批量读的覆盖应答（#145）。
+    batch_override: Mutex<Option<Reply>>,
+    /// 单篇读的处理延迟与并发计数（定位的并发上限，#145）。
+    head_delay: Mutex<Option<Duration>>,
+    head_in_flight: AtomicUsize,
+    head_peak: AtomicUsize,
 }
 
 impl Fake {
@@ -142,6 +154,20 @@ impl Fake {
             }
             ("POST", "/heads") => {
                 let uris = body_json(request)["uris"].clone();
+                if let Some(reply) = self.batch_override.lock().unwrap().clone() {
+                    return reply;
+                }
+                let mut denied = self.denied_reads.lock().unwrap().clone();
+                denied.extend(self.invalid_reads.lock().unwrap().iter().cloned());
+                let rejected = self.reject_all_batches.load(Ordering::SeqCst)
+                    || uris.as_array().is_some_and(|list| {
+                        list.iter()
+                            .any(|uri| denied.contains(uri.as_str().unwrap_or("")))
+                    });
+                drop(denied);
+                if rejected {
+                    return problem("DPE_FORBIDDEN", 403);
+                }
                 let heads: Vec<Option<String>> = uris
                     .as_array()
                     .expect("heads 请求体带 uris")
@@ -151,8 +177,28 @@ impl Fake {
                 return heads_reply(&heads);
             }
             ("HEAD", "/documents") => {
+                let now = self.head_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                self.head_peak.fetch_max(now, Ordering::SeqCst);
+                if let Some(delay) = *self.head_delay.lock().unwrap() {
+                    std::thread::sleep(delay);
+                }
+                self.head_in_flight.fetch_sub(1, Ordering::SeqCst);
                 if let Some(reply) = self.head_override.lock().unwrap().clone() {
                     return reply;
+                }
+                if self.invalid_reads.lock().unwrap().contains(&uri) {
+                    return Reply::Response {
+                        status: 400,
+                        headers: vec![("DPE-Error-Code".to_owned(), "DPE_VALIDATION".to_owned())],
+                        body: Vec::new(),
+                    };
+                }
+                if self.denied_reads.lock().unwrap().contains(&uri) {
+                    return Reply::Response {
+                        status: 403,
+                        headers: vec![("DPE-Error-Code".to_owned(), "DPE_FORBIDDEN".to_owned())],
+                        body: Vec::new(),
+                    };
                 }
                 return match self.get(&uri) {
                     Some(value) => Reply::Response {
@@ -2594,4 +2640,322 @@ async fn parity_scenario_runs_commit_delete_and_move_end_to_end() {
         ]
     );
     assert_eq!(state(&store, &server), StateSnapshot::default());
+}
+
+// ---------------------------------------------------------------------- 批量读被拒的逐条定位（#145）
+
+const SECRET: &str = "dpe://secret/b.md";
+
+fn deny(fake: &Fake, uris: &[&str]) {
+    let mut denied = fake.denied_reads.lock().unwrap();
+    denied.extend(uris.iter().map(|uri| (*uri).to_owned()));
+}
+
+#[tokio::test]
+async fn batch_read_rejection_fails_only_the_offending_entry() {
+    let logs = captured_logs();
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    deny(&fake, &[SECRET]);
+    fake.script(Route::Commit(A.into()), vec![created(A, &text("A"))]);
+    fake.script(Route::Commit(B.into()), vec![created(B, &text("B"))]);
+
+    let results = pusher(&client, &store)
+        .push(
+            &docs(&[(A, &text("A")), (SECRET, &text("S")), (B, &text("B"))]),
+            &none(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        statuses(&results),
+        [PushStatus::Created, PushStatus::Failed, PushStatus::Created]
+    );
+    assert_eq!(results[1].file_uri, SECRET);
+    assert_eq!(
+        results[1].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_FORBIDDEN")
+    );
+    assert_eq!((results[1].side, results[1].unknown), (None, false));
+    assert_eq!(count(&server, "POST", "/heads"), 1);
+    assert_eq!(count(&server, "HEAD", "/documents"), 3);
+    assert!(logs
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(level, message)| *level == log::Level::Warn
+            && message.contains("DPE_FORBIDDEN")
+            && message.contains("3 个 URI 中 1 个读被拒")));
+    let snapshot = state(&store, &server);
+    assert_eq!(
+        snapshot.synced.keys().cloned().collect::<Vec<_>>(),
+        [A.to_owned(), B.to_owned()]
+    );
+    assert_eq!(snapshot.intents, BTreeMap::new());
+}
+
+/// 测试用的日志后端：收下 target `dpe_sdk::pusher` 的记录（`log` 只能设一次后端，进程内共享）。
+struct Capture(Mutex<Vec<(log::Level, String)>>);
+
+impl log::Log for Capture {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.target() == "dpe_sdk::pusher"
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if self.enabled(record.metadata()) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((record.level(), record.args().to_string()));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static CAPTURE: Capture = Capture(Mutex::new(Vec::new()));
+
+fn captured_logs() -> &'static Capture {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        log::set_logger(&CAPTURE).expect("测试进程内只设一次日志后端");
+        log::set_max_level(log::LevelFilter::Warn);
+    });
+    &CAPTURE
+}
+
+#[tokio::test]
+async fn batch_rejection_with_every_single_read_passing_still_writes() {
+    let logs = captured_logs();
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    fake.reject_all_batches.store(true, Ordering::SeqCst);
+    const C: &str = "dpe://docs/c.md";
+    for (uri, body) in [(A, "A"), (B, "B"), (C, "C")] {
+        fake.script(Route::Commit(uri.into()), vec![created(uri, &text(body))]);
+    }
+
+    let results = pusher(&client, &store)
+        .push(
+            &docs(&[(A, &text("A")), (B, &text("B")), (C, &text("C"))]),
+            &none(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // 拒绝与具体 URI 无关：按逐条读到的值照常写入（connector §7.1）
+    assert_eq!(
+        statuses(&results),
+        [
+            PushStatus::Created,
+            PushStatus::Created,
+            PushStatus::Created
+        ]
+    );
+    assert_eq!(fake.write_count.load(Ordering::SeqCst), 3);
+    // 批量读被拒不被吞掉：一条 warn，带原错误码与计数（并行用例可能也写了日志，按内容找）
+    let records = logs.0.lock().unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|(level, message)| *level == log::Level::Warn
+                && message.contains("DPE_FORBIDDEN")
+                && message.contains("3 个 URI 中 0 个读被拒")),
+        "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn network_failure_while_locating_fails_the_whole_batch() {
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    deny(&fake, &[SECRET]);
+    *fake.head_override.lock().unwrap() = Some(Reply::Close);
+
+    let error = pusher(&client, &store)
+        .push(
+            &docs(&[(A, &text("A")), (SECRET, &text("S"))]),
+            &none(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.code().is_none(), "{error}");
+    assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
+    assert_eq!(state(&store, &server).intents, BTreeMap::new());
+}
+
+#[tokio::test]
+async fn delete_and_move_read_rejection_is_located() {
+    const D1: &str = "dpe://docs/d1.md";
+    const D2: &str = "dpe://docs/d2.md";
+    const M1: &str = "dpe://docs/m1.md";
+    const M2: &str = "dpe://docs/m2.md";
+    const N2: &str = "dpe://docs/n2.md";
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    for uri in [D1, D2, M1, M2] {
+        fake.set(uri, Some(doc_hash(&text(uri))));
+    }
+    deny(&fake, &[D2, SECRET]);
+    fake.script(
+        Route::Delete(D1.into()),
+        vec![reply_then(Reply::new(204, ""), D1, None)],
+    );
+    fake.script(
+        Route::Move(M2.into()),
+        vec![move_ok(M2, N2, &doc_hash(&text(M2)))],
+    );
+    let mut pusher = pusher(&client, &store);
+
+    let deleted = pusher
+        .delete(&[D1.to_owned(), D2.to_owned()], &none())
+        .await
+        .unwrap();
+    assert_eq!(
+        statuses(&deleted),
+        [PushStatus::Deleted, PushStatus::Failed]
+    );
+    assert_eq!(
+        deleted[1].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_FORBIDDEN")
+    );
+
+    let moved = pusher
+        .move_documents(&moves(&[(M1, SECRET), (M2, N2)]), &none())
+        .await
+        .unwrap();
+    assert_eq!(statuses(&moved), [PushStatus::Failed, PushStatus::Moved]);
+    assert_eq!(moved[0].to_uri.as_deref(), Some(SECRET));
+    assert_eq!(moved[0].side, None);
+    assert_eq!(
+        moved[0].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_FORBIDDEN")
+    );
+}
+
+#[tokio::test]
+async fn locating_respects_the_concurrency_limit() {
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    deny(&fake, &[SECRET]);
+    *fake.head_delay.lock().unwrap() = Some(Duration::from_millis(20));
+    let uris: Vec<String> = (0..7).map(|i| format!("dpe://docs/{i}.md")).collect();
+    let mut documents: Vec<(String, ExpandedDocument)> =
+        uris.iter().map(|uri| (uri.clone(), text(uri))).collect();
+    documents.push((SECRET.to_owned(), text("S")));
+    for uri in &uris {
+        fake.script(Route::Commit(uri.clone()), vec![created(uri, &text(uri))]);
+    }
+
+    let results = StatefulPusher::with_store(&client, Arc::clone(&store) as Arc<dyn StateStore>, 2)
+        .unwrap()
+        .push(&documents, &none(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| r.status == PushStatus::Failed)
+            .count(),
+        1
+    );
+    assert_eq!(count(&server, "HEAD", "/documents"), 8);
+    let peak = fake.head_peak.load(Ordering::SeqCst);
+    assert_eq!(peak, 2, "峰值并发应恰为 concurrency");
+}
+
+#[tokio::test]
+async fn round_level_failures_while_locating_fail_the_whole_batch() {
+    for (reply, expected_code) in [
+        (
+            Reply::Response {
+                status: 503,
+                headers: vec![
+                    ("DPE-Error-Code".to_owned(), "DPE_UNAVAILABLE".to_owned()),
+                    ("Retry-After".to_owned(), "0".to_owned()),
+                ],
+                body: Vec::new(),
+            },
+            Some("DPE_UNAVAILABLE"),
+        ),
+        (Reply::new(502, "bad gateway"), None),
+    ] {
+        let fake = Fake::new();
+        let server = fake.server();
+        let client = client(&server);
+        let store = Arc::new(MemoryStateStore::new());
+        deny(&fake, &[SECRET]);
+        *fake.head_override.lock().unwrap() = Some(reply);
+
+        let error = pusher(&client, &store)
+            .push(
+                &docs(&[(A, &text("A")), (SECRET, &text("S"))]),
+                &none(),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), expected_code, "{error}");
+        assert_eq!(fake.write_count.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn contract_rejection_is_not_located() {
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    *fake.batch_override.lock().unwrap() = Some(problem("DPE_CONTRACT_UNSUPPORTED", 400));
+
+    let error = pusher(&client, &store)
+        .push(&docs(&[(A, &text("A")), (B, &text("B"))]), &none(), None)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::ContractUnsupported);
+    assert_eq!(count(&server, "HEAD", "/documents"), 0);
+}
+
+#[tokio::test]
+async fn move_with_both_sides_denied_reports_the_source_error() {
+    const TARGET: &str = "dpe://secret/t.md";
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    fake.set(SECRET, Some(doc_hash(&text("S"))));
+    deny(&fake, &[SECRET]);
+    fake.invalid_reads.lock().unwrap().insert(TARGET.to_owned());
+
+    let moved = pusher(&client, &store)
+        .move_documents(&moves(&[(SECRET, TARGET), (A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(moved[0].status, PushStatus::Failed);
+    // 源侧 403，而不是目标侧的 400
+    assert_eq!(
+        moved[0].error.as_ref().and_then(|error| error.code()),
+        Some("DPE_FORBIDDEN")
+    );
 }
