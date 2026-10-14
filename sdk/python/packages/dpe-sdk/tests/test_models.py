@@ -297,12 +297,12 @@ def test_embedded_in_other_model_wraps_error() -> None:
 
 
 def test_wire_contract_from_context() -> None:
-    child = "dpe2:" + "0" * 64
+    child = "dpex:" + "0" * 64
     with pytest.raises(DpeHashError) as info:
         PageObject.model_validate({"elements": [child]})
     assert info.value.code == "DPE_CONTRACT_UNSUPPORTED"
-    page = PageObject.model_validate({"elements": [child]}, context={"contract": "dpe2"})
-    assert page.page_hash("dpe2").startswith("dpe2:")
+    page = PageObject.model_validate({"elements": [child]}, context={"contract": "dpex"})
+    assert page.page_hash("dpex").startswith("dpex:")
 
 
 def test_model_copy_update_revalidated() -> None:

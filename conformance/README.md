@@ -55,12 +55,12 @@
 
 ## 契约升级期
 
-- 服务端同时声明 dpe1 与 dpe2 时，以 `DPE-Hash-Contract: dpe1` 调用 `batch_head` 得到 dpe1 值，未变文档与本地值相等（不触发重推）；以 dpe2 调用得到 dpe2 值；两种前缀的 `If-Match` 都能匹配当前内容；`documents` 路径的响应带 `Vary: DPE-Hash-Contract`（`heads` 不带，HTTP §3.1）。
+- 服务端同时声明 dpe1 与 dpex 时，以 `DPE-Hash-Contract: dpe1` 调用 `batch_head` 得到 dpe1 值，未变文档与本地值相等（不触发重推）；以 dpex 调用得到 dpex 值；两种前缀的 `If-Match` 都能匹配当前内容；`documents` 路径的响应带 `Vary: DPE-Hash-Contract`（`heads` 不带，HTTP §3.1）。
 - 读接口按请求契约给值：`list` 各条目的 `doc_hash`；`head` 与 `get_skeleton` 的 `DPE-Doc-Hash`、`ETag`、体内 `doc_hash` 以及骨架中的页 hash 与元素 hash 都按 `DPE-Hash-Contract` 给出。
-- 写入同理：以 dpe2 声明、请求体按 dpe2 计算的 commit，带 dpe1 的 `If-Match` 得 `updated`，回报按 dpe2 给值；提交与当前相同的内容得 `unchanged`，回报同样按请求契约。
-- GET 的 `If-None-Match` 只与请求契约下的当前值比较：以 dpe1 声明、写当前内容的 dpe2 值不命中（200，不是 304，HTTP §3.3）。
+- 写入同理：以 dpex 声明、请求体按 dpex 计算的 commit，带 dpe1 的 `If-Match` 得 `updated`，回报按 dpex 给值；提交与当前相同的内容得 `unchanged`，回报同样按请求契约。
+- GET 的 `If-None-Match` 只与请求契约下的当前值比较：以 dpe1 声明、写当前内容的 dpex 值不命中（200，不是 304，HTTP §3.3）。
 - 契约混用：两个契约都已声明时，对象引用另一契约的子 hash 得 `DPE_VALIDATION`，不是 `DPE_CONTRACT_UNSUPPORTED`（core §2.8 第 4 步、契约 1 §5）。本项只要求服务端同时声明了两个契约（不需要计算期望值），对 dpe-hash 不认识的未来契约同样执行。
-- 其余各项需要计算期望值：服务端未同时声明主契约与 dpe-hash 能计算的第二契约（目前只有演练契约 dpe2）时如实 skip；真实服务端不声明演练契约，不因此判失败。
+- 其余各项需要计算期望值：服务端未同时声明主契约与 dpe-hash 能计算的第二契约（目前只有演练契约 dpex）时如实 skip；真实服务端不声明演练契约，不因此判失败。
 
 ## HTTP 绑定（#4 B5 / B6）
 

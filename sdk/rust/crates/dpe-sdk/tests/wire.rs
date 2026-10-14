@@ -172,7 +172,7 @@ fn skeleton_objects_stay_closed() {
     assert!(error.message().contains("page_number"), "{error}");
 
     // 子 hash 按显式传入的契约校验
-    let body = skeleton_body("dpe2", "x:a");
+    let body = skeleton_body("dpex", "x:a");
     assert!(Skeleton::from_value(&body, "dpe1").is_err());
 }
 

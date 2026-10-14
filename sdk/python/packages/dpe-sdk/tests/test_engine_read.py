@@ -25,7 +25,7 @@ def test_capabilities_reflect_config() -> None:
     )
     caps = engine.capabilities()
     assert caps.protocol == "dpe/1"
-    assert caps.hash_contracts == ["dpe1", "dpe2"]
+    assert caps.hash_contracts == ["dpe1", "dpex"]
     assert caps.limits.max_payload_bytes == 1024
     assert caps.limits.list_page_max == 3
     assert caps.limits.staging_ttl_seconds >= 3600
@@ -47,7 +47,7 @@ def test_head() -> None:
     doc_hash = _put(engine, "test://a")
     head = engine.head("u", "test://a", C)
     assert head is not None and head.doc_hash == doc_hash
-    for contract in (None, "dpe2"):
+    for contract in (None, "dpex"):
         with pytest.raises(errors.ContractUnsupportedError):
             engine.head("u", "test://a", contract)
 
@@ -173,8 +173,8 @@ def test_list_contract() -> None:
     engine = make_engine(contracts=("dpe1", dpe_hash.DRILL_CONTRACT))
     doc = text_doc(["x"])
     engine.commit("u", "test://a", inline(doc).body(), C, IfAbsent())
-    listed = engine.list_documents("u", "dpe2").documents
-    assert listed[0].doc_hash == inline(doc, "dpe2").doc_hash
+    listed = engine.list_documents("u", "dpex").documents
+    assert listed[0].doc_hash == inline(doc, "dpex").doc_hash
     with pytest.raises(errors.ContractUnsupportedError):
         engine.list_documents("u", "dpe9")
 

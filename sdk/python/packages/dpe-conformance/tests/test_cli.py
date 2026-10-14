@@ -43,17 +43,17 @@ _LIMIT_ARGS = (
 #: 只认已授予的凭证（其余 401）：「认证先于一切报文校验」的检查据此执行（HTTP §3.1、§6）
 _AUTH_ARGS = ("--require-auth",)
 
-#: 同时声明演练契约 dpe2（vectors/README.md）：invalid_objects 中以 dpe2 为用例契约的用例据此执行
-_CONTRACT_ARGS = ("--contract", "dpe1", "--contract", "dpe2")
+#: 同时声明演练契约 dpex（vectors/README.md）：invalid_objects 中以 dpex 为用例契约的用例据此执行
+_CONTRACT_ARGS = ("--contract", "dpe1", "--contract", "dpex")
 
 #: 与 .github/workflows/python-sdk.yml 的 conformance job 同一套参数与配置（改动须两处同步）
 _SERVER_ARGS = _HOOK_ARGS + _AUTH_ARGS + _CONTRACT_ARGS + _LIMIT_ARGS
 #: 第二轮（只声明 dpe1，只跑 vectors 章）：前提互斥的向量用例在两轮的并集里都被执行（#56）
 _SINGLE_CONTRACT_ARGS = _HOOK_ARGS + _AUTH_ARGS + _LIMIT_ARGS
 
-#: 依赖「服务端声明了 dpe2」的向量用例（第二轮 skip）与依赖「服务端未声明 dpe2」的（第一轮 skip）
-_NEEDS_DPE2 = {("vectors", "test_invalid_object_vector[page_child_hash_mixed_contract]")}
-_NEEDS_NO_DPE2 = {
+#: 依赖「服务端声明了 dpex」的向量用例（第二轮 skip）与依赖「服务端未声明 dpex」的（第一轮 skip）
+_NEEDS_DRILL = {("vectors", "test_invalid_object_vector[page_child_hash_mixed_contract]")}
+_NEEDS_NO_DRILL = {
     ("vectors", "test_invalid_object_vector[page_child_hash_drill_contract_unsupported]")
 }
 
@@ -104,7 +104,7 @@ def _cases(path: Path, outcome: str) -> set[tuple[str, str]]:
 
 def test_full_run_against_reference_server(tmp_path: Path) -> None:
     """有配置：全部章节 257 条检查，执行 256 条（含经错误注入钩子构造的 429 / 503）；唯一的
-    skip 是前提为「服务端未声明 dpe2」的那条向量用例，由只声明 dpe1 的第二轮执行。"""
+    skip 是前提为「服务端未声明 dpex」的那条向量用例，由只声明 dpe1 的第二轮执行。"""
     with reference_server(*_SERVER_ARGS) as server:
         config = _write_config(tmp_path, server.hooks)
         junit = tmp_path / "junit.xml"
@@ -145,14 +145,14 @@ def test_full_run_against_reference_server(tmp_path: Path) -> None:
     suite = _testsuite(junit)
     assert suite.get("tests") == "257"
     assert int(suite.get("failures", "0")) == 0
-    assert _cases(junit, "skipped") == _NEEDS_NO_DPE2
-    assert _cases(junit, "passed") >= _NEEDS_DPE2
+    assert _cases(junit, "skipped") == _NEEDS_NO_DRILL
+    assert _cases(junit, "passed") >= _NEEDS_DRILL
     assert "执行 256" in completed.stdout
 
 
 def test_single_contract_vectors_pass_covers_the_other_side(tmp_path: Path) -> None:
-    """第二轮：只声明 dpe1 时只跑 vectors 章——「dpe2 前缀不受支持」的用例在这里执行并通过，
-    skip 只落在以 dpe2 为用例契约的用例上；与全配置轮合起来每条用例都至少执行一次（#56）。"""
+    """第二轮：只声明 dpe1 时只跑 vectors 章——「dpex 前缀不受支持」的用例在这里执行并通过，
+    skip 只落在以 dpex 为用例契约的用例上；与全配置轮合起来每条用例都至少执行一次（#56）。"""
     with reference_server(*_SINGLE_CONTRACT_ARGS) as server:
         config = _write_config(tmp_path, server.hooks)
         junit = tmp_path / "junit.xml"
@@ -167,8 +167,8 @@ def test_single_contract_vectors_pass_covers_the_other_side(tmp_path: Path) -> N
             cwd=tmp_path,
         )
     assert completed.returncode == 0, completed.stderr
-    assert _cases(junit, "skipped") == _NEEDS_DPE2
-    assert _cases(junit, "passed") >= _NEEDS_NO_DPE2
+    assert _cases(junit, "skipped") == _NEEDS_DRILL
+    assert _cases(junit, "passed") >= _NEEDS_NO_DRILL
 
 
 def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
@@ -195,7 +195,7 @@ def test_missing_hooks_are_skipped_and_counted(tmp_path: Path) -> None:
 
 def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
     """CWD 下的 dpe-conformance.toml 自动生效：给出 full 身份后 skip 数从 248
-    变 56（仅余钩子、scoped、匿名可访问时的认证顺序，以及只在声明 dpe2 时适用的向量用例与
+    变 56（仅余钩子、scoped、匿名可访问时的认证顺序，以及只在声明 dpex 时适用的向量用例与
     契约升级期一章）。"""
     with reference_server() as server:
         (tmp_path / "dpe-conformance.toml").write_text(

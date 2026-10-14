@@ -31,7 +31,7 @@
 //!
 //! # contract
 //!
-//! 子 hash 列表按显式传入的 `contract` 校验（通常为 [`CONTRACT`](crate::CONTRACT)；`dpe2`
+//! 子 hash 列表按显式传入的 `contract` 校验（通常为 [`CONTRACT`](crate::CONTRACT)；`dpex`
 //! 只在显式传入时接受，用于契约升级演练）。
 //!
 //! ```

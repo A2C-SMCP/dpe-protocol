@@ -1583,7 +1583,7 @@ fn deliver_validates_locally_without_requests() {
         .kind(),
         ErrorKind::Validation
     );
-    let drill_hash = h2().replace("dpe1", "dpe2");
+    let drill_hash = h2().replace("dpe1", "dpex");
     assert_eq!(
         expect_error(core("dpe1").deliver(
             URI,

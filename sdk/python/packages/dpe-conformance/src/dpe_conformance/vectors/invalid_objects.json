@@ -253,7 +253,7 @@
       "contract": "dpe1",
       "input": {
         "elements": [
-          "dpe2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          "dpex:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ]
       },
       "code": "DPE_CONTRACT_UNSUPPORTED",
@@ -274,7 +274,7 @@
     {
       "name": "page_child_hash_mixed_contract",
       "object_kind": "page",
-      "contract": "dpe2",
+      "contract": "dpex",
       "input": {
         "elements": [
           "dpe1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

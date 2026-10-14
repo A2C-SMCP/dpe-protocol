@@ -251,22 +251,22 @@ def test_cli_rejects_require_auth_without_grant() -> None:
 
 
 def test_dual_contract_declaration_over_tcp() -> None:
-    args = ("--prefix", "/r/1", "--contract", "dpe1", "--contract", "dpe2")  # fmt: skip
+    args = ("--prefix", "/r/1", "--contract", "dpe1", "--contract", "dpex")  # fmt: skip
     with _spawn(*args) as info:
         server = info["url"]
         target = f"{server}/documents?uri=test%3A%2F%2Fdocs%2Fa"
         request = inline(text_doc(["x"]))
-        drill_hash = inline(text_doc(["x"]), "dpe2").doc_hash
+        drill_hash = inline(text_doc(["x"]), "dpex").doc_hash
         with httpx.Client() as client:
             capabilities = client.get(f"{server}/capabilities").json()
-            assert capabilities["hash_contracts"] == ["dpe1", "dpe2"]
+            assert capabilities["hash_contracts"] == ["dpe1", "dpex"]
             created = _put(client, target, request.body(), headers={"If-None-Match": "*"})
             assert created.status_code == 201
             assert created.headers["vary"] == "DPE-Hash-Contract"
             # 读接口按请求声明的契约返回值（同一内容，两个前缀）
             heads = client.post(
                 f"{server}/heads",
-                headers={"DPE-Hash-Contract": "dpe2"},
+                headers={"DPE-Hash-Contract": "dpex"},
                 content=json.dumps({"uris": ["test://docs/a"]}).encode(),
             )
             assert heads.json()["heads"][0]["doc_hash"] == drill_hash

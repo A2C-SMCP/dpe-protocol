@@ -24,10 +24,10 @@ CONTRACT = "dpe1"
 #: 本包支持的真实契约，供服务端 capabilities 的 ``hash_contracts`` 使用。
 SUPPORTED_CONTRACTS: tuple[str, ...] = ("dpe1",)
 
-#: 假想契约 ``dpe2``，**仅用于契约升级演练**（vectors/README.md）：摘要输入为 ASCII ``dpe2``
-#: 后接 JCS 原像字节。不在 ``SUPPORTED_CONTRACTS`` 中：只有调用方显式传 ``contract="dpe2"``
+#: 假想契约 ``dpex``，**仅用于契约升级演练**（vectors/README.md）：摘要输入为 ASCII ``dpex``
+#: 后接 JCS 原像字节。不在 ``SUPPORTED_CONTRACTS`` 中：只有调用方显式传 ``contract="dpex"``
 #: 时 hash 函数才接受它，``parse_hash`` 默认拒绝。
-DRILL_CONTRACT = "dpe2"
+DRILL_CONTRACT = "dpex"
 
 #: 本包认识的全部契约：真实契约加演练契约。消费方判断「契约能否由 dpe_hash 计算」时用它，
 #: 不自行拼集合；它不是服务端应声明的契约（那是 ``SUPPORTED_CONTRACTS``）。

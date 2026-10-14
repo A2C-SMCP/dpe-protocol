@@ -10,7 +10,7 @@
   （不是 ``DPE_CONTRACT_UNSUPPORTED``：受支持与否按服务端声明的集合判定，core §3.1）。
 
 期望值只经 dpe-hash 按各契约重算。第二契约取服务端声明的、dpe-hash 能计算的契约（目前只有
-演练契约 ``dpe2``，vectors/README.md）；服务端没有同时声明它时整章如实 skip——真实服务端不会
+演练契约 ``dpex``，vectors/README.md）；服务端没有同时声明它时整章如实 skip——真实服务端不会
 声明演练契约，不因此判失败。
 """
 

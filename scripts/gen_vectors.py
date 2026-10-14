@@ -96,9 +96,9 @@ RECOMMENDED_FILE_TYPES = (
 #: file_type 的语法（core.md §2.5）：ASCII 小写字母、数字与下划线，首字符是字母或数字，长度 ≤ 32。
 FILE_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9_]{0,31}")
 
-#: dpe2 是**仅用于契约升级演练的假想契约**（vectors/README.md）：
-#: 算法与 dpe1 相同，但每次摘要额外前置一个内容为 b"dpe2" 的段。
-TEST_CONTRACTS = ("dpe1", "dpe2")
+#: dpex 是**仅用于契约升级演练的假想契约**（vectors/README.md）：
+#: 算法与 dpe1 相同，但每次摘要额外前置一个内容为 b"dpex" 的段。
+TEST_CONTRACTS = ("dpe1", "dpex")
 
 
 def strip_nulls(value: Any) -> Any:
@@ -113,12 +113,12 @@ def strip_nulls(value: Any) -> Any:
 def obj_hash(obj: dict[str, Any], contract: str) -> tuple[str, str]:
     """唯一原语（§3.1）：hash = 前缀 + SHA-256(JCS(对象) 的 UTF-8 字节)。返回 (hash, JCS 原像)。
 
-    dpe2 仅用于升级演练：在原像字节前加 ASCII "dpe2"（vectors/README.md）。
+    dpex 仅用于升级演练：在原像字节前加 ASCII "dpex"（vectors/README.md）。
     """
     preimage = jcs(obj)
     data = preimage.encode("utf-8")
-    if contract == "dpe2":
-        data = b"dpe2" + data
+    if contract == "dpex":
+        data = b"dpex" + data
     return f"{contract}:{hashlib.sha256(data).hexdigest()}", preimage
 
 
@@ -144,7 +144,7 @@ VALIDATION = "DPE_VALIDATION"
 CATEGORY_UNKNOWN = "DPE_CATEGORY_UNKNOWN"
 CONTRACT_UNSUPPORTED = "DPE_CONTRACT_UNSUPPORTED"
 
-#: 真实契约；dpe2 只在被选为本次契约时才算受支持（契约 1 §5）
+#: 真实契约；dpex 只在被选为本次契约时才算受支持（契约 1 §5）
 SUPPORTED_CONTRACTS = ("dpe1",)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
@@ -1389,8 +1389,8 @@ DOCUMENT_VECTORS: list[dict[str, Any]] = [
     },
     {
         "name": "upgrade_drill",
-        "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpe2 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
-        "contracts": ["dpe1", "dpe2"],
+        "description": "契约升级演练（#3 S8）：同一份内容给出 dpe1 与假想 dpex 的期望值；两契约的逐页、逐元素结果按位置一一对应，即升级时的原位对应关系。",
+        "contracts": ["dpe1", "dpex"],
         "documents": {
             "doc": doc(
                 page(
@@ -1542,7 +1542,7 @@ URI_VECTORS: list[dict[str, Any]] = [
 
 
 _H1 = "dpe1:" + "a" * 64
-_H2 = "dpe2:" + "a" * 64
+_H2 = "dpex:" + "a" * 64
 _HUGE = 2**53
 
 
@@ -1734,7 +1734,7 @@ INVALID_VECTORS: list[dict[str, Any]] = [
                 {"elements": [_H1]},
                 V,
                 "/elements/0",
-                contract="dpe2",
+                contract="dpex",
             ),
             bad("page_elements_null_is_missing", "page", {"elements": None}, V, ""),
             bad(
@@ -3843,7 +3843,7 @@ def build_files() -> dict[str, str]:
         },
         "provenance": {
             "generator": "scripts/gen_vectors.py",
-            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1",
+            "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpex 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1",
         },
         "files": [
             {

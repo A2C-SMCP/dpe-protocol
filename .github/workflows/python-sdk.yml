@@ -123,8 +123,8 @@ jobs:
       # 显式 shell: bash 才带 -o pipefail；参考服务端的身份、钩子、认证、契约与收小限额与 test_cli
       # 一致（改动须两处同步：dpe-conformance/tests/test_cli.py 的 _SERVER_ARGS /
       # _SINGLE_CONTRACT_ARGS 与 _write_config）。两轮（#56）：
-      #   1. 全配置（--require-auth、同时声明 dpe1 与演练契约 dpe2）跑全部章节；
-      #   2. 只声明 dpe1 跑 vectors 章——前提为「服务端未声明 dpe2」的向量用例在这里执行。
+      #   1. 全配置（--require-auth、同时声明 dpe1 与演练契约 dpex）跑全部章节；
+      #   2. 只声明 dpe1 跑 vectors 章——前提为「服务端未声明 dpex」的向量用例在这里执行。
       # 零 skip 按两轮的并集判定：任一轮 skip 的用例必须在另一轮执行并通过。
       - name: 对参考服务端运行 dpe-conformance
         shell: bash
@@ -182,7 +182,7 @@ jobs:
             jq -e '.totals | .failed == 0 and .errors == 0 and .collection_errors == 0 and .executed > 0' "$name.json"
             return $status
           }
-          run_pass full "--contract dpe1 --contract dpe2"
+          run_pass full "--contract dpe1 --contract dpex"
           run_pass vectors-dpe1 "" --section vectors
           # 两轮并集零 skip：任一轮 skip 的用例必须在另一轮通过
           python3 - full.xml vectors-dpe1.xml <<'EOF'

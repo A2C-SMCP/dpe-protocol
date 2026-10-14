@@ -6,7 +6,7 @@
 - 请求体不在这里定义：服务端须按规范的求值顺序逐步校验（core §3.3），不能交给模型一次性解析。
 
 ``Skeleton`` 中对象的子 hash 按 validation context 的 ``contract`` 校验，同 ``dpe_sdk.models``，
-如 ``Skeleton.model_validate(data, context={"contract": "dpe2"})``。
+如 ``Skeleton.model_validate(data, context={"contract": "dpex"})``。
 """
 
 from __future__ import annotations

@@ -181,8 +181,8 @@ def test_move_base_hash_compared_by_value() -> None:
         with pytest.raises(errors.PreconditionFailedError):
             _move(engine, from_uri="test://a", to_uri="test://b", base_hash=garbage)
     # 任一受支持契约下的值都匹配；响应按请求声明的契约给出
-    dpe2 = inline(doc, "dpe2").doc_hash
+    dpex = inline(doc, "dpex").doc_hash
     assert (
-        _move(engine, from_uri="test://a", to_uri="test://b", base_hash=dpe2)
+        _move(engine, from_uri="test://a", to_uri="test://b", base_hash=dpex)
         == inline(doc).doc_hash
     )

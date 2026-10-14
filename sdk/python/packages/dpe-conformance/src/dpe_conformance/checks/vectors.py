@@ -33,8 +33,9 @@ from dpe_conformance.support import assert_problem
 _WIRE_KINDS = ("document", "page", "element")
 
 
-#: 输入中出现的契约前缀（``dpe1:``、``dpe9:`` 等；``sha256:`` 是 blob 引用，不是契约）
-_PREFIX = re.compile(r"\b(dpe[0-9]+):")
+#: 输入中出现的契约前缀（只做提取，不判定契约名是否合乎契约 1 §1 的规则——文法外的前缀同样要
+#: 参与「受支持与否」的比较）；``sha256:`` 是 blob 引用，不是契约
+_PREFIX = re.compile(r"\b(dpe[0-9a-z]+):")
 
 
 def _read(name: str) -> dict[str, Any]:
@@ -88,7 +89,7 @@ def _commit_case(
         pytest.skip(f"服务端未声明契约 {contract}（hash_contracts={sorted(contracts)}）")
     # 向量按「manifest 契约 ∪ 用例契约」判定受支持与否（vectors/README.md），服务端按自己声明的
     # 集合判定（CORE §3.1）。只有输入涉及的每个契约前缀在两边的受支持与否一致时，期望码才适用于
-    # 该服务端（例如服务端声明了 dpe2 时，「dpe2 前缀不受支持」的用例就不适用）
+    # 该服务端（例如服务端声明了 dpex 时，「dpex 前缀不受支持」的用例就不适用）
     supported = {_MANIFEST_CONTRACT, contract}
     differing = sorted(
         prefix

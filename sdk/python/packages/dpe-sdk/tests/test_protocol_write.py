@@ -225,8 +225,8 @@ def test_write_operations_validate_uris_locally() -> None:
 
 
 def test_commit_under_drill_contract() -> None:
-    c = core("dpe2", hash_contracts=["dpe1", "dpe2"])
-    expected = DOC.doc_hash("dpe2")
+    c = core("dpex", hash_contracts=["dpe1", "dpex"])
+    expected = DOC.doc_hash("dpex")
     body = {
         "status": "created",
         "doc_hash": expected,
@@ -234,7 +234,7 @@ def test_commit_under_drill_contract() -> None:
     }
     result, server = run(c.commit(URI, DOC, IfAbsent()), ok(body, 201))
     assert result.doc_hash == expected
-    assert server.requests[0].headers[CONTRACT_HEADER] == "dpe2"
+    assert server.requests[0].headers[CONTRACT_HEADER] == "dpex"
 
 
 # ---------------------------------------------------------------------- commit：结果校验

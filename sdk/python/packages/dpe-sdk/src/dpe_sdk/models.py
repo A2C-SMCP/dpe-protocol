@@ -20,7 +20,7 @@ hash 不缓存，每次调用都经 dpe_hash 重新校验并计算。模型是 f
 metadata 仍是普通 dict，原地修改它不受保护，但改动后的 hash 照样按新内容计算，不会失真。
 
 线上对象的子 hash 列表按 validation context 的 ``contract`` 校验（缺省 ``dpe_hash.CONTRACT``），
-如 ``PageObject.model_validate(data, context={"contract": "dpe2"})``。
+如 ``PageObject.model_validate(data, context={"contract": "dpex"})``。
 """
 
 from __future__ import annotations

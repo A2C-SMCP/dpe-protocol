@@ -110,7 +110,7 @@
   },
   "provenance": {
     "generator": "scripts/gen_vectors.py",
-    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpe2 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1"
+    "note": "向量由规范参考实现生成（plan §1：向量归本仓库）；dpex 仅用于升级演练，定义见 vectors/README.md；file_uri_normalization 的规范依据是 core.md §1.1，config_schema_patterns 的规范依据是 connector 契约 §4.1.1，nesting_depth 的规范依据是 core.md §2.8（第 0 步第三项），remote_url 的规范依据是 HTTP 绑定 §1"
   },
   "files": [
     {
@@ -179,7 +179,7 @@
     },
     {
       "name": "invalid_objects.json",
-      "sha256": "d512416017cdc503a5abe727b0286aee31c6f1d19d62f5b8523dbe6a0298659f"
+      "sha256": "4fbae53a15e824640e6d3f386d56d947297e238db57953ea319994356dc50aab"
     },
     {
       "name": "jcs_basic.json",
@@ -243,7 +243,7 @@
     },
     {
       "name": "upgrade_drill.json",
-      "sha256": "c7feefa580f434c28c31b6c522b550b19e9d4f17066931a6c834107157856cef"
+      "sha256": "ec95fe18969a49ccfc50a4eb8b81875dc150d583b5eacd34f1c221f0da7b1b17"
     }
   ]
 }

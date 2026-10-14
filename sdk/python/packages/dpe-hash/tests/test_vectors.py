@@ -1,4 +1,4 @@
-"""一致性向量：dpe_hash 逐字节通过 vectors/ 全部向量，含 dpe2 升级演练、relations 与 preimages。"""
+"""一致性向量：dpe_hash 逐字节通过 vectors/ 全部向量，含 dpex 升级演练、relations 与 preimages。"""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _resolve(computed: dict[str, Any], ref: str) -> Any:
 
 
 def _digest(contract: str, preimage: str) -> str:
-    salt = b"dpe2" if contract == DRILL_CONTRACT else b""
+    salt = b"dpex" if contract == DRILL_CONTRACT else b""
     return f"{contract}:{hashlib.sha256(salt + preimage.encode('utf-8')).hexdigest()}"
 
 
@@ -134,7 +134,7 @@ def test_vectors_cover_drill_contract(vectors_dir: Path) -> None:
         for v in _load(vectors_dir, "document")
         if any(DRILL_CONTRACT in exp for exp in v["expected"].values())
     ]
-    assert drills, "向量应包含 dpe2 升级演练（契约 1 §6）"
+    assert drills, "向量应包含 dpex 升级演练（契约 1 §6）"
 
 
 @pytest.mark.parametrize("name", ["jcs_basic", "jcs_numbers"])

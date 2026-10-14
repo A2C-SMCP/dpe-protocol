@@ -65,12 +65,12 @@ def test_fetch_capabilities_rejects_non_positive_limits(name: str, value: int) -
 
 def test_contract_must_be_accepted_by_server_no_downgrade() -> None:
     with pytest.raises(errors.ContractUnsupportedError):
-        core(hash_contracts=["dpe2"])
+        core(hash_contracts=["dpex"])
     with pytest.raises(errors.ContractUnsupportedError):
         core(hash_contracts=[])
     # 演练契约只在显式指定且服务端接受时使用
-    assert core("dpe2", hash_contracts=["dpe1", "dpe2"]).contract == "dpe2"
-    assert core(hash_contracts=["dpe1", "dpe2"]).contract == dpe_hash.CONTRACT
+    assert core("dpex", hash_contracts=["dpe1", "dpex"]).contract == "dpex"
+    assert core(hash_contracts=["dpe1", "dpex"]).contract == dpe_hash.CONTRACT
 
 
 def test_unknown_contract_and_protocol() -> None:
@@ -81,11 +81,11 @@ def test_unknown_contract_and_protocol() -> None:
 
 
 def test_every_request_declares_the_contract() -> None:
-    c = core("dpe2", hash_contracts=["dpe2"])
+    c = core("dpex", hash_contracts=["dpex"])
     ops = [c.head("a:1"), c.batch_head(["a:1"]), c.get_skeleton("a:1"), c.list_page()]
     for op in ops:
         request = next(op)
-        assert request.headers["DPE-Hash-Contract"] == "dpe2"
+        assert request.headers["DPE-Hash-Contract"] == "dpex"
         op.close()
 
 
@@ -301,11 +301,11 @@ def test_get_skeleton() -> None:
 
 
 def test_get_skeleton_under_drill_contract() -> None:
-    body = skeleton_body("dpe2")
-    c = core("dpe2", hash_contracts=["dpe1", "dpe2"])
+    body = skeleton_body("dpex")
+    c = core("dpex", hash_contracts=["dpe1", "dpex"])
     result, _ = run(c.get_skeleton("a:1"), ok(body))
-    assert result.doc_hash.startswith("dpe2:")
-    # 同一份 dpe2 骨架交给 dpe1 核心：hash 不属于声明的契约
+    assert result.doc_hash.startswith("dpex:")
+    # 同一份 dpex 骨架交给 dpe1 核心：hash 不属于声明的契约
     with pytest.raises(errors.UnexpectedResponseError):
         run(core().get_skeleton("a:1"), ok(body))
 

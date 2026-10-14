@@ -45,7 +45,9 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 
 所有入口都对封闭 schema 做完整校验：嵌套深度超过 `MAX_NESTING_DEPTH`（core §2.8 第 0 步）、未定义字段、不合语法的 file_type、不在 category 封闭枚举的值、超过 2^53−1 的整数、NaN 等一律拒绝。file_type 是开放取值（core §2.5）：语法合法的取值即使不在推荐表内也照常接受。
 
-**原位重算**（契约 1 §6）：各入口的 `contract` 参数决定按哪个契约计算。`DRILL_CONTRACT`（`dpe2`）是仅用于升级演练的假想契约，只在显式传入时接受，不在 `SUPPORTED_CONTRACTS` 中，`parse_hash` 默认拒绝它。
+**原位重算**（契约 1 §6）：各入口的 `contract` 参数决定按哪个契约计算。`DRILL_CONTRACT`（`dpex`）是仅用于升级演练的假想契约，只在显式传入时接受，不在 `SUPPORTED_CONTRACTS` 中，`parse_hash` 默认拒绝它。
+
+**升级须知**（0.4 起，不兼容）：演练契约由 `dpe2` 改名为 `dpex`（`DRILL_CONTRACT`），摘要前缀随之由 ASCII `dpe2` 改为 `dpex`，演练契约下的值全部变化——`dpe2` 留给将来真实的契约 2，同一个前缀不再先后对应两种算法（契约 1 §1）。dpe1 的值不变，不引起重学；只有显式使用演练契约的测试代码需要改名。
 
 ## 常量与类型
 

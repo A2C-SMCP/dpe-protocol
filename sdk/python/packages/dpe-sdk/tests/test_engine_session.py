@@ -124,7 +124,7 @@ def test_mixed_contract_staging_is_conservative() -> None:
     doc2 = {"file_type": "md", "pages": [ph2]}
     with pytest.raises(errors.MissingContentError) as info:
         engine.commit("u", URI, commit_body(doc2, staging_session=sid), drill, IfAbsent())
-    assert info.value.missing.pages == [ph2]  # dpe2 下直查会话未命中 → 视为缺失
+    assert info.value.missing.pages == [ph2]  # dpex 下直查会话未命中 → 视为缺失
 
 
 def test_session_expiry_and_renewal() -> None:
