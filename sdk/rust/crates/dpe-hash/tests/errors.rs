@@ -4,8 +4,9 @@
 //! 承载合法 JSON，`str` 不能含孤立代理项），由类型系统与解析阶段保证，不在此重复。
 
 use dpe_hash::{
-    children, content_hash, doc_hash, document_hashes, jcs, object_hash, page_hash, parse_blob_ref,
-    parse_hash, Error, ErrorKind, ObjectKind, Result,
+    children, children_with, content_hash, doc_hash, doc_hash_with, document_hashes, jcs,
+    object_hash, object_hash_with, page_hash, page_hash_with, parse_blob_ref, parse_hash, Error,
+    ErrorKind, ObjectKind, Result, DRILL_CONTRACT, SUPPORTED_CONTRACTS,
 };
 use serde_json::{json, Value};
 
@@ -343,4 +344,130 @@ fn rust_constructed_non_finite_floats_become_null() {
             content_hash(&json!({"category": "Title"}), "dpe1").unwrap()
         );
     }
+}
+
+/// 声明多契约的服务端传入的集合：受支持契约加演练契约。
+fn declared() -> Vec<&'static str> {
+    let mut contracts = SUPPORTED_CONTRACTS.to_vec();
+    contracts.push(DRILL_CONTRACT);
+    contracts
+}
+
+#[test]
+fn declared_contracts_turn_drill_child_into_mixed_reference() {
+    // contracts 参数：声明的契约集合让「受支持但不同契约」按混用判（core §3.1、契约 1 §5；#157，
+    // 对等 Python 的 test_declared_contracts_turn_drill_child_into_mixed_reference）。默认基准下
+    // dpe1 对象引用 dpex 子 hash 是「不受支持的契约」（同向量 page_child_hash_drill_contract_unsupported）
+    let child = [format!("{DRILL_CONTRACT}:{}", "b".repeat(64))];
+    assert_err(
+        page_hash(&json!({}), &child, "dpe1"),
+        ErrorKind::ContractUnsupported,
+        "DPE_CONTRACT_UNSUPPORTED",
+        "/elements/0",
+    );
+    assert_err(
+        page_hash_with(&json!({}), &child, "dpe1", &declared()),
+        ErrorKind::Validation,
+        V,
+        "/elements/0",
+    );
+}
+
+#[test]
+fn contracts_parameter_threads_through_all_entries() {
+    // 四个带子 hash 列表的入口都接受 contracts；合法输入下 hash 不变（对等 Python 的
+    // test_contracts_parameter_threads_through_all_entries）。展开视图 document_hashes 的子 hash
+    // 全部自算，没有该参数
+    let declared = declared();
+    let drill_child = [format!("{DRILL_CONTRACT}:{}", "c".repeat(64))];
+    let page = json!({"elements": drill_child});
+    let results: Vec<ErrorKind> = vec![
+        page_hash_with(&json!({}), &drill_child, "dpe1", &declared)
+            .expect_err("page_hash_with")
+            .kind(),
+        doc_hash_with(&json!({"file_type": "md"}), &drill_child, "dpe1", &declared)
+            .expect_err("doc_hash_with")
+            .kind(),
+        object_hash_with(&page, ObjectKind::Page, "dpe1", &declared)
+            .expect_err("object_hash_with")
+            .kind(),
+        children_with(&page, ObjectKind::Page, "dpe1", &declared)
+            .expect_err("children_with")
+            .kind(),
+    ];
+    assert!(
+        results.iter().all(|kind| *kind == ErrorKind::Validation),
+        "{results:?}"
+    );
+    // 没有混用时，参数不影响结果（含 dpex 对象引用 dpe1 子的既有混用判定）
+    let doc = json!({"file_type": "md", "pages": [h()]});
+    assert_eq!(
+        object_hash_with(&doc, ObjectKind::Document, "dpe1", &declared).unwrap(),
+        object_hash(&doc, ObjectKind::Document, "dpe1").unwrap()
+    );
+    assert_eq!(
+        children_with(&doc, ObjectKind::Document, "dpe1", &declared).unwrap(),
+        children(&doc, ObjectKind::Document, "dpe1").unwrap()
+    );
+    assert_eq!(
+        page_hash_with(&json!({}), &[h()], "dpe1", &declared).unwrap(),
+        page_hash(&json!({}), &[h()], "dpe1").unwrap()
+    );
+    assert_eq!(
+        doc_hash_with(&json!({"file_type": "md"}), &[h()], "dpe1", &declared).unwrap(),
+        doc_hash(&json!({"file_type": "md"}), &[h()], "dpe1").unwrap()
+    );
+    assert_err(
+        object_hash_with(
+            &json!({"elements": [h()]}),
+            ObjectKind::Page,
+            DRILL_CONTRACT,
+            &declared,
+        ),
+        ErrorKind::Validation,
+        V,
+        "/elements/0",
+    );
+}
+
+#[test]
+fn contracts_parameter_rejects_unknown_contracts() {
+    // 参数校验与 parse_hash_with 同形：未知契约即拒绝，即使子 hash 列表为空（对等 Python 的
+    // test_contracts_parameter_rejects_bad_sets；「单个字符串」那半在 Rust 由类型系统排除）
+    let empty: [&str; 0] = [];
+    for result in [
+        page_hash_with(&json!({}), &empty, "dpe1", &["dpe9"]),
+        doc_hash_with(&json!({"file_type": "md"}), &empty, "dpe1", &["dpe9"]),
+        object_hash_with(
+            &json!({"elements": []}),
+            ObjectKind::Page,
+            "dpe1",
+            &["dpe9"],
+        ),
+    ] {
+        assert_err(
+            result,
+            ErrorKind::ContractUnsupported,
+            "DPE_CONTRACT_UNSUPPORTED",
+            "",
+        );
+    }
+    // 页 / 文档自身字段的错误先于 contracts 的校验报出（与 Python 同序：子 hash 列表最后处理）
+    assert_err(
+        doc_hash_with(&json!({}), &empty, "dpe1", &["dpe9"]),
+        ErrorKind::Validation,
+        V,
+        "",
+    );
+    assert_err(
+        children_with(
+            &json!({"elements": []}),
+            ObjectKind::Page,
+            "dpe1",
+            &["dpe9"],
+        ),
+        ErrorKind::ContractUnsupported,
+        "DPE_CONTRACT_UNSUPPORTED",
+        "",
+    );
 }
