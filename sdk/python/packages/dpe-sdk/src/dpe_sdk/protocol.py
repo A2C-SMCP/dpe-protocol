@@ -244,14 +244,23 @@ class Request:
 
 @dataclass(frozen=True)
 class Response:
-    """响应描述。头字段名不区分大小写（构造时统一为小写）；HEAD 响应的 ``body`` 为空。"""
+    """响应描述。头字段名不区分大小写（构造时统一为小写）；HEAD 响应的 ``body`` 为空。
+
+    同名字段出现多次时，``headers`` 中的值须已按 RFC 9110 §5.3 依出现顺序以 ``, `` 合并（HTTP
+    绑定 §5；httpx 的 ``Headers`` 转 ``dict`` 即如此）；仅大小写不同的键在这里同样合并，不取其一
+    （与 Rust 侧 ``Response::new`` 一致，#205）。
+    """
 
     status: int
     headers: Mapping[str, str] = field(default_factory=dict)
     body: bytes = b""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "headers", {k.lower(): v for k, v in self.headers.items()})
+        merged: dict[str, str] = {}
+        for name, value in self.headers.items():
+            key = name.lower()
+            merged[key] = f"{merged[key]}, {value}" if key in merged else value
+        object.__setattr__(self, "headers", merged)
 
     def header(self, name: str) -> str | None:
         return self.headers.get(name.lower())
@@ -385,8 +394,8 @@ def error_from_response(response: Response) -> DpeError | UnexpectedResponseErro
     problem = _problem(response)
     if problem is not None:
         return from_problem(problem, retry_after)
-    code = (response.header(ERROR_CODE_HEADER) or "").strip()
-    if code:
+    code = _header_code(response)
+    if code is not None:
         return from_problem({"code": code}, retry_after)
     return UnexpectedResponseError(
         "错误响应既无 problem 体、也无 DPE-Error-Code 头，不是 DPE 错误",
@@ -395,10 +404,16 @@ def error_from_response(response: Response) -> DpeError | UnexpectedResponseErro
     )
 
 
+def _header_code(response: Response) -> str | None:
+    """``DPE-Error-Code`` 头给出的单个 code（HTTP 绑定 §5）：去掉首尾 OWS 后非空、且不是同名字段
+    重复合并出的列表（含逗号，不论各项是否相同）才算——否则视同没有这个头，不从中挑一个（#205）。"""
+    code = (response.header(ERROR_CODE_HEADER) or "").strip(" \t")
+    return code if code and "," not in code else None
+
+
 def _is_dpe_error(response: Response) -> bool:
     """响应带 DPE 错误码：problem 体的 ``code`` 或 ``DPE-Error-Code`` 头（HTTP 绑定 §5）。"""
-    header = (response.header(ERROR_CODE_HEADER) or "").strip()
-    return _problem(response) is not None or bool(header)
+    return _problem(response) is not None or _header_code(response) is not None
 
 
 def _bare_412(response: Response) -> bool:

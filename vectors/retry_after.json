@@ -449,6 +449,26 @@
       "input": "2026-10-08T12:00:30Z",
       "now": "2026-10-08T12:00:00Z",
       "seconds": null
+    },
+    {
+      "input": "1, 2",
+      "now": "2026-10-08T12:00:00Z",
+      "seconds": null
+    },
+    {
+      "input": "120, 30",
+      "now": "2026-10-08T12:00:00Z",
+      "seconds": null
+    },
+    {
+      "input": "1, 1",
+      "now": "2026-10-08T12:00:00Z",
+      "seconds": null
+    },
+    {
+      "input": "Thu, 08 Oct 2026 12:00:30 GMT, Thu, 08 Oct 2026 12:00:40 GMT",
+      "now": "2026-10-08T12:00:00Z",
+      "seconds": null
     }
   ]
 }

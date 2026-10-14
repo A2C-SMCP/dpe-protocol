@@ -460,7 +460,8 @@ pub struct Response {
 }
 
 impl Response {
-    /// 构造响应；头字段名统一转小写（同 Python 侧 `Response`）。
+    /// 构造响应；头字段名统一转小写（同 Python 侧 `Response`）。同名（不区分大小写）字段出现多次时按
+    /// RFC 9110 §5.3 依出现顺序以 `, ` 合并为一个值，不只取其中一个（HTTP 绑定 §5，#205）。
     pub fn new(
         status: u16,
         headers: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -468,7 +469,13 @@ impl Response {
     ) -> Self {
         let mut normalized = Headers::new();
         for (name, value) in headers {
-            normalized.insert(name.into().to_ascii_lowercase(), value);
+            let name = name.into().to_ascii_lowercase();
+            let value = value.into();
+            let combined = match normalized.get(&name) {
+                Some(existing) => format!("{existing}, {value}"),
+                None => value,
+            };
+            normalized.insert(name, combined);
         }
         Response {
             status,
@@ -3958,14 +3965,18 @@ fn expect_status(response: &Response, expected: u16) -> Result<(), Error> {
 /// Gateway Timeout）。服务端自己的暂时不可用是带错误码的 `DPE_UNAVAILABLE`（503），不在此列。
 const GATEWAY_STATUSES: [u16; 2] = [502, 504];
 
+/// `DPE-Error-Code` 头给出的单个 code（HTTP 绑定 §5）：去掉首尾 OWS 后非空、且不是同名字段
+/// 重复合并出的列表（含逗号，不论各项是否相同）才算——否则视同没有这个头，不从中挑一个（#205）。
+fn header_code(response: &Response) -> Option<&str> {
+    let code = response
+        .header(ERROR_CODE_HEADER)?
+        .trim_matches(|c| c == ' ' || c == '\t');
+    (!code.is_empty() && !code.contains(',')).then_some(code)
+}
+
 /// 响应带 DPE 错误码：problem 体的 `code` 或 `DPE-Error-Code` 头（HTTP 绑定 §5）。
 fn is_dpe_error(response: &Response) -> bool {
-    problem_body(response).is_some()
-        || !response
-            .header(ERROR_CODE_HEADER)
-            .unwrap_or("")
-            .trim()
-            .is_empty()
+    problem_body(response).is_some() || header_code(response).is_some()
 }
 
 /// 无 DPE 错误码的 412，如网关自行求值条件头的结果（HTTP 绑定 §3.2）。
@@ -4000,8 +4011,7 @@ pub fn error_from_response(response: &Response) -> Error {
             return error;
         }
     }
-    let code = response.header(ERROR_CODE_HEADER).unwrap_or("").trim();
-    if !code.is_empty() {
+    if let Some(code) = header_code(response) {
         if let Some(error) = Error::from_problem(&json!({"code": code}), retry_after) {
             return error;
         }

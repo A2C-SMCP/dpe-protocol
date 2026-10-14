@@ -380,6 +380,51 @@ async fn retryable_error_without_retry_after_uses_the_spec_default() {
     );
 }
 
+/// 响应里同名头出现多次：按 RFC 9110 §5.3 合并后再解析（与 Python 侧对等，#205）——两行
+/// `Retry-After` 合并成 `1, 2`，不合文法，按缺省等 1 秒，而不是只取最后一行的 2 秒。
+#[tokio::test(start_paused = true)]
+async fn repeated_retry_after_lines_are_combined_into_no_hint() {
+    let server = MockServer::start(vec![
+        Reply::problem(
+            "DPE_RATE_LIMITED",
+            429,
+            &[("Retry-After", "1"), ("Retry-After", "2")],
+        ),
+        capabilities_reply(&["gzip"]),
+    ]);
+    let client = DpeClient::builder(server.remote())
+        .timeout(None)
+        .build()
+        .expect("remote 合法");
+    let started = tokio::time::Instant::now();
+    assert_eq!(client.capabilities().await.expect("能力").protocol, "dpe/1");
+    assert_eq!(server.count(), 2);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(2),
+        "{elapsed:?}"
+    );
+}
+
+/// 两行不同的 `DPE-Error-Code`、没有 problem 体：不是单个 code，非协议错误（#205）。
+#[tokio::test]
+async fn repeated_error_code_lines_are_not_a_code() {
+    let server = MockServer::start(vec![Reply::Response {
+        status: 404,
+        headers: vec![
+            ("DPE-Error-Code".to_owned(), "DPE_NOT_FOUND".to_owned()),
+            ("DPE-Error-Code".to_owned(), "DPE_FORBIDDEN".to_owned()),
+        ],
+        body: Vec::new(),
+    }]);
+    let client = DpeClient::builder(server.remote())
+        .build()
+        .expect("remote 合法");
+    let error = client.capabilities().await.expect_err("非协议错误");
+    assert_eq!(error.kind(), ErrorKind::UnexpectedResponse);
+    assert_eq!(error.status(), Some(404));
+}
+
 #[tokio::test(start_paused = true)]
 async fn waiting_at_the_ceiling_is_still_retried() {
     let server = MockServer::start(vec![

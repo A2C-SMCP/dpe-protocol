@@ -701,6 +701,54 @@ async def test_error_from_response_maps_problem_bodies() -> None:
     assert not isinstance(error_from_response(Response(500, {}, b"<html>")), DpeError)
 
 
+async def test_repeated_error_code_header_is_not_a_code() -> None:
+    """重复的 ``DPE-Error-Code``（合并成列表，不论各项是否相同）不是单个 code：没有 problem 体时
+    是非协议错误，不从中挑一个；有 problem 体时照常按体内的 code（HTTP 绑定 §5，#205）。"""
+    for merged in ("DPE_NOT_FOUND, DPE_FORBIDDEN", "DPE_NOT_FOUND, DPE_NOT_FOUND"):
+        error = error_from_response(Response(404, {"DPE-Error-Code": merged}, b""))
+        assert isinstance(error, UnexpectedResponseError), merged
+        assert error.status == 404
+    case_split = Response(
+        404, {"DPE-Error-Code": "DPE_NOT_FOUND", "dpe-error-code": "DPE_FORBIDDEN"}
+    )
+    assert case_split.header("dpe-error-code") == "DPE_NOT_FOUND, DPE_FORBIDDEN"  # 与 Rust 一致
+    assert isinstance(error_from_response(case_split), UnexpectedResponseError)
+    body = json.dumps({"code": "DPE_FORBIDDEN"}).encode()
+    headers = {
+        "Content-Type": "application/problem+json",
+        "DPE-Error-Code": "DPE_FORBIDDEN, DPE_NOT_FOUND",
+    }
+    assert isinstance(error_from_response(Response(403, headers, body)), ForbiddenError)
+
+
+async def test_repeated_fields_in_a_real_reply_are_combined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """响应里同名头出现多次：按 RFC 9110 §5.3 合并后再解析（与 Rust 侧对等，#205）——两行
+    ``Retry-After`` 合并成 ``1, 2``，不合文法，按缺省等待；两行 ``DPE-Error-Code`` 是非协议错误。"""
+    waits: list[float] = []
+    monkeypatch.setattr(transport_module, "_sleep", waits.append)
+    limited = _problem("DPE_RATE_LIMITED", 429)
+    repeated = httpx.Response(
+        429,
+        content=limited.content,
+        headers=[*limited.headers.multi_items(), ("Retry-After", "1"), ("Retry-After", "2")],
+    )
+    transport, requests = _scripted(repeated, httpx.Response(200, json=CAPABILITIES))
+    with DpeClient(REMOTE, transport=transport) as client:
+        assert client.capabilities().protocol == "dpe/1"
+    assert (len(requests), waits) == (2, [1.0])
+
+    codes = [("DPE-Error-Code", "DPE_NOT_FOUND"), ("DPE-Error-Code", "DPE_FORBIDDEN")]
+    transport, _ = _scripted(httpx.Response(404, headers=codes))
+    with (
+        DpeClient(REMOTE, transport=transport) as client,
+        pytest.raises(UnexpectedResponseError) as excinfo,
+    ):
+        client.capabilities()
+    assert excinfo.value.status == 404
+
+
 async def test_not_sent_classifies_connect_failures() -> None:
     """公开的「确定未发出」判定：建连失败为真（写操作调用方据此清除待定意图），其余为假。"""
     assert transport_module.not_sent(httpx.ConnectError("refused"))
