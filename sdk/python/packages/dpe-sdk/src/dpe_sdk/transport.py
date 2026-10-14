@@ -6,7 +6,8 @@
 在核心。传输层**可以**自行重发的情形只有三类：
 
 1. ``Request.retry_safe`` 为真的请求（只读操作与断点查询）遇到连接错误、超时等网络失败；
-2. 任何请求遇到确定未发出的失败（``httpx.ConnectError`` / ``httpx.ConnectTimeout``）——
+2. 任何请求遇到确定未发出的失败（``httpx.ConnectError`` / ``httpx.ConnectTimeout``，以及经代理时
+   隧道建立被拒的 ``httpx.ProxyError``）——
    放弃发送时在该异常上打底标（``protocol.mark_request_not_sent``），写操作据此把「确定未生效」
    与「结果未知」分开（异常类型不变，兼容新增）；
 3. 响应是可重试的 DPE 错误——按 ``code`` 的 ``retryable`` 判定（不按状态码，HTTP 绑定 §3.2），
@@ -29,11 +30,19 @@ capabilities 的 ``content_encodings`` 含 ``gzip``、媒体类型为 ``applicat
 ``https://example.com/anything/r/42``）；只接受 http / https、无查询串与片段、不带凭证信息
 （凭证走 ``CredentialProvider``）。capabilities 在客户端实例内快照一次，核心的契约与 limits
 与它绑定；服务端变更能力后应新建客户端。
+
+**代理只来自环境变量**（#132）：未传入 ``transport`` 时，按 ``dpe_sdk._proxy`` 的规则从
+``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``ALL_PROXY`` / ``NO_PROXY`` 判定 remote 走哪个代理，
+显式交给 httpx 的传输层——httpx 缺省在 macOS / Windows 上会回退读系统代理设置，这里不用它的
+缺省（传入了传输层的 httpx 客户端不再自行探测代理）。连不上代理是建连失败；HTTPS 经代理时
+隧道（``CONNECT``）被拒抛 ``httpx.ProxyError``，发生在请求到达 remote 之前，同样确定未发出；
+明文 HTTP 经代理转发时，代理的应答（如 502）是普通响应。传入 ``transport`` 时原样使用。
 """
 
 from __future__ import annotations
 
 import gzip
+import os
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -44,6 +53,7 @@ import anyio.to_thread
 import dpe_hash
 import httpx
 
+from dpe_sdk._proxy import proxy_for
 from dpe_sdk.credentials import CredentialProvider
 from dpe_sdk.errors import DpeError
 from dpe_sdk.models import Document, ElementObject, PageObject
@@ -81,8 +91,9 @@ _DEFAULT_RETRY_AFTER = 1.0
 #: 如实抛出——库不在一次调用里替调用方长时间阻塞，何时重试由调用方决定
 _MAX_RETRY_WAIT = 300.0
 
-#: 确定未发出（请求一个字节都没到链路上）的失败：任何请求都可原样重发
-_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout)
+#: 确定未发出（请求一个字节都没到 remote）的失败：任何请求都可原样重发。``ProxyError`` 只在
+#: 经代理建立隧道（``CONNECT`` 应答非 2xx）或 SOCKS 握手失败时抛出，都在请求发出之前
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError)
 
 
 def not_sent(exc: BaseException) -> bool:
@@ -252,6 +263,8 @@ class DpeClient(_ClientBase):
             max_resends=max_resends,
             max_retries=max_retries,
         )
+        if transport is None:
+            transport = httpx.HTTPTransport(proxy=proxy_for(remote, os.environ))
         self._http = httpx.Client(timeout=timeout, transport=transport, follow_redirects=False)
         # 并发首次访问 core 时只协商一次能力
         self._lock = threading.Lock()
@@ -415,6 +428,8 @@ class AsyncDpeClient(_ClientBase):
             max_resends=max_resends,
             max_retries=max_retries,
         )
+        if transport is None:
+            transport = httpx.AsyncHTTPTransport(proxy=proxy_for(remote, os.environ))
         self._http = httpx.AsyncClient(timeout=timeout, transport=transport, follow_redirects=False)
         # 首次访问 core 的并发保护；在事件循环内创建（anyio 的锁绑定创建时的运行时）
         self._lock: anyio.Lock | None = None

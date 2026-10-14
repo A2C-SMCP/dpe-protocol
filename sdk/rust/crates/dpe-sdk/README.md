@@ -50,6 +50,16 @@ assert_eq!(result.status.as_str(), "created");
 - remote 按 HTTP 绑定 §1 的文法校验（`dpe_sdk::remote_url::check_remote_url`，即 dpe-hash 的同一函数，与实例定义的 `remote.url` 同一个判定）：http / https、已是 core §1.1 规范化形式、无查询串与片段、无 userinfo、不写默认端口、路径不以 `/` 结尾且无点段；合法即原样使用。**升级须知**（0.4 起，不兼容）：此前构造时去掉的尾部 `/`，以及大写 scheme、显式默认端口、`127.1` 这类数字主机、非 RFC 5952 形式的 IPv6，现在都报 `InvalidArgument`；
 - 传输层只做 I/O：拼 URL、注入凭证、按策略 gzip（请求体，HTTP 绑定 §7）、把响应还原给核心；协议判定与写操作的重试全在 sans-IO 核心；
 - 例外只有三类：`retry_safe` 的请求遇网络失败、任何请求遇「确定未发出」的建连失败、按 `code` 判定的可重试错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，等 `Retry-After` 后原样重发，等待超过 300 秒不吸收；`Retry-After` 只按 RFC 9110 文法解析，即 dpe-hash 的 `retry_after_seconds`，经 `dpe_sdk::protocol` 重新导出。0.4 起首尾只去 SP / HTAB（以前用 `trim()` 去掉全部 Unicode 空白），rfc850 两位年份在世纪交替前后改为取「不晚于现在加 50 年」的最晚年份，以前固定按当前世纪读）；
+- **代理只来自环境变量**（#132）：构造客户端时按下面的规则判定一次 remote 走哪个代理，**从不读操作系统的代理设置**（macOS / Windows 的系统代理、PAC 都不看）。两个 SDK 规则相同，共用一张用例表 `sdk/testdata/proxy_env.json`：
+  - https remote 用 `HTTPS_PROXY`，http remote 用 `HTTP_PROXY`，都没有时用 `ALL_PROXY`；每个名字先看大写、再看小写，空值视为未设置；
+  - 环境中存在 `REQUEST_METHOD`（CGI）时忽略全部代理变量；
+  - `NO_PROXY` 逗号分隔：`*` 匹配一切；IP 与 CIDR（如 `10.0.0.0/8`、`::1`）按地址匹配；其余条目是域名，匹配自身及其子域（`example.com` 与 `.example.com` 等价，不匹配 `notexample.com`）；条目不带端口；
+  - 代理 URL 只支持 `http://` / `https://`（不带 scheme 按 `http://`，`user:pass@` 作为代理的 Basic 认证；密码里的 `@` 须写成 `%40`）；`socks5://` 等在构造客户端时报参数错误；
+  - 规则全部按字符判定，两个 SDK 不借助各自 URL 库的解析：空白只指 ASCII 空白（空格、`\t`、`\n`、`\r`、`\v`、`\f`），不区分大小写只按 ASCII；代理 URL 整体只能含 RFC 3986 允许的 ASCII 字符且不超过 4096 个（`\`、空白、控制字符、非 ASCII 都不合法），userinfo 只能含 RFC 3986 userinfo 字符；主机必须是方括号内的 IPv6（不带 zone）、点分十进制 IPv4 或 ASCII 字母 / 数字 / `-` 组成的域名（不接受 `xn--` 标签），端口写了就是不超过 65535 的十进制数，authority 之后只允许单个 `/`，不合法的值在构造客户端时报错（错误消息不回显值）；
+  - 关闭代理：不设这些变量，或设 `NO_PROXY=*`；
+  - 连不上代理、HTTPS 隧道（`CONNECT`）被代理拒绝都按「确定未发出」处理；明文 HTTP 经代理转发时代理的应答（如 502）是普通响应。
+
+  **升级须知**（0.4 起，行为变化）：Rust 侧以前就只读环境变量（reqwest 缺省），现在改由本 crate 按上述规则判定，个别边界与 reqwest 的口径不同（例如大写变量为空时现在退到小写变量），`socks5://` 等不受支持的代理在构造时报 `InvalidArgument`，不再交给 reqwest；即使依赖图经 feature 合并打开了 reqwest 的 `system-proxy`，本客户端也不读系统设置；
 - 缺省超时 30 秒、不跟随重定向、大 blob 的源读取进工作线程；`send` / `drive` 是公开的驱动缝；
 - 所有操作的 future 都是 `Send`，可以交给 `tokio::spawn`。**不兼容变更（自 0.3.x 之后的下一个次版本起）**：`deliver` 与推送器 `push` 的 `blobs` 回调（`BlobProvider`）须为 `Send`；捕获 `Rc`、`RefCell`、`Cell` 等非 `Send` 状态的闭包不再能编译，请改用 `Arc`、`Mutex`、原子类型，或直接捕获 `&mut` 局部变量（见下文「媒体来源」的示例）。
 

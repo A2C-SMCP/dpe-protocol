@@ -8,6 +8,7 @@ on:
     paths:
       - "sdk/python/**"
       - "conformance/connector-fixture/**"
+      - "sdk/testdata/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
       - "scripts/pattern_subset.py"
@@ -17,6 +18,7 @@ on:
     paths:
       - "sdk/python/**"
       - "conformance/connector-fixture/**"
+      - "sdk/testdata/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
       - "scripts/pattern_subset.py"

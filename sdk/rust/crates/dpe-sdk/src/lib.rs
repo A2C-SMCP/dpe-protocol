@@ -22,6 +22,8 @@ pub mod credentials;
 #[cfg(feature = "http")]
 pub mod http;
 pub mod models;
+#[cfg(feature = "http")]
+mod proxy;
 
 pub use models::{DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, PageObject};
 

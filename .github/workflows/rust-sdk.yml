@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - "sdk/rust/**"
+      - "sdk/testdata/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
       - "scripts/pattern_subset.py"
@@ -24,9 +25,11 @@ on:
       - "sdk/python/packages/dpe-sdk/tests/test_media_http.py"
       - "sdk/python/packages/dpe-sdk/tests/test_transport_server.py"
       - "sdk/python/packages/dpe-sdk/tests/test_pusher.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_proxy.py"
   pull_request:
     paths:
       - "sdk/rust/**"
+      - "sdk/testdata/**"
       - "vectors/**"
       - "scripts/gen_vectors.py"
       - "scripts/pattern_subset.py"
@@ -44,6 +47,7 @@ on:
       - "sdk/python/packages/dpe-sdk/tests/test_media_http.py"
       - "sdk/python/packages/dpe-sdk/tests/test_transport_server.py"
       - "sdk/python/packages/dpe-sdk/tests/test_pusher.py"
+      - "sdk/python/packages/dpe-sdk/tests/test_proxy.py"
   workflow_call:
 
 permissions:

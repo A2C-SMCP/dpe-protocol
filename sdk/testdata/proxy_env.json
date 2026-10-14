@@ -1,0 +1,822 @@
+{
+  "description": "两个 SDK 的代理判定共用的用例表（#132）：给定 remote 与环境变量，判定应经的代理 URL（null 为直连，\"error\" 为构造客户端时报参数错误）。规则见 Python dpe-sdk 与 Rust dpe-sdk 包级 README 传输一节的「代理只来自环境变量」；Python 的 dpe_sdk._proxy 与 Rust 的 dpe_sdk::proxy 都必须逐例通过。这不是规范向量：代理是 SDK 的传输实现细节，不属于协议。",
+  "cases": [
+    {
+      "name": "不设任何变量即直连",
+      "remote": "https://dpe.example.com/r",
+      "env": {},
+      "expected": null
+    },
+    {
+      "name": "https 用 HTTPS_PROXY",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "http 不用 HTTPS_PROXY",
+      "remote": "http://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128"
+      },
+      "expected": null
+    },
+    {
+      "name": "http 用 HTTP_PROXY",
+      "remote": "http://dpe.example.com/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "https 不用 HTTP_PROXY",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128"
+      },
+      "expected": null
+    },
+    {
+      "name": "取不到时用 ALL_PROXY",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "ALL_PROXY": "http://all:1"
+      },
+      "expected": "http://all:1"
+    },
+    {
+      "name": "按 scheme 的变量优先于 ALL_PROXY",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "ALL_PROXY": "http://all:1",
+        "HTTPS_PROXY": "http://s:2"
+      },
+      "expected": "http://s:2"
+    },
+    {
+      "name": "大写优先于小写",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://upper:1",
+        "https_proxy": "http://lower:1"
+      },
+      "expected": "http://upper:1"
+    },
+    {
+      "name": "只有小写也认",
+      "remote": "http://dpe.example.com/r",
+      "env": {
+        "http_proxy": "http://lower:1"
+      },
+      "expected": "http://lower:1"
+    },
+    {
+      "name": "大写为空白视为未设置，取小写",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "  ",
+        "https_proxy": "http://lower:1"
+      },
+      "expected": "http://lower:1"
+    },
+    {
+      "name": "按 scheme 的变量为空时退到 ALL_PROXY",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "",
+        "all_proxy": "http://all:1"
+      },
+      "expected": "http://all:1"
+    },
+    {
+      "name": "值的首尾空白去掉",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": " http://p:3128 "
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "存在 REQUEST_METHOD 时忽略全部代理变量",
+      "remote": "http://dpe.example.com/r",
+      "env": {
+        "REQUEST_METHOD": "GET",
+        "HTTP_PROXY": "http://p:3128",
+        "ALL_PROXY": "http://all:1"
+      },
+      "expected": null
+    },
+    {
+      "name": "REQUEST_METHOD 为空也算存在",
+      "remote": "http://dpe.example.com/r",
+      "env": {
+        "REQUEST_METHOD": "",
+        "HTTP_PROXY": "http://p:3128"
+      },
+      "expected": null
+    },
+    {
+      "name": "不带 scheme 按 http://",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "p:3128"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "https:// 代理照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "https://p:443"
+      },
+      "expected": "https://p:443"
+    },
+    {
+      "name": "scheme 大小写不敏感",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "HTTP://p:3128"
+      },
+      "expected": "HTTP://p:3128"
+    },
+    {
+      "name": "userinfo 原样保留（代理的 Basic 认证）",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:pw@p:3128"
+      },
+      "expected": "http://u:pw@p:3128"
+    },
+    {
+      "name": "不支持的 scheme 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "socks5://p:1080"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "ALL_PROXY 的不支持 scheme 同样报错",
+      "remote": "http://dpe.example.com/r",
+      "env": {
+        "ALL_PROXY": "socks5h://p:1080"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "命中 NO_PROXY 时不看代理的 scheme",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "ALL_PROXY": "socks5://p:1080",
+        "NO_PROXY": "*"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY=* 匹配一切",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "*"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 域名匹配子域",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "example.com"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 域名匹配自身",
+      "remote": "https://example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "example.com"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 域名不匹配同后缀的其他域名",
+      "remote": "https://notexample.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "example.com"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "NO_PROXY 前导点可有可无",
+      "remote": "https://example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": ".example.com"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 域名大小写不敏感",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "EXAMPLE.COM"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 逗号分隔、忽略空白与空条目",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": " foo.org ,, example.com "
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 不命中时照走代理",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "foo.org,bar.net"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "NO_PROXY 大写优先于小写",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "foo.org",
+        "no_proxy": "example.com"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "NO_PROXY 只有小写也认",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "no_proxy": "example.com"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 条目不带端口",
+      "remote": "https://dpe.example.com:8443/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "dpe.example.com:8443"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "NO_PROXY 匹配 IPv4 地址",
+      "remote": "http://127.0.0.1:8080/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "127.0.0.1"
+      },
+      "expected": null
+    },
+    {
+      "name": "IP 条目不匹配域名",
+      "remote": "http://localhost:8080/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "127.0.0.1"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "域名条目不匹配 IP 主机",
+      "remote": "http://127.0.0.1/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "0.0.1"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "NO_PROXY 匹配 IPv4 CIDR",
+      "remote": "http://10.1.2.3/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "10.0.0.0/8"
+      },
+      "expected": null
+    },
+    {
+      "name": "IPv4 CIDR 之外照走代理",
+      "remote": "http://11.0.0.1/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "10.0.0.0/8"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "CIDR 的主机位不为零也按网络匹配",
+      "remote": "http://10.1.2.3/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "10.9.9.9/8"
+      },
+      "expected": null
+    },
+    {
+      "name": "不接受掩码写法",
+      "remote": "http://10.1.2.3/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "10.0.0.0/255.0.0.0"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "前缀长度越界的条目不匹配",
+      "remote": "http://10.1.2.3/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "10.0.0.0/33"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "NO_PROXY 匹配 IPv6 地址",
+      "remote": "http://[::1]:8080/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "::1"
+      },
+      "expected": null
+    },
+    {
+      "name": "IPv6 条目可带方括号",
+      "remote": "http://[::1]:8080/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "[::1]"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 匹配 IPv6 CIDR",
+      "remote": "http://[fd12::1]/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "fd00::/8"
+      },
+      "expected": null
+    },
+    {
+      "name": "IPv4 条目不匹配 IPv6 主机",
+      "remote": "http://[::1]/r",
+      "env": {
+        "HTTP_PROXY": "http://p:3128",
+        "NO_PROXY": "127.0.0.1"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "代理 URL 末尾可带单个 /",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128/"
+      },
+      "expected": "http://p:3128/"
+    },
+    {
+      "name": "代理 URL 带路径报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128/x"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "代理 URL 带查询串报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128?x=1"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "代理 URL 带片段报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128#x"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "端口超过 65535 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:70000"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "端口 65535 照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:65535"
+      },
+      "expected": "http://p:65535"
+    },
+    {
+      "name": "端口超过 5 位报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:000080"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "端口非数字报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:abc"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "冒号后端口为空报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "只有 scheme 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "主机为空报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "主机为空（带 userinfo）报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:pw@:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "主机含下划线报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p_q:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "主机带尾点报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p.:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "主机含连续点报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://a..b:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "主机标签以 xn-- 开头报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://xn--a.example:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "大写字母与连字符的主机照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://Proxy-1.Corp:3128"
+      },
+      "expected": "http://Proxy-1.Corp:3128"
+    },
+    {
+      "name": "IPv4 代理照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://10.0.0.1:3128"
+      },
+      "expected": "http://10.0.0.1:3128"
+    },
+    {
+      "name": "末标签为数字但不是点分四段报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://1.2.3:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "IPv4 段超过 255 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://999.1.1.1:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "IPv4 段有前导零报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://010.0.0.1:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "末标签以 0x 开头报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://a.0x7f:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "末标签含数字以外字符的域名照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://1.2.3a:3128"
+      },
+      "expected": "http://1.2.3a:3128"
+    },
+    {
+      "name": "IPv6 代理照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://[::1]:3128"
+      },
+      "expected": "http://[::1]:3128"
+    },
+    {
+      "name": "IPv6 代理不带端口照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://[fd00::1]"
+      },
+      "expected": "http://[fd00::1]"
+    },
+    {
+      "name": "IPv6 带 zone 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://[fe80::1%25en0]:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "IPv6 缺右方括号报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://[::1:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "IPv6 方括号后不是端口报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://[::1]x"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "方括号内不是 IPv6 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://[p]:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "userinfo 含 @ 报错（须写成 %40）",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:p@ss@p:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "不带 scheme 的值带 userinfo",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "u:pw@p:3128"
+      },
+      "expected": "http://u:pw@p:3128"
+    },
+    {
+      "name": "scheme 位置不合法报错（不回显）",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "u:pw@socks5://p:1080"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "ASCII 空白 \\v \\f 视为空白",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "\u000b\f"
+      },
+      "expected": null
+    },
+    {
+      "name": "ASCII 之外的控制字符不算空白",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "\u001c"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "remote 主机为 xn-- 时照常按 scheme 取代理",
+      "remote": "https://xn--a.example/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "remote 主机为 xn-- 时 NO_PROXY 照常匹配",
+      "remote": "https://xn--a.example/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "xn--a.example"
+      },
+      "expected": null
+    },
+    {
+      "name": "NO_PROXY 只按 ASCII 不区分大小写（开尔文符号 K 不等于 k）",
+      "remote": "https://dpe.k8s.local/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "K8s.local"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "NO_PROXY 条目只去掉 ASCII 空白",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://p:3128",
+        "NO_PROXY": "\u001cexample.com"
+      },
+      "expected": "http://p:3128"
+    },
+    {
+      "name": "密码里的 @ 写成 %40 照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:p%40ss@p:3128"
+      },
+      "expected": "http://u:p%40ss@p:3128"
+    },
+    {
+      "name": "userinfo 含反斜杠报错（凭证不得被送往另一台主机）",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:p@attacker\\@proxy.corp:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "主机前含反斜杠报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://attacker.com\\@proxy.corp:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "userinfo 中间带 TAB 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://us\ter:p@proxy.corp:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "userinfo 中间带控制字符报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://us\u0001er:p@proxy.corp:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "userinfo 含 DEL 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://user:p@proxy.corp:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "userinfo 含非 ASCII 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://üser:p@proxy.corp:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "userinfo 含替换字符报错（非 UTF-8 的值在 Rust 侧的形态）",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u�:p@proxy.corp:3128"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "两个 @ 报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "a@b@proxy:1"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "% 后不是两位十六进制报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:p%4@proxy:1"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "userinfo 允许 sub-delims 与 pct-encoded",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u-._~!$&'()*+,;=:%20@proxy:1"
+      },
+      "expected": "http://u-._~!$&'()*+,;=:%20@proxy:1"
+    },
+    {
+      "name": "空 userinfo 照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://@proxy:1"
+      },
+      "expected": "http://@proxy:1"
+    },
+    {
+      "name": "URL 中间含空格报错",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://pro xy:1"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "代理 URL 恰为 4096 个字符照用",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@p:1"
+      },
+      "expected": "http://u:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@p:1"
+    },
+    {
+      "name": "代理 URL 超过 4096 个字符报错（不静默直连）",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "http://u:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@p:1"
+      },
+      "expected": "error"
+    },
+    {
+      "name": "补上 http:// 之后才计长度",
+      "remote": "https://dpe.example.com/r",
+      "env": {
+        "HTTPS_PROXY": "u:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@p:1"
+      },
+      "expected": "error"
+    }
+  ]
+}
