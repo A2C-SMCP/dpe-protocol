@@ -1,7 +1,14 @@
 """线协议服务端（connector 契约 §6.2–§6.8）：sans-IO，一行请求进、一行响应出。
 
-方法：``initialize``、``scan``（按批拉取）、``shutdown``；``cancel`` 是通知。本期没有 blob，
-``read_blob`` 一律以未知句柄（``-32002``）拒绝。请求同步处理（同 markdown-dir）。
+方法：``initialize``、``scan``（按批拉取）、``read_blob``（按偏移读附件字节）、``shutdown``；
+``cancel`` 是通知。请求同步处理（同 markdown-dir）。
+
+**read_blob**（§6.7）：句柄是附件 id（附件内容按 id 不可变，天然是快照），``size`` 取附件元数据。
+本轮发出过的句柄才登记（文档整篇或首段发出时），新的轮首 ``scan`` 或 ``shutdown`` 时全部失效
+（``-32002``）。读取用 HTTP Range；服务端忽略 Range 时整份下载到临时文件再按偏移取，临时文件随
+句柄一起删除。返回的字节总数必须等于声明的 ``size``：对不上即 ``-32003``（``retryable:
+false``），不截断、不补齐。读取是同步的：服务端忽略 Range 时首次读取要整份下载，期间处理不了
+``cancel``。
 
 **一轮**（``supports_cursor: true``，§6.8）：轮首用增强搜索把范围内全部工单的 id、key、updated
 枚举完（按 nextPageToken 翻页，按 id 升序）。**枚举是完整的才往下走**：任何一页失败、分页字段
@@ -50,9 +57,14 @@
 
 from __future__ import annotations
 
+import atexit
+import base64
+import contextlib
 import json
 import os
 import re
+import shutil
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,11 +77,12 @@ from dpe_jira.client import (
     JiraError,
     NotFound,
     RateLimited,
+    SpoolFailed,
     Unavailable,
     UnexpectedResponse,
 )
 from dpe_jira.cursor import Marks, decode_cursor, encode_cursor, is_issue_id, source_digest
-from dpe_jira.mapping import ISSUE_FIELDS, MappingError, issue_document
+from dpe_jira.mapping import ISSUE_FIELDS, MappingError, blob_handles, issue_document
 
 __all__ = ["PROTOCOL_VERSION", "Serve"]
 
@@ -152,6 +165,8 @@ class _Out:
     item: dict[str, Any]
     issue_id: str | None = None
     mark: tuple[str, str] | None = None
+    #: 文档里的 blob 句柄 → size：条目（整篇或首段）发出时才登记给 ``read_blob``
+    handles: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -205,6 +220,11 @@ class Serve:
         self._source = ""
         self._round: _Round | None = None
         self._rounds = 0
+        #: 本轮产出过的 blob 句柄（附件 id）→ 声明的 size
+        self._handles: dict[str, int] = {}
+        #: 服务端忽略 Range 时整份下载的附件：句柄 → 临时文件
+        self._spooled: dict[str, str] = {}
+        self._spool_dir: str | None = None
 
     def _token(self, round_: _Round) -> str:
         return f"{round_.number}.{round_.issued}"
@@ -231,11 +251,12 @@ class Serve:
             return self._initialize(id_, params)
         if method == "shutdown":
             self.shutdown_requested = True
+            self._drop_handles()
             return _line({"jsonrpc": "2.0", "id": id_, "result": {}})
         if method == "scan":
             return self._scan(id_, params)
         if method == "read_blob":
-            return self._error(id_, -32002, "未知或已失效的句柄")
+            return self._read_blob(id_, params)
         return self._error(id_, -32601, "未知方法")
 
     def _error(self, id_: Any, code: int, message: str, data: Any = None) -> str:
@@ -357,6 +378,98 @@ class Serve:
                 raise type(exc)(f"确认凭证账号失败：{exc}") from None
         return source_digest(self.prefix, self._config, self._account)
 
+    # ------------------------------------------------------------------ read_blob
+
+    def _read_blob(self, id_: Any, params: dict[str, Any]) -> str:
+        handle, offset, limit = (
+            params.get("handle"),
+            params.get("offset", 0),
+            params.get("max_bytes"),
+        )
+        if (
+            not isinstance(handle, str)
+            or not isinstance(offset, int)
+            or isinstance(offset, bool)
+            or offset < 0
+            or not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or limit <= 0
+        ):
+            return self._error(id_, -32602, "read_blob 参数非法")
+        size = self._handles.get(handle)
+        if size is None:
+            return self._error(id_, -32002, "未知或已失效的句柄")
+        # base64 膨胀 4/3：单条响应不超过 max_message_bytes
+        budget = self.max_message_bytes - _ENVELOPE_RESERVE - _size(id_)
+        if budget < 256:
+            return self._error(id_, -32602, "单条预算过小，无法产出")
+        room = budget * 3 // 4
+        want = min(limit, room, size - offset)
+        if want <= 0:  # offset 到达或超过末尾：空块 + eof，不发请求
+            return self._result(id_, {"data": "", "eof": True})
+        try:
+            chunk = self._read_range(handle, size, offset, want)
+        except JiraError as exc:
+            return self._error(id_, -32003, f"读取附件失败：{exc}", {"retryable": exc.retryable})
+        return self._result(
+            id_,
+            {"data": base64.b64encode(chunk).decode("ascii"), "eof": offset + len(chunk) >= size},
+        )
+
+    def _read_range(self, handle: str, size: int, offset: int, want: int) -> bytes:
+        """读附件 ``[offset, offset + want)`` 中开头的一段（至少 1 字节）；长度对不上即抛异常。"""
+        assert self._client is not None
+        spooled = self._spooled.get(handle)
+        if spooled is not None:
+            try:
+                return _read_file(spooled, offset, want)
+            except FileNotFoundError:
+                del self._spooled[handle]  # 轮内被系统清理掉：重新下载
+        paths: list[str] = []
+
+        def spool() -> str:
+            paths.append(os.path.join(self._spool(), f"{handle}.bin"))
+            return paths[-1]
+
+        try:
+            fetched = self._client.attachment_range(handle, offset, want, spool, size)
+        except JiraError:
+            for path in paths:  # 整份下载中途失败：不留半截文件
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(path)
+            raise
+        if fetched.partial:
+            if fetched.total != size:
+                raise _size_mismatch()
+            if fetched.first != offset:
+                raise UnexpectedResponse("附件 Range 响应的起点不符")
+            return fetched.data
+        [path] = paths
+        if fetched.written != size:
+            os.unlink(path)
+            raise _size_mismatch()
+        self._spooled[handle] = path
+        return _read_file(path, offset, want)
+
+    def _spool(self) -> str:
+        """临时目录（第一次整份下载时才创建）。"""
+        if self._spool_dir is None:
+            try:
+                self._spool_dir = tempfile.mkdtemp(prefix="dpe-jira-")
+            except OSError as exc:
+                raise SpoolFailed(f"无法创建临时目录（{type(exc).__name__}）") from None
+            atexit.register(shutil.rmtree, self._spool_dir, True)
+        return self._spool_dir
+
+    def _drop_handles(self) -> None:
+        """句柄失效：清空登记，清空临时目录（含没登记上的半截文件）。"""
+        self._handles.clear()
+        self._spooled.clear()
+        if self._spool_dir is not None:
+            for name in os.listdir(self._spool_dir):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(os.path.join(self._spool_dir, name))
+
     # ------------------------------------------------------------------ scan
 
     def _scan(self, id_: Any, params: dict[str, Any]) -> str:
@@ -371,6 +484,7 @@ class Serve:
             cursor = params.get("cursor")
             if cursor is not None and not isinstance(cursor, str):
                 return self._error(id_, -32602, "cursor 必须是字符串或 null")
+            self._drop_handles()  # 上一轮的句柄到此失效（§6.7）
             try:
                 self._round = self._open_round(cursor)
             except JiraError as exc:
@@ -529,10 +643,12 @@ class Serve:
                 round_.queue.pop(0)
                 if payload is out.item:
                     round_.commit(out)
+                    self._handles.update(out.handles)
                 elif round_.pending is not None:
                     round_.pending_out = out  # 首段：末段发出时再写入记录
+                    self._handles.update(out.handles)
                 else:
-                    round_.revert(out.issue_id)  # 改判为 error
+                    round_.revert(out.issue_id)  # 改判为 error：没发出，句柄不登记
             items.append(payload)
             total += _size(payload) + (1 if len(items) > 1 else 0)
         return items, total
@@ -563,7 +679,7 @@ class Serve:
         if item["kind"] != "document":  # 失败：沿用旧记录，下一轮重新尝试（含移动）
             round_.revert(issue.id)
             return [_Out(item)]
-        document = _Out(item, issue.id, (issue.key, issue.updated))
+        document = _Out(item, issue.id, (issue.key, issue.updated), blob_handles(item))
         return [document] if move is None else [_Out(move), document]
 
     @staticmethod
@@ -676,6 +792,23 @@ def _account_id(me: Any) -> str:
     if not isinstance(account, str) or not account:
         raise UnexpectedResponse("/myself 响应缺少 accountId")
     return account
+
+
+def _read_file(path: str, offset: int, want: int) -> bytes:
+    """从临时文件按偏移读；文件不见了原样抛 ``FileNotFoundError``（调用方重新下载），其余 I/O
+    错误归为 ``SpoolFailed``。"""
+    try:
+        with open(path, "rb") as source:
+            source.seek(offset)
+            return source.read(want)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise SpoolFailed(f"读临时文件失败（{type(exc).__name__}）") from None
+
+
+def _size_mismatch() -> JiraError:
+    return UnexpectedResponse("附件字节长度与元数据里的 size 不符")
 
 
 def _bad_page() -> JiraError:

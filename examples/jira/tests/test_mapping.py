@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fake_jira import adf
 
-from dpe_jira.mapping import MappingError, issue_document, utc
+from dpe_jira.mapping import MappingError, blob_handles, issue_document, utc
 
 URI = "jira://example.atlassian.net/issue/ABC-1"
 
@@ -157,3 +157,78 @@ def test_broken_issues_raise_mapping_error(broken: dict[str, Any]) -> None:
 def test_comment_without_numeric_id_is_rejected() -> None:
     with pytest.raises(MappingError):
         issue_document(URI, issue(), [comment("abc", "2026-09-02T00:00:00.000+0000", "x")])
+
+
+def attachment(
+    attachment_id: str, filename: str, size: Any = 10, mime: str = "x/y"
+) -> dict[str, Any]:
+    return {"id": attachment_id, "filename": filename, "size": size, "mimeType": mime}
+
+
+def test_attachments_page_lists_every_attachment_in_id_order() -> None:
+    item = issue_document(
+        URI,
+        issue(
+            attachment=[
+                attachment("30", "report.PDF", 2048, "application/pdf"),
+                attachment("4", "Shot.JPG", 99, "application/octet-stream"),
+                attachment("12", "diagram.png", 5),
+            ]
+        ),
+        [],
+    )
+    assert [page["page_metadata"] for page in item["pages"]][-1] == {"section": "attachments"}
+    assert item["pages"][-1]["elements"] == [
+        {
+            "category": "Image",
+            "text": "Shot.JPG",
+            "mime_type": "image/jpeg",  # 按扩展名查固定表，不取 Jira 给的 mimeType
+            "blob": {"handle": "4", "size": 99},
+            "metadata": {"attachment_id": "4"},
+        },
+        {
+            "category": "Image",
+            "text": "diagram.png",
+            "mime_type": "image/png",
+            "blob": {"handle": "12", "size": 5},
+            "metadata": {"attachment_id": "12"},
+        },
+        {
+            "category": "NarrativeText",
+            "text": "report.PDF",
+            "metadata": {"attachment_id": "30", "mime_type": "application/pdf", "size": 2048},
+        },
+    ]
+    assert blob_handles(item) == {"4": 99, "12": 5}
+
+
+def test_no_attachments_means_no_fourth_page() -> None:
+    empties: tuple[list[Any] | None, ...] = (None, [])
+    for value in empties:
+        item = issue_document(URI, issue(attachment=value), [])
+        assert len(item["pages"]) == 3
+        assert blob_handles(item) == {}
+
+
+def test_adding_an_attachment_leaves_other_pages_untouched() -> None:
+    before = issue_document(URI, issue(), [])
+    after = issue_document(URI, issue(attachment=[attachment("1", "a.png")]), [])
+    assert after["pages"][:3] == before["pages"]
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "not a list",
+        [{"filename": "a.png", "size": 1}],
+        [attachment("x1", "a.png")],
+        [attachment("1", "")],
+        [attachment("1", "a.png", -1)],
+        [attachment("1", "a.png", True)],
+        [attachment("1", "a.png", 2**53)],
+        [attachment("1", "a.png", "10")],
+    ],
+)
+def test_broken_attachments_raise_mapping_error(broken: Any) -> None:
+    with pytest.raises(MappingError):
+        issue_document(URI, issue(attachment=broken), [])
