@@ -8,9 +8,12 @@
   committer 时间（UTC）的 ``YYYY-MM``；``page_metadata`` 为 ``{ref: <默认分支名>, period: …}``；
 - **其他跟踪分支每条一页**：只含该分支独有（``<default>..<branch>``）的提交，
   ``page_metadata`` 为 ``{ref: <分支名>}``；
-- **元素 = 一次提交**（见 ``extractors``）。
+- **附注标签一页**（#220）：放在最后，``page_metadata`` 为 ``{kind: "tags"}``——换一个键而不是
+  ``ref``，分支名可以叫 ``tags``，键集合不同即从结构上区分页的种类；没有附注标签不产该页；
+- **元素 = 一次提交**（标签页上是一个附注标签，见 ``extractors``）。
 
-页序：月页按月份升序在前，分支页按分支名（字节序）在后；页内旧在前——**自有拓扑序**（从
+页序：月页按月份升序在前，分支页按分支名（字节序）在后，标签页最后；标签页内按
+``order_tags``（标签时间，再按名字）；提交页内旧在前——**自有拓扑序**（从
 起始提交出发按父提交记录顺序做后序 DFS，见 ``gitrepo.order_commits`` 与 README「确定性」；
 只依赖提交图，不依赖 git 的输出次序，跨 git 版本稳定），合并带入的提交排在其合并提交之前。
 不写易变字段、不写由位置算出的序号（core §2.4）；``file_uri`` 是身份（实例前缀 + 仓库标识），
@@ -25,11 +28,12 @@
   ``max_payload_bytes``（部署配置问题，不静默按远端值重新切分）。
 
 **增量**（#66）：映射是「仓库状态」的纯函数——默认分支名与 tip、``since`` 解析出的提交、
-各跟踪分支的 tip（提交按 SHA 不可变，配置与映射规则版本由运行器的内容身份承担）。``resolve``
-一次解析出这组值，``RepoState.fingerprint`` 是它的摘要：指纹与上一轮相同即文档相同，``scan``
-直接跳过、不读提交日志；不同则用**同一次解析出的 tip** 映射整篇文档（避免两次解析之间仓库被
-推送造成指纹与内容不符）。仓库消失 / 改名由 ``server`` 在仓库集合层面表达 delete / move，
-改名的配对判据「根提交集合 + 默认分支名」由 ``move_key`` 给出（#96）。
+各跟踪分支的 tip、各附注标签的标签对象（#220）（提交与标签对象按 SHA 不可变，配置与映射
+规则版本由运行器的内容身份承担）。``resolve`` 一次解析出这组值，``RepoState.fingerprint``
+是它的摘要：指纹与上一轮相同即文档相同，``scan`` 直接跳过、不读提交日志；不同则用
+**同一次解析出的 tip** 映射整篇文档（避免两次解析之间仓库被推送造成指纹与内容不符）。
+仓库消失 / 改名由 ``server`` 在仓库集合层面表达 delete / move，改名的配对判据「根提交集合 +
+默认分支名」由 ``move_key`` 给出（#96）。
 """
 
 from __future__ import annotations
@@ -47,13 +51,14 @@ from dpe_hash import (
     normalize_file_uri,
 )
 
-from dpe_git_connector.extractors import commit_elements, element_bytes
+from dpe_git_connector.extractors import commit_elements, element_bytes, tag_elements
 from dpe_git_connector.gitrepo import (
     CommitRecord,
     GitContentError,
     GitError,
     GitRepo,
     RepoDir,
+    TagRecord,
     first_parent_chain,
     order_commits,
     root_commits,
@@ -69,6 +74,7 @@ __all__ = [
     "build_file_uri",
     "month_partition",
     "move_key",
+    "order_tags",
 ]
 
 #: RFC 3986 unreserved —— 这些字节照原样进 URI（其余一律百分号编码）
@@ -143,6 +149,9 @@ class RepoState:
     branches: tuple[tuple[str, str | None], ...] = ()
     #: 浅克隆的边界：tip 不变时它变化（``fetch --deepen``）同样改变可见的提交集合
     shallow: tuple[str, ...] = ()
+    #: 附注标签（名字, 标签对象 SHA），按名字字节序。轻量标签不产内容、不在其中：指纹恰好
+    #: 等于映射的输入，多了只会无谓重扫；标签对象 SHA 已覆盖说明、tagger、target 的变化
+    tags: tuple[tuple[str, str], ...] = ()
 
     def fingerprint(self) -> str:
         return _digest(
@@ -152,6 +161,7 @@ class RepoState:
                 "since": self.since,
                 "branches": [[name, tip] for name, tip in self.branches],
                 "shallow": list(self.shallow),
+                "tags": [[name, sha] for name, sha in self.tags],
             }
         )
 
@@ -225,6 +235,15 @@ def month_partition(
             continue
         months.setdefault(chain_month[introduction], []).append(record)
     return months
+
+
+def order_tags(records: Sequence[TagRecord]) -> list[TagRecord]:
+    """标签页内的自有顺序：按 ``tagged_at`` 升序，同时间按名字（UTF-8 字节序）；没有 tagger 的
+    老标签排在最前（再按名字）。只依赖标签对象与 ref 名，不依赖 git 的输出次序。"""
+    return sorted(
+        records,
+        key=lambda tag: (tag.tagged_at is not None, tag.tagged_at or "", tag.name.encode("utf-8")),
+    )
 
 
 def _elements(records: Sequence[CommitRecord]) -> list[ElementObject]:
@@ -374,12 +393,13 @@ class DocumentMapper:
             # 解析不到（未建或已删）记 None：不产该页，也不是错误——与「删除分支 = 删页」一致
             branches=tuple((name, repo.resolve_branch(name)) for name in tracked),
             shallow=repo.shallow_boundary(),
+            tags=repo.annotated_tags(),
         )
 
     def _pages(
         self, repo: GitRepo, state: RepoState
     ) -> tuple[list[dict[str, Any]], tuple[str, ...]]:
-        """按已解析的状态给出全部页对象（月页在前、分支页在后）与默认分支的根提交。"""
+        """按已解析的状态给出全部页对象（月页、分支页、标签页依次排列）与默认分支的根提交。"""
         if state.default_name is None or state.default_tip is None:
             return [], ()
         default_name, default_tip = state.default_name, state.default_tip
@@ -405,6 +425,11 @@ class DocumentMapper:
                     "elements": _elements(order_commits(repo.log(f"{default_tip}..{tip}"), tip)),
                 }
             )
+        if state.tags:
+            elements: list[ElementObject] = []
+            for tag in order_tags(repo.tags(state.tags)):
+                elements += tag_elements(tag)
+            pages.append({"page_metadata": {"kind": "tags"}, "elements": elements})
         return pages, root_commits(records)
 
     def _oversize(self, pages: list[dict[str, Any]]) -> int | None:

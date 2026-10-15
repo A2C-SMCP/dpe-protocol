@@ -128,6 +128,40 @@ def test_new_commit_only_emits_that_repository(root: Path) -> None:
     assert run(serve, second.cursor).items == []
 
 
+def _tag(repo: Path, *args: str, date: str = "2026-02-07T10:00:00+00:00") -> None:
+    run_git(repo, "-c", "tag.gpgsign=false", "tag", *args, env={"GIT_COMMITTER_DATE": date})
+
+
+def test_annotated_tag_changes_are_document_changes(root: Path) -> None:
+    """打、改（force）、删附注标签都是该仓库的内容变化（#220）；只动轻量标签没有任何产出。"""
+    serve = serve_for(root)
+    first = run(serve)
+    alpha = root / "alpha"
+
+    _tag(alpha, "light")
+    assert run(serve, first.cursor).items == []
+
+    _tag(alpha, "-a", "v1", "-m", "发版 v1")
+    tagged = run(serve, first.cursor)
+    assert tagged.kinds() == [("document", uri("alpha"))]
+    assert tagged.items[0]["pages"][-1]["page_metadata"] == {"kind": "tags"}
+
+    _tag(alpha, "-f", "-a", "v1", "-m", "发版 v1（改写说明）")
+    retagged = run(serve, tagged.cursor)
+    assert retagged.kinds() == [("document", uri("alpha"))]
+    assert retagged.items[0]["pages"][-1]["elements"][0]["text"] == "发版 v1（改写说明）\n"
+
+    run_git(alpha, "tag", "-d", "v1")
+    untagged = run(serve, retagged.cursor)
+    assert untagged.kinds() == [("document", uri("alpha"))]
+    assert untagged.items[0]["pages"] == first_pages(first, "alpha")
+    assert run(serve, untagged.cursor).items == []
+
+
+def first_pages(round_: Round, name: str) -> Any:
+    return next(item["pages"] for item in round_.items if item.get("file_uri") == uri(name))
+
+
 def test_new_repository_is_a_document(root: Path) -> None:
     serve = serve_for(root)
     first = run(serve)

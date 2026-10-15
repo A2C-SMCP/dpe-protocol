@@ -1,7 +1,7 @@
-"""Git 仓库访问：以命令行 git 为唯一后端（不引入 git 库；对象格式只在旧编码提交处读取）。
+"""Git 仓库访问：以命令行 git 为唯一后端（不引入 git 库；对象格式只在标签与旧编码提交处读取）。
 
 本连接器把仓库的**提交历史**映射为 DPE 内容（README「映射规则」），因此只遍历提交图——
-读取提交元数据与提交说明，**不读树、不读 diff、不读文件内容**。只读命令：
+读取提交元数据与提交说明（以及附注标签的说明），**不读树、不读 diff、不读文件内容**。只读命令：
 
 - ``git rev-parse``：仓库根校验、ref 与提交解析（``^{commit}`` 解引用）与祖先判定；
 - ``git symbolic-ref``：默认分支取自 ``refs/remotes/origin/HEAD`` 的符号目标（由远端声明）；
@@ -10,9 +10,10 @@
 - ``git log -z --format=…``：提交**集合**与元数据——git 的输出次序不进内容，页内元素序由本
   模块的 ``order_commits`` 按自有规则给出（只依赖提交图；跨 git 版本稳定）；
 - ``git rev-list --max-parents=0``：根提交集合（仓库改名的配对判据，见 ``server``）；
-- ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）；
-- ``git cat-file --batch``：声明了非 UTF-8 编码的提交的原始字节（``git log`` 的转码随平台
-  而异，见 ``GitRepo._verbatim``）——这是唯一自行读取对象格式之处。
+- ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）与附注
+  标签的集合（``refs/tags/*`` 中指向标签对象的 ref，#220）；
+- ``git cat-file --batch``：标签对象，以及声明了非 UTF-8 编码的提交的原始字节（``git log``
+  的转码随平台而异，见 ``GitRepo._verbatim``）——只有这两处自行读取对象格式。
 
 ``-z`` 与 ``%x00`` 分隔是必需的：提交说明原样进 DPE，NUL 不能出现在提交消息与 ident 里，用它
 分隔无歧义（换行、引号都不会被改写）。
@@ -49,6 +50,7 @@ __all__ = [
     "GitError",
     "GitRepo",
     "RepoDir",
+    "TagRecord",
     "discover_repos",
     "first_parent_chain",
     "git_version",
@@ -97,6 +99,74 @@ class CommitRecord:
     committed_at: str
     #: 提交说明全文（原样，不剥离；含 Git 存储的结尾换行）
     message: str
+
+
+@dataclass(frozen=True)
+class TagRecord:
+    """一个附注标签（标签页元素的源，#220）：ref 名 + 标签对象里的源事实 + 说明（不含签名）。"""
+
+    #: ref 名去掉 ``refs/tags/``（用户认的名字；可能与对象里的 ``tag`` 头不同）
+    name: str
+    #: 对象里 ``object`` 头直接记录的 SHA（不剥到底层：嵌套标签就指向那个标签对象）
+    target: str
+    #: ``Name <email>`` 与 RFC 3339 UTC；老标签没有 ``tagger`` 头时两者都是 ``None``
+    tagger: str | None
+    tagged_at: str | None
+    #: 标签说明原文，去掉末尾的签名块（``strip_signature``）
+    message: str
+
+
+#: ``_cat_objects`` 的对象类型 → 错误消息里的中文名
+_KIND_NAMES = {"commit": "提交", "tag": "标签"}
+
+#: git 认定的签名块起始标记（gpg-interface.c 的 OpenPGP / X.509 / SSH 三种格式）。本模块自己
+#: 按它切分而不用 ``%(contents:signature)``：SSH 签名自 git 2.34 才被识别，低于它的 git 会把
+#: SSH 签名留在说明里，映射就随 git 版本而变
+_SIGNATURE_MARKERS = (
+    b"-----BEGIN PGP SIGNATURE-----",
+    b"-----BEGIN PGP MESSAGE-----",
+    b"-----BEGIN SIGNED MESSAGE-----",
+    b"-----BEGIN SSH SIGNATURE-----",
+)
+
+
+def strip_signature(message: bytes) -> bytes:
+    """去掉标签说明末尾的签名块（签名不进内容，README「映射规则」）。
+
+    边界与 git 的 ``parse_signed_buffer`` 一致：**最后一个**以签名起始标记开头的行及其之后都是
+    签名。标记不在行首（缩进、句中引用）不算；正文行首出现标记、末尾另有真签名时只切末尾那块。
+    """
+    match = len(message)
+    position = 0
+    while position < len(message):
+        if message.startswith(_SIGNATURE_MARKERS, position):
+            match = position
+        newline = message.find(b"\n", position)
+        position = len(message) if newline < 0 else newline + 1
+    return message[:match]
+
+
+def _split_ident(ident: bytes, what: str) -> tuple[bytes, bytes, bytes]:
+    """``Name <email> 其余`` → (name, email, 其余)：与 git 的 ``split_ident_line`` 同口径，在第一个
+    ``<`` 处切、取其后第一个 ``>``；格式不对抛 ``GitContentError``。"""
+    opening = ident.find(b"<")
+    closing = ident.find(b">", opening)
+    if opening < 0 or closing < 0:
+        raise GitContentError(f"{what}格式不对")
+    return ident[:opening].strip(b" \t"), ident[opening + 1 : closing], ident[closing + 1 :]
+
+
+def _ident_time(rest: bytes, what: str) -> str:
+    """ident 之后的 ``<秒> <时区>`` → RFC 3339 UTC（时区不影响 UTC 时刻，只校验形状）。"""
+    fields = rest.split()
+    shaped = len(fields) == 2 and re.fullmatch(rb"[+-]\d{4}", fields[1]) is not None
+    if not shaped or not fields[0].isdigit():
+        raise GitContentError(f"{what}的时间格式不对")
+    try:
+        moment = datetime.fromtimestamp(int(fields[0]), UTC)
+    except (OverflowError, ValueError, OSError):
+        raise GitContentError(f"{what}的时间超出可表示的范围") from None
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass(frozen=True)
@@ -532,36 +602,105 @@ class GitRepo:
             )
         return records
 
+    def annotated_tags(self) -> tuple[tuple[str, str], ...]:
+        """附注标签：``refs/tags/*`` 中直接指向标签对象的 ref → (名字, 标签对象 SHA)，按名字的
+        UTF-8 字节序。轻量标签（直接指向提交等）只是名字、不是内容，不在其中（#220）。
+
+        标签由 fetch 直接写进本地 ``refs/tags``，没有远端命名空间可优先：集合以部署方 fetch 的
+        结果为准（README「已知限制」）。名字不是 UTF-8 时抛 ``GitContentError``。
+        """
+        raw = self._run_bytes(
+            "for-each-ref", "--format=%(objecttype)%00%(objectname)%00%(refname)", "refs/tags/"
+        )
+        tags: list[tuple[str, str]] = []
+        for line in raw.split(b"\n"):
+            if not line:
+                continue
+            fields = line.split(b"\x00")
+            if len(fields) != 3 or not fields[2].startswith(b"refs/tags/"):
+                raise GitError("git for-each-ref 的输出格式不对")
+            if fields[0] != b"tag":
+                continue
+            try:
+                name = fields[2][len(b"refs/tags/") :].decode("utf-8")
+            except UnicodeDecodeError:
+                raise GitContentError("有标签的名字不是合法 UTF-8") from None
+            tags.append((name, fields[1].decode("ascii").lower()))
+        return tuple(sorted(tags, key=lambda tag: tag[0].encode("utf-8")))
+
+    def tags(self, tags: Sequence[tuple[str, str]]) -> list[TagRecord]:
+        """读标签对象（``annotated_tags`` 的结果）→ ``TagRecord``，顺序与传入相同。
+
+        对象格式按 git 文档：头部（``object`` / ``type`` / ``tag`` / ``tagger``）、一个空行、说明。
+        说明去掉末尾签名块后按 UTF-8 严格解码（标签对象没有 encoding 头的语义，git 也不对它
+        转码）；解不了或格式不对抛 ``GitContentError``。
+        """
+        bodies = self._cat_objects([sha for _, sha in tags], "tag")
+        records: list[TagRecord] = []
+        for name, sha in tags:
+            head, _, message = bodies[sha].partition(b"\n\n")
+            lines = head.split(b"\n")
+            target = next((line[7:] for line in lines if line.startswith(b"object ")), None)
+            if target is None:
+                raise GitContentError(f"标签 {name} 的对象缺少 object 头")
+            tagger: str | None = None
+            tagged_at: str | None = None
+            line = next((line for line in lines if line.startswith(b"tagger ")), None)
+            try:
+                if line is not None:
+                    who, email, rest = _split_ident(line[7:], f"标签 {name} 的 tagger 行")
+                    tagger = f"{who.decode('utf-8')} <{email.decode('utf-8')}>"
+                    tagged_at = _ident_time(rest, f"标签 {name} 的 tagger 行")
+                text = strip_signature(message).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise GitContentError(
+                    f"标签 {name} 的说明或 tagger 不是合法 UTF-8（{exc.reason}）"
+                ) from None
+            records.append(
+                TagRecord(
+                    name=name,
+                    target=target.decode("ascii", "replace").strip().lower(),
+                    tagger=tagger,
+                    tagged_at=tagged_at,
+                    message=text,
+                )
+            )
+        return records
+
     def _verbatim(self, shas: list[str]) -> dict[str, tuple[bytes, bytes, bytes]]:
         """取声明了非 UTF-8 编码的提交的作者名、邮箱与说明的**原始字节**（README「确定性」）。
 
         ``git log`` 的输出编码不可移植：即便请求与提交声明相同的编码，musl 上的 git 仍会转码
-        （实测），iconv 失败时还会悄悄原样输出。原始字节只能取自对象本身：``git cat-file
-        --batch`` 原样给出提交对象，按 git 文档规定的格式（头部、一个空行、说明）取 ``author``
-        行与说明——这是本模块唯一自行读取对象格式之处，只用于这类旧编码提交。
+        （实测），iconv 失败时还会悄悄原样输出。原始字节只能取自对象本身：按 git 文档规定的
+        格式（头部、一个空行、说明）取 ``author`` 行与说明——只用于这类旧编码提交。
         """
+        bodies = self._cat_objects(shas, "commit")
+        out: dict[str, tuple[bytes, bytes, bytes]] = {}
+        for sha in shas:
+            head, _, message = bodies[sha].partition(b"\n\n")
+            author = next((line for line in head.split(b"\n") if line.startswith(b"author ")), None)
+            ident = author[len(b"author ") :] if author is not None else b""
+            name, email, _ = _split_ident(ident, f"提交 {sha} 的 author 行")
+            out[sha.lower()] = (name, email, message)
+        return out
+
+    def _cat_objects(self, shas: list[str], kind: str) -> dict[str, bytes]:
+        """``git cat-file --batch`` 原样取一批对象的内容（SHA → 字节）；类型须是 ``kind``。"""
+        if not shas:
+            return {}
         raw = self._run_bytes(
             "cat-file", "--batch", stdin="".join(f"{sha}\n" for sha in shas).encode("ascii")
         )
-        out: dict[str, tuple[bytes, bytes, bytes]] = {}
+        out: dict[str, bytes] = {}
         position = 0
         for sha in shas:
             newline = raw.find(b"\n", position)
             header = raw[position:newline].split(b" ") if newline >= 0 else []
-            if len(header) != 3 or header[1] != b"commit" or not header[2].isdigit():
-                raise GitError(f"git cat-file 读不出提交 {sha}")
+            if len(header) != 3 or header[1] != kind.encode() or not header[2].isdigit():
+                raise GitError(f"git cat-file 读不出{_KIND_NAMES[kind]} {sha}")
             size = int(header[2])
-            body = raw[newline + 1 : newline + 1 + size]
+            out[sha] = raw[newline + 1 : newline + 1 + size]
             position = newline + 1 + size + 1  # 对象之后的换行
-            head, _, message = body.partition(b"\n\n")
-            author = next((line for line in head.split(b"\n") if line.startswith(b"author ")), None)
-            ident = author[len(b"author ") :] if author is not None else b""
-            opening = ident.find(b"<")
-            closing = ident.find(b">", opening)
-            if opening < 0 or closing < 0:
-                raise GitContentError(f"提交 {sha} 的 author 行格式不对")
-            name = ident[:opening].strip(b" \t")
-            out[sha.lower()] = (name, ident[opening + 1 : closing], message)
         return out
 
     # ------------------------------------------------------------------ 子进程
