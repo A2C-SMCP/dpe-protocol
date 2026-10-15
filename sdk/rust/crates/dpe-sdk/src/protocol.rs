@@ -64,6 +64,10 @@ pub const ERROR_CODE_HEADER: &str = "DPE-Error-Code";
 pub const SESSION_EXPIRES_HEADER: &str = "DPE-Session-Expires";
 /// 分块上传与断点查询的本会话已收字节数（HTTP 绑定 §4.7）。
 pub const UPLOAD_OFFSET_HEADER: &str = "DPE-Upload-Offset";
+/// 更新走快路径（整篇内联重传）的上限（core §3.2，#212）：整篇内联请求体不超过它的更新，重传的
+/// 代价与多一次往返相当；更大的更新走差量路径，只传缺失的页与元素。新建不受它限制。两个 SDK
+/// 取同一值（Python `SMALL_UPDATE_BYTES`）。
+pub const SMALL_UPDATE_BYTES: u64 = 64 * 1024;
 
 /// JSON 请求体的媒体类型。
 const JSON: &str = "application/json";
@@ -713,8 +717,8 @@ impl ProtocolCore {
 
     /// `POST negotiate`（HTTP 绑定 §4.5）：开启暂存会话并返回逐层缺失清单。
     ///
-    /// 只提交文档对象——规范允许附带部分页对象（MAY），本 SDK 暂不提供该开关：增量场景下附带
-    /// 会把服务端已有的页也当请求体重传，收益方向相反。`uri` 不合法（core §1.1）时本地即失败，
+    /// 只提交文档对象——规范允许附带部分页对象（MAY）；附带哪些页要先知道哪些缺失，这由
+    /// `deliver` 的差量路径（两次 negotiate，#212）完成，公开接口不提供该开关。`uri` 不合法（core §1.1）时本地即失败，
     /// 不发请求。
     pub fn negotiate(
         &self,
@@ -722,7 +726,7 @@ impl ProtocolCore {
         document: &ExpandedDocument,
     ) -> Result<NegotiateOp<'_>, Error> {
         let parts = self.wire_parts(document)?;
-        self.negotiate_op(uri, &parts)
+        self.negotiate_op(uri, &parts, &[])
     }
 
     /// `PUT staging/{sid}/pages/{page_hash}`（HTTP 绑定 §4.6）：上传一个页对象（对象本身即请求
@@ -829,8 +833,15 @@ impl ProtocolCore {
 
     /// 投递一篇文档（core §3.2）：自动选择快路径或暂存路径，只传变更。
     ///
-    /// - 内联请求体不超过 `max_payload_bytes` 时走快路径（一次 `commit`）；否则逐层协商
-    ///   （negotiate → 缺失页 → 缺失元素 → 缺失 blob → commit 引用会话），只传缺失的部分；
+    /// - 选路只看前置条件与本地算出的请求体大小，不额外读 remote（core §3.2，#212）：
+    ///   - 新建（`IfAbsent`）：整篇内联放得下 `max_payload_bytes` 就走快路径（一次 `commit`）；
+    ///   - 更新（`BaseHash` / `Force`）：整篇内联不超过 [`SMALL_UPDATE_BYTES`]（且放得下）走快
+    ///     路径；否则走**差量路径**，只传缺失、往返数有上限——`negotiate` 只交文档对象得到缺失的
+    ///     页；有缺失的页时再 `negotiate` 一次、只附带这些页，得到其中缺失的元素；`commit` 引用
+    ///     会话并只内联缺失的元素（缺失的 blob 由 commit 的缺失清单给出、补传后重提）；请求体放
+    ///     不下时按清单逐层上传；
+    ///   - 以上都放不下时逐层协商（negotiate → 缺失页 → 缺失元素 → 缺失 blob → commit 引用
+    ///     会话），只传缺失的部分；
     /// - `DPE_MISSING_CONTENT`：按分层清单把缺失对象补传进**同一会话**后重新 commit；快路径下
     ///   用「内联 + `staging_session`」的请求体，其余对象不必重传（blob 永远不能内联，是快路径
     ///   唯一可能缺的一层）；
@@ -889,10 +900,17 @@ impl ProtocolCore {
     }
 
     /// 由已拆分的部件发起 negotiate（[`Self::negotiate`] 与 `deliver` 共用）。
-    fn negotiate_op(&self, uri: &str, parts: &WireParts) -> Result<NegotiateOp<'_>, Error> {
+    /// `pages`：附带的页对象（差量路径只附带缺失的页，#212）——它们存入会话，缺失清单因此给出
+    /// 其中缺失的元素（HTTP 绑定 §4.5）。
+    fn negotiate_op(
+        &self,
+        uri: &str,
+        parts: &WireParts,
+        pages: &[Value],
+    ) -> Result<NegotiateOp<'_>, Error> {
         let expected_uri = dpe_hash::normalize_file_uri(uri)
             .map_err(|error| Error::from_hash_error(&error, ""))?;
-        let body = json!({"file_uri": uri, "document": &parts.document});
+        let body = negotiate_body(uri, parts, pages);
         let request = self.write_request(Method::Post, "negotiate".to_owned(), Some(&body), &[]);
         Ok(NegotiateOp {
             core: self,
@@ -2335,7 +2353,8 @@ pub struct Negotiated {
     pub session: Session,
     /// 文档对象引用、而不可得的页对象。
     pub missing_pages: Vec<String>,
-    /// 附带的页对象中引用、而不可得的元素对象（本 SDK 不附带页对象，因此恒为空）。
+    /// 附带的页对象中引用、而不可得的元素对象：公开的 `negotiate` 不附带页对象，因此为空；
+    /// `deliver` 的差量路径附带缺失的页，由它给出其中缺失的元素（#212）。
     pub missing_content_hashes: Vec<String>,
 }
 
@@ -3062,6 +3081,12 @@ enum DeliverMode {
 enum DeliverGoal {
     /// 快路径恢复：算「内联 + 会话」的请求体重提；加上会话 id 即超限时回落暂存路径。
     InlineRecovery,
+    /// 差量路径第一步（#212）：只交文档对象，得到缺失的页；没有缺失的页即提交，否则只附带它们
+    /// 再 negotiate 一次（[`DeliverGoal::DeltaElements`]）。
+    DeltaPages,
+    /// 差量路径第二步：已附带缺失的页，以「会话 + 缺失元素」的请求体提交；放不下时按清单走暂存
+    /// 路径。
+    DeltaElements,
     /// 暂存路径：按新清单补传后重新提交。
     Staged,
 }
@@ -3090,6 +3115,10 @@ pub struct DeliverOp<'a> {
     /// 当前清单是否已展开进队列（重开 negotiate / 收到新清单时重置）。
     queue_active: bool,
     mode: DeliverMode,
+    /// 内联请求体是差量路径的「会话 + 缺失对象」（#212）：换会话时重走两次 negotiate、重算。
+    delta: bool,
+    /// 差量路径第二次 negotiate 要附带的缺失页。
+    delta_pages: Vec<Value>,
     /// negotiate 完成后要做的事。
     after_negotiate: Option<DeliverGoal>,
     phase: DeliverPhase<'a>,
@@ -3146,6 +3175,8 @@ impl<'a> DeliverOp<'a> {
             queue: ManifestQueue::default(),
             queue_active: false,
             mode: DeliverMode::Inline,
+            delta: false,
+            delta_pages: Vec::new(),
             after_negotiate: None,
             phase: DeliverPhase::Finished,
             awaiting: false,
@@ -3159,9 +3190,18 @@ impl<'a> DeliverOp<'a> {
             return Ok(op);
         }
         let inline = op.build_inline_body();
-        if json_body_len(&inline) <= core.limits().max_payload_bytes {
+        let size = json_body_len(&inline);
+        let limit = core.limits().max_payload_bytes;
+        let fast = match op.precondition {
+            Precondition::IfAbsent => size <= limit,
+            _ => size <= SMALL_UPDATE_BYTES.min(limit),
+        };
+        if fast {
             op.inline = Some(inline);
             op.start_commit()?;
+        } else if op.precondition != Precondition::IfAbsent {
+            op.delta = true;
+            op.start_negotiate(DeliverGoal::DeltaPages)?;
         } else {
             op.mode = DeliverMode::Staged;
             op.start_negotiate(DeliverGoal::Staged)?;
@@ -3189,6 +3229,56 @@ impl<'a> DeliverOp<'a> {
         let mut body = self.inline.clone()?;
         body["staging_session"] = Value::String(session.id.clone());
         (json_body_len(&body) <= self.core.limits().max_payload_bytes).then_some(body)
+    }
+
+    /// negotiate 清单里列出的对象（去重、按清单顺序）；出现不属于本文档的 hash 是服务端问题。
+    fn listed(
+        table: &std::collections::HashMap<String, Value>,
+        hashes: &[String],
+        what: &str,
+    ) -> Result<Vec<Value>, Error> {
+        let mut seen = HashSet::new();
+        let mut found = Vec::new();
+        for hash in hashes {
+            if !seen.insert(hash.as_str()) {
+                continue;
+            }
+            let Some(value) = table.get(hash) else {
+                return Err(Error::unexpected(
+                    format!("negotiate 缺失清单里的{what} {hash} 不是本次提交引用的对象"),
+                    200,
+                    None,
+                ));
+            };
+            found.push(value.clone());
+        }
+        Ok(found)
+    }
+
+    /// 差量路径的 commit 请求体（#212）：文档对象、会话，以及 negotiate 列出的缺失元素（去重范围
+    /// 之外的才内联，core §3.3 第 6 步）；放不下 `max_payload_bytes` 时为 `None`。附带过的页已
+    /// 存入会话，不再内联；清单仍列出缺失的页（只附带了部分页时）则一并内联。
+    fn delta_body(&self, negotiated: &Negotiated) -> Result<Option<Value>, Error> {
+        let pages = Self::listed(&self.parts.page_by_hash, &negotiated.missing_pages, "页")?;
+        let objects = Self::listed(
+            &self.parts.object_by_hash,
+            &negotiated.missing_content_hashes,
+            "元素",
+        )?;
+        let mut body = json!({
+            "document": &self.parts.document,
+            "staging_session": &negotiated.session.id,
+        });
+        if !pages.is_empty() {
+            body["pages"] = Value::Array(pages);
+        }
+        if !objects.is_empty() {
+            body["objects"] = Value::Array(objects);
+        }
+        if self.precondition == Precondition::Force {
+            body["force"] = Value::Bool(true);
+        }
+        Ok((json_body_len(&body) <= self.core.limits().max_payload_bytes).then_some(body))
     }
 
     /// 当前会话的 id（暂存路径必有会话）。
@@ -3227,7 +3317,12 @@ impl<'a> DeliverOp<'a> {
 
     /// 发起 negotiate。
     fn start_negotiate(&mut self, goal: DeliverGoal) -> Result<(), Error> {
-        let op = self.core.negotiate_op(&self.uri, &self.parts)?;
+        let pages: &[Value] = if goal == DeliverGoal::DeltaElements {
+            &self.delta_pages
+        } else {
+            &[]
+        };
+        let op = self.core.negotiate_op(&self.uri, &self.parts, pages)?;
         self.after_negotiate = Some(goal);
         self.phase = DeliverPhase::Negotiate(Box::new(op));
         Ok(())
@@ -3262,6 +3357,32 @@ impl<'a> DeliverOp<'a> {
                     }
                 }
             }
+            DeliverGoal::DeltaPages if !negotiated.missing_pages.is_empty() => {
+                // 有缺失的页：只附带它们再 negotiate 一次（会话以最近一次返回的为准，core §3.4）。
+                // 第二次 negotiate 本身放不下时，按第一次的清单逐层上传
+                let pages =
+                    Self::listed(&self.parts.page_by_hash, &negotiated.missing_pages, "页")?;
+                if json_body_len(&negotiate_body(&self.uri, &self.parts, &pages))
+                    > self.core.limits().max_payload_bytes
+                {
+                    return self.fall_back_to_staged(negotiated);
+                }
+                self.delta_pages = pages;
+                self.start_negotiate(DeliverGoal::DeltaElements)
+            }
+            DeliverGoal::DeltaPages | DeliverGoal::DeltaElements => {
+                match self.delta_body(&negotiated)? {
+                    Some(body) => {
+                        // 会话 + 缺失对象：直接提交；缺 blob 等由 commit 的缺失清单驱动补传到同一会话
+                        // （同 Python `_delta`，进入 `_inline` 的恢复循环）
+                        self.mode = DeliverMode::Inline;
+                        self.inline = Some(body);
+                        self.queue_active = false;
+                        self.advance()
+                    }
+                    None => self.fall_back_to_staged(negotiated),
+                }
+            }
             DeliverGoal::Staged => {
                 self.pending = Some(Missing {
                     pages: negotiated.missing_pages,
@@ -3272,6 +3393,21 @@ impl<'a> DeliverOp<'a> {
                 self.advance()
             }
         }
+    }
+
+    /// 差量路径放不下：按最近一次 negotiate 的清单逐层上传后 commit 引用会话。暂存阶段是新的
+    /// 恢复轮（同 Python：`_staged` 自持 `budget = max_resends`）。
+    fn fall_back_to_staged(&mut self, negotiated: Negotiated) -> Result<(), Error> {
+        self.mode = DeliverMode::Staged;
+        self.delta = false;
+        self.budget = self.core.max_resends();
+        self.pending = Some(Missing {
+            pages: negotiated.missing_pages,
+            content_hashes: negotiated.missing_content_hashes,
+            blobs: Vec::new(),
+        });
+        self.queue_active = false;
+        self.advance()
     }
 
     /// 主循环：展开待补传清单 → 逐项上传（层序）→ 无待传时 commit。
@@ -3445,6 +3581,7 @@ impl<'a> DeliverOp<'a> {
             }
             self.budget -= 1;
             let goal = match self.mode {
+                DeliverMode::Inline if self.delta => DeliverGoal::DeltaPages,
                 DeliverMode::Inline => DeliverGoal::InlineRecovery,
                 DeliverMode::Staged => DeliverGoal::Staged,
             };
@@ -3934,6 +4071,15 @@ fn bytes_upload_runner<'a>(
             content_type,
         )
     }
+}
+
+/// negotiate 的请求体：文档对象，加上附带的页对象（HTTP 绑定 §4.5）。
+fn negotiate_body(uri: &str, parts: &WireParts, pages: &[Value]) -> Value {
+    let mut body = json!({"file_uri": uri, "document": &parts.document});
+    if !pages.is_empty() {
+        body["pages"] = Value::Array(pages.to_vec());
+    }
+    body
 }
 
 /// JSON 请求体的字节数（尺寸预检与实际发送共用同一序列化）。

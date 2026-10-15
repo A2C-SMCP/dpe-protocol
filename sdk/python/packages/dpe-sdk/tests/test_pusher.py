@@ -230,10 +230,12 @@ def test_sync_push_passes_blobs_to_deliver() -> None:
 
 
 async def test_mid_page_insert_uploads_only_new_objects() -> None:
-    """验收②（北极星 E2E 判据）：文档中间插一页，只上传新页对象与新增元素对象。
+    """验收②（北极星 E2E 判据）：文档中间插一页，只传新增的内容对象。
 
-    用参考服务端的小 ``max_payload_bytes`` 强制走暂存路径（快路径会把全部对象内联重发，
-    判据只对逐层协商有意义）；已有页、已有元素与既有内容一律不重传。
+    整篇内联超过 ``SMALL_UPDATE_BYTES`` 的更新走差量路径（core §3.2，#212）：negotiate 只交
+    文档对象得到缺失的页，再 negotiate 一次只附带缺失的页，commit 引用会话并只内联缺失的元素；
+    小 ``max_payload_bytes`` 下首推走暂存路径。已有的页与元素一次都不出现在请求里（含 negotiate
+    附带、commit 内联与暂存上传）。
     """
     engine = make_engine(max_payload_bytes=1500)
     doc1 = _pages(["a" * 300, "b" * 300], ["c" * 300], ["d" * 300])
@@ -257,9 +259,16 @@ async def test_mid_page_insert_uploads_only_new_objects() -> None:
     assert new_pages - old_pages == {page["page_hash"] for page in doc2.hashes(C)["pages"][1:2]}
     uploaded_pages = {digest for kind, digest in _staging(recorder) if kind == "page"}
     uploaded_objects = {digest for kind, digest in _staging(recorder) if kind == "object"}
-    assert uploaded_pages == new_pages - old_pages  # 只有新页
-    assert uploaded_objects == new_objects - old_objects  # 只有新增元素
-    assert not uploaded_pages & old_pages and not uploaded_objects & old_objects
+    bodies = [
+        json.loads(gzip.decompress(body) if body[:2] == b"\x1f\x8b" else body)
+        for request, body in zip(recorder.requests, recorder.bodies, strict=True)
+        if request.method in ("PUT", "POST")
+        and request.url.path.endswith(("/documents", "/negotiate"))
+    ]
+    carried = {dpe_hash.object_hash(p, "page", C) for b in bodies for p in b.get("pages") or []}
+    inlined = {dpe_hash.content_hash(o, C) for b in bodies for o in b.get("objects") or []}
+    assert uploaded_pages | carried == new_pages - old_pages  # 只有新页
+    assert uploaded_objects | inlined == new_objects - old_objects  # 只有新增元素
 
 
 async def test_old_contract_state_entries_are_treated_as_missing() -> None:

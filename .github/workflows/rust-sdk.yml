@@ -155,6 +155,7 @@ jobs:
           --test reference_write --test reference_staging
           --test reference_media --test reference_transport
           --test reference_pusher
+          --test reference_delta
 
   # 原位重算基准（#19，对等 Python 的 bench job）：只报告、不设门槛，结果写进 job summary
   bench:
