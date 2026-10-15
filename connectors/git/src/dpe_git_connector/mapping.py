@@ -10,7 +10,8 @@
   ``page_metadata`` 为 ``{ref: <分支名>}``；
 - **附注标签一页**（#220）：放在最后，``page_metadata`` 为 ``{kind: "tags"}``——换一个键而不是
   ``ref``，分支名可以叫 ``tags``，键集合不同即从结构上区分页的种类；没有附注标签不产该页；
-- **元素 = 一次提交**（标签页上是一个附注标签，见 ``extractors``）。
+- **元素 = 一次提交**，带 git note（``refs/notes/commits``）的提交其后紧跟一个 note 元素（#222）；
+  标签页上是一个附注标签（见 ``extractors``）。
 
 页序：月页按月份升序在前，分支页按分支名（字节序）在后，标签页最后；标签页内按
 ``order_tags``（标签时间，再按名字）；提交页内旧在前——**自有拓扑序**（从
@@ -28,10 +29,11 @@
   ``max_payload_bytes``（部署配置问题，不静默按远端值重新切分）。
 
 **增量**（#66）：映射是「仓库状态」的纯函数——默认分支名与 tip、``since`` 解析出的提交、
-各跟踪分支的 tip、各附注标签的标签对象（#220）（提交与标签对象按 SHA 不可变，配置与映射
-规则版本由运行器的内容身份承担）。``resolve`` 一次解析出这组值，``RepoState.fingerprint``
-是它的摘要：指纹与上一轮相同即文档相同，``scan`` 直接跳过、不读提交日志；不同则用
-**同一次解析出的 tip** 映射整篇文档（避免两次解析之间仓库被推送造成指纹与内容不符）。
+各跟踪分支的 tip、各附注标签的标签对象（#220）、默认 notes ref 上的 note（#222）（提交、标签
+对象与 note blob 按 SHA 不可变，配置与映射规则版本由运行器的内容身份承担）。``resolve`` 一次
+解析出这组值，``RepoState.fingerprint`` 是它的摘要：指纹与上一轮相同即文档相同，``scan``
+直接跳过、不读提交日志；不同则用**同一次解析出的 tip** 映射整篇文档（避免两次解析之间仓库
+被推送造成指纹与内容不符）。
 仓库消失 / 改名由 ``server`` 在仓库集合层面表达 delete / move，改名的配对判据「根提交集合 +
 默认分支名」由 ``move_key`` 给出（#96）。
 """
@@ -51,7 +53,12 @@ from dpe_hash import (
     normalize_file_uri,
 )
 
-from dpe_git_connector.extractors import commit_elements, element_bytes, tag_elements
+from dpe_git_connector.extractors import (
+    commit_elements,
+    element_bytes,
+    note_elements,
+    tag_elements,
+)
 from dpe_git_connector.gitrepo import (
     CommitRecord,
     GitContentError,
@@ -152,6 +159,10 @@ class RepoState:
     #: 附注标签（名字, 标签对象 SHA），按名字字节序。轻量标签不产内容、不在其中：指纹恰好
     #: 等于映射的输入，多了只会无谓重扫；标签对象 SHA 已覆盖说明、tagger、target 的变化
     tags: tuple[tuple[str, str], ...] = ()
+    #: 默认 notes ref 上的（被注对象, note blob），按被注对象排序（#222）。不用 notes ref 的 tip：
+    #: tip 会在内容不变时变化（notes 合并、重写），blob 对才对准内容；不在本文档里的被注对象
+    #: 也在其中——指纹必须覆盖全部映射输入，多出的只导致一次无产出的重扫
+    notes: tuple[tuple[str, str], ...] = ()
 
     def fingerprint(self) -> str:
         return _digest(
@@ -162,6 +173,7 @@ class RepoState:
                 "branches": [[name, tip] for name, tip in self.branches],
                 "shallow": list(self.shallow),
                 "tags": [[name, sha] for name, sha in self.tags],
+                "notes": [[commit, blob] for commit, blob in self.notes],
             }
         )
 
@@ -246,11 +258,15 @@ def order_tags(records: Sequence[TagRecord]) -> list[TagRecord]:
     )
 
 
-def _elements(records: Sequence[CommitRecord]) -> list[ElementObject]:
-    """提交列表（旧在前）→ 元素列表（说明超预算的提交切成多个连续元素）。"""
+def _elements(records: Sequence[CommitRecord], notes: dict[str, str]) -> list[ElementObject]:
+    """提交列表（旧在前）→ 元素列表（说明超预算的提交切成多个连续元素）；带 note 的提交其后
+    紧跟 note 元素（``notes``：提交 SHA → note 原文，#222）。"""
     elements: list[ElementObject] = []
     for record in records:
         elements += commit_elements(record)
+        note = notes.get(record.sha)
+        if note is not None:
+            elements += note_elements(record.sha, note)
     return elements
 
 
@@ -394,6 +410,7 @@ class DocumentMapper:
             branches=tuple((name, repo.resolve_branch(name)) for name in tracked),
             shallow=repo.shallow_boundary(),
             tags=repo.annotated_tags(),
+            notes=repo.notes(),
         )
 
     def _pages(
@@ -407,24 +424,28 @@ class DocumentMapper:
         ordered = order_commits(records, default_tip)
         chain = first_parent_chain(records, default_tip)
 
-        pages: list[dict[str, Any]] = []
-        for month, month_records in sorted(month_partition(chain, ordered, state.since).items()):
-            pages.append(
-                {
-                    "page_metadata": {"ref": default_name, "period": month},
-                    "elements": _elements(month_records),
-                }
-            )
+        commit_pages: list[tuple[dict[str, str], list[CommitRecord]]] = [
+            ({"ref": default_name, "period": month}, month_records)
+            for month, month_records in sorted(month_partition(chain, ordered, state.since).items())
+        ]
         for name, tip in state.branches:
             if tip is None:
                 continue
-            pages.append(
-                {
-                    "page_metadata": {"ref": name},
-                    # 独有提交集合同样用自有排序（从分支 tip 出发做后序 DFS）
-                    "elements": _elements(order_commits(repo.log(f"{default_tip}..{tip}"), tip)),
-                }
-            )
+            # 独有提交集合同样用自有排序（从分支 tip 出发做后序 DFS）
+            branch_records = order_commits(repo.log(f"{default_tip}..{tip}"), tip)
+            commit_pages.append(({"ref": name}, branch_records))
+
+        # 只读出现在本文档页里的提交的 note：其余 note（已丢弃的提交、树或 blob 上的 note）
+        # 不属于本文档，内容也不必是合法 UTF-8
+        shown = {record.sha for _, page_records in commit_pages for record in page_records}
+        noted = {commit: blob for commit, blob in state.notes if commit in shown}
+        texts = repo.note_texts(list(noted.values())) if noted else {}
+        notes = {commit: texts[blob] for commit, blob in noted.items()}
+
+        pages: list[dict[str, Any]] = [
+            {"page_metadata": metadata, "elements": _elements(page_records, notes)}
+            for metadata, page_records in commit_pages
+        ]
         if state.tags:
             elements: list[ElementObject] = []
             for tag in order_tags(repo.tags(state.tags)):

@@ -12,8 +12,11 @@
 - ``git rev-list --max-parents=0``：根提交集合（仓库改名的配对判据，见 ``server``）；
 - ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）与附注
   标签的集合（``refs/tags/*`` 中指向标签对象的 ref，#220）；
-- ``git cat-file --batch``：标签对象，以及声明了非 UTF-8 编码的提交的原始字节（``git log``
-  的转码随平台而异，见 ``GitRepo._verbatim``）——只有这两处自行读取对象格式。
+- ``git notes --ref=refs/notes/commits list``：默认 notes ref 上的（note blob, 被注对象）对
+  （#222；显式写 ref，不受 ``core.notesRef`` / ``GIT_NOTES_REF`` 影响）；
+- ``git cat-file --batch``：标签对象、note blob，以及声明了非 UTF-8 编码的提交的原始字节
+  （``git log`` 的转码随平台而异，见 ``GitRepo._verbatim``）——只有标签与旧编码提交两处自行
+  读取对象格式（note blob 是原文，不需要解析）。
 
 ``-z`` 与 ``%x00`` 分隔是必需的：提交说明原样进 DPE，NUL 不能出现在提交消息与 ident 里，用它
 分隔无歧义（换行、引号都不会被改写）。
@@ -46,6 +49,7 @@ from pathlib import Path
 
 __all__ = [
     "MIN_GIT_VERSION",
+    "NOTES_REF",
     "CommitRecord",
     "GitContentError",
     "GitError",
@@ -119,7 +123,11 @@ class TagRecord:
 
 
 #: ``_cat_objects`` 的对象类型 → 错误消息里的中文名
-_KIND_NAMES = {"commit": "提交", "tag": "标签"}
+_KIND_NAMES = {"commit": "提交", "tag": "标签", "blob": " note"}
+
+#: 映射读取的 notes ref（#222）：git 的默认 notes ref，``git log`` / ``git show`` 默认显示的就是它。
+#: 其他 notes ref 多半是工具的机器格式数据，且集合随环境里装了什么工具而变，不读
+NOTES_REF = "refs/notes/commits"
 
 #: git 认定的签名块起始标记（gpg-interface.c 的 OpenPGP / X.509 / SSH 三种格式）。本模块自己
 #: 按它切分而不用 ``%(contents:signature)``：SSH 签名自 git 2.34 才被识别，低于它的 git 会把
@@ -807,6 +815,34 @@ class GitRepo:
                 )
             )
         return records
+
+    def notes(self) -> tuple[tuple[str, str], ...]:
+        """``NOTES_REF`` 上的全部 note：(被注对象 SHA, note blob SHA)，按被注对象 SHA 排序（#222）。
+
+        被注对象可能不在本文档的任何页里（已丢弃的提交、树或 blob 上的 note）：这里照列，由
+        映射按页里出现的提交过滤；状态指纹包含全部对（覆盖全部映射输入，多出的只会导致一次
+        无产出的重扫）。没有这个 ref 时为空。
+        """
+        raw = self._run("notes", f"--ref={NOTES_REF}", "list")
+        pairs: list[tuple[str, str]] = []
+        for line in raw.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                raise GitError("git notes list 的输出格式不对")
+            blob, annotated = (field.lower() for field in fields)
+            pairs.append((annotated, blob))
+        return tuple(sorted(pairs))
+
+    def note_texts(self, blobs: Sequence[str]) -> dict[str, str]:
+        """note blob SHA → 原文（UTF-8 严格解码；解不了抛 ``GitContentError``）。"""
+        unique = sorted(set(blobs))
+        texts: dict[str, str] = {}
+        for sha, raw in self._cat_objects(unique, "blob").items():
+            try:
+                texts[sha] = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise GitContentError(f"note {sha} 不是合法 UTF-8（{exc.reason}）") from None
+        return texts
 
     def _verbatim(self, shas: list[str]) -> dict[str, tuple[bytes, bytes, bytes]]:
         """取声明了非 UTF-8 编码的提交的作者名、邮箱与说明的**原始字节**（README「确定性」）。
