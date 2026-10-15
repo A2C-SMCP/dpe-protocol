@@ -12,4 +12,4 @@ __all__ = ["PLUGIN_NAME", "__version__"]
 #: 插件身份：必须与随附清单 ``dpe-connector.json`` 的 ``name`` / ``version`` 相同（§4.1，
 #: 运行器在 initialize 之后核对）。不发布、不经安装元数据读取版本，两处直接写死并由测试看住
 PLUGIN_NAME = "jira"
-__version__ = "0.1.0"
+__version__ = "0.2.0"
