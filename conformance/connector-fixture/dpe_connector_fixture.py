@@ -14,7 +14,9 @@
   挂起直到 ``cancel`` 的句柄）、``scan_error``（轮首 ``scan`` 的 JSON-RPC 错误）、``record``
   （把每个请求追加写入该文件）、``stderr``（initialize 时写到 stderr 的行，可用 ``$NAME``
   引用环境变量）、``crash_on_scan``、``scan_delay``（轮首 ``scan`` 前等待的秒数）、
-  ``script``（从该 JSON 文件读取上述配置，与其余键合并——换脚本而不改变实例配置）。
+  ``script``（从该 JSON 文件读取上述配置，与其余键合并——换脚本而不改变实例配置）、
+  ``full_batches`` / ``full_cursor``（轮首 ``scan`` 不带 ``cursor`` 的轮改用它们：模拟「增量
+  扫描看不到、全量扫描看得到」的源，供运行器写入集合刷新的测试，#213）。
 
 身份为 ``connector-fixture 1.0``，与同目录的 ``dpe-connector.json`` 一致（``env_probe`` 用
 ``dpe-connector.env-probe.json``，多声明一个必填凭证）。产出的 URI 都以 initialize 收到的
@@ -246,6 +248,7 @@ def main() -> None:
     config: dict[str, Any] = {}
     hanging: dict[Any, str] = {}  # 挂起中的 read_blob 请求 id → 句柄
     hung_once: set[str] = set()
+    full = False  # 本轮是否为不带 cursor 的全量扫描且脚本给了 full_batches
     for line in sys.stdin:
         message = json.loads(line)
         method, params = message.get("method"), message.get("params") or {}
@@ -303,7 +306,9 @@ def main() -> None:
                 sys.stdout.write("\nnot json\n")
                 sys.stdout.flush()
                 continue
-            batches = config.get("batches", [[]])
+            if first:
+                full = "cursor" not in params and "full_batches" in config
+            batches = config["full_batches"] if full else config.get("batches", [[]])
             index = int(params["next"]) if not first else 0
             if config.get("crash_before") is not None and index >= config["crash_before"]:
                 sys.exit(3)  # 第二批之前以非零码退出
@@ -311,8 +316,11 @@ def main() -> None:
             if index + 1 < len(batches):
                 out["next"] = str(index + 1)
             else:
-                out["cursor"] = config.get("cursor")
-                out["incremental"] = config.get("incremental", "cursor" in params)
+                out["cursor"] = config.get("full_cursor") if full else config.get("cursor")
+                # full_batches 模拟的全量扫描固定为 incremental: false（§6.4）；其余照脚本
+                out["incremental"] = (
+                    False if full else config.get("incremental", "cursor" in params)
+                )
             result(id_, out)
         elif method == "read_blob":
             handle = params["handle"]
