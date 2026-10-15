@@ -92,6 +92,8 @@ pre_commit_hooks = [
     "git add ../../connectors/git/uv.lock",
     "uv lock --quiet --directory ../../examples/markdown-dir",
     "git add ../../examples/markdown-dir/uv.lock",
+    "uv lock --quiet --directory ../../examples/jira",
+    "git add ../../examples/jira/uv.lock",
 ]
 
 [tool.bumpversion.parts.pre_l]

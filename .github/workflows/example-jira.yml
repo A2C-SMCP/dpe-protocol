@@ -1,0 +1,46 @@
+# 示例插件（examples/jira，#223）的质量门禁：ruff / mypy --strict / pytest（含真实 dpe-run + 参考
+# 服务端 + 模拟 Jira 的端到端用例）。它是与 sdk/python 独立的 uv 项目（运行时只依赖 dpe-hash，
+# 经 path 源指向 SDK 的成员包，自带 uv.lock），因此单独一个 job；paths 同时匹配 examples/jira/**
+# 与 sdk/python/**——SDK 一变本 job 就会跑，SDK 升版后 --locked 失败即是「必须同步」的信号。
+name: example-jira
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/jira/**"
+      - "sdk/python/**"
+      - ".github/workflows/example-jira.yml"
+  pull_request:
+    paths:
+      - "examples/jira/**"
+      - "sdk/python/**"
+      - ".github/workflows/example-jira.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: examples/jira
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest
