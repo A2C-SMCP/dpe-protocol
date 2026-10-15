@@ -722,7 +722,8 @@ def test_contradictory_cursor_falls_back_to_a_full_round(fake: FakeJira, site: s
 
     populate(fake, 2)
     session = started(site)
-    source = source_digest(PREFIX, {"site": site, "projects": ["ABC"]})
+    assert fake.account_id is not None
+    source = source_digest(PREFIX, {"site": site, "projects": ["ABC"]}, fake.account_id)
     duplicated = encode_cursor(source, {"10001": ("ABC-1", "t"), "9": ("ABC-1", "t")})
     stale = encode_cursor(source, {"9": ("ABC-2", "t"), "10001": ("ABC-1", "t")})
     # 10001 上一轮在 ABC-2、本轮在 ABC-1，而 ABC-1 上一轮属于 10002：move 会搬走别人的文档
@@ -731,3 +732,46 @@ def test_contradictory_cursor_falls_back_to_a_full_round(fake: FakeJira, site: s
         items = session.round(cursor=cursor)
         assert session.incremental is False
         assert all(item["kind"] == "document" for item in items)
+
+
+def test_switching_credential_account_never_deletes(fake: FakeJira, site: str) -> None:
+    populate(fake, 3)
+    session = started(site)
+    session.round()
+    cursor = session.cursor
+    # 换成另一个（权限更小的）账号：它看不到 ABC-3
+    fake.account_id = "narrower"
+    fake.remove(10003)
+    switched = started(site)
+    items = switched.round(cursor=cursor)
+    assert switched.incremental is False  # 旧游标作废，回退全量轮
+    assert all(item["kind"] == "document" for item in items)
+    assert kinds(switched.round(cursor=switched.cursor)) == []  # 新账号自己的游标照常增量
+
+
+def test_account_is_fetched_at_scan_when_the_probe_was_transient(fake: FakeJira, site: str) -> None:
+    populate(fake, 2)
+    session = started(site)
+    session.round()
+    cursor = session.cursor
+    fake.throttle["/rest/api/3/myself"] = 1  # 握手时探测被限流（探测不重试）
+    later = started(site)
+    assert kinds(later.round(cursor=cursor)) == []  # 首轮取到同一账号：游标照常可用
+    assert later.incremental is True
+    fake.throttle_forever.add("/rest/api/3/myself")
+    stuck = started(site)
+    error = stuck.call("scan", {"cursor": cursor})["error"]
+    assert error["code"] == -32003 and error["data"] == {"retryable": True}
+    assert "确认凭证账号失败" in error["message"]
+
+
+def test_missing_account_id_is_rejected(fake: FakeJira, site: str) -> None:
+    fake.account_id = None  # /myself 不返回 accountId：无法把游标绑定到账号
+    session = Session()
+    error = session.initialize(site)["error"]
+    assert error["code"] == -32005 and session.serve.fatal
+    # 握手时探测暂时失败、轮首再取仍缺 accountId：本轮不可重试地失败，而不是用空账号继续
+    fake.throttle["/rest/api/3/myself"] = 1
+    later = started(site)
+    error = later.call("scan", {"cursor": None})["error"]
+    assert error["code"] == -32003 and error["data"] == {"retryable": False}

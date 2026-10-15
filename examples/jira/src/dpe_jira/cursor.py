@@ -1,8 +1,8 @@
 """增量游标的编码（connector 契约 §6.8）：不透明、自包含，解释不了即回退全量轮。
 
 游标记录**上一轮成功产出时范围内的每个工单**——数字 id → ``[key, updated]``，外加数据源摘要
-（实例前缀与配置）。下一轮据此只取 updated 变了的工单，并把消失的工单表达为 delete、key 变了的
-工单表达为 move（``server``）。
+（实例前缀、配置与凭证对应的账号 id）。下一轮据此只取 updated 变了的工单，并把消失的工单表达为
+delete、key 变了的工单表达为 move（``server``）。
 
 形态：``j1.`` + base64url（无填充）的 zlib 压缩 JSON
 ``{"v": 1, "src": <数据源摘要>, "issues": {<id>: [<key>, <updated>]}}``。``updated`` 原样保存
@@ -10,9 +10,9 @@
 
 - **不透明**：运行器只原样保存与回传（§6.8 MUST NOT 解析）；
 - **自包含**：插件重启后仍可解释，不依赖进程内状态；
-- **解释不了即回退**：前缀、编码、压缩、JSON 结构、版本任一不符，或数据源摘要与本次配置不同
-  （配置变化本应由运行器丢弃游标，这里再挡一层），``decode_cursor`` 返回 ``None``，调用方按
-  全量轮处理并标 ``incremental: false``——MUST NOT 因此报错（§6.8）。
+- **解释不了即回退**：前缀、编码、压缩、JSON 结构、版本任一不符，或数据源摘要与本次不同
+  （配置变化本应由运行器丢弃游标，这里再挡一层；换凭证账号则只靠这一层），``decode_cursor``
+  返回 ``None``，调用方按全量轮处理并标 ``incremental: false``——MUST NOT 因此报错（§6.8）。
 """
 
 from __future__ import annotations
@@ -48,9 +48,9 @@ def is_issue_id(value: str) -> bool:
     return _ISSUE_ID.fullmatch(value) is not None
 
 
-def source_digest(uri_prefix: str, config: Mapping[str, Any]) -> str:
-    """数据源摘要：实例前缀 + 实例配置（JCS）。游标只在同一数据源下有效。"""
-    canonical = jcs({"uri_prefix": uri_prefix, "config": dict(config)})
+def source_digest(uri_prefix: str, config: Mapping[str, Any], account_id: str) -> str:
+    """数据源摘要：实例前缀 + 实例配置 + 账号 id（JCS）。游标只在同一数据源、同一账号下有效。"""
+    canonical = jcs({"uri_prefix": uri_prefix, "config": dict(config), "account": account_id})
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 

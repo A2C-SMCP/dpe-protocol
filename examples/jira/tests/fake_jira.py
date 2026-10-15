@@ -57,6 +57,7 @@ class FakeJira:
     redirect: dict[str, str] = field(default_factory=dict)
     search_override: list[dict[str, Any]] | None = None
     token: str = TOKEN  # 站点当前接受的 API token（改掉即模拟凭证被吊销）
+    account_id: str | None = "bot"  # /myself 返回的账号 id（改掉即换了账号，None 即不返回）
     reject_search: bool = False
     not_json: set[str] = field(default_factory=set)
     server_error: set[str] = field(default_factory=set)
@@ -134,7 +135,10 @@ class FakeJira:
         if headers.get("Authorization") != expected:
             return 401, {"errorMessages": ["unauthorized"]}, {}
         if method == "GET" and path == "/rest/api/3/myself":
-            return 200, {"accountId": "bot", "displayName": "Bot"}, {}
+            me = {"displayName": "Bot"}
+            if self.account_id is not None:
+                me["accountId"] = self.account_id
+            return 200, me, {}
         if method == "POST" and path == "/rest/api/3/search/jql":
             if self.reject_search:
                 return 400, {"errorMessages": ["The value 'ABX' does not exist"]}, {}

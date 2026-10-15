@@ -22,6 +22,10 @@
 - **新游标**（``cursor``）：工单的新记录 [key, updated] 在它的文档**最后一段发出时**才写入；
   跳过的工单沿用旧记录；任何失败（含发出途中改判为 error）沿用旧记录（新工单不记）；已删除
   的不记——新游标不越过没成功产出的变化（§6.8）。
+- **换凭证账号**：游标的数据源摘要含 ``/myself`` 返回的账号 id，账号一变旧游标即解释不了，
+  回退全量轮（不表达删除）——换成权限更小的账号不会把它看不到的工单当作删除。账号 id 是每轮的
+  前置依赖：握手时没取到，每轮开头再取，取不到本轮以 ``-32003`` 失败（宁可不跑，也不用一个
+  区分不了账号的摘要）；
 - **游标与本轮自相矛盾**（两条记录指向同一个 key，或本轮某工单的 key 在上一轮属于另一个
   工单——Jira 不复用 key，正常不会发生）：不冒险，本轮按全量轮处理。结束批放不下游标时，
   本批以 ``next`` 结束、下一批单独给出游标；游标本身超过单条预算则给 ``null``（运行器保留
@@ -49,7 +53,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -196,6 +200,8 @@ class Serve:
         self._environ = os.environ if environ is None else environ
         self._client: JiraClient | None = None
         self._jql = ""
+        self._config: dict[str, Any] = {}
+        self._account: str | None = None
         self._source = ""
         self._round: _Round | None = None
         self._rounds = 0
@@ -316,22 +322,40 @@ class Serve:
             return "缺少凭证 JIRA_EMAIL 或 JIRA_API_TOKEN（应由运行器按清单注入）"
         client = JiraClient(site, email, token)
         jql = f"({scope}) ORDER BY id ASC"
-        probes: tuple[Callable[[], Any], ...] = (
-            lambda: client.myself(attempts=1),
-            lambda: client.search(jql, ["key"], None, max_results=1, attempts=1),
-        )
-        for probe in probes:  # 各自探测：一项暂时失败不让另一项的配置错误漏过
-            try:
-                probe()
-            except (Unavailable, RateLimited):
-                pass  # 暂时性失败不是配置问题，留给 scan 按可重试报告
-            except JiraError as exc:
-                return f"站点、凭证或范围不被 Jira 接受：{exc}"
+        account: str | None = None
+        # 各自探测：一项暂时失败不让另一项的配置错误漏过；暂时性失败不是配置问题，留给 scan 报告
+        try:
+            account = _account_id(client.myself(attempts=1))
+        except (Unavailable, RateLimited):
+            pass
+        except JiraError as exc:
+            return f"站点、凭证或范围不被 Jira 接受：{exc}"
+        try:
+            client.search(jql, ["key"], None, max_results=1, attempts=1)
+        except (Unavailable, RateLimited):
+            pass
+        except JiraError as exc:
+            return f"站点、凭证或范围不被 Jira 接受：{exc}"
         self.prefix = prefix
         self._client = client
         self._jql = jql
-        self._source = source_digest(prefix, config)
+        self._config = dict(config)
+        self._account = account  # 探测暂时失败为 None：每轮开头再取（取不到本轮失败）
         return None
+
+    def _source_digest(self) -> str:
+        """游标的数据源摘要：前缀 + 配置 + 凭证对应的账号 id。
+
+        账号 id 是标识而非凭证值。纳入它是为了换账号时旧游标作废、回退全量轮（全量轮不表达
+        删除）——否则换成权限更小的账号后，看不到的工单会在增量轮里被当作删除。
+        """
+        if self._account is None:
+            assert self._client is not None
+            try:
+                self._account = _account_id(self._client.myself())
+            except JiraError as exc:
+                raise type(exc)(f"确认凭证账号失败：{exc}") from None
+        return source_digest(self.prefix, self._config, self._account)
 
     # ------------------------------------------------------------------ scan
 
@@ -388,6 +412,7 @@ class Serve:
         )
 
     def _open_round(self, cursor: str | None) -> _Round:
+        self._source = self._source_digest()
         current = self._enumerate()
         previous = None if cursor is None else decode_cursor(cursor, self._source)
         self._rounds += 1
@@ -643,6 +668,14 @@ class Serve:
             used += size
             count += 1
         return count
+
+
+def _account_id(me: Any) -> str:
+    """``/myself`` 响应里的账号 id；没有即响应不符协议。"""
+    account = me.get("accountId") if isinstance(me, dict) else None
+    if not isinstance(account, str) or not account:
+        raise UnexpectedResponse("/myself 响应缺少 accountId")
+    return account
 
 
 def _bad_page() -> JiraError:

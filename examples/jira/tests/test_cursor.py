@@ -11,7 +11,7 @@ import pytest
 
 from dpe_jira.cursor import decode_cursor, encode_cursor, source_digest
 
-SOURCE = source_digest("jira://x/", {"site": "https://x.atlassian.net", "projects": ["ABC"]})
+SOURCE = source_digest("jira://x/", {"site": "https://x.atlassian.net", "projects": ["ABC"]}, "a1")
 MARKS = {"10001": ("ABC-1", "2026-10-01T08:00:00.000+0000"), "7": ("ABC-0", "t")}
 
 
@@ -28,15 +28,18 @@ def test_round_trip_and_determinism() -> None:
     assert decode_cursor(encode_cursor(SOURCE, {}), SOURCE) == {}
 
 
-def test_source_digest_depends_on_prefix_and_config() -> None:
+def test_source_digest_depends_on_prefix_config_and_account() -> None:
     config = {"site": "https://x.atlassian.net", "projects": ["ABC"]}
-    assert source_digest("jira://x/", config) == SOURCE
-    assert source_digest("jira://y/", config) != SOURCE
-    assert source_digest("jira://x/", {**config, "projects": ["ABD"]}) != SOURCE
+    assert source_digest("jira://x/", config, "a1") == SOURCE
+    assert source_digest("jira://y/", config, "a1") != SOURCE
+    assert source_digest("jira://x/", {**config, "projects": ["ABD"]}, "a1") != SOURCE
+    assert source_digest("jira://x/", config, "a2") != SOURCE
 
 
 def test_cursor_from_another_source_is_not_interpreted() -> None:
-    other = source_digest("jira://y/", {"site": "https://x.atlassian.net", "projects": ["ABC"]})
+    other = source_digest(
+        "jira://y/", {"site": "https://x.atlassian.net", "projects": ["ABC"]}, "a1"
+    )
     assert decode_cursor(encode_cursor(other, MARKS), SOURCE) is None
 
 
