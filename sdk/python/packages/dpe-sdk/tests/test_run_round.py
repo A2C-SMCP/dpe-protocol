@@ -1323,6 +1323,25 @@ def _doc_of(*texts: str) -> Document:
     return Document.model_validate({"file_type": "md", "pages": [{"elements": _text(*texts)}]})
 
 
+async def test_commit_after_a_foreign_delete_follows_the_commit_policy(tmp_path: Path) -> None:
+    """他人删除了本实例同步过的文档、源端随后又修改它（#215，§7.2「有 L，R 不存在」）：
+    缺省 ``source_wins`` 以 if_absent 复活（created），``report`` 下条目失败、不复活。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "v1")]]})
+        await h.foreign.delete(P + "a.md", expected("v1"))
+        changed = {"batches": [[doc_item("a.md", "v2")]]}
+
+        reported = await h.round(changed, policy=ConflictPolicy(commit="report"))
+        assert reported.outcome == "partial"
+        assert codes(reported) == ["DPE_PRECONDITION_FAILED"]
+        assert reported.failures[0].retryable is False
+        assert await h.foreign.head(P + "a.md") is None  # 不复活
+
+        revived = await h.round(changed)
+        assert revived.outcome == "succeeded" and revived.counts.created == 1
+        assert await h.foreign.head(P + "a.md") == expected("v2")
+
+
 async def test_delete_conflict_follows_the_delete_policy(tmp_path: Path) -> None:
     async with harness(tmp_path) as h:
         await h.round({"batches": [[doc_item("a.md", "v1")]]})

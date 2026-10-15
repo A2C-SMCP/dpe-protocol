@@ -45,4 +45,22 @@ jobs:
       - run: uv run ruff check
       - run: uv run ruff format --check
       - run: uv run mypy
-      - run: uv run pytest
+      # 端到端场景（#215）单独一个 job（见下），这里跑其余测试
+      - run: uv run pytest -m "not scenarios"
+
+  # 端到端场景（#215）：真实 dpe-run + Git connector + 参考服务端 + 记录代理，每步与从零全量推送
+  # 做页级比较。较慢，单独一个 job、单一 Python 版本，并设耗时上限
+  scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: connectors/git
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+      - run: git --version
+      - run: uv sync --locked
+      - run: uv run pytest -m scenarios -v
