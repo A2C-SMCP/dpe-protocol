@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from fake_jira import EMAIL, TOKEN, FakeJira, adf, serving
+from fake_jira import EMAIL, TOKEN, FakeJira, FakeMedia, adf, serving
 
 from dpe_jira import PLUGIN_NAME, __version__
 from dpe_jira.mapping import issue_document
@@ -244,7 +245,7 @@ def test_requests_before_handshake_and_unknown_methods(site: str) -> None:
     session = Session()
     assert session.call("scan", {"cursor": None})["error"]["code"] == -32600
     session.initialize(site)
-    assert session.call("read_blob", {"handle": "h"})["error"]["code"] == -32002
+    assert session.call("read_blob", {"handle": "h", "max_bytes": 10})["error"]["code"] == -32002
     assert session.call("nope", {})["error"]["code"] == -32601
     assert session.call("shutdown", {})["result"] == {}
 
@@ -775,3 +776,200 @@ def test_missing_account_id_is_rejected(fake: FakeJira, site: str) -> None:
     later = started(site)
     error = later.call("scan", {"cursor": None})["error"]
     assert error["code"] == -32003 and error["data"] == {"retryable": False}
+
+
+# ---------------------------------------------------------------------- 附件与 read_blob
+
+PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 20  # 5 KiB 的「图片」
+
+
+def read_all(session: Session, handle: str, max_bytes: int = 1000) -> bytes:
+    out = b""
+    while True:
+        result = session.call(
+            "read_blob", {"handle": handle, "offset": len(out), "max_bytes": max_bytes}
+        )["result"]
+        chunk = base64.b64decode(result["data"])
+        assert len(chunk) <= max_bytes
+        out += chunk
+        if result["eof"]:
+            return out
+        assert chunk  # 空块必须带 eof（§6.7）
+
+
+def with_attachments(fake: FakeJira) -> None:
+    fake.add_issue(10001, "ABC-1", summary="带附件")
+    fake.attach(10001, 501, "shot.png", PNG)
+    fake.attach(10001, 502, "spec.pdf", b"%PDF-1.7", mime="application/pdf")
+
+
+@pytest.mark.parametrize("honor_range", [True, False], ids=["range", "spooled"])
+@pytest.mark.parametrize("via_media", [True, False], ids=["media", "site"])
+def test_read_blob_returns_the_attachment_bytes(
+    fake: FakeJira, site: str, honor_range: bool, via_media: bool
+) -> None:
+    with_attachments(fake)
+    fake.honor_range = honor_range
+    media = FakeMedia(fake, honor_range=honor_range)
+    with serving(media) as media_url:
+        if via_media:
+            fake.media_url = media_url
+        session = started(site)
+        [item] = session.round()
+        page = item["pages"][-1]
+        assert page["page_metadata"] == {"section": "attachments"}
+        image = page["elements"][0]
+        assert image["blob"] == {"handle": "501", "size": len(PNG)}
+        assert read_all(session, "501") == PNG
+        # 断点重试：同一偏移重复读取结果一致
+        first = session.call("read_blob", {"handle": "501", "offset": 100, "max_bytes": 50})
+        again = session.call("read_blob", {"handle": "501", "offset": 100, "max_bytes": 50})
+        assert first == {**again, "id": first["id"]}
+        assert base64.b64decode(first["result"]["data"]) == PNG[100:150]
+    assert all(not authorized for _, authorized in media.requests)
+
+
+def test_read_blob_edges(fake: FakeJira, site: str) -> None:
+    with_attachments(fake)
+    session = started(site, max_message_bytes=2048)
+    session.round()
+    end = session.call("read_blob", {"handle": "501", "offset": len(PNG), "max_bytes": 10})
+    assert end["result"] == {"data": "", "eof": True}
+    beyond = session.call("read_blob", {"handle": "501", "offset": len(PNG) + 5, "max_bytes": 10})
+    assert beyond["result"] == {"data": "", "eof": True}
+    big = session.call("read_blob", {"handle": "501", "offset": 0, "max_bytes": 1 << 20})
+    assert len(base64.b64decode(big["result"]["data"])) < 1024  # 受单条上限约束
+    assert read_all(session, "501", max_bytes=1 << 20) == PNG
+    for params in (
+        {"handle": "501"},
+        {"handle": "501", "max_bytes": 0},
+        {"handle": 1, "max_bytes": 1},
+        {"handle": "501", "offset": -1, "max_bytes": 1},
+    ):
+        assert session.call("read_blob", params)["error"]["code"] == -32602
+    # 非图片附件、别的工单的附件都不是句柄
+    assert session.call("read_blob", {"handle": "502", "max_bytes": 1})["error"]["code"] == -32002
+
+
+def test_handles_expire_with_the_next_round_and_spool_files_are_removed(
+    fake: FakeJira, site: str
+) -> None:
+    with_attachments(fake)
+    fake.honor_range = False
+    session = started(site)
+    session.round()
+    assert read_all(session, "501") == PNG
+    spool_dir = session.serve._spool_dir
+    assert spool_dir is not None and os.listdir(spool_dir)
+    quiet = session.round(cursor=session.cursor)  # 新的一轮：上一轮的句柄失效
+    assert quiet == []
+    assert session.call("read_blob", {"handle": "501", "max_bytes": 1})["error"]["code"] == -32002
+    assert os.listdir(spool_dir) == []
+    session.round()
+    read_all(session, "501")
+    assert os.listdir(spool_dir)
+    session.call("shutdown", {})
+    assert os.listdir(spool_dir) == []
+
+
+@pytest.mark.parametrize("honor_range", [True, False], ids=["range", "spooled"])
+def test_size_mismatch_is_a_permanent_read_failure(
+    fake: FakeJira, site: str, honor_range: bool
+) -> None:
+    fake.add_issue(10001, "ABC-1")
+    fake.attach(10001, 501, "shot.png", PNG, size=len(PNG) + 7)  # 元数据比实际多 7 字节
+    fake.honor_range = honor_range
+    session = started(site)
+    session.round()
+    error = session.call("read_blob", {"handle": "501", "offset": 0, "max_bytes": 100})["error"]
+    assert error["code"] == -32003 and error["data"] == {"retryable": False}
+    assert "size" in error["message"]
+
+
+def test_adding_an_attachment_changes_only_the_attachments_page(fake: FakeJira, site: str) -> None:
+    fake.add_issue(10001, "ABC-1", summary="会加附件", description=adf("正文"))
+    session = started(site)
+    [before] = session.round()
+    fake.attach(10001, 501, "shot.png", PNG)
+    fake.touch(10001, "2026-10-02T08:00:00.000+0000")  # Jira 加附件时更新 updated
+    [after] = session.round(cursor=session.cursor)
+    assert after["pages"][:3] == before["pages"]
+    assert after["pages"][3]["page_metadata"] == {"section": "attachments"}
+
+
+@pytest.mark.parametrize("kind", ["wrong-start", "malformed", "unsatisfiable"])
+def test_strict_range_responses(fake: FakeJira, site: str, kind: str) -> None:
+    with_attachments(fake)
+    media = FakeMedia(fake)
+
+    def respond(path: str, headers: Any) -> tuple[int, Any, dict[str, str]]:
+        if kind == "wrong-start":
+            return 206, PNG[:10], {"Content-Range": f"bytes 0-9/{len(PNG)}"}
+        if kind == "malformed":
+            return 206, PNG[:10], {"Content-Range": "bytes 0-9"}
+        return 416, b"", {"Content-Range": f"bytes */{len(PNG)}"}
+
+    media.responder = respond
+    with serving(media) as media_url:
+        fake.media_url = media_url
+        session = started(site)
+        session.round()
+        error = session.call("read_blob", {"handle": "501", "offset": 100, "max_bytes": 50})[
+            "error"
+        ]
+    assert error["code"] == -32003 and error["data"] == {"retryable": False}
+
+
+def test_short_range_responses_are_continued(fake: FakeJira, site: str) -> None:
+    with_attachments(fake)
+    media = FakeMedia(fake)
+
+    def respond(path: str, headers: Any) -> tuple[int, Any, dict[str, str]]:
+        first = int(headers["Range"].removeprefix("bytes=").split("-")[0])
+        last = min(first + 6, len(PNG) - 1)  # 每次只给 7 字节，少于请求的量（HTTP 允许）
+        return 206, PNG[first : last + 1], {"Content-Range": f"bytes {first}-{last}/{len(PNG)}"}
+
+    media.responder = respond
+    with serving(media) as media_url:
+        fake.media_url = media_url
+        session = started(site)
+        session.round()
+        assert read_all(session, "501", max_bytes=100) == PNG
+
+
+def test_new_round_clears_every_file_in_the_spool_directory(fake: FakeJira, site: str) -> None:
+    with_attachments(fake)
+    fake.honor_range = False
+    session = started(site)
+    session.round()
+    read_all(session, "501")
+    spool_dir = session.serve._spool_dir
+    assert spool_dir is not None
+    stray = os.path.join(spool_dir, "999.bin")  # 例如整份下载中途失败、没登记上的半截文件
+    with open(stray, "wb") as handle:
+        handle.write(b"half")
+    session.round(cursor=session.cursor)
+    assert os.listdir(spool_dir) == []
+
+
+def test_document_that_was_never_emitted_registers_no_handles(fake: FakeJira, site: str) -> None:
+    fake.add_issue(10001, "ABC-1", description=adf("z" * 5000))  # 单页超预算：改判 error
+    fake.attach(10001, 501, "shot.png", PNG)
+    session = started(site, max_message_bytes=4096)
+    [item] = session.round()
+    assert item["kind"] == "error"
+    assert session.call("read_blob", {"handle": "501", "max_bytes": 10})["error"]["code"] == -32002
+
+
+def test_spool_file_cleaned_up_mid_round_is_downloaded_again(fake: FakeJira, site: str) -> None:
+    with_attachments(fake)
+    fake.honor_range = False
+    session = started(site)
+    session.round()
+    first = session.call("read_blob", {"handle": "501", "offset": 0, "max_bytes": 100})
+    spool_dir = session.serve._spool_dir
+    assert spool_dir is not None
+    for name in os.listdir(spool_dir):  # 系统清理程序在轮内删掉了临时文件
+        os.unlink(os.path.join(spool_dir, name))
+    assert read_all(session, "501") == PNG
+    assert "result" in first

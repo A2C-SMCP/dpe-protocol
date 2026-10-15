@@ -2,8 +2,8 @@
 
 > **这是示例，不发布，也不是官方 connector**（官方的是 [`connectors/git`](../../connectors/git/)）。
 > 它用来验证 Git connector 覆盖不到的 DPE 能力：大量小文档、数据源凭证、易变内容、限流、删除与
-> 移动，后续还有网络来源的 blob。设计见 [Issue #223](https://github.com/A2C-SMCP/dpe-protocol/issues/223)，
-> 按其中的拆分逐步实现；**附件字节与项目文档尚未实现**，`include_project_docs` 目前只接受、不生效。
+> 移动、网络来源的 blob。设计见 [Issue #223](https://github.com/A2C-SMCP/dpe-protocol/issues/223)，
+> 按其中的拆分逐步实现；**项目文档尚未实现**，`include_project_docs` 目前只接受、不生效。
 
 把 Jira Cloud 的工单映射为 DPE 文档的 **dpe-run 插件**（[connector 契约](../../spec/connector-contract.md) §6）。
 插件只产出源内容：不计算 hash、不接触 DPE remote。运行时只依赖 `dpe-hash`（Retry-After 解析与
@@ -42,13 +42,32 @@ uv run pytest            # 含模拟 Jira + 真实 dpe-run + 参考服务端的�
 
 - **文档 = 一个工单**：`file_uri` = 实例前缀 + `issue/<工单 key>`；`file_type` 为 `jira_issue`，
   `title` 为 summary，`doc_metadata` 只放不可变的 `{issue_id, created_at}`。
-- **三页**，`page_metadata.section` 依次为 `body`（描述）、`comments`（评论，按创建时间、再按评论
-  id 在本地排序）、`fields`（固定字段，按固定顺序每个一个元素，值为空不产出）。
+- **页**，`page_metadata.section` 依次为 `body`（描述）、`comments`（评论，按创建时间、再按评论
+  id 在本地排序）、`fields`（固定字段，按固定顺序每个一个元素，值为空不产出），以及有附件时的
+  `attachments`（见下文「附件」）。
 - **ADF 转换**是只依赖节点结构的确定性规则（见 `src/dpe_jira/adf.py` 文档串），换一种语言照着
   实现能得到逐字节相同的元素。
 - **名称会随语言变化**：状态、优先级、类型、解决结果的名称按凭证账号的语言设置返回，因此
   `metadata.value` 同时记 `{id, name}`。切换账号语言会让这些元素的内容变化——这是真实的内容变化，
   不是插件的不确定性。
+
+## 附件
+
+- 附件单独成第 4 页 `attachments`，按附件 id 升序每个附件一个元素；没有附件不产生这一页。增删
+  附件只改这一页，正文、评论、字段页不受影响。
+- **图片**（扩展名 png、jpg / jpeg、gif、webp、bmp，按固定表定 `mime_type`，不取 Jira 给的类型）
+  为 `Image`：`text` 是文件名，`blob` 是句柄（附件 id）加附件元数据里的大小，字节由运行器经
+  `read_blob` 分块读取后上传。**其他附件**为 `NarrativeText`，只记文件名、类型与大小，不传字节。
+- **不在引用位置关联**：描述或评论里内嵌的图片节点只产出不带字节的 `Image` 占位。Jira Cloud 没有
+  公开这些节点与附件的对应关系（节点上的 id 是 Media Services 的 id，不是附件 id），按文件名猜或
+  依赖渲染后的 HTML 都不确定，所以字节统一放在附件页。
+- **读取**：用 HTTP Range 按偏移读；Jira 把下载重定向到媒体服务时手动跟随，只有与站点同源、且
+  这条跳转链还没离开过站点的请求才带凭证。服务端不支持 Range 时整份下载到临时文件再按偏移取，句柄失效（下一轮开始或关闭）时删除。
+  读到的总长必须等于附件元数据里的大小，对不上即判读取失败、不可重试。
+- **已知限制**：附件在后台被清理而工单的 `updated` 不变时，增量轮看不到这次变化，要等工单下次
+  变化或一次全量轮。读取是同步的：服务端不支持 Range 时，首次读取要在一个请求里整份下载，很大的
+  附件可能超过运行器的 `read_blob` 超时，期间插件也响应不了取消；这种附件每一轮都会因同样的原因
+  失败，不会自己恢复。
 
 ## 增量、删除与移动
 

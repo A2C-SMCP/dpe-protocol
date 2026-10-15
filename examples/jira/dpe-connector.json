@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "name": "jira",
-  "version": "0.2.0",
-  "description": "示例插件（不发布、非官方）：把 Jira Cloud 工单映射为 DPE 文档（正文 / 评论 / 字段三页）",
+  "version": "0.3.0",
+  "description": "示例插件（不发布、非官方）：把 Jira Cloud 工单映射为 DPE 文档（正文 / 评论 / 字段三页，有附件时加附件页）",
   "protocol_versions": [
     "dpe-connector/1"
   ],

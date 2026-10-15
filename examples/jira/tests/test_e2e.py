@@ -11,7 +11,10 @@ remote 是独立监听的参考服务端（``python -m dpe_sdk.testing``，真�
 - 凭证不外泄：运行器的报告与日志里没有凭证值；
 - 增量收敛（connector §8.3 判据 3）：同一实例依次经历新增、修改、加评论、删除、换 key 的
   移动，每步一轮增量，remote 前缀内的映射等于同一源状态在空前缀上的全量结果；
-- 截断防御：搜索后面的页失败的一轮由运行器判为失败，remote 上一篇都不少，恢复后照常收敛。
+- 截断防御：搜索后面的页失败的一轮由运行器判为失败，remote 上一篇都不少，恢复后照常收敛；
+- 附件：图片字节经 ``read_blob``（含需多次读取的大图、媒体服务另一个源、服务端忽略 Range 时
+  落临时文件）到达 remote，图片元素的 content_hash 等于「blob 为字节的 ``sha256:``」时的值；
+  加附件、删附件后的增量轮收敛到全量结果。
 """
 
 from __future__ import annotations
@@ -28,9 +31,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from dpe_hash import document_hashes
+from dpe_hash import blob_ref, content_hash, document_hashes
 from dpe_sdk.transport import DpeClient
-from fake_jira import EMAIL, TOKEN, FakeJira, adf, serving
+from fake_jira import EMAIL, TOKEN, FakeJira, FakeMedia, adf, serving
 
 from dpe_jira import PLUGIN_NAME, __version__
 from dpe_jira.mapping import issue_document
@@ -122,6 +125,12 @@ class Runner:
         assert report["outcome"] == "succeeded", report
         assert report["incremental"] is False
         return self.listing(prefix)
+
+    def element_hashes(self, uri: str) -> set[str]:
+        with DpeClient(self.remote) as client:
+            skeleton = client.get_skeleton(uri)
+        assert skeleton is not None
+        return {h for page in skeleton.pages for h in page.elements}
 
     def listing(self, prefix: str) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -247,3 +256,71 @@ def test_incremental_rounds_converge_and_truncated_enumeration_deletes_nothing(
         assert set(runner.listing("jira://inc/")) == {
             f"issue/{key}" for key in ("ABC-1", "ABC-2", "ABC-3", "XYZ-5", "ABC-7", "ABC-8")
         }
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + os.urandom(4096)
+#: 超过运行器单次 read_blob 的上限（1 MiB），必然分多次读取
+BIG = os.urandom(3 * 1024 * 1024 + 17)
+
+
+def image_hash(attachment_id: str, name: str, mime: str, data: bytes) -> str:
+    """附件页图片元素在 remote 上应有的 content_hash：blob 为字节的 ``sha256:``。"""
+    return content_hash(
+        {
+            "category": "Image",
+            "text": name,
+            "mime_type": mime,
+            "blob": blob_ref(data),
+            "metadata": {"attachment_id": attachment_id},
+        }
+    )
+
+
+@pytest.mark.parametrize("honor_range", [True, False], ids=["range", "spooled"])
+def test_attachment_bytes_arrive_and_attachment_changes_converge(
+    tmp_path: Path, honor_range: bool
+) -> None:
+    fake = FakeJira()
+    fake.add_issue(10001, "ABC-1", summary="带图", description=adf("见附件"))
+    fake.attach(10001, 501, "shot.png", PNG)
+    fake.attach(10001, 502, "big.JPG", BIG)
+    fake.attach(10001, 503, "spec.pdf", b"%PDF-1.7 ...", mime="application/pdf")
+    fake.add_issue(10002, "ABC-2", summary="没有附件")
+    media = FakeMedia(fake, honor_range=honor_range)
+    with serving(media) as media_url, serving(fake) as site, reference_server() as remote:
+        fake.media_url = media_url  # 下载被 303 到另一个源，同 Jira Cloud
+        runner = Runner(tmp_path, remote, site)
+        first = runner.run("inc", "jira://inc/")
+        assert first["outcome"] == "succeeded", first
+        hashes = runner.element_hashes("jira://inc/issue/ABC-1")
+        assert image_hash("501", "shot.png", "image/png", PNG) in hashes
+        assert image_hash("502", "big.JPG", "image/jpeg", BIG) in hashes
+        assert all(not authorized for _, authorized in media.requests)  # 凭证没出站点
+        reads = [path for path, _ in media.requests if path == "/file/502"]
+        if honor_range:
+            assert len(reads) >= 4  # 3 MiB 的大图按运行器的块大小分多次 Range 读取
+        else:
+            assert len(reads) == 1  # 整份下载一次，之后从临时文件按偏移取
+
+        def step(expected: dict[str, int]) -> None:
+            report = runner.run("inc", "jira://inc/")
+            assert report["outcome"] == "succeeded", report
+            assert report["incremental"] is True, report
+            for key, value in expected.items():
+                assert report["counts"][key] == value, (key, report["counts"])
+            assert runner.listing("jira://inc/") == runner.full_mapping()
+
+        shot = os.urandom(2048)
+        fake.attach(10002, 504, "new.gif", shot)
+        fake.touch(10002, "2026-10-02T08:00:00.000+0000")  # Jira 加附件时更新 updated
+        step({"updated": 1})
+        assert image_hash("504", "new.gif", "image/gif", shot) in runner.element_hashes(
+            "jira://inc/issue/ABC-2"
+        )
+        fields = fake.issues["10001"]["fields"]
+        fields["attachment"] = [a for a in fields["attachment"] if a["id"] != "502"]
+        fake.touch(10001, "2026-10-03T08:00:00.000+0000")
+        step({"updated": 1})
+        assert image_hash("502", "big.JPG", "image/jpeg", BIG) not in runner.element_hashes(
+            "jira://inc/issue/ABC-1"
+        )

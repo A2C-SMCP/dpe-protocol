@@ -13,6 +13,11 @@ key 取全文时返回 404（模拟枚举之后被删）；``redirect[路径] = 
 ``search_fail_from`` 让起始位置不小于它的搜索页返回 500（前面的页正常，模拟部分页失败）。
 
 源的变化用 ``touch``（改 updated）、``rekey``（换 key，模拟换项目）、``remove``（删除）。
+
+附件：``attach`` 给工单加附件（元数据进工单的 ``attachment`` 字段，字节存在 ``blobs``）。
+下载端点 ``/rest/api/3/attachment/content/{id}`` 在设了 ``media_url`` 时 303 到模拟媒体服务
+（``FakeMedia``，另一个端口，即另一个源），否则直接在本站返回字节；两处都按 ``Range`` 返回 206，
+``honor_range`` 为假时忽略 Range、整份返回 200。
 数据由用例用 ``add_issue`` 构造；``requests`` 记下每个请求的（方法, 路径）。
 """
 
@@ -20,8 +25,9 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,6 +69,10 @@ class FakeJira:
     server_error: set[str] = field(default_factory=set)
     gone_endpoints: set[str] = field(default_factory=set)
     search_fail_from: int | None = None
+    blobs: dict[str, bytes] = field(default_factory=dict)  # 附件 id → 字节
+    media_url: str | None = None
+    honor_range: bool = True
+    auth_seen: list[tuple[str, bool]] = field(default_factory=list)  # (路径, 带了 Authorization)
     requests: list[tuple[str, str]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -102,6 +112,29 @@ class FakeJira:
         if updated is not None:
             issue["fields"]["updated"] = updated
 
+    def attach(
+        self,
+        issue_id: int,
+        attachment_id: int,
+        filename: str,
+        data: bytes,
+        *,
+        size: int | None = None,
+        mime: str = "application/octet-stream",
+    ) -> None:
+        """加一个附件；``size`` 默认取字节长度（给出别的值即模拟元数据与内容不符）。"""
+        self.blobs[str(attachment_id)] = data
+        fields = self.issues[str(issue_id)]["fields"]
+        fields.setdefault("attachment", []).append(
+            {
+                "id": str(attachment_id),
+                "filename": filename,
+                "mimeType": mime,
+                "size": len(data) if size is None else size,
+                "content": f"/rest/api/3/attachment/content/{attachment_id}",
+            }
+        )
+
     def remove(self, issue_id: int) -> None:
         del self.issues[str(issue_id)]
         del self.comments[str(issue_id)]
@@ -116,6 +149,7 @@ class FakeJira:
         limited = {} if self.retry_after is None else {"Retry-After": self.retry_after}
         with self.lock:
             self.requests.append((method, path))
+            self.auth_seen.append((path, headers.get("Authorization") is not None))
             if path in self.redirect:
                 return 302, {}, {"Location": self.redirect[path]}
             if path in self.not_json:
@@ -143,6 +177,14 @@ class FakeJira:
             if self.reject_search:
                 return 400, {"errorMessages": ["The value 'ABX' does not exist"]}, {}
             return self._search(json.loads(body))
+        if method == "GET" and path.startswith("/rest/api/3/attachment/content/"):
+            attachment_id = path.removeprefix("/rest/api/3/attachment/content/")
+            if attachment_id not in self.blobs:
+                return 404, {"errorMessages": ["no attachment"]}, {}
+            if self.media_url is not None:
+                target = f"{self.media_url}/file/{attachment_id}?token=signed"
+                return 303, {}, {"Location": target}
+            return ranged(self.blobs[attachment_id], headers, self.honor_range)
         if method == "GET" and path.startswith("/rest/api/3/issue/"):
             rest = unquote(path.removeprefix("/rest/api/3/issue/"))
             if rest.endswith("/comment"):
@@ -191,8 +233,42 @@ class FakeJira:
         return 200, {"comments": page, "startAt": start, "total": len(everything)}, {}
 
 
+def ranged(data: bytes, headers: Any, honor: bool) -> tuple[int, Any, dict[str, str]]:
+    """按请求头里的 ``Range: bytes=a-b`` 返回 206；不认 Range 时整份返回 200。"""
+    match = re.fullmatch(r"bytes=([0-9]+)-([0-9]+)", headers.get("Range") or "")
+    if not honor or match is None:
+        return 200, data, {}
+    first, last = int(match.group(1)), min(int(match.group(2)), len(data) - 1)
+    if first >= len(data):
+        return 416, b"", {"Content-Range": f"bytes */{len(data)}"}
+    return 206, data[first : last + 1], {"Content-Range": f"bytes {first}-{last}/{len(data)}"}
+
+
+@dataclass
+class FakeMedia:
+    """模拟媒体服务：按附件 id 返回 ``source.blobs`` 里的字节；记下每个请求是否带了凭证。"""
+
+    source: FakeJira
+    honor_range: bool = True
+    requests: list[tuple[str, bool]] = field(default_factory=list)  # (路径, 带了 Authorization)
+    #: 给出时替代正常响应（构造不规范的 Range 响应、跳转链等）：(路径, 请求头) → 响应
+    responder: Callable[[str, Any], tuple[int, Any, dict[str, str]]] | None = None
+
+    def handle(
+        self, method: str, raw_path: str, headers: Any, body: bytes
+    ) -> tuple[int, Any, dict[str, str]]:
+        path = urlsplit(raw_path).path
+        self.requests.append((path, headers.get("Authorization") is not None))
+        if self.responder is not None:
+            return self.responder(path, headers)
+        data = self.source.blobs.get(path.removeprefix("/file/"))
+        if method != "GET" or data is None:
+            return 404, b"", {}
+        return ranged(data, headers, self.honor_range)
+
+
 @contextmanager
-def serving(fake: FakeJira) -> Iterator[str]:
+def serving(fake: FakeJira | FakeMedia) -> Iterator[str]:
     """在回环地址的随机端口上运行模拟服务，产出站点地址（``http://127.0.0.1:<端口>``）。"""
 
     class Handler(BaseHTTPRequestHandler):
