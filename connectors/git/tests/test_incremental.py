@@ -136,6 +136,35 @@ def test_new_repository_is_a_document(root: Path) -> None:
     assert second.kinds() == [("document", uri("gamma"))]
 
 
+def test_linked_worktrees_never_become_documents(root: Path) -> None:
+    """在 root 下为已有仓库加、删 linked worktree：同一仓库不多出文档，增量轮没有任何产出
+    （#219）。"""
+    serve = serve_for(root)
+    first = run(serve)
+    run_git(root / "alpha", "worktree", "add", "-q", "-b", "feature", str(root / "alpha-wt"))
+    second = run(serve, first.cursor)
+    assert second.items == [] and second.cursor == first.cursor
+    full = run(serve)
+    assert full.kinds() == first.kinds()  # 全量也只有原来两篇
+    run_git(root / "alpha", "worktree", "remove", "--force", str(root / "alpha-wt"))
+    assert run(serve, second.cursor).items == []
+
+
+def test_worktrees_of_a_repo_outside_root_never_produce_anything(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """主仓库在 root 外：worktree 的增删不产出任何条目（不会因换代表出现内容未变的 move）。"""
+    outside = make_repo(tmp_path_factory.mktemp("outside") / "main", "外部仓库初始化").root
+    serve = serve_for(root)
+    first = run(serve)
+    run_git(outside, "worktree", "add", "-q", "-b", "b", str(root / "b-wt"))
+    second = run(serve, first.cursor)
+    assert second.items == [] and second.cursor == first.cursor
+    run_git(outside, "worktree", "add", "-q", "-b", "a", str(root / "a-wt"))
+    assert run(serve, second.cursor).items == []
+    assert run(serve).kinds() == first.kinds()
+
+
 def test_removed_repository_is_a_delete(root: Path) -> None:
     serve = serve_for(root)
     first = run(serve)

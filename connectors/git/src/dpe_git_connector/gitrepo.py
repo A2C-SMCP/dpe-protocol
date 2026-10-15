@@ -1,4 +1,4 @@
-"""Git 仓库访问：以命令行 git 为唯一后端（不引入 git 库、不自解析对象格式）。
+"""Git 仓库访问：以命令行 git 为唯一后端（不引入 git 库；对象格式只在旧编码提交处读取）。
 
 本连接器把仓库的**提交历史**映射为 DPE 内容（README「映射规则」），因此只遍历提交图——
 读取提交元数据与提交说明，**不读树、不读 diff、不读文件内容**。只读命令：
@@ -10,7 +10,9 @@
 - ``git log -z --format=…``：提交**集合**与元数据——git 的输出次序不进内容，页内元素序由本
   模块的 ``order_commits`` 按自有规则给出（只依赖提交图；跨 git 版本稳定）；
 - ``git rev-list --max-parents=0``：根提交集合（仓库改名的配对判据，见 ``server``）；
-- ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）。
+- ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）；
+- ``git cat-file --batch``：声明了非 UTF-8 编码的提交的原始字节（``git log`` 的转码随平台
+  而异，见 ``GitRepo._verbatim``）——这是唯一自行读取对象格式之处。
 
 ``-z`` 与 ``%x00`` 分隔是必需的：提交说明原样进 DPE，NUL 不能出现在提交消息与 ident 里，用它
 分隔无歧义（换行、引号都不会被改写）。
@@ -30,6 +32,8 @@
 
 from __future__ import annotations
 
+import codecs
+import logging
 import os
 import re
 import subprocess
@@ -54,15 +58,18 @@ __all__ = [
     "root_commits",
 ]
 
+#: 诊断日志（stderr，见 cli）：stdout 只走协议
+_log = logging.getLogger("dpe_git_connector")
+
 #: git 命令的超时（秒）：枚举必须是有界的，插件不因数据源卡死而挂住整轮
 _GIT_TIMEOUT = 120.0
 
 #: ``git log`` 的字段格式：NUL 分隔的 7 个字段/提交——sha、父提交、作者名、作者邮箱、
 #: 作者时间、提交时间、提交说明全文。时间取 ``%aI``/``%cI``（严格的 ISO 8601，带偏移）。
-_LOG_FORMAT = "%H%x00%P%x00%an%x00%ae%x00%aI%x00%cI%x00%B"
+_LOG_FORMAT = "%H%x00%P%x00%an%x00%ae%x00%aI%x00%cI%x00%e%x00%B"
 
 #: 每个提交在 ``git log`` 输出中被 NUL 分隔的字段数（须与 ``_LOG_FORMAT`` 一致）
-_LOG_FIELDS = 7
+_LOG_FIELDS = 8
 
 
 class GitError(Exception):
@@ -105,6 +112,27 @@ class RepoDir:
     identifier: bytes
 
 
+def _is_utf8(encoding: str) -> bool:
+    """git 判为 UTF-8 的编码名（``utf-8`` / ``utf8``，不分大小写）：主 log 输出的就是原字节。"""
+    return encoding.lower() in ("utf-8", "utf8")
+
+
+def _decode(raw: bytes, encoding: str, sha: str) -> str:
+    """按提交的 encoding 头解码（README「确定性」）：用 Python 标准库的编解码表，与平台、git
+    版本、iconv 无关；没有 encoding 头即 UTF-8（git 的缺省）。声明的编码不是 Python 认识的
+    文本编码，或按它解不了时抛 ``GitContentError``（条目级 ``content_invalid``）。"""
+    name = encoding or "utf-8"
+    try:
+        return raw.decode(codecs.lookup(name).name)
+    except LookupError:  # 不认识的编码名，或不是文本编码（如 base64）
+        raise GitContentError(f"提交 {sha} 声明的编码 {encoding!r} 不受支持") from None
+    except UnicodeDecodeError as exc:
+        declared = f"声明的编码 {encoding}" if encoding else "UTF-8（没有 encoding 头）"
+        raise GitContentError(
+            f"提交 {sha} 的说明或作者不能按{declared}解码（{exc.reason}）"
+        ) from None
+
+
 def looks_like_repo(directory: Path) -> bool:
     """目录是否是仓库候选：有 ``.git``（目录，或 worktree/子模块的 ``.git`` 文件）或形似裸仓库。
 
@@ -130,6 +158,10 @@ def discover_repos(root: str) -> tuple[list[RepoDir], list[RepoDir]]:
     规则（README「映射规则」）：
 
     - 每发现一个仓库即停止下探：仓库工作树内的目录（含子模块）不是独立仓库；
+    - **同一仓库只算一篇**：按「共同 git 目录」归并（``_common_git_dir``）——``git worktree
+      add`` 出来的 linked worktree 与主仓库共用同一个共同目录。worktree 只是别名，永不成为
+      文档：组内只保留主工作树（优先）或裸目录；主仓库不在 ``root`` 下时该仓库不出现，只记
+      warn。裸仓库与它的克隆是两个仓库，各成一篇；
     - 符号链接目录不跟随（可能成环）；``.git`` 目录不进入；
     - ``root`` 自身不当作仓库（它是容器；这个误配在 ``initialize`` 被显式拒绝）；
     - **子孙目录读不了**（权限等）只记录到第二个返回值：调用方出条目级 error 并继续其余
@@ -171,7 +203,66 @@ def discover_repos(root: str) -> tuple[list[RepoDir], list[RepoDir]]:
     walk(base)
     found.sort(key=lambda item: item.identifier)
     unreadable.sort(key=lambda item: item.identifier)
-    return found, unreadable
+    return _one_per_repository(found), unreadable
+
+
+#: ``_common_git_dir`` 的优先级里 linked worktree 的取值（它永不成为代表）
+_LINKED_WORKTREE = 2
+
+
+def _common_git_dir(directory: Path) -> tuple[str, int]:
+    """候选目录的共同 git 目录（真实路径）与它在组内当代表的优先级（越小越优先）。
+
+    只读 git 自己用的文件，不调 git：``.git`` 是文件时取 ``gitdir:`` 指向的目录，其中有
+    ``commondir`` 即 linked worktree，共同目录是它所指的主仓库 git 目录；其余（``.git`` 目录、
+    ``--separate-git-dir``、子模块的 modules 目录、裸仓库）的共同目录就是自身的 git 目录。
+    优先级：0 主工作树（含 ``--separate-git-dir`` 的工作树）；1 没有 ``.git`` 的目录本身
+    （裸仓库，或 ``--separate-git-dir`` 指向、本身打不开的 git 目录）；2 linked worktree。
+    读不了或格式不对时按独立仓库处理（以自身为键），由 ``GitRepo.open`` 如实判定。
+    """
+    marker = directory / ".git"
+    try:
+        if marker.is_dir():
+            return os.path.realpath(marker), 0
+        if not marker.is_file():
+            return os.path.realpath(directory), 1  # 裸仓库
+        content = marker.read_text(encoding="utf-8").strip()
+        if not content.startswith("gitdir:"):
+            return os.path.realpath(directory), 0
+        gitdir = directory / content[len("gitdir:") :].strip()
+        commondir = gitdir / "commondir"
+        if commondir.is_file():
+            target = commondir.read_text(encoding="utf-8").strip()
+            return os.path.realpath(gitdir / target), _LINKED_WORKTREE
+        return os.path.realpath(gitdir), 0
+    except (OSError, UnicodeDecodeError):
+        return os.path.realpath(directory), 0
+
+
+def _one_per_repository(found: list[RepoDir]) -> list[RepoDir]:
+    """同一共同 git 目录的候选只保留一个（见 ``discover_repos``），保持身份字节序。
+
+    linked worktree 只是仓库的别名，一律不成为文档：代表只在主工作树与裸目录中选，否则
+    worktree 的增删会改变代表、引发伪 move。主仓库不在 root 下时该仓库不出现，对每个这样的
+    worktree 记一条 warn（部署形态问题，不是读取失败，不产出条目级错误）。
+    """
+    groups: dict[str, list[tuple[int, RepoDir]]] = {}
+    for repo in found:
+        common, rank = _common_git_dir(Path(repo.path))
+        groups.setdefault(common, []).append((rank, repo))
+    kept: list[RepoDir] = []
+    for members in groups.values():
+        owners = [member for member in members if member[0] != _LINKED_WORKTREE]
+        if owners:
+            kept.append(min(owners, key=lambda m: (m[0], m[1].identifier))[1])
+            continue
+        for _, worktree in members:
+            _log.warning(
+                "%s 是 linked worktree，它的主仓库不在 root 下，不同步；"
+                "请把主工作树或裸仓库放进 root",
+                worktree.identifier.decode("utf-8", "backslashreplace"),
+            )
+    return sorted(kept, key=lambda item: item.identifier)
 
 
 def _utc_timestamp(value: str) -> str:
@@ -398,7 +489,8 @@ class GitRepo:
             "log",
             "-z",
             # 输出编码钉死为 UTF-8、不混入签名校验：仓库自己的 i18n.logOutputEncoding /
-            # log.showSignature 是本机配置，不得改变映射（状态指纹看不出这类变化）
+            # log.showSignature 是本机配置，不得改变映射。声明了其他编码的提交另取对象的原始
+            # 字节（``_verbatim``），不用这里经 iconv 转码的结果
             "--encoding=UTF-8",
             "--no-show-signature",
             f"--format={_LOG_FORMAT}",
@@ -410,19 +502,24 @@ class GitRepo:
             fields.pop()  # 末条记录之后的分隔符
         if len(fields) % _LOG_FIELDS != 0:
             raise GitError(f"git log 输出字段数不是 {_LOG_FIELDS} 的倍数：{len(fields)}")
+        chunks = [
+            fields[offset : offset + _LOG_FIELDS] for offset in range(0, len(fields), _LOG_FIELDS)
+        ]
+        legacy = [
+            chunk[0].decode("ascii", "replace")
+            for chunk in chunks
+            if chunk[6] and not _is_utf8(chunk[6].decode("ascii", "replace"))
+        ]
+        verbatim = self._verbatim(legacy) if legacy else {}
         records: list[CommitRecord] = []
-        for offset in range(0, len(fields), _LOG_FIELDS):
-            chunk = fields[offset : offset + _LOG_FIELDS]
-            # 说明与作者 ident 都按严格 UTF-8 解码：不是 UTF-8 的内容进不了 JSON 字符串，
-            # 如实报错（内容类失败，条目级 content_invalid），不做替换或猜测编码
-            try:
-                author = f"{chunk[2].decode('utf-8')} <{chunk[3].decode('utf-8')}>"
-                message = chunk[6].decode("utf-8")
-            except UnicodeDecodeError as exc:
-                sha = chunk[0].decode("ascii", "replace")
-                raise GitContentError(
-                    f"提交 {sha} 的说明或作者不是合法 UTF-8（{exc.reason}）"
-                ) from None
+        for chunk in chunks:
+            # 说明与作者 ident 按提交声明的编码严格解码（无 encoding 头即 UTF-8）：解不了如实
+            # 报错（内容类失败，条目级 content_invalid），不做替换或猜测编码
+            sha = chunk[0].decode("ascii", "replace")
+            encoding = chunk[6].decode("ascii", "replace")
+            name, email, body = verbatim.get(sha.lower(), (chunk[2], chunk[3], chunk[7]))
+            author = f"{_decode(name, encoding, sha)} <{_decode(email, encoding, sha)}>"
+            message = _decode(body, encoding, sha)
             records.append(
                 CommitRecord(
                     sha=chunk[0].decode("ascii", "replace").lower(),
@@ -435,13 +532,47 @@ class GitRepo:
             )
         return records
 
+    def _verbatim(self, shas: list[str]) -> dict[str, tuple[bytes, bytes, bytes]]:
+        """取声明了非 UTF-8 编码的提交的作者名、邮箱与说明的**原始字节**（README「确定性」）。
+
+        ``git log`` 的输出编码不可移植：即便请求与提交声明相同的编码，musl 上的 git 仍会转码
+        （实测），iconv 失败时还会悄悄原样输出。原始字节只能取自对象本身：``git cat-file
+        --batch`` 原样给出提交对象，按 git 文档规定的格式（头部、一个空行、说明）取 ``author``
+        行与说明——这是本模块唯一自行读取对象格式之处，只用于这类旧编码提交。
+        """
+        raw = self._run_bytes(
+            "cat-file", "--batch", stdin="".join(f"{sha}\n" for sha in shas).encode("ascii")
+        )
+        out: dict[str, tuple[bytes, bytes, bytes]] = {}
+        position = 0
+        for sha in shas:
+            newline = raw.find(b"\n", position)
+            header = raw[position:newline].split(b" ") if newline >= 0 else []
+            if len(header) != 3 or header[1] != b"commit" or not header[2].isdigit():
+                raise GitError(f"git cat-file 读不出提交 {sha}")
+            size = int(header[2])
+            body = raw[newline + 1 : newline + 1 + size]
+            position = newline + 1 + size + 1  # 对象之后的换行
+            head, _, message = body.partition(b"\n\n")
+            author = next((line for line in head.split(b"\n") if line.startswith(b"author ")), None)
+            ident = author[len(b"author ") :] if author is not None else b""
+            opening = ident.find(b"<")
+            closing = ident.find(b">", opening)
+            if opening < 0 or closing < 0:
+                raise GitContentError(f"提交 {sha} 的 author 行格式不对")
+            name = ident[:opening].strip(b" \t")
+            out[sha.lower()] = (name, ident[opening + 1 : closing], message)
+        return out
+
     # ------------------------------------------------------------------ 子进程
 
-    def _exec(self, *args: str) -> subprocess.CompletedProcess[bytes]:
-        return _exec_git(["-C", self.path, *args], label=" ".join(args))
+    def _exec(self, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+        return _exec_git(["-C", self.path, *args], label=" ".join(args), stdin=stdin)
 
-    def _run_bytes(self, *args: str, allow_exit: tuple[int, ...] = ()) -> bytes:
-        completed = self._exec(*args)
+    def _run_bytes(
+        self, *args: str, allow_exit: tuple[int, ...] = (), stdin: bytes | None = None
+    ) -> bytes:
+        completed = self._exec(*args, stdin=stdin)
         if completed.returncode != 0 and completed.returncode not in allow_exit:
             message = completed.stderr.decode("utf-8", "replace").strip()
             raise GitError(f"git {' '.join(args)} 失败（退出码 {completed.returncode}）：{message}")
@@ -486,7 +617,7 @@ def git_version() -> tuple[int, int, int] | None:
 
 
 def _exec_git(
-    args: list[str], *, label: str, timeout: float = _GIT_TIMEOUT
+    args: list[str], *, label: str, timeout: float = _GIT_TIMEOUT, stdin: bytes | None = None
 ) -> subprocess.CompletedProcess[bytes]:
     """以插件环境运行一条 git 命令；git 起不来（不存在、不可执行等 ``OSError``）或超时都映射成
     ``GitError``，不让底层异常穿出 initialize / scan。"""
@@ -497,6 +628,7 @@ def _exec_git(
             timeout=timeout,
             env=_git_env(),
             check=False,
+            input=stdin,
         )
     except FileNotFoundError:
         raise GitError("找不到 git 可执行文件（PATH 中没有 git）") from None
