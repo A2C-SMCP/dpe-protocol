@@ -5,7 +5,7 @@
 # 仓库内的成员包；CI 用模拟 Jira 服务，不依赖真实 Jira 与凭证。
 [project]
 name = "dpe-jira"
-version = "0.3.0"
+version = "0.4.0"
 description = "示例 dpe-run 插件：把 Jira Cloud 工单映射为 DPE 文档（不发布）"
 readme = "README.md"
 requires-python = ">=3.11"

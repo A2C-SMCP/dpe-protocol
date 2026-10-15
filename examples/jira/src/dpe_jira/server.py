@@ -13,20 +13,24 @@ false``），不截断、不补齐。读取是同步的：服务端忽略 Range 
 **一轮**（``supports_cursor: true``，§6.8）：轮首用增强搜索把范围内全部工单的 id、key、updated
 枚举完（按 nextPageToken 翻页，按 id 升序）。**枚举是完整的才往下走**：任何一页失败、分页字段
 矛盾或 token 重复，本轮在产出任何条目之前以 ``-32003`` 结束——截断的枚举会被当成大批删除，
-因此结构上不允许它产出 delete / move。之后：
+因此结构上不允许它产出 delete / move。项目集合（配置给出的，或工单所属的；
+``include_project_docs: false`` 时为空）也在轮首逐个取回，取不到同样整轮失败。之后：
 
 - **全量轮**（没有游标或游标解释不了）：每个工单取全文与全部评论，映射为 document 条目
   （``mapping``）；结束批 ``incremental: false``；
 - **增量轮**（与游标里的 id → [key, updated] 比较）：上一轮有、本轮没有的工单 → ``delete``
   （排在最前，按 id 升序）；其余按 id 升序：新工单或 updated 变了 → document；key 变了
   （换项目）→ ``move`` 旧 URI → 新 URI，紧跟新 URI 的 document（不论内容是否变化，§6.5）；
-  都没变 → 跳过。结束批 ``incremental: true``；
+  都没变 → 跳过。项目排在工单之后：项目没有 updated，取回组件与版本后按映射出的内容摘要
+  判断（游标里记 id → [key, 摘要]），变了才产出，改 key 同样表达为 ``move``，消失即 ``delete``。
+  结束批 ``incremental: true``；
 - **取全文失败**（枚举后被删、内容无法映射）→ 条目级 error；移动的目标取不到时连 ``move`` 也
   不发，只发目标 URI 的 error（不先改名再建不出内容）；
 - **装不下的文档**：取全文时就按单条预算判断能否发出（带文档对象的首段头部装得下、每页都能
   单独成段，并为后续批次留余量；移动条目本身也要装得下），不能就当作取全文失败
   （``content_invalid``），同样不发 ``move``；
-- **新游标**（``cursor``）：工单的新记录 [key, updated] 在它的文档**最后一段发出时**才写入；
+- **新游标**（``cursor``）：工单的新记录 [key, updated]（项目为 [key, 摘要]）在它的文档**最后一段
+  发出时**才写入；
   跳过的工单沿用旧记录；任何失败（含发出途中改判为 error）沿用旧记录（新工单不记）；已删除
   的不记——新游标不越过没成功产出的变化（§6.8）。
 - **换凭证账号**：游标的数据源摘要含 ``/myself`` 返回的账号 id，账号一变旧游标即解释不了，
@@ -60,6 +64,7 @@ from __future__ import annotations
 import atexit
 import base64
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -69,7 +74,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from dpe_hash import RemoteUrlError, check_remote_url
+from dpe_hash import RemoteUrlError, check_remote_url, jcs
 
 from dpe_jira import PLUGIN_NAME, __version__
 from dpe_jira.client import (
@@ -82,7 +87,13 @@ from dpe_jira.client import (
     UnexpectedResponse,
 )
 from dpe_jira.cursor import Marks, decode_cursor, encode_cursor, is_issue_id, source_digest
-from dpe_jira.mapping import ISSUE_FIELDS, MappingError, blob_handles, issue_document
+from dpe_jira.mapping import (
+    ISSUE_FIELDS,
+    MappingError,
+    blob_handles,
+    issue_document,
+    project_document,
+)
 
 __all__ = ["PROTOCOL_VERSION", "Serve"]
 
@@ -113,12 +124,35 @@ def _line(message: dict[str, Any]) -> str:
     return json.dumps(message, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+def project_uri(prefix: str, key: str) -> str:
+    """实例前缀 + ``project/<项目 key>``（编码规则同 ``issue_uri``）。"""
+    return f"{prefix}project/{_encode_key(key)}"
+
+
+def _content_digest(item: dict[str, Any]) -> str:
+    """项目文档的内容摘要（不含 ``file_uri``：改 key 不改内容），用来判断项目是否变化。"""
+    body = {"document": item["document"], "pages": item["pages"]}
+    return hashlib.sha256(jcs(body).encode("utf-8")).hexdigest()[:32]
+
+
+def _contradicts(previous: dict[_Ref, tuple[str, str]], now: list[tuple[str, str, str]]) -> bool:
+    """游标与本轮自相矛盾：同类里两条记录指向同一个 key，或本轮某个 key 上一轮属于另一个 id。"""
+    owners: dict[tuple[str, str], str] = {}
+    for (kind, entry_id), (key, _) in previous.items():
+        if owners.setdefault((kind, key), entry_id) != entry_id:
+            return True
+    return any(owners.get((kind, key), entry_id) != entry_id for kind, entry_id, key in now)
+
+
 def issue_uri(prefix: str, key: str) -> str:
     """实例前缀 + ``issue/<工单 key>``（key 按 RFC 3986 编码；正常的 key 本身就是安全字符）。"""
-    encoded = "".join(
+    return f"{prefix}issue/{_encode_key(key)}"
+
+
+def _encode_key(key: str) -> str:
+    return "".join(
         ch if ch in _KEEP else "".join(f"%{b:02X}" for b in ch.encode("utf-8")) for ch in key
     )
-    return f"{prefix}issue/{encoded}"
 
 
 def _error_item(uri: str | None, code: str, message: str, retryable: bool) -> dict[str, Any]:
@@ -149,21 +183,35 @@ class _Issue:
 
 
 @dataclass(frozen=True)
+class _Project:
+    """轮首取到的一个项目：数字 id、key 与项目本身的响应（名称、描述）。"""
+
+    id: str
+    key: str
+    raw: dict[str, Any]
+
+
+#: 新游标记录的键：（"issue" | "project", id）——工单与项目的 id 各成一个空间
+_Ref = tuple[str, str]
+
+
+@dataclass(frozen=True)
 class _Step:
-    """一轮中的一步：删除一个消失的工单（``delete_uri``），或取一个工单的全文（``issue``，
-    ``moved_from`` 为移动前的 key）。"""
+    """一轮中的一步：删除一篇消失的文档（``delete_uri``），取一个工单的全文（``issue``），或取
+    一个项目的组件与版本（``project``）；``moved_from`` 为移动前的 key。"""
 
     issue: _Issue | None = None
+    project: _Project | None = None
     moved_from: str | None = None
     delete_uri: str | None = None
 
 
 @dataclass
 class _Out:
-    """待发出的条目；``mark`` 是它完整发出后要写进新游标的记录（只有工单的 document 带）。"""
+    """待发出的条目；``mark`` 是它完整发出后要写进新游标的记录（工单与项目的 document 带）。"""
 
     item: dict[str, Any]
-    issue_id: str | None = None
+    ref: _Ref | None = None
     mark: tuple[str, str] | None = None
     #: 文档里的 blob 句柄 → size：条目（整篇或首段）发出时才登记给 ``read_blob``
     handles: dict[str, int] = field(default_factory=dict)
@@ -175,9 +223,9 @@ class _Round:
     steps: list[_Step]
     incremental: bool
     #: 上一轮的记录（增量轮）；取全文失败时沿用
-    previous: Marks
-    #: 新游标的记录：先放跳过的工单，文档完整发出时补上
-    marks: Marks
+    previous: dict[_Ref, tuple[str, str]]
+    #: 新游标的记录：先放跳过的工单与项目，文档完整发出时补上
+    marks: dict[_Ref, tuple[str, str]]
     position: int = 0
     #: 已产出、尚未发出的条目（本批装不下的留到下一批，不重取）
     queue: list[_Out] = field(default_factory=list)
@@ -189,17 +237,21 @@ class _Round:
     issued: int = 0
 
     def commit(self, out: _Out) -> None:
-        if out.issue_id is not None and out.mark is not None:
-            self.marks[out.issue_id] = out.mark
+        if out.ref is not None and out.mark is not None:
+            self.marks[out.ref] = out.mark
 
-    def revert(self, issue_id: str | None) -> None:
-        """这个工单本轮没有成功产出：新游标沿用上一轮的记录（新工单不记）。"""
-        if issue_id is None:
+    def revert(self, ref: _Ref | None) -> None:
+        """这篇文档本轮没有成功产出：新游标沿用上一轮的记录（新的不记）。"""
+        if ref is None:
             return
-        if issue_id in self.previous:
-            self.marks[issue_id] = self.previous[issue_id]
+        if ref in self.previous:
+            self.marks[ref] = self.previous[ref]
         else:
-            self.marks.pop(issue_id, None)
+            self.marks.pop(ref, None)
+
+    def table(self, kind: str) -> Marks:
+        """新游标里一张表（工单或项目）的记录。"""
+        return {entry_id: mark for (k, entry_id), mark in self.marks.items() if k == kind}
 
     def exhausted(self) -> bool:
         return self.pending is None and not self.queue and self.position >= len(self.steps)
@@ -216,6 +268,8 @@ class Serve:
         self._client: JiraClient | None = None
         self._jql = ""
         self._config: dict[str, Any] = {}
+        self._projects: list[str] | None = None  # 配置给出的项目；None 即按工单所属项目
+        self._include_projects = True
         self._account: str | None = None
         self._source = ""
         self._round: _Round | None = None
@@ -361,6 +415,8 @@ class Serve:
         self._client = client
         self._jql = jql
         self._config = dict(config)
+        self._projects = sorted(set(projects)) if projects is not None else None
+        self._include_projects = include
         self._account = account  # 探测暂时失败为 None：每轮开头再取（取不到本轮失败）
         return None
 
@@ -489,9 +545,7 @@ class Serve:
                 self._round = self._open_round(cursor)
             except JiraError as exc:
                 self._round = None
-                return self._error(
-                    id_, -32003, f"枚举工单失败：{exc}", {"retryable": exc.retryable}
-                )
+                return self._error(id_, -32003, f"枚举失败：{exc}", {"retryable": exc.retryable})
         round_ = self._round
         assert round_ is not None
         max_items = params.get("max_items")
@@ -510,7 +564,9 @@ class Serve:
             return self._result(id_, {"items": items, "next": self._token(round_)})
         # 结束批：给出新游标（§6.8）。信封预留只覆盖 "cursor":null，游标串的字节另计
         if round_.cursor is None:
-            round_.cursor = encode_cursor(self._source, round_.marks)
+            round_.cursor = encode_cursor(
+                self._source, round_.table("issue"), round_.table("project")
+            )
         cursor_value: str | None = round_.cursor
         if used + _size(cursor_value) > budget:
             if items:
@@ -528,36 +584,81 @@ class Serve:
     def _open_round(self, cursor: str | None) -> _Round:
         self._source = self._source_digest()
         current = self._enumerate()
-        previous = None if cursor is None else decode_cursor(cursor, self._source)
+        projects = self._fetch_projects(current)
+        decoded = None if cursor is None else decode_cursor(cursor, self._source)
         self._rounds += 1
-        if previous is None:  # 全量轮：没有游标，或游标解释不了（§6.8 回退，不报错）
-            steps = [_Step(issue=issue) for issue in current]
-            return _Round(self._rounds, steps, incremental=False, previous={}, marks={})
-        alive = {issue.id for issue in current}
-        steps = [
-            _Step(delete_uri=issue_uri(self.prefix, previous[issue_id][0]))
-            for issue_id in sorted(previous, key=int)
-            if issue_id not in alive
+        full = [_Step(issue=issue) for issue in current] + [
+            _Step(project=project) for project in projects
         ]
-        owners: dict[str, str] = {}  # 上一轮的 key → id
-        for issue_id, (key, _) in previous.items():
-            owners.setdefault(key, issue_id)
-        if len(owners) != len(previous) or any(
-            owners.get(issue.key, issue.id) != issue.id for issue in current
-        ):
+        if decoded is None:  # 全量轮：没有游标，或游标解释不了（§6.8 回退，不报错）
+            return _Round(self._rounds, full, incremental=False, previous={}, marks={})
+        previous: dict[_Ref, tuple[str, str]] = {
+            **{("issue", k): v for k, v in decoded[0].items()},
+            **{("project", k): v for k, v in decoded[1].items()},
+        }
+        now: list[tuple[str, str, str]] = [("issue", i.id, i.key) for i in current]
+        now += [("project", p.id, p.key) for p in projects]
+        if _contradicts(previous, now):
             # 游标与本轮自相矛盾（见模块说明）：不冒险删除，按全量轮处理
-            steps = [_Step(issue=issue) for issue in current]
-            return _Round(self._rounds, steps, incremental=False, previous={}, marks={})
-        marks: Marks = {}
+            return _Round(self._rounds, full, incremental=False, previous={}, marks={})
+        alive = {(kind, entry_id) for kind, entry_id, _ in now}
+        steps = [
+            _Step(delete_uri=self._uri(kind, previous[(kind, entry_id)][0]))
+            for kind in ("issue", "project")
+            for entry_id in sorted((i for k, i in previous if k == kind), key=int)
+            if (kind, entry_id) not in alive
+        ]
+        marks: dict[_Ref, tuple[str, str]] = {}
         for issue in current:
-            old = previous.get(issue.id)
+            old = previous.get(("issue", issue.id))
             if old is None or (old[0] == issue.key and old[1] != issue.updated):
                 steps.append(_Step(issue=issue))
             elif old[0] != issue.key:
                 steps.append(_Step(issue=issue, moved_from=old[0]))
             else:
-                marks[issue.id] = old  # 没变：跳过
+                marks[("issue", issue.id)] = old  # 没变：跳过
+        for project in projects:  # 项目没有 updated：取数后按内容摘要判断（``_run_step``）
+            old = previous.get(("project", project.id))
+            moved = old[0] if old is not None and old[0] != project.key else None
+            steps.append(_Step(project=project, moved_from=moved))
         return _Round(self._rounds, steps, incremental=True, previous=previous, marks=marks)
+
+    def _uri(self, kind: str, key: str) -> str:
+        return issue_uri(self.prefix, key) if kind == "issue" else project_uri(self.prefix, key)
+
+    def _fetch_projects(self, issues: list[_Issue]) -> list[_Project]:
+        """本轮的项目集合（配置给出的，或工单所属的），按 key 排序取回项目本身。
+
+        这一步属于枚举：取不到就整轮失败、不产出任何条目——项目集合不完整时同样不能删除。
+        """
+        if not self._include_projects:
+            return []
+        assert self._client is not None
+        keys = (
+            self._projects
+            if self._projects is not None
+            else sorted({issue.key.rsplit("-", 1)[0] for issue in issues if "-" in issue.key})
+        )
+        projects: list[_Project] = []
+        seen: set[str] = set()
+        for key in keys:
+            try:
+                raw = self._client.project(key)
+            except NotFound:
+                if self._projects is not None:  # 配置里的项目读不到：改配置之前重试无用
+                    raise NotFound(f"配置的项目 {key} 不存在或不可读") from None
+                raise Unavailable(f"项目 {key} 在枚举期间不可读") from None  # 竞态：可重试
+            project_id = raw.get("id") if isinstance(raw, dict) else None
+            actual = raw.get("key") if isinstance(raw, dict) else None
+            if not isinstance(project_id, str) or not is_issue_id(project_id):
+                raise UnexpectedResponse("项目响应缺少数字 id")
+            if not isinstance(actual, str) or not actual:
+                raise UnexpectedResponse("项目响应缺少 key")
+            assert isinstance(raw, dict)
+            if project_id not in seen:  # 旧 key 会被 Jira 重定向到同一个项目：按 id 去重
+                seen.add(project_id)
+                projects.append(_Project(project_id, actual, raw))
+        return projects
 
     def _enumerate(self) -> list[_Issue]:
         """枚举范围内全部工单（按 id 升序）；不完整就抛异常，绝不返回截断的结果。"""
@@ -622,7 +723,7 @@ class Serve:
                     # 取全文时已按预算筛过，正常到不了这里；万一到了，如实上报并沿用旧记录
                     uri = round_.pending[0]
                     round_.pending = None
-                    round_.revert(round_.pending_out.issue_id)
+                    round_.revert(round_.pending_out.ref)
                     round_.pending_out = None
                     payload = _error_item(uri, "content_invalid", "分段无法在单条预算内继续", False)
                 elif round_.pending is None:  # 末段：文档完整发出
@@ -648,7 +749,7 @@ class Serve:
                     round_.pending_out = out  # 首段：末段发出时再写入记录
                     self._handles.update(out.handles)
                 else:
-                    round_.revert(out.issue_id)  # 改判为 error：没发出，句柄不登记
+                    round_.revert(out.ref)  # 改判为 error：没发出，句柄不登记
             items.append(payload)
             total += _size(payload) + (1 if len(items) > 1 else 0)
         return items, total
@@ -657,29 +758,71 @@ class Serve:
         """执行一步，返回它产出的待发条目。新游标的记录在文档完整发出时才写入。"""
         if step.delete_uri is not None:
             return [_Out({"kind": "delete", "file_uri": step.delete_uri})]
+        if step.project is not None:
+            return self._project_step(round_, step, budget)
         issue = step.issue
         assert issue is not None
         item = self._issue_item(issue)
+        ref: _Ref = ("issue", issue.id)
+        return self._emit(round_, ref, (issue.key, issue.updated), item, step.moved_from, budget)
+
+    def _project_step(self, round_: _Round, step: _Step, budget: int) -> list[_Out]:
+        project = step.project
+        assert project is not None and self._client is not None
+        ref: _Ref = ("project", project.id)
+        uri = project_uri(self.prefix, project.key)
+        try:
+            components = self._client.components(project.key)
+            versions = self._client.versions(project.key)
+        except NotFound:
+            item = _error_item(uri, "source_unavailable", "项目在枚举之后不可读", True)
+            round_.revert(ref)
+            return [_Out(item)]
+        except JiraError as exc:
+            raise _RoundAborted(f"读取项目失败：{exc}", exc.retryable) from None
+        try:
+            item = project_document(uri, project.raw, components, versions)
+        except MappingError as exc:
+            round_.revert(ref)
+            return [_Out(_error_item(uri, "content_invalid", f"项目内容无法映射：{exc}", False))]
+        digest = _content_digest(item)
+        old = round_.previous.get(ref)
+        if step.moved_from is None and old is not None and old[1] == digest:
+            round_.marks[ref] = old  # 内容没变：跳过
+            return []
+        return self._emit(round_, ref, (project.key, digest), item, step.moved_from, budget)
+
+    def _emit(
+        self,
+        round_: _Round,
+        ref: _Ref,
+        mark: tuple[str, str],
+        item: dict[str, Any],
+        moved_from: str | None,
+        budget: int,
+    ) -> list[_Out]:
+        """把取到的条目（document 或 error）排进待发队列，必要时在前面加 move。"""
+        step_kind = ref[0]
         move: dict[str, Any] | None = None
-        if step.moved_from is not None:
+        if moved_from is not None:
             move = {
                 "kind": "move",
-                "from_uri": issue_uri(self.prefix, step.moved_from),
+                "from_uri": self._uri(step_kind, moved_from),
                 "to_uri": item["file_uri"],
             }
         limit = budget - 2 * _SEGMENT_SLACK
         if item["kind"] == "document" and not self._expressible(item, limit):
             item = _error_item(
-                item["file_uri"], "content_invalid", "工单超过单条消息预算，无法分段", False
+                item["file_uri"], "content_invalid", "文档超过单条消息预算，无法分段", False
             )
         elif move is not None and _size(move) > limit:
             item = _error_item(
                 item["file_uri"], "content_invalid", "移动条目超过单条消息预算", False
             )
         if item["kind"] != "document":  # 失败：沿用旧记录，下一轮重新尝试（含移动）
-            round_.revert(issue.id)
+            round_.revert(ref)
             return [_Out(item)]
-        document = _Out(item, issue.id, (issue.key, issue.updated), blob_handles(item))
+        document = _Out(item, ref, mark, blob_handles(item))
         return [document] if move is None else [_Out(move), document]
 
     @staticmethod

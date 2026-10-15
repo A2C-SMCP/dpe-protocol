@@ -14,6 +14,9 @@ key 取全文时返回 404（模拟枚举之后被删）；``redirect[路径] = 
 
 源的变化用 ``touch``（改 updated）、``rekey``（换 key，模拟换项目）、``remove``（删除）。
 
+项目：``projects``（key → 项目本身）、``components`` / ``versions``（key → 列表）对应
+``/rest/api/3/project/{key}`` 及其 ``/components``、``/versions``；缺省有 ABC 与 XYZ 两个空项目。
+
 附件：``attach`` 给工单加附件（元数据进工单的 ``attachment`` 字段，字节存在 ``blobs``）。
 下载端点 ``/rest/api/3/attachment/content/{id}`` 在设了 ``media_url`` 时 303 到模拟媒体服务
 （``FakeMedia``，另一个端口，即另一个源），否则直接在本站返回字节；两处都按 ``Range`` 返回 206，
@@ -69,6 +72,14 @@ class FakeJira:
     server_error: set[str] = field(default_factory=set)
     gone_endpoints: set[str] = field(default_factory=set)
     search_fail_from: int | None = None
+    projects: dict[str, dict[str, Any]] = field(
+        default_factory=lambda: {
+            "ABC": {"id": "100", "key": "ABC", "name": "Alpha", "description": ""},
+            "XYZ": {"id": "200", "key": "XYZ", "name": "Xylo", "description": ""},
+        }
+    )
+    components: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    versions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     blobs: dict[str, bytes] = field(default_factory=dict)  # 附件 id → 字节
     media_url: str | None = None
     honor_range: bool = True
@@ -177,6 +188,17 @@ class FakeJira:
             if self.reject_search:
                 return 400, {"errorMessages": ["The value 'ABX' does not exist"]}, {}
             return self._search(json.loads(body))
+        if method == "GET" and path.startswith("/rest/api/3/project/"):
+            key, _, rest = unquote(path.removeprefix("/rest/api/3/project/")).partition("/")
+            if key not in self.projects:
+                return 404, {"errorMessages": ["No project could be found"]}, {}
+            if rest == "":
+                return 200, self.projects[key], {}
+            if rest == "components":
+                return 200, self.components.get(key, []), {}
+            if rest == "versions":
+                return 200, self.versions.get(key, []), {}
+            return 404, {"errorMessages": ["no route"]}, {}
         if method == "GET" and path.startswith("/rest/api/3/attachment/content/"):
             attachment_id = path.removeprefix("/rest/api/3/attachment/content/")
             if attachment_id not in self.blobs:

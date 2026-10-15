@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "name": "jira",
-  "version": "0.3.0",
-  "description": "示例插件（不发布、非官方）：把 Jira Cloud 工单映射为 DPE 文档（正文 / 评论 / 字段三页，有附件时加附件页）",
+  "version": "0.4.0",
+  "description": "示例插件（不发布、非官方）：把 Jira Cloud 工单映射为 DPE 文档（正文 / 评论 / 字段三页，有附件时加附件页），并为范围内的项目产出项目文档",
   "protocol_versions": [
     "dpe-connector/1"
   ],
@@ -31,7 +31,7 @@
       },
       "include_project_docs": {
         "type": "boolean",
-        "description": "是否为范围内的项目产出项目文档（缺省 true；本版本尚未实现，见 README）"
+        "description": "是否为范围内的项目产出项目文档（项目描述、组件、版本各一页），缺省 true"
       }
     },
     "required": [

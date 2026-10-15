@@ -2,10 +2,9 @@
 
 > **这是示例，不发布，也不是官方 connector**（官方的是 [`connectors/git`](../../connectors/git/)）。
 > 它用来验证 Git connector 覆盖不到的 DPE 能力：大量小文档、数据源凭证、易变内容、限流、删除与
-> 移动、网络来源的 blob。设计见 [Issue #223](https://github.com/A2C-SMCP/dpe-protocol/issues/223)，
-> 按其中的拆分逐步实现；**项目文档尚未实现**，`include_project_docs` 目前只接受、不生效。
+> 移动、网络来源的 blob。设计见 [Issue #223](https://github.com/A2C-SMCP/dpe-protocol/issues/223)。
 
-把 Jira Cloud 的工单映射为 DPE 文档的 **dpe-run 插件**（[connector 契约](../../spec/connector-contract.md) §6）。
+把 Jira Cloud 的工单与项目映射为 DPE 文档的 **dpe-run 插件**（[connector 契约](../../spec/connector-contract.md) §6）。
 插件只产出源内容：不计算 hash、不接触 DPE remote。运行时只依赖 `dpe-hash`（Retry-After 解析与
 站点地址校验）。
 
@@ -35,6 +34,7 @@ uv run pytest            # 含模拟 Jira + 真实 dpe-run + 参考服务端的�
 | `site` | 是 | 站点地址，与 remote URL 同一套文法（HTTP 绑定 §1）：小写、无尾部 `/`、无查询串 |
 | `projects` | 二选一 | 项目 key 列表 |
 | `jql` | 二选一 | 自定义范围；不得含 `ORDER BY`（插件统一按 id 升序；检测是简单的文本匹配，字符串字面量里出现 `order by` 也会被拒） |
+| `include_project_docs` | 否 | 是否产出项目文档，缺省 `true`（见下文「项目文档」） |
 
 凭证 `JIRA_EMAIL` / `JIRA_API_TOKEN`（Basic 认证）由运行器按清单注入，插件不回显它们。
 
@@ -50,6 +50,21 @@ uv run pytest            # 含模拟 Jira + 真实 dpe-run + 参考服务端的�
 - **名称会随语言变化**：状态、优先级、类型、解决结果的名称按凭证账号的语言设置返回，因此
   `metadata.value` 同时记 `{id, name}`。切换账号语言会让这些元素的内容变化——这是真实的内容变化，
   不是插件的不确定性。
+
+## 项目文档
+
+- **一个项目一篇**：`file_uri` = 实例前缀 + `project/<项目 key>`；`file_type` 为 `jira_project`，`title`
+  为项目名，`doc_metadata` 为 `{project_id}`。三页：`description`（项目描述）、`components`（按组件
+  id 升序，每个组件一个元素）、`versions`（按 Jira 里排定的版本顺序，每个版本一个元素，`metadata`
+  记是否已发布、是否已归档与发布日期）。**不列工单清单**：清单由工单推导而来，不是项目自己的内容。
+- **哪些项目**：配置 `projects` 时就是这些项目；配置 `jql` 时是本轮枚举到的工单所属的项目，所以一个
+  项目的最后一个工单离开范围后，项目文档也会被删除。
+- **增量**：项目没有更新时间，插件每轮重取项目、组件与版本（每个项目 3 个请求，即使什么都没变），
+  按映射出的内容摘要判断是否变化；项目改 key 表达为移动。用 `jql` 覆盖大量项目时这部分开销与限流
+  风险会明显增加，可以关掉 `include_project_docs`。项目在枚举时读不到，本轮整体失败、不当作删除：
+  配置里写明的项目读不到标为不可重试（需要改配置），按工单推出的项目读不到视为暂时情况。
+- 把 `include_project_docs` 从 `true` 改成 `false` 是配置变化，运行器会改跑全量轮，已有的项目文档
+  **不会被删除**，需要时手动清理。
 
 ## 附件
 
