@@ -18,6 +18,12 @@
   Cloud 没有公开它与附件 id 的对应关系，猜测（按文件名）或依赖渲染结果都不确定；媒体节点照旧
   产出不带 blob 的 ``Image`` 占位（``adf``）。
 
+**项目 → document 条目**（``project_document``，#223 §5）：``file_type: jira_project``，
+``title`` = 项目名，``doc_metadata = {project_id}``。三页：``description``（项目描述非空时一个
+``NarrativeText``）、``components``（按组件 id 升序每个组件一个元素）、``versions``（按 Jira
+返回的顺序，即用户排定的版本顺序，每个版本一个元素）。组件与版本的 ``text`` 是「名称」或
+「名称: 说明」。**不列工单清单**：清单是由工单推导出来的，不是项目自己的内容。
+
 时间戳一律规范化为 RFC 3339 UTC（毫秒精度，以 ``Z`` 结尾）。
 """
 
@@ -28,7 +34,15 @@ from typing import Any
 
 from dpe_jira.adf import to_elements
 
-__all__ = ["IMAGE_TYPES", "ISSUE_FIELDS", "MappingError", "blob_handles", "issue_document", "utc"]
+__all__ = [
+    "IMAGE_TYPES",
+    "ISSUE_FIELDS",
+    "MappingError",
+    "blob_handles",
+    "issue_document",
+    "project_document",
+    "utc",
+]
 
 #: 字段页的字段：(Jira 字段 id, 固定显示名)，按此顺序产出
 _FIELDS: tuple[tuple[str, str], ...] = (
@@ -117,6 +131,79 @@ def issue_document(
     if attachments:
         pages.append({"page_metadata": {"section": "attachments"}, "elements": attachments})
     return {"kind": "document", "file_uri": uri, "document": document, "pages": pages}
+
+
+def project_document(uri: str, project: Any, components: Any, versions: Any) -> dict[str, Any]:
+    """组装一个项目的 document 条目（三页）。内容异常抛 ``MappingError``。"""
+    if not isinstance(project, dict):
+        raise MappingError("项目响应不是对象")
+    project_id, name = project.get("id"), project.get("name")
+    if not isinstance(project_id, str) or not project_id or not isinstance(name, str):
+        raise MappingError("项目缺少 id 或名称")
+    description = project.get("description")
+    described = (
+        [{"category": "NarrativeText", "text": description, "metadata": {}}]
+        if isinstance(description, str) and description
+        else []
+    )
+    if not isinstance(components, list) or not isinstance(versions, list):
+        raise MappingError("组件或版本列表不是数组")
+    keyed: list[tuple[int, dict[str, Any]]] = []
+    for component in components:
+        component_id = _numeric_id(component, "组件")
+        keyed.append((int(component_id), component))
+    keyed.sort(key=lambda entry: entry[0])
+    component_elements = [
+        {
+            "category": "NarrativeText",
+            "text": _named(component, "组件"),
+            "metadata": {"component_id": component["id"]},
+        }
+        for _, component in keyed
+    ]
+    version_elements: list[dict[str, Any]] = []
+    for version in versions:
+        version_id = _numeric_id(version, "版本")
+        metadata: dict[str, Any] = {
+            "version_id": version_id,
+            "released": version.get("released") is True,
+            "archived": version.get("archived") is True,
+        }
+        release_date = version.get("releaseDate")
+        if isinstance(release_date, str) and release_date:
+            metadata["release_date"] = release_date  # 日期（YYYY-MM-DD）而非时间戳，原样保留
+        version_elements.append(
+            {"category": "NarrativeText", "text": _named(version, "版本"), "metadata": metadata}
+        )
+    return {
+        "kind": "document",
+        "file_uri": uri,
+        "document": {
+            "file_type": "jira_project",
+            "title": name,
+            "doc_metadata": {"project_id": project_id},
+        },
+        "pages": [
+            {"page_metadata": {"section": "description"}, "elements": described},
+            {"page_metadata": {"section": "components"}, "elements": component_elements},
+            {"page_metadata": {"section": "versions"}, "elements": version_elements},
+        ],
+    }
+
+
+def _numeric_id(entry: Any, what: str) -> str:
+    entry_id = entry.get("id") if isinstance(entry, dict) else None
+    if not isinstance(entry_id, str) or not entry_id.isascii() or not entry_id.isdigit():
+        raise MappingError(f"{what}缺少数字 id")
+    return entry_id
+
+
+def _named(entry: dict[str, Any], what: str) -> str:
+    """「名称」或「名称: 说明」。"""
+    name, description = entry.get("name"), entry.get("description")
+    if not isinstance(name, str) or not name:
+        raise MappingError(f"{what}缺少名称")
+    return f"{name}: {description}" if isinstance(description, str) and description else name
 
 
 def blob_handles(item: dict[str, Any]) -> dict[str, int]:

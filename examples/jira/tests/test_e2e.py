@@ -72,8 +72,12 @@ def reference_server() -> Iterator[str]:
 
 
 class Runner:
-    def __init__(self, tmp: Path, remote: str, site: str) -> None:
+    def __init__(
+        self, tmp: Path, remote: str, site: str, extra: dict[str, Any] | None = None
+    ) -> None:
         self.tmp, self.remote, self.site = tmp, remote, site
+        #: 额外的实例配置；缺省不产出项目文档（项目文档由专门的用例打开）
+        self.extra = {"include_project_docs": False} if extra is None else extra
         self.fresh = 0
         self.environ = {
             "PATH": os.environ.get("PATH", ""),
@@ -91,7 +95,7 @@ class Runner:
             "remote": {"url": self.remote},
             "uri_prefix": prefix,
             "plugin": {"manifest": str(MANIFEST), "command": command()},
-            "config": {"site": self.site, "projects": ["ABC"]},
+            "config": {"site": self.site, **self.scope(), **self.extra},
             "secrets": {
                 "JIRA_EMAIL": {"env": "SRC_JIRA_EMAIL"},
                 "JIRA_API_TOKEN": {"env": "SRC_JIRA_TOKEN"},
@@ -125,6 +129,9 @@ class Runner:
         assert report["outcome"] == "succeeded", report
         assert report["incremental"] is False
         return self.listing(prefix)
+
+    def scope(self) -> dict[str, Any]:
+        return {} if "jql" in self.extra else {"projects": ["ABC"]}
 
     def element_hashes(self, uri: str) -> set[str]:
         with DpeClient(self.remote) as client:
@@ -324,3 +331,55 @@ def test_attachment_bytes_arrive_and_attachment_changes_converge(
         assert image_hash("502", "big.JPG", "image/jpeg", BIG) not in runner.element_hashes(
             "jira://inc/issue/ABC-1"
         )
+
+
+def test_project_documents_converge(tmp_path: Path) -> None:
+    fake = FakeJira()
+    populate(fake)
+    fake.projects["ABC"]["description"] = "示例项目"
+    fake.components["ABC"] = [{"id": "1", "name": "Web", "description": "前端"}]
+    with serving(fake) as site, reference_server() as remote:
+        runner = Runner(tmp_path, remote, site, extra={})  # 缺省 include_project_docs: true
+        first = runner.run("inc", "jira://inc/")
+        assert first["outcome"] == "succeeded", first
+        assert "project/ABC" in runner.listing("jira://inc/")
+
+        def step(expected: dict[str, int]) -> None:
+            report = runner.run("inc", "jira://inc/")
+            assert report["outcome"] == "succeeded", report
+            assert report["incremental"] is True, report
+            for key, value in expected.items():
+                assert report["counts"][key] == value, (key, report["counts"])
+            assert runner.listing("jira://inc/") == runner.full_mapping()
+
+        step({"created": 0, "updated": 0})
+        fake.versions["ABC"] = [{"id": "9", "name": "1.0", "released": True}]
+        step({"updated": 1, "created": 0})  # 只有项目文档变化
+        fake.projects["ABC"]["name"] = "Alpha 2"
+        step({"updated": 1})
+
+
+def test_project_moves_and_departures_converge_under_jql(tmp_path: Path) -> None:
+    fake = FakeJira()
+    fake.add_issue(10001, "ABC-1", summary="甲")
+    fake.add_issue(10002, "XYZ-1", summary="乙")
+    with serving(fake) as site, reference_server() as remote:
+        runner = Runner(tmp_path, remote, site, extra={"jql": "labels = sync"})
+        assert runner.run("inc", "jira://inc/")["outcome"] == "succeeded"
+
+        def step(expected: dict[str, int]) -> None:
+            report = runner.run("inc", "jira://inc/")
+            assert report["outcome"] == "succeeded", report
+            assert report["incremental"] is True, report
+            for key, value in expected.items():
+                assert report["counts"][key] == value, (key, report["counts"])
+            assert runner.listing("jira://inc/") == runner.full_mapping()
+
+        # 项目改 key：工单与项目各一次移动
+        fake.projects["ABD"] = {**fake.projects.pop("ABC"), "key": "ABD"}
+        fake.rekey(10001, "ABD-1", "2026-10-02T08:00:00.000+0000")
+        step({"moved": 2})
+        # XYZ 的最后一个工单离开范围：工单与项目文档都删除
+        fake.remove(10002)
+        step({"deleted": 2})
+        assert set(runner.listing("jira://inc/")) == {"issue/ABD-1", "project/ABD"}

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from fake_jira import adf
 
-from dpe_jira.mapping import MappingError, blob_handles, issue_document, utc
+from dpe_jira.mapping import MappingError, blob_handles, issue_document, project_document, utc
 
 URI = "jira://example.atlassian.net/issue/ABC-1"
 
@@ -232,3 +232,92 @@ def test_adding_an_attachment_leaves_other_pages_untouched() -> None:
 def test_broken_attachments_raise_mapping_error(broken: Any) -> None:
     with pytest.raises(MappingError):
         issue_document(URI, issue(attachment=broken), [])
+
+
+PROJECT_URI = "jira://example/project/ABC"
+
+
+def test_project_document_has_three_pages() -> None:
+    item = project_document(
+        PROJECT_URI,
+        {"id": "100", "key": "ABC", "name": "Alpha", "description": "支付系统"},
+        [
+            {"id": "12", "name": "Web", "description": "前端"},
+            {"id": "3", "name": "API"},
+        ],
+        [
+            {"id": "50", "name": "2.0", "released": False, "archived": False},
+            {
+                "id": "40",
+                "name": "1.0",
+                "description": "首发",
+                "released": True,
+                "archived": True,
+                "releaseDate": "2026-01-31",
+            },
+        ],
+    )
+    assert item["document"] == {
+        "file_type": "jira_project",
+        "title": "Alpha",
+        "doc_metadata": {"project_id": "100"},
+    }
+    assert item["pages"] == [
+        {
+            "page_metadata": {"section": "description"},
+            "elements": [{"category": "NarrativeText", "text": "支付系统", "metadata": {}}],
+        },
+        {
+            "page_metadata": {"section": "components"},
+            "elements": [  # 按组件 id 升序
+                {"category": "NarrativeText", "text": "API", "metadata": {"component_id": "3"}},
+                {
+                    "category": "NarrativeText",
+                    "text": "Web: 前端",
+                    "metadata": {"component_id": "12"},
+                },
+            ],
+        },
+        {
+            "page_metadata": {"section": "versions"},
+            "elements": [  # 保持 Jira 给的顺序（用户排定的版本顺序）
+                {
+                    "category": "NarrativeText",
+                    "text": "2.0",
+                    "metadata": {"version_id": "50", "released": False, "archived": False},
+                },
+                {
+                    "category": "NarrativeText",
+                    "text": "1.0: 首发",
+                    "metadata": {
+                        "version_id": "40",
+                        "released": True,
+                        "archived": True,
+                        "release_date": "2026-01-31",
+                    },
+                },
+            ],
+        },
+    ]
+
+
+def test_project_without_description_components_or_versions() -> None:
+    item = project_document(PROJECT_URI, {"id": "100", "name": "Alpha"}, [], [])
+    assert [page["elements"] for page in item["pages"]] == [[], [], []]
+
+
+@pytest.mark.parametrize(
+    ("project", "components", "versions"),
+    [
+        (None, [], []),
+        ({"name": "Alpha"}, [], []),
+        ({"id": "100"}, [], []),
+        ({"id": "100", "name": "A"}, "x", []),
+        ({"id": "100", "name": "A"}, [{"id": "a", "name": "W"}], []),
+        ({"id": "100", "name": "A"}, [{"id": "1"}], []),
+        ({"id": "100", "name": "A"}, [], [{"name": "1.0"}]),
+    ],
+)
+def test_broken_projects_raise_mapping_error(project: Any, components: Any, versions: Any) -> None:
+    with pytest.raises(MappingError):
+        project_document(PROJECT_URI, project, components, versions)

@@ -182,6 +182,21 @@ class JiraClient:
             {"fields": ",".join(fields)},
         )
 
+    def project(self, key: str, *, attempts: int = _MAX_ATTEMPTS) -> Any:
+        return self._request(
+            "GET", f"/rest/api/3/project/{urllib.parse.quote(key, safe='')}", attempts=attempts
+        )
+
+    def components(self, key: str) -> Any:
+        return self._request(
+            "GET", f"/rest/api/3/project/{urllib.parse.quote(key, safe='')}/components"
+        )
+
+    def versions(self, key: str) -> Any:
+        return self._request(
+            "GET", f"/rest/api/3/project/{urllib.parse.quote(key, safe='')}/versions"
+        )
+
     def attachment_range(
         self,
         attachment_id: str,

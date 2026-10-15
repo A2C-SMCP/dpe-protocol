@@ -13,6 +13,7 @@ from dpe_jira.cursor import decode_cursor, encode_cursor, source_digest
 
 SOURCE = source_digest("jira://x/", {"site": "https://x.atlassian.net", "projects": ["ABC"]}, "a1")
 MARKS = {"10001": ("ABC-1", "2026-10-01T08:00:00.000+0000"), "7": ("ABC-0", "t")}
+PROJECTS = {"100": ("ABC", "0f" * 16)}
 
 
 def raw_cursor(body: Any, prefix: str = "j1.") -> str:
@@ -21,11 +22,11 @@ def raw_cursor(body: Any, prefix: str = "j1.") -> str:
 
 
 def test_round_trip_and_determinism() -> None:
-    token = encode_cursor(SOURCE, MARKS)
+    token = encode_cursor(SOURCE, MARKS, PROJECTS)
     assert token.startswith("j1.")
-    assert decode_cursor(token, SOURCE) == MARKS
-    assert encode_cursor(SOURCE, dict(reversed(list(MARKS.items())))) == token
-    assert decode_cursor(encode_cursor(SOURCE, {}), SOURCE) == {}
+    assert decode_cursor(token, SOURCE) == (MARKS, PROJECTS)
+    assert encode_cursor(SOURCE, dict(reversed(list(MARKS.items()))), PROJECTS) == token
+    assert decode_cursor(encode_cursor(SOURCE, {}, {}), SOURCE) == ({}, {})
 
 
 def test_source_digest_depends_on_prefix_config_and_account() -> None:
@@ -40,7 +41,7 @@ def test_cursor_from_another_source_is_not_interpreted() -> None:
     other = source_digest(
         "jira://y/", {"site": "https://x.atlassian.net", "projects": ["ABC"]}, "a1"
     )
-    assert decode_cursor(encode_cursor(other, MARKS), SOURCE) is None
+    assert decode_cursor(encode_cursor(other, MARKS, PROJECTS), SOURCE) is None
 
 
 @pytest.mark.parametrize(
@@ -52,16 +53,19 @@ def test_cursor_from_another_source_is_not_interpreted() -> None:
         "j1.***",
         "j1." + base64.urlsafe_b64encode(b"not zlib").decode(),
         raw_cursor([1, 2]),
+        raw_cursor({"v": 1, "src": SOURCE, "issues": {}}),  # v1：没有项目表
         raw_cursor({"v": 2, "src": SOURCE, "issues": {}}),
-        raw_cursor({"v": True, "src": SOURCE, "issues": {}}),
-        raw_cursor({"v": 1, "src": SOURCE, "issues": {}, "extra": 1}),
-        raw_cursor({"v": 1, "src": SOURCE, "issues": []}),
-        raw_cursor({"v": 1, "src": SOURCE, "issues": {"abc": ["K-1", "t"]}}),
-        raw_cursor({"v": 1, "src": SOURCE, "issues": {"1": ["K-1"]}}),
-        raw_cursor({"v": 1, "src": SOURCE, "issues": {"1": ["", "t"]}}),
-        raw_cursor({"v": 1, "src": SOURCE, "issues": {"1": ["K-1", 5]}}),
-        encode_cursor(SOURCE, MARKS)[:-4],  # 截断
-        encode_cursor(SOURCE, MARKS) + "AAAA",  # 流后多出字节
+        raw_cursor({"v": True, "src": SOURCE, "issues": {}, "projects": {}}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": {}, "projects": {}, "extra": 1}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": [], "projects": {}}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": {}, "projects": []}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": {"abc": ["K-1", "t"]}, "projects": {}}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": {"1": ["K-1"]}, "projects": {}}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": {"1": ["", "t"]}, "projects": {}}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": {"1": ["K-1", 5]}, "projects": {}}),
+        raw_cursor({"v": 2, "src": SOURCE, "issues": {}, "projects": {"x": ["ABC", "d"]}}),
+        encode_cursor(SOURCE, MARKS, PROJECTS)[:-4],  # 截断
+        encode_cursor(SOURCE, MARKS, PROJECTS) + "AAAA",  # 流后多出字节
     ],
 )
 def test_malformed_cursors_fall_back(token: str) -> None:

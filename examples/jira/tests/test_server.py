@@ -17,6 +17,8 @@ from dpe_jira.server import Serve
 
 PREFIX = "jira://example/"
 CREDS = {"JIRA_EMAIL": EMAIL, "JIRA_API_TOKEN": TOKEN}
+#: 缺省范围：只看工单（项目文档由专门的用例打开）
+SCOPE = {"projects": ["ABC"], "include_project_docs": False}
 SECRETS = (TOKEN, base64.b64encode(f"{EMAIL}:{TOKEN}".encode()).decode())
 
 
@@ -52,7 +54,7 @@ class Session:
                 "max_message_bytes": max_message_bytes,
                 "instance": {
                     "uri_prefix": PREFIX,
-                    "config": {"site": site, "projects": ["ABC"]} if config is None else config,
+                    "config": {"site": site, **SCOPE} if config is None else config,
                 },
             },
         )
@@ -724,11 +726,11 @@ def test_contradictory_cursor_falls_back_to_a_full_round(fake: FakeJira, site: s
     populate(fake, 2)
     session = started(site)
     assert fake.account_id is not None
-    source = source_digest(PREFIX, {"site": site, "projects": ["ABC"]}, fake.account_id)
-    duplicated = encode_cursor(source, {"10001": ("ABC-1", "t"), "9": ("ABC-1", "t")})
-    stale = encode_cursor(source, {"9": ("ABC-2", "t"), "10001": ("ABC-1", "t")})
+    source = source_digest(PREFIX, {"site": site, **SCOPE}, fake.account_id)
+    duplicated = encode_cursor(source, {"10001": ("ABC-1", "t"), "9": ("ABC-1", "t")}, {})
+    stale = encode_cursor(source, {"9": ("ABC-2", "t"), "10001": ("ABC-1", "t")}, {})
     # 10001 上一轮在 ABC-2、本轮在 ABC-1，而 ABC-1 上一轮属于 10002：move 会搬走别人的文档
-    swapped = encode_cursor(source, {"10001": ("ABC-2", "t"), "10002": ("ABC-1", "t")})
+    swapped = encode_cursor(source, {"10001": ("ABC-2", "t"), "10002": ("ABC-1", "t")}, {})
     for cursor in (duplicated, stale, swapped):
         items = session.round(cursor=cursor)
         assert session.incremental is False
@@ -973,3 +975,179 @@ def test_spool_file_cleaned_up_mid_round_is_downloaded_again(fake: FakeJira, sit
         os.unlink(os.path.join(spool_dir, name))
     assert read_all(session, "501") == PNG
     assert "result" in first
+
+
+# ---------------------------------------------------------------------- 项目文档
+
+WITH_PROJECTS = {"projects": ["ABC"]}
+
+
+def projects_session(site: str, **config: Any) -> Session:
+    session = Session()
+    response = session.initialize(site, config={"site": site, **(config or WITH_PROJECTS)})
+    assert "result" in response, response
+    return session
+
+
+def test_project_documents_follow_the_issues(fake: FakeJira, site: str) -> None:
+    populate(fake, 2)
+    fake.components["ABC"] = [{"id": "1", "name": "Web"}]
+    session = projects_session(site)
+    items = session.round()
+    assert kinds(items) == [
+        ("document", uri("ABC-1")),
+        ("document", uri("ABC-2")),
+        ("document", f"{PREFIX}project/ABC"),
+    ]
+    project = items[-1]
+    assert project["document"]["file_type"] == "jira_project"
+    assert project["pages"][1]["elements"][0]["text"] == "Web"
+    assert session.round(cursor=session.cursor) == []  # 没变：项目文档也不再产出
+
+
+def test_jql_scope_uses_the_projects_of_its_issues(fake: FakeJira, site: str) -> None:
+    fake.add_issue(1, "ABC-1")
+    fake.add_issue(2, "XYZ-7")
+    session = projects_session(site, jql="labels = sync")
+    items = session.round()
+    assert [i["file_uri"] for i in items if "/project/" in i["file_uri"]] == [
+        f"{PREFIX}project/ABC",
+        f"{PREFIX}project/XYZ",
+    ]
+
+
+def test_include_project_docs_false_produces_none(fake: FakeJira, site: str) -> None:
+    populate(fake, 1)
+    session = projects_session(site, projects=["ABC"], include_project_docs=False)
+    assert kinds(session.round()) == [("document", uri("ABC-1"))]
+
+
+def test_project_changes_are_expressed_incrementally(fake: FakeJira, site: str) -> None:
+    fake.add_issue(1, "ABC-1")
+    fake.add_issue(2, "XYZ-1")
+    session = projects_session(site, jql="labels = sync")
+    session.round()
+    fake.versions["ABC"] = [{"id": "9", "name": "1.0"}]  # 改项目：工单都不变
+    assert kinds(session.round(cursor=session.cursor)) == [("document", f"{PREFIX}project/ABC")]
+    # 项目改 key：同一 id 下 ABC → ABD（Jira 允许改项目 key）
+    fake.projects["ABD"] = {**fake.projects.pop("ABC"), "key": "ABD"}
+    fake.rekey(1, "ABD-1")
+    items = session.round(cursor=session.cursor)
+    assert kinds(items) == [
+        ("move", uri("ABC-1"), uri("ABD-1")),
+        ("document", uri("ABD-1")),
+        ("move", f"{PREFIX}project/ABC", f"{PREFIX}project/ABD"),
+        ("document", f"{PREFIX}project/ABD"),
+    ]
+    # XYZ 的最后一个工单离开范围：项目也随之离开
+    fake.remove(2)
+    items = session.round(cursor=session.cursor)
+    assert kinds(items) == [("delete", uri("XYZ-1")), ("delete", f"{PREFIX}project/XYZ")]
+
+
+def test_incomplete_enumeration_never_deletes_projects(fake: FakeJira, site: str) -> None:
+    for n in range(1, 5):
+        fake.add_issue(n, f"XYZ-{n}" if n == 4 else f"ABC-{n}")
+    fake.search_page_size = 2
+    session = projects_session(site, jql="labels = sync")
+    session.round()
+    cursor = session.cursor
+    fake.search_fail_from = 2  # XYZ 的工单在第 2 页：截断会让 XYZ 看似消失
+    assert session.call("scan", {"cursor": cursor})["error"]["code"] == -32003
+    assert all('"delete"' not in line for line in session.lines)
+
+
+@pytest.mark.parametrize("mode", ["projects", "jql"])
+def test_unreadable_project_at_enumeration_fails_the_round(
+    fake: FakeJira, site: str, mode: str
+) -> None:
+    populate(fake, 1)
+    session = projects_session(
+        site, **({"projects": ["ABC"]} if mode == "projects" else {"jql": "x"})
+    )
+    session.round()
+    del fake.projects["ABC"]  # 枚举时项目读不到：整轮失败，不当作删除
+    error = session.call("scan", {"cursor": session.cursor})["error"]
+    # 配置写明的项目读不到要改配置（不可重试）；按工单推出的项目读不到是竞态（可重试）
+    assert error["code"] == -32003 and error["data"] == {"retryable": mode == "jql"}
+    assert all('"delete"' not in line for line in session.lines)
+
+
+def test_project_details_404_is_an_item_error_retried_next_round(fake: FakeJira, site: str) -> None:
+    populate(fake, 1)
+    session = projects_session(site)
+    session.round()
+    fake.versions["ABC"] = [{"id": "9", "name": "1.0"}]
+    fake.gone_endpoints.add("/rest/api/3/project/ABC/versions")
+    items = session.round(cursor=session.cursor)
+    assert [(i["kind"], i.get("code")) for i in items] == [("error", "source_unavailable")]
+    fake.gone_endpoints.clear()
+    assert kinds(session.round(cursor=session.cursor)) == [("document", f"{PREFIX}project/ABC")]
+
+
+def test_moved_project_whose_details_fail_is_not_moved(fake: FakeJira, site: str) -> None:
+    fake.add_issue(1, "ABC-1")
+    session = projects_session(site, jql="x")
+    session.round()
+    fake.projects["ABD"] = {**fake.projects.pop("ABC"), "key": "ABD"}
+    fake.rekey(1, "ABD-1")
+    fake.gone_endpoints.add("/rest/api/3/project/ABD/components")
+    items = session.round(cursor=session.cursor)
+    assert kinds(items)[-1] == ("error", f"{PREFIX}project/ABD")
+    assert ("move", f"{PREFIX}project/ABC", f"{PREFIX}project/ABD") not in kinds(items)
+    fake.gone_endpoints.clear()
+    assert kinds(session.round(cursor=session.cursor)) == [
+        ("move", f"{PREFIX}project/ABC", f"{PREFIX}project/ABD"),
+        ("document", f"{PREFIX}project/ABD"),
+    ]
+
+
+def test_new_project_that_fails_is_not_recorded(fake: FakeJira, site: str) -> None:
+    fake.add_issue(1, "ABC-1")
+    session = projects_session(site, jql="x")
+    session.round()
+    fake.add_issue(2, "XYZ-1")
+    fake.gone_endpoints.add("/rest/api/3/project/XYZ/versions")
+    items = session.round(cursor=session.cursor)
+    assert kinds(items) == [("document", uri("XYZ-1")), ("error", f"{PREFIX}project/XYZ")]
+    fake.gone_endpoints.clear()
+    assert kinds(session.round(cursor=session.cursor)) == [("document", f"{PREFIX}project/XYZ")]
+
+
+def test_project_alias_keys_are_deduplicated(fake: FakeJira, site: str) -> None:
+    fake.projects["OLD"] = fake.projects["ABC"]  # 改名前的 key 被重定向到同一个项目
+    populate(fake, 1)
+    session = projects_session(site, projects=["ABC", "OLD"])
+    items = session.round()
+    assert [i["file_uri"] for i in items].count(f"{PREFIX}project/ABC") == 1
+
+
+def test_contradictory_project_table_falls_back_to_a_full_round(fake: FakeJira, site: str) -> None:
+    from dpe_jira.cursor import encode_cursor, source_digest
+
+    populate(fake, 1)
+    session = projects_session(site)
+    session.round()
+    assert fake.account_id is not None
+    source = source_digest(PREFIX, {"site": site, **WITH_PROJECTS}, fake.account_id)
+    # ABC 上一轮属于另一个项目 id：按增量会把别人的文档删掉或搬走
+    stale = encode_cursor(source, {}, {"999": ("ABC", "d"), "100": ("ABD", "d")})
+    items = session.round(cursor=stale)
+    assert session.incremental is False
+    assert all(item["kind"] == "document" for item in items)
+
+
+def test_v1_cursor_falls_back_to_a_full_round(fake: FakeJira, site: str) -> None:
+    import base64 as b64
+    import zlib
+
+    from dpe_jira.cursor import source_digest
+
+    populate(fake, 1)
+    session = projects_session(site)
+    assert fake.account_id is not None
+    source = source_digest(PREFIX, {"site": site, **WITH_PROJECTS}, fake.account_id)
+    body = json.dumps({"v": 1, "src": source, "issues": {"10001": ["ABC-1", "t"]}}).encode()
+    v1 = "j1." + b64.urlsafe_b64encode(zlib.compress(body)).decode().rstrip("=")
+    items = session.round(cursor=v1)
+    assert session.incremental is False and len(items) == 2

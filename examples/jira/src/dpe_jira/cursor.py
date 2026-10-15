@@ -1,12 +1,14 @@
 """增量游标的编码（connector 契约 §6.8）：不透明、自包含，解释不了即回退全量轮。
 
-游标记录**上一轮成功产出时范围内的每个工单**——数字 id → ``[key, updated]``，外加数据源摘要
-（实例前缀、配置与凭证对应的账号 id）。下一轮据此只取 updated 变了的工单，并把消失的工单表达为
-delete、key 变了的工单表达为 move（``server``）。
+游标记录**上一轮成功产出时范围内的每个工单与项目**——工单 id → ``[key, updated]``，项目 id →
+``[key, 内容摘要]``（项目没有 updated，用映射出的文档摘要判断变化），外加数据源摘要（实例前缀、
+配置与凭证对应的账号 id）。下一轮据此只取有变化的，并把消失的表达为 delete、key 变了的表达为
+move（``server``）。
 
 形态：``j1.`` + base64url（无填充）的 zlib 压缩 JSON
-``{"v": 1, "src": <数据源摘要>, "issues": {<id>: [<key>, <updated>]}}``。``updated`` 原样保存
-搜索返回的字符串，只用于比较相等。
+``{"v": 2, "src": <数据源摘要>, "issues": {<id>: [<key>, <updated>]}, "projects": {<id>: [<key>,
+<摘要>]}}``。``updated`` 原样保存搜索返回的字符串，只用于比较相等。v1（只有工单）解释不了，回退
+一次全量轮。
 
 - **不透明**：运行器只原样保存与回传（§6.8 MUST NOT 解析）；
 - **自包含**：插件重启后仍可解释，不依赖进程内状态；
@@ -30,11 +32,11 @@ from dpe_hash import jcs
 
 __all__ = ["Marks", "decode_cursor", "encode_cursor", "is_issue_id", "source_digest"]
 
-#: 工单 id → (key, updated)
+#: id → (key, updated 或内容摘要)
 Marks = dict[str, tuple[str, str]]
 
 _PREFIX = "j1."
-_VERSION = 1
+_VERSION = 2
 _ISSUE_ID = re.compile(r"[0-9]{1,19}")
 #: 解压后的上限：工单记录重复度高、压缩比可达十几倍，按压缩长度的倍数放宽但仍有界，被篡改的
 #: 游标（压缩炸弹）不能解压成超大数据
@@ -43,8 +45,8 @@ _EXPANSION = 64
 
 
 def is_issue_id(value: str) -> bool:
-    """工单 id 的形态（ASCII 十进制、至多 19 位）；枚举与游标用同一判据，免得写进游标的 id
-    下一轮解释不了、每轮都回退全量。"""
+    """工单（与项目）id 的形态（ASCII 十进制、至多 19 位）；枚举与游标用同一判据，免得写进游标的
+    id 下一轮解释不了、每轮都回退全量。"""
     return _ISSUE_ID.fullmatch(value) is not None
 
 
@@ -64,19 +66,22 @@ def _b64decode(text: str) -> bytes:
     return base64.b64decode(padded, altchars=b"-_", validate=True)
 
 
-def encode_cursor(source: str, marks: Mapping[str, tuple[str, str]]) -> str:
-    """把各工单的记录编码成游标；同一输入总是得到同一字符串（键排序、紧凑编码）。"""
+def encode_cursor(
+    source: str, issues: Mapping[str, tuple[str, str]], projects: Mapping[str, tuple[str, str]]
+) -> str:
+    """把工单与项目的记录编码成游标；同一输入总是得到同一字符串（键排序、紧凑编码）。"""
     body = {
         "v": _VERSION,
         "src": source,
-        "issues": {issue_id: [key, updated] for issue_id, (key, updated) in marks.items()},
+        "issues": {key_id: [key, mark] for key_id, (key, mark) in issues.items()},
+        "projects": {key_id: [key, mark] for key_id, (key, mark) in projects.items()},
     }
     raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return _PREFIX + _b64encode(zlib.compress(raw.encode("utf-8"), 9))
 
 
-def decode_cursor(token: str, source: str) -> Marks | None:
-    """解释游标，返回各工单的记录；任何不符都返回 ``None``（调用方回退全量轮，不报错）。"""
+def decode_cursor(token: str, source: str) -> tuple[Marks, Marks] | None:
+    """解释游标，返回（工单记录, 项目记录）；任何不符都返回 ``None``（回退全量轮，不报错）。"""
     if not token.startswith(_PREFIX):
         return None
     try:
@@ -92,21 +97,29 @@ def decode_cursor(token: str, source: str) -> Marks | None:
         return None
     if (
         not isinstance(body, dict)
-        or set(body) != {"v", "src", "issues"}
+        or set(body) != {"v", "src", "issues", "projects"}
         or type(body["v"]) is not int
         or body["v"] != _VERSION
         or body["src"] != source
-        or not isinstance(body["issues"], dict)
     ):
         return None
+    issues, projects = _marks(body["issues"]), _marks(body["projects"])
+    if issues is None or projects is None:
+        return None
+    return issues, projects
+
+
+def _marks(table: Any) -> Marks | None:
+    if not isinstance(table, dict):
+        return None
     marks: Marks = {}
-    for issue_id, value in body["issues"].items():
+    for entry_id, value in table.items():
         if (
-            not is_issue_id(issue_id)
+            not is_issue_id(entry_id)
             or not isinstance(value, list)
             or len(value) != 2
             or not all(isinstance(part, str) and part for part in value)
         ):
             return None
-        marks[issue_id] = (value[0], value[1])
+        marks[entry_id] = (value[0], value[1])
     return marks
