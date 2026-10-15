@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import os
 import subprocess
 from pathlib import Path
@@ -472,3 +473,129 @@ def test_git_version_reports_failing_git(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(subprocess, "run", failing)
     with pytest.raises(GitError, match=r"退出码 128.*broken install"):
         git_version()
+
+
+# -------------------------------------------------------------------- linked worktree（#219）
+
+
+def test_discovery_keeps_only_the_main_repo_of_its_linked_worktrees(tmp_path: Path) -> None:
+    """主仓库与它的 linked worktree 都在 root 下：同一仓库只算一篇（主仓库）。"""
+    main = simple_repo(tmp_path / "main")
+    run_git(main.root, "worktree", "add", "-q", "-b", "feature", str(tmp_path / "a-wt"))
+    run_git(main.root, "worktree", "add", "-q", "-b", "other", str(tmp_path / "z-wt"))
+    found, _ = discover_repos(str(tmp_path))
+    assert [item.identifier for item in found] == [b"main"]
+
+
+def test_discovery_skips_worktrees_of_a_repo_outside_root_with_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """主仓库不在 root 下：worktree 只是别名，该仓库不出现；每个 worktree 记一条只带相对路径的
+    warn，不算无法读取（部署形态问题，不产出条目级错误）。"""
+    main = simple_repo(tmp_path / "outside" / "main")
+    root = tmp_path / "root"
+    root.mkdir()
+    run_git(main.root, "worktree", "add", "-q", "-b", "b", str(root / "b-wt"))
+    run_git(main.root, "worktree", "add", "-q", "-b", "a", str(root / "a-wt"))
+    simple_repo(root / "plain")
+    with caplog.at_level("WARNING", logger="dpe_git_connector"):
+        found, unreadable = discover_repos(str(root))
+    assert [item.identifier for item in found] == [b"plain"]
+    assert unreadable == []
+    warnings = sorted(record.getMessage() for record in caplog.records)
+    assert len(warnings) == 2
+    assert warnings[0].startswith("a-wt ") and warnings[1].startswith("b-wt ")
+    assert not any(str(tmp_path) in message for message in warnings)
+
+
+def test_discovery_prefers_the_working_tree_over_its_separate_git_dir(tmp_path: Path) -> None:
+    """``--separate-git-dir`` 的 git 目录与工作树同在 root 下：选工作树，即便 git 目录字节序更小。
+
+    git 目录形似裸仓库却打不开（core.bare=false），选它会把正常的文档换成一条永久错误。
+    """
+    (tmp_path / "a-gitdirs").mkdir()
+    run_git(
+        tmp_path,
+        "init",
+        "-q",
+        "--separate-git-dir",
+        str(tmp_path / "a-gitdirs" / "x.git"),
+        str(tmp_path / "work" / "x"),
+    )
+    found, _ = discover_repos(str(tmp_path))
+    assert [item.identifier for item in found] == [os.fsencode(os.path.join("work", "x"))]
+
+
+def test_discovery_keeps_a_broken_git_file_as_a_candidate(tmp_path: Path) -> None:
+    """``.git`` 文件格式不对或指向不存在的目录：照旧作为候选，由打开仓库时如实报错。"""
+    for name, content in (("garbage", "not a gitdir line\n"), ("dangling", "gitdir: /nope\n")):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / ".git").write_text(content, encoding="utf-8")
+    found, _ = discover_repos(str(tmp_path))
+    assert [item.identifier for item in found] == [b"dangling", b"garbage"]
+
+
+# --------------------------------------------------------------------------- 编码（#219）
+
+
+def _raw_commit(repo: FixtureRepo, message: bytes, author: bytes, encoding: str | None) -> str:
+    """直接写入一个提交对象（可带 encoding 头），挂到 refs/heads/raw 上。"""
+    tree = run_git(repo.root, "rev-parse", "HEAD^{tree}").strip()
+    header = f"tree {tree}\n".encode()
+    header += b"author " + author + b" <t@example.invalid> 1767225600 +0000\n"
+    header += b"committer " + author + b" <t@example.invalid> 1767225600 +0000\n"
+    if encoding is not None:
+        header += f"encoding {encoding}\n".encode()
+    completed = subprocess.run(
+        ["git", "-C", str(repo.root), "hash-object", "-w", "-t", "commit", "--stdin"],
+        capture_output=True,
+        check=False,
+        env=git_env(),
+        input=header + b"\n" + message + b"\n",
+    )
+    assert completed.returncode == 0, completed.stderr
+    sha = completed.stdout.decode().strip()
+    run_git(repo.root, "update-ref", "refs/heads/raw", sha)
+    return sha
+
+
+@pytest.mark.parametrize(
+    ("encoding", "message", "author"),
+    [
+        ("GBK", "中文提交".encode("gbk"), "张三".encode("gbk")),
+        # 平台 iconv 在这几处结果不同（macOS / glibc 得 ¥‾，musl 得 \\~）：以 Python 编解码表为准
+        ("Shift_JIS", b"\x5c\x7e\x81\x60", "山田".encode("shift_jis")),
+        # CP932 的 NEC 特殊字符：musl 的 iconv 不支持 CP932
+        ("CP932", b"\x81\x60\x87\x40", "山田".encode("cp932")),
+        ("Big5", "中文".encode("big5"), "王".encode("big5")),
+        ("EUC-KR", "한글".encode("euc_kr"), "김".encode("euc_kr")),
+        ("ISO-8859-1", b"caf\xe9", b"Ren\xe9"),
+    ],
+)
+def test_log_decodes_the_declared_encoding_itself(
+    tmp_path: Path, encoding: str, message: bytes, author: bytes
+) -> None:
+    """按提交声明的编码用 Python 标准库解码，不经 git 的 iconv 转码：结果与平台无关（判据 1）。"""
+    repo = simple_repo(tmp_path / "repo")
+    _raw_commit(repo, message, author, encoding)
+    [record] = [r for r in GitRepo(str(repo.root)).log("raw") if r.parents == ()]
+    codec = codecs.lookup(encoding).name
+    assert record.message == message.decode(codec) + "\n"
+    assert record.author == f"{author.decode(codec)} <t@example.invalid>"
+
+
+@pytest.mark.parametrize(
+    ("encoding", "message", "match"),
+    [
+        ("GBK", b"\x80", "GBK"),  # 严格 GBK 没有 0x80（glibc 的 iconv 会把它当作 €）
+        ("x-no-such-encoding", b"text", "不受支持"),
+        ("base64", b"text", "不受支持"),  # Python 认识、但不是文本编码
+    ],
+)
+def test_log_rejects_what_the_declared_encoding_cannot_decode(
+    tmp_path: Path, encoding: str, message: bytes, match: str
+) -> None:
+    repo = simple_repo(tmp_path / "repo")
+    _raw_commit(repo, message, b"T", encoding)
+    with pytest.raises(GitContentError, match=match):
+        GitRepo(str(repo.root)).log("raw")
