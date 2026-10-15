@@ -66,8 +66,11 @@ CI 只跑模拟 Jira。要对真实站点试一试（插件只读 Jira，不会�
        page = client.list_page("jira://example.atlassian.net/")  # next_cursor 不为 None 时继续翻
        for entry in page.documents:
            skeleton = client.get_skeleton(entry.file_uri)
-           print(entry.file_uri, skeleton.document.title,
-                 [(p.page_metadata, len(p.elements)) for p in skeleton.pages])
+           print(
+               entry.file_uri,
+               skeleton.document.title,
+               [(p.page_metadata, len(p.elements)) for p in skeleton.pages],
+           )
    ```
 
 7. 跑完停掉参考服务端（数据随之消失），删掉临时目录，不再需要时撤销 token。
