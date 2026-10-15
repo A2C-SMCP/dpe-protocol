@@ -55,8 +55,25 @@ CI 只跑模拟 Jira。要对真实站点试一试（插件只读 Jira，不会�
    `uri_prefix` 必须是规范化不动点（scheme 与主机小写，如上面的 `jira://example.atlassian.net/`）；
 5. `NO_PROXY=127.0.0.1,localhost uv run python -m dpe_sdk.run --state-dir <临时目录> <实例定义>`，
    标准输出是这一轮的报告。`NO_PROXY` 只影响运行器访问本机 remote；运行器不把 shell 里的代理变量
-   传给插件，需要经代理访问 Jira 时，在实例定义的 `plugin.env` 里写 `HTTPS_PROXY`。跑完停掉参考
-   服务端（数据随之消失），删掉临时目录，不再需要时撤销 token。
+   传给插件，需要经代理访问 Jira 时，在实例定义的 `plugin.env` 里写 `HTTPS_PROXY`。
+6. 查看推送上去的结果：DPE v1 读不回元素对象，但能列出文档、读出文档对象与页结构（每页的
+   `page_metadata` 与元素 hash 列表），例如：
+
+   ```python
+   from dpe_sdk.transport import DpeClient
+
+   with DpeClient("<参考服务端的 url>") as client:
+       page = client.list_page("jira://example.atlassian.net/")  # next_cursor 不为 None 时继续翻
+       for entry in page.documents:
+           skeleton = client.get_skeleton(entry.file_uri)
+           print(
+               entry.file_uri,
+               skeleton.document.title,
+               [(p.page_metadata, len(p.elements)) for p in skeleton.pages],
+           )
+   ```
+
+7. 跑完停掉参考服务端（数据随之消失），删掉临时目录，不再需要时撤销 token。
 
 ### 规模与开销
 
