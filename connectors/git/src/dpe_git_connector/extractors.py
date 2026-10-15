@@ -7,6 +7,10 @@
 - ``author``：作者 ident 原样（``Name <email>``，不做 mailmap——改写过的 ident 不是源内容）；
 - ``authored_at`` / ``committed_at``：RFC 3339 UTC（作者时间与提交时间）。
 
+带 git note 的提交，其后紧跟**一个 note 元素**（#222）：``text`` 是 note 原文，``metadata`` 只有
+``note_of``（被注提交的 SHA）——note blob 本身没有作者与时间，notes ref 的提交作者描述的是「谁改了
+notes 树」，不是这条 note 的属性。不并进提交元素：编辑 note 不改变提交元素的 hash。
+
 标签页的元素是**一个附注标签**（#220）：``text`` 是标签说明（去掉末尾签名块——签名是对内容的
 认证、不是叙述，重签不应改变内容），``metadata`` 为 ``tag``（ref 名）、``target``（对象里直接
 记录的 SHA）与 ``tagger`` / ``tagged_at``（老标签没有 tagger 时两键都省略，不写默认值）。
@@ -35,6 +39,7 @@ __all__ = [
     "ELEMENT_BUDGET_BYTES",
     "commit_elements",
     "element_bytes",
+    "note_elements",
     "split_element",
     "tag_elements",
 ]
@@ -65,6 +70,16 @@ def commit_elements(record: CommitRecord) -> list[ElementObject]:
             "authored_at": record.authored_at,
             "committed_at": record.committed_at,
         },
+    }
+    return split_element(element)
+
+
+def note_elements(commit: str, text: str) -> list[ElementObject]:
+    """一条 git note → 一个或多个元素（超出预算时同样切分）。"""
+    element: ElementObject = {
+        "category": "NarrativeText",
+        "text": text,
+        "metadata": {"note_of": commit},
     }
     return split_element(element)
 
