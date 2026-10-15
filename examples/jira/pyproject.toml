@@ -1,0 +1,59 @@
+# 示例插件：dpe-run 的 Jira Cloud 插件（connector 契约 §6，#223）。不发布、不是官方 connector。
+# 独立 uv 项目（与 examples/markdown-dir 同样的组织方式）：运行时只依赖 dpe-hash——复用它的
+# Retry-After 解析（HTTP 绑定 §5）与 remote URL 文法判定（HTTP 绑定 §1，用来校验 site），不复制
+# 第二份实现；网络访问只用标准库 urllib。测试依赖 dpe-sdk（运行器与参考服务端），经 path 源指向
+# 仓库内的成员包；CI 用模拟 Jira 服务，不依赖真实 Jira 与凭证。
+[project]
+name = "dpe-jira"
+version = "0.1.0"
+description = "示例 dpe-run 插件：把 Jira Cloud 工单映射为 DPE 文档（不发布）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["dpe-hash>=0.4,<0.5"]
+classifiers = ["Private :: Do Not Upload"]
+
+[project.scripts]
+dpe-jira = "dpe_jira.cli:main"
+
+[dependency-groups]
+dev = [
+    "dpe-sdk[server]>=0.4,<0.5",
+    "pytest>=8.3",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+[tool.uv.sources]
+dpe-sdk = { path = "../../sdk/python/packages/dpe-sdk", editable = true }
+dpe-hash = { path = "../../sdk/python/packages/dpe-hash", editable = true }
+
+[tool.uv]
+required-version = ">=0.8"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dpe_jira"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# 文档与注释用中文（CLAUDE.md 约定），全角标点不是歧义字符
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib", "--strict-markers"]
+testpaths = ["tests"]
+pythonpath = ["tests"]

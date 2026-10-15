@@ -1,0 +1,66 @@
+{
+  "manifest_version": 1,
+  "name": "jira",
+  "version": "0.1.0",
+  "description": "示例插件（不发布、非官方）：把 Jira Cloud 工单映射为 DPE 文档（正文 / 评论 / 字段三页）",
+  "protocol_versions": [
+    "dpe-connector/1"
+  ],
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "site": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Jira Cloud 站点地址，如 https://example.atlassian.net；须为 HTTP 绑定 §1 的规范写法"
+      },
+      "projects": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "description": "项目 key 列表，与 jql 二选一"
+      },
+      "jql": {
+        "type": "string",
+        "minLength": 1,
+        "description": "自定义范围，与 projects 二选一；不得包含 ORDER BY"
+      },
+      "include_project_docs": {
+        "type": "boolean",
+        "description": "是否为范围内的项目产出项目文档（缺省 true；本版本尚未实现，见 README）"
+      }
+    },
+    "required": [
+      "site"
+    ],
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "required": [
+          "projects"
+        ]
+      },
+      {
+        "required": [
+          "jql"
+        ]
+      }
+    ]
+  },
+  "secrets": [
+    {
+      "name": "JIRA_EMAIL",
+      "description": "Jira Cloud 账号邮箱（Basic 认证的用户名）",
+      "required": true
+    },
+    {
+      "name": "JIRA_API_TOKEN",
+      "description": "Jira Cloud API token（Basic 认证的密码）",
+      "required": true
+    }
+  ]
+}
