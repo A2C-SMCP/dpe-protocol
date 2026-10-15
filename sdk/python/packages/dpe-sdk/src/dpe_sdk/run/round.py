@@ -79,7 +79,7 @@ from functools import partial
 from typing import Any, Literal, TypeVar
 
 import httpx
-from dpe_hash import DpeHashError
+from dpe_hash import DpeHashError, normalize_file_uri
 
 from dpe_sdk.errors import (
     ClientError,
@@ -89,7 +89,7 @@ from dpe_sdk.errors import (
     UnexpectedResponseError,
 )
 from dpe_sdk.models import Document
-from dpe_sdk.pusher import AsyncStatefulPusher, PushResult
+from dpe_sdk.pusher import AsyncStatefulPusher, PushResult, StateSnapshot
 from dpe_sdk.run.blobs import BlobStage
 from dpe_sdk.run.definition import ConflictPolicy
 from dpe_sdk.run.errors import (
@@ -392,6 +392,19 @@ class _Round:
         #: 未达成 URI → 使它未达成的那条发出过的 move（from_uri, to_uri）：跳过链一律追溯到它，
         #: 作为 ``item.skipped`` 的 ``cause``（§7.5，#197）
         self.unachieved_cause: dict[str, tuple[str, str]] = {}
+        #: 当前这次扫描产出过的 file_uri（document、delete、move 两侧，含条目 error）：写入集合的
+        #: 对账以它判断「未产出」（§6.8「写入集合与刷新」，#213）
+        self.produced: set[str] = set()
+        #: 每个 file_uri（move 取 from_uri）在本次调用中最后计入的计数类别（统计对账删除的结局）
+        self.tallied: dict[str, str] = {}
+        #: 刷新的全量扫描只落地这些 URI（写入集合中增量扫描未产出的，W'）；``None`` 即不在刷新中
+        self.refresh_scope: set[str] | None = None
+        #: 刷新中只作为被忽略的 move 的目标出现的 W' 成员：没有 document 就无法对账（枚举不完整）
+        self.move_targets: set[str] = set()
+        #: 无 L 的推断删除：运行器读到的 R 作为删除的预期值（推送器重读不同即判冲突）
+        self.foreign_base: dict[str, str | None] = {}
+        #: 其中判冲突的 URI（从来不是本实例的值）：记一次失败，由调用方移出写入集合
+        self.foreign_hits: list[str] = []
 
     # -------------------------------------------------------------- 事件与失败
 
@@ -404,10 +417,138 @@ class _Round:
         self.failures.append(failure)
         if isinstance(failure, ItemFailure):
             self.item_failed = True
-            self.counts.failed += 1
+            self.tally(failure.file_uri or failure.from_uri, "failed")
             self.emit("item.failed", "warn", {"failure": failure.to_report()})
         else:
             self.emit("item.failed", "error", {"failure": failure.to_report()})
+
+    def tally(self, key: str | None, category: str) -> None:
+        """计入一个结局（§7.4 ``counts``）。刷新的全量扫描只落地增量扫描未产出的 URI，两者不
+        重叠，计数直接相加。"""
+        setattr(self.counts, category, getattr(self.counts, category) + 1)
+        if key is not None:
+            self.tallied[key] = category
+
+    def begin_refresh(self, scope: set[str]) -> None:
+        """开始刷新的全量扫描（§6.8「写入集合与刷新」）：只落地 ``scope``（W'）中的 URI，产出
+        集合重新累计。"""
+        self.refresh_scope = scope
+        self.produced = set()
+
+    async def reconcile(
+        self,
+        written: Mapping[str, str | None],
+        scope: list[str],
+        state: StateSnapshot,
+        forget: Callable[[list[str]], None],
+        *,
+        incremental: bool,
+    ) -> None:
+        """对账写入集合（§6.8「写入集合与刷新」）。``scope`` 是要对账的 URI（增量轮为 W'，全量
+        轮为 W 中本轮未产出的）；全量扫描产出了的已按普通条目落地，其余在完整枚举中未产出、即
+        不在源中，以**本实例确认过的值**为前置条件删除：
+
+        - 有 L：与插件显式产出的 delete 同等对待——交给推送器的 delete（以 L 为前置条件，含意图
+          对账），冲突遵从 ``conflict_policy.delete``（``report`` 即永久冲突，改 ``source_wins``
+          即以重读到的 R 重提）；
+        - 没有 L：先读 R。R 不存在即已达成（有待定意图时仍交给推送器清除它，不会删除任何
+          内容）；R 等于本实例的待定意图值时，它是本实例自己的写入，交给推送器（按意图确认后
+          删除）；其余 R 存在的情形——这个值从来不是本实例的——判冲突、不发写，记一次条目失败
+          （``DPE_PRECONDITION_FAILED``，不可重试），并经 ``forget`` 移出写入集合（不再对账，
+          下一轮即可成功；在落地之前移出，落地中途失败也只上报这一次）。交给推送器的无 L 条目
+          以运行器读到的 R 为预期值：两次读之间 R 被他人改写时推送器判冲突，同样按此处理，
+          不按策略重提。
+
+        B 存在的（游标那一刻存在、插件本应产出其删除）只做观测，计入 ``violations``：运行器
+        无法区分插件违约与过期的 L，后者若扣住游标会使实例永久卡住。只在枚举完整时调用。
+        """
+        unproduced = [uri for uri in scope if uri not in self.produced]
+        confirmed = [uri for uri in unproduced if uri in state.synced]
+        unknown = [uri for uri in unproduced if uri not in state.synced]
+        heads = await self.read_heads(unknown)
+        achieved = 0
+        for uri in unknown:
+            if uri not in heads:
+                continue  # 读被确定拒绝：已记条目失败
+            head = heads[uri]
+            if head is None:
+                if uri in state.intents:
+                    confirmed.append(uri)  # 已不存在：交给推送器清除残留的意图
+                    self.foreign_base[uri] = None
+                else:
+                    achieved += 1  # 已不存在、也没有本实例的记录：已达成，不发写
+                    self.tally(uri, "deleted")
+            elif uri in state.intents and state.intents[uri] == head:
+                confirmed.append(uri)  # remote 正是本实例的待定写入
+                self.foreign_base[uri] = head
+            else:
+                self.foreign_conflict(uri)
+        if self.foreign_hits:
+            forget(list(self.foreign_hits))  # 落地之前移出：只上报这一次
+            self.foreign_hits.clear()
+        try:
+            await self.land([DeleteItem(file_uri=uri) for uri in confirmed])
+        finally:
+            self.foreign_base.clear()  # 只作用于这次 land（对账是本次调用的最后一次落地）
+            if self.foreign_hits:  # 推送器重读判冲突的（两次读之间 R 被改写）
+                forget(list(self.foreign_hits))
+                self.foreign_hits.clear()
+        self.emit(
+            "round.refreshed",
+            "warn",
+            {
+                "uris": len(scope),
+                "deleted": achieved
+                + sum(1 for uri in confirmed if self.tallied.get(uri) == "deleted"),
+                "violations": sum(1 for uri in unproduced if written[uri] is not None)
+                if incremental
+                else 0,
+            },
+        )
+
+    def foreign_conflict(self, uri: str) -> None:
+        """无 L 的推断删除判冲突（§6.8）：remote 上的值从来不是本实例的，不发写、不按策略重提，
+        记一次条目失败，并由调用方把它移出写入集合。"""
+        self.foreign_hits.append(uri)
+        self.record(
+            ItemFailure(
+                "DPE_PRECONDITION_FAILED",
+                "对账删除：本实例没有确认过该文档的值，remote 上的内容可能属于他人，不删除（§6.8）",
+                source="remote",
+                file_uri=uri,
+            )
+        )
+
+    async def read_heads(self, uris: list[str]) -> dict[str, str | None]:
+        """读取 R（推断删除的无 L 一支）。失败按推送器调用的口径归类（§7.1、§7.3）：轮级失败
+        终止本轮；批量读被确定拒绝时逐条重读定位，读被拒的条目记失败、不在返回值中（#145）。"""
+        if not uris:
+            return {}
+        client = self.pusher.client
+        try:
+            return dict(zip(uris, await client.batch_head(uris), strict=True))
+        except Exception as exc:
+            rejected = _classify_remote(exc, unknown=False)
+            if not isinstance(rejected, ItemFailure):
+                raise rejected from None
+        heads: dict[str, str | None] = {}
+        denied = 0
+        for uri in uris:
+            try:
+                heads[uri] = await client.head(uri)
+            except Exception as exc:
+                failure = _classify_remote(exc, unknown=False)
+                if not isinstance(failure, ItemFailure):
+                    raise failure from None
+                failure.file_uri = uri
+                self.record(failure)
+                denied += 1
+        self.emit(
+            "remote.batch_read_rejected",
+            "warn",
+            {"code": rejected.code, "entries": len(uris), "denied": denied},
+        )
+        return heads
 
     def item_failure(self, failure: RunFailure, **uris: str | None) -> None:
         """记录一条条目级失败；``failure`` 不是条目级（如结果未知）时向上抛出、终止本轮。"""
@@ -456,26 +597,75 @@ class _Round:
         """解析一批产出项，按流中顺序给出待落地的操作（失败即时记录）。"""
         ops: list[_Op | ReadyDocument] = []
 
+        scope = self.refresh_scope
+
+        def kept(failure: ItemFailure) -> bool:
+            # 刷新中只忽略能证明在 W' 之外的失败（越界，或 URI 已规范化、在前缀内且不在 W' 中）：
+            # 归属不了 URI 的失败可能就是 W' 中的某篇，照记——它使枚举不完整、跳过推断删除。
+            # 插件的 error 条目一律照记（如读不了的目录，可能掩盖其下 W' 中的 URI）
+            if scope is None or failure.source == "plugin":
+                return True
+            if failure.source == "prefix":
+                return False
+            uri = failure.file_uri
+            return not (
+                isinstance(uri, str)
+                and uri.startswith(self.prefix)
+                and _is_normalized(uri)
+                and uri not in scope
+            )
+
         def take(events: list[ReadyDocument | ItemFailure]) -> None:
             for event in events:
                 if isinstance(event, ItemFailure):
-                    self.record(event)
-                else:
+                    if kept(event):
+                        self.record(event)
+                elif scope is None or event.file_uri in scope:
                     ops.append(event)
 
         for raw in batch.items:
             item = parse_item(raw, self.prefix)
+            if scope is None or not isinstance(item, MoveItem):
+                self.mark_produced(item)
+            elif item.to_uri in scope:
+                # 刷新中被忽略的 move：from_uri 不算产出（照常进入推断删除）；W' 中的 to_uri 若此后
+                # 没有它的 document，无法对账，视为枚举不完整（见 ``check_move_targets``）
+                self.move_targets.add(item.to_uri)
             if isinstance(item, DocumentSegment):
                 take(self.assembler.feed(item))
                 continue
             take(self.assembler.interrupt())
             if isinstance(item, ItemFailure):
-                self.record(item)
-            else:
-                ops.append(item)
+                if kept(item):
+                    self.record(item)
+            elif scope is None or (isinstance(item, DeleteItem) and item.file_uri in scope):
+                ops.append(item)  # 刷新中只落地 W' 内的 delete；move 一律由增量扫描负责
         if batch.final:
             take(self.assembler.finish())
         return ops
+
+    def check_move_targets(self) -> None:
+        """刷新的全量扫描结束：W' 中只作为被忽略的 move 的目标出现、没有 document 的 URI 无法
+        对账（它在源中，但内容未知）——记条目失败，使枚举不完整、跳过推断删除（§6.8）。"""
+        for uri in sorted(self.move_targets - self.produced):
+            self.record(
+                ItemFailure(
+                    "DPE_VALIDATION",
+                    "刷新的全量扫描只以 move 的目标给出它、没有给出其 document，无法对账（§6.8）",
+                    source="validation",
+                    retryable=True,
+                    file_uri=uri,
+                )
+            )
+        self.move_targets.clear()
+
+    def mark_produced(self, item: object) -> None:
+        """记下产出项涉及的 file_uri（含条目 error 与无法落地的产出：本轮因此不会成功，不影响
+        对账的结论）。"""
+        for key in ("file_uri", "from_uri", "to_uri"):
+            uri = getattr(item, key, None)
+            if isinstance(uri, str):
+                self.produced.add(uri)
 
     # -------------------------------------------------------------- 落地
 
@@ -575,7 +765,10 @@ class _Round:
         attempts: dict[str, int] = {}
         commits, deletes, moves = dict(wave.commits), list(wave.deletes), list(wave.moves)
         commit_base: dict[str, str | None] = {}
-        delete_base: dict[str, str | None] = {}
+        # 无 L 的推断删除以运行器读到的 R 为预期值（§6.8），推送器重读不同即判冲突
+        delete_base: dict[str, str | None] = {
+            uri: self.foreign_base[uri] for uri in deletes if uri in self.foreign_base
+        }
         move_base: dict[str, str | None] = {}
         fatal: RunFailure | None = None
         # 涉及未达成 URI 的写入不发写；跳过的写入使它涉及的 URI 都未达成（永不解除），在等待
@@ -633,6 +826,10 @@ class _Round:
                 for result in await self.call(
                     partial(self._delete_subset, delete_base), list(deletes)
                 ):
+                    if result.status == "conflict" and result.file_uri in self.foreign_base:
+                        # 无 L：R 在两次读之间变了——不是本实例的值，不按策略重提（§6.8）
+                        self.foreign_conflict(result.file_uri)
+                        continue
                     settled = self.settle(result, self.policy.delete, attempts)
                     if isinstance(settled, RunFailure):
                         fatal = fatal or settled
@@ -696,18 +893,13 @@ class _Round:
             uris = {"from_uri": result.file_uri, "to_uri": result.to_uri}
         status = result.status
         if status in ("created", "updated", "unchanged", "achieved"):
-            if status == "created":
-                self.counts.created += 1
-            elif status == "updated":
-                self.counts.updated += 1
-            else:
-                self.counts.unchanged += 1
+            self.tally(result.file_uri, "unchanged" if status == "achieved" else status)
             return None
         if status == "deleted":
-            self.counts.deleted += 1
+            self.tally(result.file_uri, "deleted")
             return None
         if status == "moved":
-            self.counts.moved += 1
+            self.tally(result.file_uri, "moved")
             return None
         if status == "conflict":
             if result.remote is None:
@@ -761,9 +953,9 @@ class _Round:
         """
         _, uris = self.awaiting_target.pop(to_uri)
         self.open_moves[to_uri] -= 1
-        self.counts.moved += 1
         source = uris["from_uri"]
         assert source is not None
+        self.tally(source, "moved")
         return source
 
     def reject_target(self, result: PushResult) -> None:
@@ -846,6 +1038,66 @@ class _Round:
         return last
 
 
+def _is_normalized(uri: str) -> bool:
+    """``uri`` 是否已是 core §1.1 规范化形式（无法规范化的视为否）。"""
+    try:
+        return normalize_file_uri(uri) == uri
+    except DpeHashError:
+        return False
+
+
+def _check_final(final: ScanBatch, *, cursor_given: bool, supports_cursor: bool) -> None:
+    """结束批的游标约定（§6.4、§6.8）。"""
+    if final.cursor is not None and not supports_cursor:
+        raise ProtocolFailure("插件声明不支持游标，却在结束批给出了游标（§6.8）")
+    if final.incremental and not cursor_given:
+        raise ProtocolFailure("运行器未给出游标，结束批却标记 incremental: true（§6.4）")
+
+
+async def _reconcile_written(
+    state: _Round,
+    store: InstanceStore,
+    final: ScanBatch,
+    supports_cursor: bool,
+) -> None:
+    """推进游标之前对写入集合 W 对账（§6.8「写入集合与刷新」，#213）。
+
+    只在本轮其余条目都已成功落地时对账（有条目失败的轮本就不推进游标，W 保留）。
+
+    - 增量轮：W 中有本轮未产出的 URI（W'）时，同一次调用里再做一次全量扫描（不带游标），只
+      落地 W' 中的 URI，其余产出忽略（由增量扫描的游标负责，两次扫描之间的变化下一轮照常表达）；
+      全量扫描也未产出的，以本实例确认过的值删除。游标仍取增量扫描的；
+    - 全量轮：扫描本身就是全量的，W 中未产出的同样删除（只限 W）。
+
+    删除要求枚举完整：扫描没有条目级失败。
+    """
+    state.settle_awaiting_moves(aborted=False)  # 等待中的 move 先下结论（可能使本轮 partial）
+    written = store.written
+    if not written or state.item_failed:
+        return
+    missing = sorted(uri for uri in written if uri not in state.produced)
+    if not missing:
+        return
+    if final.incremental:
+        state.begin_refresh(set(missing))
+        full = await state.run(None)
+        _check_final(full, cursor_given=False, supports_cursor=supports_cursor)
+        state.check_move_targets()
+        state.settle_awaiting_moves(aborted=False)
+        state.refresh_scope = None
+        if state.item_failed:
+            # 全量扫描枚举不完整：不做推断；本轮 partial，游标不推进，W 保留
+            state.emit(
+                "round.refreshed", "warn", {"uris": len(missing), "deleted": 0, "violations": 0}
+            )
+            return
+    snapshot = store.load("") or StateSnapshot()
+    # forget 写失败抛 state_unavailable：本轮失败、游标不推进
+    await state.reconcile(
+        written, missing, snapshot, store.forget_written, incremental=bool(final.incremental)
+    )
+
+
 async def run_round(
     *,
     host: PluginHost,
@@ -903,10 +1155,9 @@ async def run_round(
         await negotiate_capabilities(pusher.client)
         final = await state.run(cursor)
         progress.incremental = final.incremental  # 收到结束批即确定（§7.3），唯一来源
-        if final.cursor is not None and not supports_cursor:
-            raise ProtocolFailure("插件声明不支持游标，却在结束批给出了游标（§6.8）")
-        if final.incremental and cursor is None:
-            raise ProtocolFailure("运行器未给出游标，结束批却标记 incremental: true（§6.4）")
+        _check_final(final, cursor_given=cursor is not None, supports_cursor=supports_cursor)
+        # 推进游标之前对写入集合对账（§6.8「写入集合与刷新」，#213）；游标仍取自增量扫描
+        await _reconcile_written(state, store, final, supports_cursor)
     except RunFailure as failure:
         fatal = failure
         if failure.code == "state_unavailable":

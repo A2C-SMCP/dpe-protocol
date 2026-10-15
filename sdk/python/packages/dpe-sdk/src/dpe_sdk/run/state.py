@@ -175,6 +175,9 @@ class InstanceState:
     synced: dict[str, str] = field(default_factory=dict)
     intents: dict[str, str | None] = field(default_factory=dict)
     held_since: str | None = None
+    #: 写入集合 W（§6.8「写入集合与刷新」、§7.2）：自已缓存游标以来意图或同步值变化过的
+    #: file_uri → 首次变化前的同步值 B（``None``＝「不存在」）
+    written: dict[str, str | None] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -184,6 +187,7 @@ class InstanceState:
             "synced": self.synced,
             "intents": self.intents,
             "held_since": self.held_since,
+            "written": self.written,
         }
 
     @classmethod
@@ -199,6 +203,8 @@ class InstanceState:
             data.get("intents"),
             data.get("held_since"),
         )
+        # 写入集合缺省为空：#213 之前写下的状态文件没有它，照常可读（不升状态版本）
+        written = data.get("written", {})
         if (
             not isinstance(identity, str)
             or not (cursor is None or isinstance(cursor, str))
@@ -209,9 +215,13 @@ class InstanceState:
                 isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in intents.items()
             )
             or not (held is None or isinstance(held, str))
+            or not isinstance(written, dict)
+            or not all(
+                isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in written.items()
+            )
         ):
             return None
-        return cls(identity, cursor, dict(synced), dict(intents), held)
+        return cls(identity, cursor, dict(synced), dict(intents), held, dict(written))
 
 
 class InstanceStore:
@@ -308,11 +318,33 @@ class InstanceStore:
         return StateSnapshot(synced=dict(self._state.synced), intents=dict(self._state.intents))
 
     def save(self, remote: str, snapshot: StateSnapshot) -> None:
-        self._commit(
-            dataclasses.replace(
-                self._state, synced=dict(snapshot.synced), intents=dict(snapshot.intents)
-            )
-        )
+        """保存同步状态与意图，并在同一次原子写入里维护写入集合 W（§7.2）：本次意图被加入或
+        改变、或同步值发生变化的 file_uri，尚不在 W 中的记入 W，B 取本次变化之前的同步值。
+        只采纳 remote 现状而改写同步值（已达成）同样记入——W 因此不依赖意图日志。"""
+        old = self._state
+        synced, intents = dict(snapshot.synced), dict(snapshot.intents)
+        changed = {uri for uri, value in intents.items() if old.intents.get(uri, ...) != value}
+        changed |= {
+            uri
+            for uri in old.synced.keys() | synced.keys()
+            if old.synced.get(uri) != synced.get(uri)
+        }
+        written = dict(old.written)
+        for uri in sorted(changed - written.keys()):
+            written[uri] = old.synced.get(uri)
+        self._commit(dataclasses.replace(old, synced=synced, intents=intents, written=written))
+
+    def forget_written(self, uris: list[str]) -> None:
+        """把这些 URI 移出写入集合（§6.8「推断删除」无 L 的冲突：从来不是本实例的值，上报一次
+        后不再对账）；与同步状态同一次原子写入。写失败抛 ``state_unavailable``。"""
+        remaining = {uri: b for uri, b in self._state.written.items() if uri not in uris}
+        if remaining != self._state.written:
+            self._commit(dataclasses.replace(self._state, written=remaining))
+
+    @property
+    def written(self) -> dict[str, str | None]:
+        """写入集合 W 的副本：file_uri → 首次变化前的同步值 B（§6.8「写入集合与刷新」）。"""
+        return dict(self._state.written)
 
     @property
     def round_closed(self) -> bool:
@@ -347,7 +379,12 @@ class InstanceStore:
         """
         if succeeded:
             kept = self._state.cursor if cursor is None and keep_cached else cursor
-            state = dataclasses.replace(self._state, cursor=kept, held_since=None)
+            # 写入集合只在持久化了非 null 的新游标时清空；不缓存游标的实例、或从未缓存过游标时在
+            # 成功轮清空（视同游标推进）。保留已缓存的游标时继续累积（§6.8「写入集合与刷新」）
+            # 从未缓存过游标（本轮必是全量轮、已按 §6.8 对账）同样清空：W 不会无界增长
+            clear = cursor is not None or not keep_cached or self._state.cursor is None
+            written = {} if clear else self._state.written
+            state = dataclasses.replace(self._state, cursor=kept, held_since=None, written=written)
         elif self._state.held_since is None:
             state = dataclasses.replace(self._state, held_since=started_at)
         else:

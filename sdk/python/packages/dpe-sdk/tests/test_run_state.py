@@ -330,3 +330,44 @@ def test_held_clear_failure_keeps_cursor_persisted(
         store.finish_round(succeeded=True, cursor="c1", started_at="t2", keep_cached=True)
     assert not store.cursor_lost and store.cursor_persisted
     monkeypatch.setattr(state_module, "_write_atomic", real)
+
+
+def test_written_set_is_maintained_atomically_and_tolerates_old_files() -> None:
+    """写入集合 W（§6.8「写入集合与刷新」、§7.2，#213）：随同步状态与意图一并写入；B 取首次
+    变化前的同步值；#213 之前的状态文件（没有 written）照常可读；形状不对按内容损坏处理。"""
+    state = state_module.InstanceState
+    old_file = {
+        "version": 1,
+        "identity": "x",
+        "cursor": "c1",
+        "synced": {"dpe://s/a": "dpe1:" + "a" * 64},
+        "intents": {},
+        "held_since": None,
+    }
+    loaded = state.from_json(old_file)
+    assert loaded is not None and loaded.written == {}
+    assert state.from_json({**old_file, "written": {"dpe://s/a": 1}}) is None
+    assert state.from_json({**old_file, "written": []}) is None
+    with_written = state.from_json({**old_file, "written": {"dpe://s/b": None}})
+    assert with_written is not None and with_written.written == {"dpe://s/b": None}
+    assert with_written.to_json()["written"] == {"dpe://s/b": None}
+
+
+def test_written_set_records_the_value_before_the_first_change(tmp_path: Path) -> None:
+    store = StateDirectory(tmp_path).open_instance("inst", "identity")
+    store.commit_identity()
+    a, b = "dpe://s/a", "dpe://s/b"
+    h1, h2, h3 = ("dpe1:" + c * 64 for c in "123")
+    store.save("r", StateSnapshot(synced={a: h1}))  # 首次：a 从「不存在」变为 h1
+    assert store.written == {a: None}
+    store.finish_round(succeeded=True, cursor="c1", started_at="t")
+    assert store.written == {}  # 持久化了非 null 游标：清空
+    store.save("r", StateSnapshot(synced={a: h1}, intents={a: h2}))  # 意图先于写入
+    store.save("r", StateSnapshot(synced={a: h2, b: h3}))  # 确认 a、采纳 b（已达成）
+    assert store.written == {a: h1, b: None}  # B 都是首次变化之前的值
+    store.finish_round(succeeded=True, cursor=None, started_at="t", keep_cached=True)
+    assert store.written == {a: h1, b: None} and store.cursor == "c1"  # 保留游标：继续累积
+    store.finish_round(succeeded=False, cursor="c9", started_at="t")
+    assert store.written == {a: h1, b: None}  # 未成功：不清空
+    reopened = StateDirectory(tmp_path).open_instance("inst", "identity")
+    assert reopened.written == {a: h1, b: None}  # 已落盘

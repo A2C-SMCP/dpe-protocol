@@ -1344,14 +1344,20 @@ async def test_conflict_already_achieved_on_reread_wins_over_report(tmp_path: Pa
     made, wrap = _hooks()
     async with harness(tmp_path, wrap) as h:
         hooks = made[0]
-        await h.round({"batches": [[doc_item("a.md", "v1"), doc_item("b.md", "b1")]]})
+        # 带游标：后两轮是增量轮，只产出各自的变更（不带游标的全量轮会按 §6.8「写入集合与
+        # 刷新」删除写入集合中未被枚举的 URI）
+        await h.round(
+            {"batches": [[doc_item("a.md", "v1"), doc_item("b.md", "b1")]], "cursor": "c1"}
+        )
 
         async def same_content() -> None:  # 他人抢先写下与我们相同的内容
             await h.foreign.commit(P + "a.md", _doc_of("v2"), BaseHash(expected("v1")))
 
         hooks.before.append((_is_commit, same_content))
         report = ConflictPolicy(commit="report", delete="report")
-        result = await h.round({"batches": [[doc_item("a.md", "v2")]]}, policy=report)
+        result = await h.round(
+            {"batches": [[doc_item("a.md", "v2")]], "cursor": "c2"}, policy=report
+        )
         assert result.outcome == "succeeded", result.failures
         assert result.counts.unchanged == 1
         snapshot = h.store.load(REMOTE) if h.store else None
@@ -1366,7 +1372,8 @@ async def test_conflict_already_achieved_on_reread_wins_over_report(tmp_path: Pa
         hooks.before.append((_is_delete, rewrite))
         hooks.after.append((_is_delete, remove))
         deleted = await h.round(
-            {"batches": [[{"kind": "delete", "file_uri": P + "b.md"}]]}, policy=report
+            {"batches": [[{"kind": "delete", "file_uri": P + "b.md"}]], "cursor": "c3"},
+            policy=report,
         )
         assert deleted.outcome == "succeeded", deleted.failures
         assert deleted.counts.deleted == 1
@@ -2185,3 +2192,465 @@ async def test_clearing_a_stored_cursor_that_fails_to_persist_fails_the_round(
     assert result.outcome == "failed" and codes(result) == ["state_unavailable"]
     assert result.cursor_held_since == result.started_at
     assert "state.held_write_failed" not in [e for e, _, _ in h.events]
+
+
+# ---------------------------------------------------------------------- 写入集合与刷新（#213）
+
+
+class _DropWrites(httpx.AsyncBaseTransport):
+    """armed 时，指定方法的写入照常送达服务端，但响应丢失（模拟写入生效后、确认前崩溃）。"""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, method: str) -> None:
+        self._inner = inner
+        self._method = method
+        self.armed = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self._inner.handle_async_request(request)
+        if self.armed and request.method == self._method and "documents" in request.url.path:
+            raise httpx.ReadTimeout("响应丢失", request=request)
+        return response
+
+
+def _droppers(method: str) -> tuple[list[_DropWrites], Callable[[Any], Any]]:
+    made: list[_DropWrites] = []
+
+    def wrap(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+        made.append(_DropWrites(inner, method))
+        return made[0]
+
+    return made, wrap
+
+
+async def _remote(h: Harness) -> dict[str, str]:
+    """remote 前缀内的 file_uri → doc_hash。"""
+    out: dict[str, str] = {}
+    cursor: str | None = None
+    while True:
+        page = await h.foreign.list_page(P, cursor)
+        out.update({entry.file_uri: entry.doc_hash for entry in page.documents})
+        cursor = page.next_cursor
+        if cursor is None:
+            return out
+
+
+def _refreshed(h: Harness) -> list[dict[str, Any]]:
+    return [fields for event, level, fields in h.events if event == "round.refreshed"]
+
+
+def _error_item(name: str) -> dict[str, Any]:
+    return {
+        "kind": "error",
+        "file_uri": P + name,
+        "code": "source_unavailable",
+        "message": "暂时读不到",
+        "retryable": True,
+    }
+
+
+async def test_delete_applied_before_crash_then_source_restored_is_refreshed(
+    tmp_path: Path,
+) -> None:
+    """S9b：delete 已生效、确认前崩溃；源随后原样恢复，增量扫描看不到变化——运行器经写入集合
+    补全量刷新，remote 回到 F(S)（§6.8「写入集合与刷新」）。"""
+    made, wrap = _droppers("DELETE")
+    full = [[doc_item("notes.md", "n"), doc_item("scratch.md", "s")]]
+    async with harness(tmp_path, wrap) as h:
+        first = await h.round({"batches": full, "cursor": "c1"})
+        assert first.outcome == "succeeded" and h.store is not None and h.store.written == {}
+
+        made[0].armed = True
+        crashed = await h.round(
+            {"batches": [[{"kind": "delete", "file_uri": P + "scratch.md"}]], "cursor": "c2"}
+        )
+        assert crashed.outcome == "failed"
+        assert P + "scratch.md" not in await _remote(h)  # 删除已在服务端生效
+        assert h.store.written == {P + "scratch.md": expected("s")}
+        made[0].armed = False
+
+        # 源原样恢复：自 c1 起没有变化，增量扫描什么也不产出；全量扫描看得到两篇
+        rerun = await h.round(
+            {"batches": [[]], "cursor": "c3", "full_batches": full, "full_cursor": "c3-full"}
+        )
+        assert rerun.outcome == "succeeded", rerun.failures
+        assert rerun.incremental is True  # 取增量扫描的结束批（§7.3）
+        assert await _remote(h) == {P + "notes.md": expected("n"), P + "scratch.md": expected("s")}
+        assert _refreshed(h) == [{"uris": 1, "deleted": 0, "violations": 0}]
+        # 全量扫描只落地 W'（scratch）；notes 由增量扫描的游标负责，忽略、不计数
+        assert rerun.counts.created == 1 and rerun.counts.unchanged == 0
+        assert h.store.cursor == "c3" and rerun.cursor_persisted  # 游标取增量扫描的
+        assert h.store.written == {}  # 持久化了非 null 游标：清空
+
+
+async def test_commit_applied_before_crash_then_source_reverted_is_refreshed(
+    tmp_path: Path,
+) -> None:
+    """S9b 的 commit 变体：新内容已生效、确认前崩溃，源随后退回旧内容——remote 回到旧内容。"""
+    made, wrap = _droppers("PUT")
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "v1")]], "cursor": "c1"})
+        made[0].armed = True
+        crashed = await h.round({"batches": [[doc_item("a.md", "v2")]], "cursor": "c2"})
+        assert crashed.outcome == "failed"
+        assert await _remote(h) == {P + "a.md": expected("v2")}
+        made[0].armed = False
+
+        rerun = await h.round(
+            {
+                "batches": [[]],
+                "cursor": "c3",
+                "full_batches": [[doc_item("a.md", "v1")]],
+                "full_cursor": "c3-full",
+            }
+        )
+        assert rerun.outcome == "succeeded", rerun.failures
+        assert await _remote(h) == {P + "a.md": expected("v1")}
+        assert rerun.counts.updated == 1
+
+
+async def test_confirmed_delete_in_partial_round_then_source_restored_is_refreshed(
+    tmp_path: Path,
+) -> None:
+    """S9c：partial 轮里 delete 已确认（另一条目失败扣住游标），意图早已清除；源随后恢复——
+    对账只依赖写入集合，下一轮 R = F(S)。"""
+    full = [[doc_item("notes.md", "n"), doc_item("scratch.md", "s"), doc_item("other.md", "o")]]
+    async with harness(tmp_path) as h:
+        await h.round({"batches": full, "cursor": "c1"})
+        held = await h.round(
+            {
+                "batches": [
+                    [{"kind": "delete", "file_uri": P + "scratch.md"}, _error_item("other.md")]
+                ],
+                "cursor": "c2",
+            }
+        )
+        assert held.outcome == "partial" and held.counts.deleted == 1
+        assert h.store is not None and h.store.load(REMOTE) is not None
+        snapshot = h.store.load(REMOTE)
+        assert snapshot is not None and snapshot.intents == {}  # 意图已清除
+        assert h.store.written == {P + "scratch.md": expected("s")}
+
+        # other 修好了（增量产出它），scratch 原样恢复（增量看不到）
+        rerun = await h.round(
+            {
+                "batches": [[doc_item("other.md", "o")]],
+                "cursor": "c3",
+                "full_batches": full,
+                "full_cursor": "c3-full",
+            }
+        )
+        assert rerun.outcome == "succeeded", rerun.failures
+        assert await _remote(h) == {
+            P + "notes.md": expected("n"),
+            P + "scratch.md": expected("s"),
+            P + "other.md": expected("o"),
+        }
+        # 全量扫描只落地 W'（scratch）：other 只计增量扫描的那一次，notes 不计
+        assert rerun.counts.as_dict() == {
+            "created": 1,
+            "updated": 0,
+            "unchanged": 1,
+            "deleted": 0,
+            "moved": 0,
+            "failed": 0,
+        }
+
+
+async def test_divergence_is_not_solidified_by_a_later_succeeded_round(tmp_path: Path) -> None:
+    """固化链：partial 轮 delete 已确认 → 源恢复 → 下一轮仍 partial（W 跨轮累积，不对账）→
+    之后的成功轮推进游标之前对账，分歧不被固化。"""
+    full = [[doc_item("notes.md", "n"), doc_item("scratch.md", "s"), doc_item("other.md", "o")]]
+    async with harness(tmp_path) as h:
+        await h.round({"batches": full, "cursor": "c1"})
+        await h.round(
+            {
+                "batches": [
+                    [{"kind": "delete", "file_uri": P + "scratch.md"}, _error_item("other.md")]
+                ],
+                "cursor": "c2",
+            }
+        )
+        still = await h.round(
+            {"batches": [[_error_item("other.md")]], "cursor": "c3", "full_batches": full}
+        )
+        assert still.outcome == "partial"
+        assert _refreshed(h) == []  # 有条目失败的轮不对账
+        assert h.store is not None and P + "scratch.md" in h.store.written
+        assert h.store.cursor == "c1"
+
+        done = await h.round(
+            {
+                "batches": [[doc_item("other.md", "o")]],
+                "cursor": "c4",
+                "full_batches": full,
+                "full_cursor": "c4-full",
+            }
+        )
+        assert done.outcome == "succeeded", done.failures
+        assert P + "scratch.md" in await _remote(h)
+        assert h.store.cursor == "c4" and h.store.written == {}
+
+
+async def test_source_back_to_kept_cursor_state_is_refreshed(tmp_path: Path) -> None:
+    """Q3：插件给 cursor: null（保留旧游标 c1）后，源回到 c1 那一刻的状态——W 没有被清空，
+    仍能对账；刷新的全量扫描也给 null 时保留旧游标、W 继续累积。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "v1")]], "cursor": "c1"})
+        kept = await h.round({"batches": [[doc_item("a.md", "v2")]], "cursor": None})
+        assert kept.outcome == "succeeded" and not kept.cursor_persisted
+        assert h.store is not None and h.store.cursor == "c1"
+        assert h.store.written == {P + "a.md": expected("v1")}  # 保留旧游标：W 不清空
+
+        back = await h.round(
+            {
+                "batches": [[]],
+                "cursor": None,
+                "full_batches": [[doc_item("a.md", "v1")]],
+                "full_cursor": None,
+            }
+        )
+        assert back.outcome == "succeeded", back.failures
+        assert await _remote(h) == {P + "a.md": expected("v1")}
+        assert h.store.cursor == "c1"
+        assert P + "a.md" in h.store.written  # 全量扫描也给 null：W 继续累积
+
+
+async def test_full_round_deletes_unproduced_written_uris(tmp_path: Path) -> None:
+    """全量轮：W 中本轮未产出的 URI 以 L 为前置条件删除（只限 W）；本轮有条目失败时跳过这一
+    推断、W 保留。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        await h.round({"batches": [[doc_item("b.md", "B")]], "cursor": None})  # 保留 c1
+        assert h.store is not None and h.store.written == {P + "b.md": None}
+
+        # 回退全量，且本轮另有条目失败：枚举不完整，不删除
+        incomplete = await h.round(
+            {
+                "batches": [[doc_item("a.md", "A"), _error_item("c.md")]],
+                "cursor": "c3",
+                "incremental": False,
+            }
+        )
+        assert incomplete.outcome == "partial"
+        assert P + "b.md" in await _remote(h) and P + "b.md" in h.store.written
+
+        complete = await h.round(
+            {"batches": [[doc_item("a.md", "A")]], "cursor": "c4", "incremental": False}
+        )
+        assert complete.outcome == "succeeded", complete.failures
+        assert await _remote(h) == {P + "a.md": expected("A")}
+        assert complete.counts.deleted == 1
+        assert _refreshed(h) == [{"uris": 1, "deleted": 1, "violations": 0}]
+        assert h.store.cursor == "c4" and h.store.written == {}
+
+
+async def test_written_uri_present_at_cursor_but_never_produced_is_deleted_and_observed(
+    tmp_path: Path,
+) -> None:
+    """B 存在（游标那一刻存在）、增量扫描与全量扫描都不产出：插件本应产出它的删除。完整枚举已
+    证明它不在源中，照样以 L 删除；违约只计入 ``violations`` 观测，不扣住游标（运行器无法区分
+    插件违约与过期的 L）。"""
+    async with harness(tmp_path) as h:
+        await h.round(
+            {"batches": [[doc_item("a.md", "A"), doc_item("b.md", "b1")]], "cursor": "c1"}
+        )
+        await h.round({"batches": [[doc_item("b.md", "b2")]], "cursor": None})  # 保留 c1
+        result = await h.round(
+            {"batches": [[]], "cursor": "c3", "full_batches": [[doc_item("a.md", "A")]]}
+        )
+        assert result.outcome == "succeeded", result.failures
+        assert _refreshed(h) == [{"uris": 1, "deleted": 1, "violations": 1}]
+        assert await _remote(h) == {P + "a.md": expected("A")}
+        assert h.store is not None and h.store.cursor == "c3"
+
+
+async def test_inferred_delete_never_removes_content_this_instance_did_not_confirm(
+    tmp_path: Path,
+) -> None:
+    """推断删除只删本实例确认过的值：X 的写入因冲突（report）未成，本实例没有 X 的 L；源随后
+    不再有 X——他人写下的 X 不被删除，记一次 DPE_PRECONDITION_FAILED（不可重试）、不发写，并
+    把 X 移出写入集合：它从来不是本实例的值，下一轮即可成功（不永久卡住）。"""
+    made, wrap = _hooks()
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+
+        async def theirs() -> None:  # 读与写之间他人建出 X：我们的 if_absent 得 412
+            await h.foreign.commit(P + "x.md", _doc_of("theirs"), IfAbsent())
+
+        made[0].before.append((_is_commit, theirs))
+        report = ConflictPolicy(commit="report", delete="report")
+        clash = await h.round(
+            {"batches": [[doc_item("x.md", "mine")]], "cursor": "c2"}, policy=report
+        )
+        assert clash.outcome == "partial"
+        assert h.store is not None and h.store.written == {P + "x.md": None}
+        made[0].before.clear()
+
+        result = await h.round(
+            {"batches": [[]], "cursor": "c3", "full_batches": [[doc_item("a.md", "A")]]}
+        )
+        assert result.outcome == "partial"
+        [failure] = result.failures
+        assert (failure.code, failure.retryable) == ("DPE_PRECONDITION_FAILED", False)
+        assert isinstance(failure, ItemFailure) and failure.file_uri == P + "x.md"
+        assert await _remote(h) == {P + "a.md": expected("A"), P + "x.md": expected("theirs")}
+        assert h.store.cursor == "c1" and P + "x.md" not in h.store.written
+
+        after = await h.round(
+            {"batches": [[]], "cursor": "c4", "full_batches": [[doc_item("a.md", "A")]]}
+        )
+        assert after.outcome == "succeeded", after.failures
+        assert h.store.cursor == "c4"
+        assert await _remote(h) == {P + "a.md": expected("A"), P + "x.md": expected("theirs")}
+
+
+async def test_changes_between_the_two_scans_stay_with_the_incremental_cursor(
+    tmp_path: Path,
+) -> None:
+    """全量扫描只对账 W'，其余产出忽略：两次扫描之间源端删掉的 Y 由增量扫描的游标负责，下一轮
+    从该游标照常产出 Y 的删除，不会因为采用全量扫描的游标而丢失（#213 B2）。"""
+    made, wrap = _droppers("DELETE")
+    full = [[doc_item("y.md", "Y"), doc_item("scratch.md", "s")]]
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": full, "cursor": "c1"})
+        made[0].armed = True
+        await h.round(
+            {"batches": [[{"kind": "delete", "file_uri": P + "scratch.md"}]], "cursor": "c2"}
+        )
+        made[0].armed = False
+        # 增量扫描（S1）时 Y 还在；全量扫描（S2）之前 Y 被删除，全量扫描不产出它
+        refreshed = await h.round(
+            {
+                "batches": [[]],
+                "cursor": "c3",
+                "full_batches": [[doc_item("scratch.md", "s")]],
+                "full_cursor": "c3-full",
+            }
+        )
+        assert refreshed.outcome == "succeeded", refreshed.failures
+        assert P + "y.md" in await _remote(h)  # 不由全量扫描推断：Y 不在 W 中
+        assert h.store is not None and h.store.cursor == "c3"  # 不是 c3-full
+        # 下一轮从 c3 起，插件照常产出 Y 的删除
+        after = await h.round(
+            {"batches": [[{"kind": "delete", "file_uri": P + "y.md"}]], "cursor": "c4"}
+        )
+        assert after.outcome == "succeeded", after.failures
+        assert await _remote(h) == {P + "scratch.md": expected("s")}
+
+
+async def test_no_refresh_when_every_written_uri_was_produced(tmp_path: Path) -> None:
+    """W 中的 URI 都被增量扫描产出：不做全量扫描（无额外开销）。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "v1")]], "cursor": "c1"})
+        await h.round({"batches": [[doc_item("a.md", "v2")]], "cursor": None})
+        result = await h.round(
+            {
+                "batches": [[doc_item("a.md", "v3")]],
+                "cursor": "c3",
+                "full_batches": [[doc_item("a.md", "never")]],
+            }
+        )
+        assert result.outcome == "succeeded" and _refreshed(h) == []
+        # 三轮各一次轮首 scan，没有续批，也没有刷新的全量扫描
+        assert len(h.requests("scan")) == 3
+
+
+async def test_inferred_delete_with_l_follows_the_delete_conflict_policy(tmp_path: Path) -> None:
+    """有 L、remote 已被他人改写：推断删除与显式 delete 同等对待——report 下永久冲突（W 保留、
+    游标扣住），改为 source_wins 后以重读到的 R 重提删除，冲突解开（§7.2「永久冲突」的出口）。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        # x 在 c1 之后建出，partial 轮里已提交（有 L、W[x]=None），游标仍是 c1
+        await h.round(
+            {"batches": [[doc_item("x.md", "mine"), _error_item("e.md")]], "cursor": "c2"}
+        )
+        await h.foreign.commit(P + "x.md", _doc_of("theirs"), BaseHash(expected("mine")))
+        # 源随后不再有 x（回到 c1 那一刻）
+        script = {"batches": [[]], "cursor": "c3", "full_batches": [[doc_item("a.md", "A")]]}
+        for _ in range(2):  # report：每一轮都冲突，W 保留
+            held = await h.round(script)
+            assert held.outcome == "partial"
+            assert [f.code for f in held.failures] == ["DPE_PRECONDITION_FAILED"]
+            assert h.store is not None and P + "x.md" in h.store.written
+            assert h.store.cursor == "c1"
+        resolved = await h.round(script, policy=ConflictPolicy(delete="source_wins"))
+        assert resolved.outcome == "succeeded", resolved.failures
+        assert await _remote(h) == {P + "a.md": expected("A")}
+        assert h.store is not None
+        assert h.store.cursor == "c3" and h.store.written == {}
+
+
+async def test_pending_write_overwritten_after_crash_without_l_is_reported_once(
+    tmp_path: Path,
+) -> None:
+    """崩溃后被他人覆盖、本实例没有 L：x 的创建已生效、确认前崩溃（意图待定），他人随后改写 x；
+    源回到 c1（没有 x）。R 既不是 L 也不是意图值：判冲突、记一次失败、移出写入集合，下一轮成功。"""
+    made, wrap = _droppers("PUT")
+    async with harness(tmp_path, wrap) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        made[0].armed = True
+        await h.round({"batches": [[doc_item("x.md", "mine")]], "cursor": "c2"})
+        made[0].armed = False
+        snapshot = h.store.load(REMOTE) if h.store else None
+        assert snapshot is not None and P + "x.md" not in snapshot.synced
+        await h.foreign.commit(P + "x.md", _doc_of("theirs"), BaseHash(expected("mine")))
+
+        script = {"batches": [[]], "cursor": "c3", "full_batches": [[doc_item("a.md", "A")]]}
+        once = await h.round(script)
+        assert once.outcome == "partial"
+        assert [f.code for f in once.failures] == ["DPE_PRECONDITION_FAILED"]
+        assert h.store is not None and P + "x.md" not in h.store.written
+        assert await _remote(h) == {P + "a.md": expected("A"), P + "x.md": expected("theirs")}
+        after = await h.round(script)
+        assert after.outcome == "succeeded", after.failures
+
+
+async def test_no_l_inferred_delete_does_not_follow_a_concurrent_rewrite(tmp_path: Path) -> None:
+    """无 L 的推断删除以运行器读到的 R 为预期值：运行器读到的 R 正是本实例的待定写入，但在推送器
+    重读之前他人改写了它——推送器判冲突，不删除他人的内容，记一次失败并移出写入集合。"""
+    drops, drop_wrap = _droppers("PUT")
+    hooks, hook_wrap = _hooks()
+    async with harness(tmp_path, lambda inner: hook_wrap(drop_wrap(inner))) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        drops[0].armed = True  # x 的创建已生效、确认前崩溃：意图待定，没有 L
+        await h.round({"batches": [[doc_item("x.md", "mine")]], "cursor": "c2"})
+        drops[0].armed = False
+
+        async def rewrite() -> None:  # 运行器读完 R 之后、推送器重读之前
+            await h.foreign.commit(P + "x.md", _doc_of("theirs"), BaseHash(expected("mine")))
+
+        hooks[0].after.append((_is_heads, rewrite))
+        result = await h.round(
+            {"batches": [[]], "cursor": "c3", "full_batches": [[doc_item("a.md", "A")]]}
+        )
+        assert result.outcome == "partial"
+        assert [f.code for f in result.failures] == ["DPE_PRECONDITION_FAILED"]
+        assert await _remote(h) == {P + "a.md": expected("A"), P + "x.md": expected("theirs")}
+        assert h.store is not None and P + "x.md" not in h.store.written
+
+
+async def test_written_uri_seen_only_as_an_ignored_move_target_is_not_deleted(
+    tmp_path: Path,
+) -> None:
+    """刷新的全量扫描只以被忽略的 move 的目标给出 W' 中的 y、没有它的 document：y 在源中但内容
+    未知，视为枚举不完整（DPE_VALIDATION，可重试），不做推断删除。"""
+    async with harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        await h.round({"batches": [[doc_item("y.md", "Y")]], "cursor": None})  # 保留 c1
+        result = await h.round(
+            {
+                "batches": [[]],
+                "cursor": "c3",
+                "full_batches": [
+                    [
+                        doc_item("a.md", "A"),
+                        {"kind": "move", "from_uri": P + "x.md", "to_uri": P + "y.md"},
+                    ]
+                ],
+            }
+        )
+        assert result.outcome == "partial"
+        [failure] = result.failures
+        assert (failure.code, failure.retryable) == ("DPE_VALIDATION", True)
+        assert P + "y.md" in await _remote(h)
+        assert h.store is not None and P + "y.md" in h.store.written and h.store.cursor == "c1"
