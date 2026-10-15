@@ -8,7 +8,10 @@ remote 是独立监听的参考服务端（``python -m dpe_sdk.testing``，真�
   计算的结果——插件产出的内容原样到达 remote；
 - 确定性（connector §8.3 判据 1）：同一源状态的两次全量轮得到相同映射；
 - 易变内容：只改一个工单的状态，只有它的 doc_hash 变化；
-- 凭证不外泄：运行器的报告与日志里没有凭证值。
+- 凭证不外泄：运行器的报告与日志里没有凭证值；
+- 增量收敛（connector §8.3 判据 3）：同一实例依次经历新增、修改、加评论、删除、换 key 的
+  移动，每步一轮增量，remote 前缀内的映射等于同一源状态在空前缀上的全量结果；
+- 截断防御：搜索后面的页失败的一轮由运行器判为失败，remote 上一篇都不少，恢复后照常收敛。
 """
 
 from __future__ import annotations
@@ -78,7 +81,7 @@ class Runner:
             "SRC_JIRA_TOKEN": TOKEN,
         }
 
-    def run(self, instance_id: str, prefix: str) -> dict[str, Any]:
+    def run(self, instance_id: str, prefix: str, expect: int = 0) -> dict[str, Any]:
         definition = {
             "definition_version": 1,
             "id": instance_id,
@@ -107,7 +110,7 @@ class Runner:
             env=self.environ,
             timeout=180,
         )
-        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert proc.returncode == expect, proc.stdout + proc.stderr
         assert TOKEN not in proc.stdout + proc.stderr
         report: dict[str, Any] = json.loads(proc.stdout)
         return report
@@ -190,3 +193,57 @@ def test_full_rounds_deliver_exact_and_deterministic_documents(tmp_path: Path) -
         changed = runner.full_mapping()
         assert changed == expected_mapping(fake)
         assert {uri for uri in first if first[uri] != changed[uri]} == {"issue/ABC-2"}
+
+
+def test_incremental_rounds_converge_and_truncated_enumeration_deletes_nothing(
+    tmp_path: Path,
+) -> None:
+    fake = FakeJira(search_page_size=2, comment_page_size=1)
+    populate(fake)
+    with serving(fake) as site, reference_server() as remote:
+        runner = Runner(tmp_path, remote, site)
+        first = runner.run("inc", "jira://inc/")
+        assert first["outcome"] == "succeeded" and first["incremental"] is False
+        assert first["counts"]["created"] == 7
+
+        def step(expected: dict[str, int]) -> None:
+            report = runner.run("inc", "jira://inc/")
+            assert report["outcome"] == "succeeded", report
+            assert report["incremental"] is True, report
+            for key, value in expected.items():
+                assert report["counts"][key] == value, (key, report["counts"])
+            assert runner.listing("jira://inc/") == runner.full_mapping()
+
+        step({"created": 0, "updated": 0})  # 没有变化
+        fake.add_issue(10008, "ABC-8", summary="新工单", description=adf("新内容"))
+        step({"created": 1})
+        fake.touch(10003, "2026-10-02T08:00:00.000+0000", status={"id": "3", "name": "完成"})
+        step({"updated": 1, "created": 0})
+        fake.comments["10002"].append(
+            {
+                "id": "9",
+                "author": {"accountId": "acc-9", "displayName": "王五"},
+                "body": adf("新评论"),
+                "created": "2026-10-03T00:00:00.000+0000",
+            }
+        )
+        fake.touch(10002, "2026-10-03T00:00:00.000+0000")  # 加评论时 Jira 更新 updated
+        step({"updated": 1})
+        fake.remove(10004)
+        step({"deleted": 1})
+        # 换 key（移动后仍在范围内，例如 jql 覆盖两个项目）：move 后紧跟的 document 判为 unchanged
+        fake.rekey(10005, "XYZ-5", "2026-10-04T00:00:00.000+0000")
+        step({"moved": 1, "created": 0, "updated": 0, "unchanged": 1})
+
+        # 截断防御：真实删除了一篇，但搜索第 2 页起失败——本轮失败，一篇都不能少
+        before = runner.listing("jira://inc/")
+        fake.remove(10006)
+        fake.search_fail_from = 2
+        failed = runner.run("inc", "jira://inc/", expect=2)
+        assert failed["outcome"] == "failed", failed
+        assert runner.listing("jira://inc/") == before
+        fake.search_fail_from = None
+        step({"deleted": 1})
+        assert set(runner.listing("jira://inc/")) == {
+            f"issue/{key}" for key in ("ABC-1", "ABC-2", "ABC-3", "XYZ-5", "ABC-7", "ABC-8")
+        }

@@ -11,6 +11,7 @@ import pytest
 from fake_jira import EMAIL, TOKEN, FakeJira, adf, serving
 
 from dpe_jira import PLUGIN_NAME, __version__
+from dpe_jira.mapping import issue_document
 from dpe_jira.server import Serve
 
 PREFIX = "jira://example/"
@@ -56,17 +57,26 @@ class Session:
         )
 
     def round(self, **extra: Any) -> list[dict[str, Any]]:
-        """跑完一轮，返回全部条目；断言结束批的形状。"""
+        """跑完一轮，返回全部条目；结束批的游标与 incremental 记在 ``cursor`` / ``incremental``。"""
         params: dict[str, Any] = {"cursor": None, **extra}
+        full = params["cursor"] is None
         items: list[dict[str, Any]] = []
+        self.batches = 0
         while True:
             response = self.call("scan", params)
             assert "result" in response, response
             result = response["result"]
             items.extend(result["items"])
+            self.batches += 1
             if "next" not in result:
-                assert result["cursor"] is None and result["incremental"] is False
+                assert "cursor" in result and isinstance(result["incremental"], bool)
+                assert isinstance(result["cursor"], str | None)
+                if full:
+                    assert result["incremental"] is False
+                self.cursor: str | None = result["cursor"]
+                self.incremental: bool = result["incremental"]
                 return items
+            assert "cursor" not in result and "incremental" not in result  # 中间批（§6.4）
             params = {"next": result["next"]}
 
     def assert_no_secrets(self) -> None:
@@ -100,13 +110,13 @@ def uris(items: list[dict[str, Any]]) -> list[str | None]:
 # ---------------------------------------------------------------------- 握手
 
 
-def test_handshake_declares_full_scan_only(fake: FakeJira, site: str) -> None:
+def test_handshake_declares_cursor_support(fake: FakeJira, site: str) -> None:
     session = Session()
     result = session.initialize(site)["result"]
     assert result == {
         "protocol_version": "dpe-connector/1",
         "plugin": {"name": PLUGIN_NAME, "version": __version__},
-        "capabilities": {"supports_cursor": False},
+        "capabilities": {"supports_cursor": True},
     }
     assert ("GET", "/rest/api/3/myself") in fake.requests
 
@@ -263,12 +273,12 @@ def test_empty_scope_ends_with_an_empty_final_batch(site: str) -> None:
     assert started(site).round() == []
 
 
-def test_every_round_rescans_from_scratch(fake: FakeJira, site: str) -> None:
+def test_round_without_cursor_rescans_from_scratch(fake: FakeJira, site: str) -> None:
     populate(fake, 2)
     session = started(site)
     first = session.round()
     fake.add_issue(10003, "ABC-3", summary="新工单")
-    second = session.round(cursor="ignored")  # 未声明游标：给了也按全量
+    second = session.round()
     assert uris(second) == [*uris(first), f"{PREFIX}issue/ABC-3"]
     assert second[:2] == first
 
@@ -461,3 +471,263 @@ def test_no_output_ever_contains_credentials(fake: FakeJira, site: str) -> None:
     rejected.initialize(site)
     for line in rejected.lines:
         assert TOKEN not in line
+
+
+# ---------------------------------------------------------------------- 增量
+
+
+def kinds(items: list[dict[str, Any]]) -> list[tuple[str, ...]]:
+    out: list[tuple[str, ...]] = []
+    for item in items:
+        if item["kind"] == "move":
+            out.append(("move", item["from_uri"], item["to_uri"]))
+        else:
+            out.append((item["kind"], item["file_uri"]))
+    return out
+
+
+def uri(key: str) -> str:
+    return f"{PREFIX}issue/{key}"
+
+
+def test_full_round_gives_a_cursor_and_quiet_rounds_are_empty(fake: FakeJira, site: str) -> None:
+    populate(fake, 3)
+    session = started(site)
+    assert len(session.round()) == 3
+    assert session.incremental is False and isinstance(session.cursor, str)
+    cursor = session.cursor
+    assert session.round(cursor=cursor) == []
+    assert session.incremental is True and session.cursor == cursor
+    fetched = [path for _, path in fake.requests if path.startswith("/rest/api/3/issue/")]
+    assert len(fetched) == 3 * 2  # 只有全量轮取过全文与评论
+
+
+def test_incremental_round_expresses_every_kind_of_change(fake: FakeJira, site: str) -> None:
+    populate(fake, 5)
+    session = started(site)
+    session.round()
+    fake.touch(10002, "2026-10-02T08:00:00.000+0000", summary="改过标题")
+    fake.remove(10004)
+    fake.remove(10001)
+    fake.rekey(10003, "XYZ-9")  # 换项目：updated 不变也要表达为 move + document
+    fake.add_issue(10006, "ABC-6", summary="新工单")
+    items = session.round(cursor=session.cursor)
+    assert session.incremental is True
+    assert kinds(items) == [
+        ("delete", uri("ABC-1")),
+        ("delete", uri("ABC-4")),
+        ("document", uri("ABC-2")),
+        ("move", uri("ABC-3"), uri("XYZ-9")),
+        ("document", uri("XYZ-9")),
+        ("document", uri("ABC-6")),
+    ]
+    assert items[2]["document"]["title"] == "改过标题"
+    assert session.round(cursor=session.cursor) == []  # 新游标已吸收这些变化
+
+
+def test_unusable_cursors_fall_back_to_a_full_round(fake: FakeJira, site: str) -> None:
+    populate(fake, 2)
+    other = Session()
+    other.initialize(site, config={"site": site, "projects": ["ABC", "XYZ"]})
+    other.round()
+    session = started(site)
+    for cursor in ("garbage", other.cursor):
+        items = session.round(cursor=cursor)
+        assert session.incremental is False
+        assert [item["kind"] for item in items] == ["document", "document"]
+
+
+@pytest.mark.parametrize(
+    "breakage",
+    ["page-2-fails", "is-last-contradiction", "repeated-token", "rate-limited"],
+)
+def test_incomplete_enumeration_never_deletes(fake: FakeJira, site: str, breakage: str) -> None:
+    populate(fake, 6)
+    fake.search_page_size = 2
+    session = started(site)
+    session.round()
+    cursor = session.cursor
+    fake.remove(10006)  # 一个真实的删除：截断时也不得在这一轮表达
+    if breakage == "page-2-fails":
+        fake.search_fail_from = 2  # 第 1 页正常，之后的页 500
+    elif breakage == "is-last-contradiction":
+        fake.search_override = [{"issues": [_hit("10001")], "isLast": True, "nextPageToken": "1"}]
+    elif breakage == "repeated-token":
+        fake.search_override = [
+            {"issues": [_hit("10001")], "nextPageToken": "1"},
+            {"issues": [_hit("10002")], "nextPageToken": "1"},
+        ]
+    else:
+        fake.throttle_forever.add("/rest/api/3/search/jql")
+    response = session.call("scan", {"cursor": cursor})
+    assert response["error"]["code"] == -32003  # 整轮失败：没有任何条目，更没有 delete
+    assert all('"delete"' not in line and '"move"' not in line for line in session.lines)
+    # 恢复后，从同一个游标重跑才表达那次删除
+    fake.search_fail_from = None
+    fake.search_override = None
+    fake.throttle_forever.clear()
+    assert kinds(session.round(cursor=cursor)) == [("delete", uri("ABC-6"))]
+
+
+def test_failed_fetch_keeps_the_old_record_so_the_next_round_retries(
+    fake: FakeJira, site: str
+) -> None:
+    populate(fake, 3)
+    session = started(site)
+    session.round()
+    fake.touch(10002, "2026-10-02T08:00:00.000+0000")
+    fake.add_issue(10004, "ABC-4")
+    fake.gone.update({"ABC-2", "ABC-4"})  # 枚举到了，取全文时 404
+    items = session.round(cursor=session.cursor)
+    assert [(i["kind"], i.get("code")) for i in items] == [
+        ("error", "source_unavailable"),
+        ("error", "source_unavailable"),
+    ]
+    fake.gone.clear()
+    retry = session.round(cursor=session.cursor)
+    assert kinds(retry) == [("document", uri("ABC-2")), ("document", uri("ABC-4"))]
+
+
+def test_move_whose_target_cannot_be_read_is_not_emitted(fake: FakeJira, site: str) -> None:
+    populate(fake, 2)
+    session = started(site)
+    session.round()
+    fake.rekey(10001, "XYZ-1")
+    fake.gone.add("XYZ-1")
+    items = session.round(cursor=session.cursor)
+    assert kinds(items) == [("error", uri("XYZ-1"))]  # 不先改名再建不出内容
+    fake.gone.clear()
+    assert kinds(session.round(cursor=session.cursor)) == [
+        ("move", uri("ABC-1"), uri("XYZ-1")),
+        ("document", uri("XYZ-1")),
+    ]
+
+
+def test_cursor_that_does_not_fit_the_final_batch_gets_its_own(fake: FakeJira, site: str) -> None:
+    for n in range(1, 41):
+        fake.add_issue(10000 + n, f"ABC-{n}", summary="x" * 40)
+    session = started(site, max_message_bytes=8192)
+    session.round()
+    cursor = session.cursor
+    assert cursor is not None
+    # 只改最后一个，并把它撑到「单独装得下、加上游标就装不下」的大小
+    fake.touch(10040, "2026-10-02T08:00:00.000+0000")
+    issue = fake.issues["10040"]
+    budget = 8192 - 1024 - len(str(session.next_id))
+    base = len(json.dumps(issue_document(uri("ABC-40"), issue, []), ensure_ascii=False))
+    filler = budget - base - len(cursor) // 2
+    fake.touch(10040, "2026-10-02T08:00:00.000+0000", description=adf("y" * filler))
+    items = session.round(cursor=cursor)
+    assert kinds(items) == [("document", uri("ABC-40"))]
+    assert session.batches == 2 and session.cursor is not None  # 第二批：空 items + 游标
+    assert session.incremental is True
+
+
+def test_cursor_larger_than_any_message_is_withheld(fake: FakeJira, site: str) -> None:
+    for n in range(1, 400):
+        fake.add_issue(10000 + n, f"ABC-{n}", updated=f"2026-10-01T08:00:{n % 60:02d}.{n:03d}+0000")
+    session = started(site, max_message_bytes=2048)
+    session.round()
+    assert session.cursor is None  # 下一轮全量，而不是发超限消息
+
+
+def test_incremental_cursor_larger_than_any_message_is_withheld(fake: FakeJira, site: str) -> None:
+    fake.add_issue(10000, "ABC-0")
+    session = started(site, max_message_bytes=2048)
+    session.round()
+    cursor = session.cursor
+    assert cursor is not None
+    for n in range(1, 400):  # 新游标长到单条消息装不下
+        fake.add_issue(10000 + n, f"ABC-{n}", updated=f"2026-10-01T08:00:{n % 60:02d}.{n:03d}+0000")
+    assert len(session.round(cursor=cursor)) == 399
+    assert session.incremental is True and session.cursor is None
+
+
+def test_oversized_document_does_not_advance_the_cursor(fake: FakeJira, site: str) -> None:
+    populate(fake, 2)
+    session = started(site, max_message_bytes=4096)
+    session.round()
+    fake.touch(10002, "2026-10-02T08:00:00.000+0000", description=adf("z" * 5000))
+    items = session.round(cursor=session.cursor)
+    assert [(i["kind"], i.get("code")) for i in items] == [("error", "content_invalid")]
+    fake.touch(10002, "2026-10-02T08:00:00.000+0000", description=adf("改小了"))
+    # updated 没再变：只有游标没越过上次的失败，这一轮才会重新产出它
+    assert kinds(session.round(cursor=session.cursor)) == [("document", uri("ABC-2"))]
+
+
+def test_move_whose_target_is_too_large_is_not_emitted(fake: FakeJira, site: str) -> None:
+    populate(fake, 2)
+    session = started(site, max_message_bytes=4096)
+    session.round()
+    fake.rekey(10001, "XYZ-1")
+    fake.touch(10001, "2026-10-02T08:00:00.000+0000", description=adf("z" * 5000))
+    items = session.round(cursor=session.cursor)
+    assert kinds(items) == [("error", uri("XYZ-1"))]  # move 不落单
+    fake.touch(10001, "2026-10-02T08:00:00.000+0000", description=adf("改小了"))
+    assert kinds(session.round(cursor=session.cursor)) == [
+        ("move", uri("ABC-1"), uri("XYZ-1")),
+        ("document", uri("XYZ-1")),
+    ]
+
+
+def _segmented(fake: FakeJira) -> None:
+    fake.touch(10002, "2026-10-02T08:00:00.000+0000", description=adf("x" * 1500))
+    fake.comments["10002"] = [
+        {
+            "id": "1",
+            "author": {"accountId": "a", "displayName": "A"},
+            "body": adf("y" * 1500),
+            "created": "2026-09-01T00:00:00.000+0000",
+        }
+    ]
+
+
+def test_segmented_document_round_trip(fake: FakeJira, site: str) -> None:
+    populate(fake, 2)
+    session = started(site, max_message_bytes=4096)
+    session.round()
+    _segmented(fake)
+    items = session.round(cursor=session.cursor, max_items=1)
+    assert len(items) >= 2 and all(i["file_uri"] == uri("ABC-2") for i in items)
+    assert items[0].get("continued") is True and "continued" not in items[-1]
+    assert session.round(cursor=session.cursor) == []
+
+
+def test_segment_abandoned_midway_does_not_advance_the_cursor(
+    fake: FakeJira, site: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    populate(fake, 2)
+    session = started(site, max_message_bytes=4096)
+    session.round()
+    _segmented(fake)
+    with monkeypatch.context() as patch:  # 首段发出后续段装不下（兜底路径）
+        patch.setattr(Serve, "_next_segment", lambda self, round_, room: None)
+        items = session.round(cursor=session.cursor)
+    assert items[0].get("continued") is True
+    assert items[-1]["kind"] == "error" and items[-1]["file_uri"] == uri("ABC-2")
+    # 首段已发出也不算产出成功：下一轮重新产出
+    again = session.round(cursor=session.cursor)
+    assert {i["file_uri"] for i in again} == {uri("ABC-2")}
+
+
+def test_oversized_header_is_content_invalid(fake: FakeJira, site: str) -> None:
+    populate(fake, 1)
+    fake.touch(10001, "2026-10-02T08:00:00.000+0000", summary="长" * 400)
+    items = started(site, max_message_bytes=2048).round()
+    assert [(i["kind"], i.get("code")) for i in items] == [("error", "content_invalid")]
+
+
+def test_contradictory_cursor_falls_back_to_a_full_round(fake: FakeJira, site: str) -> None:
+    from dpe_jira.cursor import encode_cursor, source_digest
+
+    populate(fake, 2)
+    session = started(site)
+    source = source_digest(PREFIX, {"site": site, "projects": ["ABC"]})
+    duplicated = encode_cursor(source, {"10001": ("ABC-1", "t"), "9": ("ABC-1", "t")})
+    stale = encode_cursor(source, {"9": ("ABC-2", "t"), "10001": ("ABC-1", "t")})
+    # 10001 上一轮在 ABC-2、本轮在 ABC-1，而 ABC-1 上一轮属于 10002：move 会搬走别人的文档
+    swapped = encode_cursor(source, {"10001": ("ABC-2", "t"), "10002": ("ABC-1", "t")})
+    for cursor in (duplicated, stale, swapped):
+        items = session.round(cursor=cursor)
+        assert session.incremental is False
+        assert all(item["kind"] == "document" for item in items)

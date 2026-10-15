@@ -3,9 +3,29 @@
 方法：``initialize``、``scan``（按批拉取）、``shutdown``；``cancel`` 是通知。本期没有 blob，
 ``read_blob`` 一律以未知句柄（``-32002``）拒绝。请求同步处理（同 markdown-dir）。
 
-**一轮**（本期为全量枚举，``supports_cursor: false``）：轮首用增强搜索枚举范围内全部工单（只取
-key 与 updated，按 nextPageToken 翻页，按 id 升序），之后每一步取一个工单的全文与全部评论，
-映射为 document 条目（``mapping``）。
+**一轮**（``supports_cursor: true``，§6.8）：轮首用增强搜索把范围内全部工单的 id、key、updated
+枚举完（按 nextPageToken 翻页，按 id 升序）。**枚举是完整的才往下走**：任何一页失败、分页字段
+矛盾或 token 重复，本轮在产出任何条目之前以 ``-32003`` 结束——截断的枚举会被当成大批删除，
+因此结构上不允许它产出 delete / move。之后：
+
+- **全量轮**（没有游标或游标解释不了）：每个工单取全文与全部评论，映射为 document 条目
+  （``mapping``）；结束批 ``incremental: false``；
+- **增量轮**（与游标里的 id → [key, updated] 比较）：上一轮有、本轮没有的工单 → ``delete``
+  （排在最前，按 id 升序）；其余按 id 升序：新工单或 updated 变了 → document；key 变了
+  （换项目）→ ``move`` 旧 URI → 新 URI，紧跟新 URI 的 document（不论内容是否变化，§6.5）；
+  都没变 → 跳过。结束批 ``incremental: true``；
+- **取全文失败**（枚举后被删、内容无法映射）→ 条目级 error；移动的目标取不到时连 ``move`` 也
+  不发，只发目标 URI 的 error（不先改名再建不出内容）；
+- **装不下的文档**：取全文时就按单条预算判断能否发出（带文档对象的首段头部装得下、每页都能
+  单独成段，并为后续批次留余量；移动条目本身也要装得下），不能就当作取全文失败
+  （``content_invalid``），同样不发 ``move``；
+- **新游标**（``cursor``）：工单的新记录 [key, updated] 在它的文档**最后一段发出时**才写入；
+  跳过的工单沿用旧记录；任何失败（含发出途中改判为 error）沿用旧记录（新工单不记）；已删除
+  的不记——新游标不越过没成功产出的变化（§6.8）。
+- **游标与本轮自相矛盾**（两条记录指向同一个 key，或本轮某工单的 key 在上一轮属于另一个
+  工单——Jira 不复用 key，正常不会发生）：不冒险，本轮按全量轮处理。结束批放不下游标时，
+  本批以 ``next`` 结束、下一批单独给出游标；游标本身超过单条预算则给 ``null``（运行器保留
+  旧游标，下一轮从旧位置重扫，§6.8）。
 
 **错误归属**：
 
@@ -30,7 +50,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from dpe_hash import RemoteUrlError, check_remote_url
@@ -44,6 +64,7 @@ from dpe_jira.client import (
     Unavailable,
     UnexpectedResponse,
 )
+from dpe_jira.cursor import Marks, decode_cursor, encode_cursor, is_issue_id, source_digest
 from dpe_jira.mapping import ISSUE_FIELDS, MappingError, issue_document
 
 __all__ = ["PROTOCOL_VERSION", "Serve"]
@@ -103,22 +124,66 @@ class _RoundAborted(Exception):
 
 @dataclass(frozen=True)
 class _Issue:
-    """搜索得到的一个工单：数字 id 与 key。"""
+    """搜索得到的一个工单：数字 id、key 与 updated（原样字符串，只比较相等）。"""
 
     id: str
     key: str
+    updated: str
+
+
+@dataclass(frozen=True)
+class _Step:
+    """一轮中的一步：删除一个消失的工单（``delete_uri``），或取一个工单的全文（``issue``，
+    ``moved_from`` 为移动前的 key）。"""
+
+    issue: _Issue | None = None
+    moved_from: str | None = None
+    delete_uri: str | None = None
+
+
+@dataclass
+class _Out:
+    """待发出的条目；``mark`` 是它完整发出后要写进新游标的记录（只有工单的 document 带）。"""
+
+    item: dict[str, Any]
+    issue_id: str | None = None
+    mark: tuple[str, str] | None = None
 
 
 @dataclass
 class _Round:
     number: int
-    steps: list[_Issue]
+    steps: list[_Step]
+    incremental: bool
+    #: 上一轮的记录（增量轮）；取全文失败时沿用
+    previous: Marks
+    #: 新游标的记录：先放跳过的工单，文档完整发出时补上
+    marks: Marks
     position: int = 0
-    #: 当前步骤已取得的条目（本批装不下留到下一批时复用，不重取）
-    scanned: tuple[int, dict[str, Any]] | None = None
-    #: 未发完的分段文档：(file_uri, 剩余页)
+    #: 已产出、尚未发出的条目（本批装不下的留到下一批，不重取）
+    queue: list[_Out] = field(default_factory=list)
+    #: 未发完的分段文档：(file_uri, 剩余页)，以及末段发出后要写入的记录
     pending: tuple[str, list[dict[str, Any]]] | None = None
+    pending_out: _Out | None = None
+    #: 结束批算出的游标（放不下而多发一批时复用）
+    cursor: str | None = None
     issued: int = 0
+
+    def commit(self, out: _Out) -> None:
+        if out.issue_id is not None and out.mark is not None:
+            self.marks[out.issue_id] = out.mark
+
+    def revert(self, issue_id: str | None) -> None:
+        """这个工单本轮没有成功产出：新游标沿用上一轮的记录（新工单不记）。"""
+        if issue_id is None:
+            return
+        if issue_id in self.previous:
+            self.marks[issue_id] = self.previous[issue_id]
+        else:
+            self.marks.pop(issue_id, None)
+
+    def exhausted(self) -> bool:
+        return self.pending is None and not self.queue and self.position >= len(self.steps)
 
 
 class Serve:
@@ -131,6 +196,7 @@ class Serve:
         self._environ = os.environ if environ is None else environ
         self._client: JiraClient | None = None
         self._jql = ""
+        self._source = ""
         self._round: _Round | None = None
         self._rounds = 0
 
@@ -204,7 +270,7 @@ class Serve:
             {
                 "protocol_version": PROTOCOL_VERSION,
                 "plugin": {"name": PLUGIN_NAME, "version": __version__},
-                "capabilities": {"supports_cursor": False},
+                "capabilities": {"supports_cursor": True},
             },
         )
 
@@ -264,6 +330,7 @@ class Serve:
         self.prefix = prefix
         self._client = client
         self._jql = jql
+        self._source = source_digest(prefix, config)
         return None
 
     # ------------------------------------------------------------------ scan
@@ -280,9 +347,8 @@ class Serve:
             cursor = params.get("cursor")
             if cursor is not None and not isinstance(cursor, str):
                 return self._error(id_, -32602, "cursor 必须是字符串或 null")
-            # 本期不支持游标（initialize 已声明 supports_cursor: false），给了也按全量处理
             try:
-                self._round = self._open_round()
+                self._round = self._open_round(cursor)
             except JiraError as exc:
                 self._round = None
                 return self._error(
@@ -297,17 +363,65 @@ class Serve:
         if budget < 256:
             return self._error(id_, -32602, "单条预算过小，无法产出")
         try:
-            items = self._next_batch(round_, min(max_items, _BATCH_MAX_ITEMS), budget)
+            items, used = self._next_batch(round_, min(max_items, _BATCH_MAX_ITEMS), budget)
         except _RoundAborted as exc:
             self._round = None
             return self._error(id_, -32003, str(exc), {"retryable": exc.retryable})
-        if round_.pending is not None or round_.position < len(round_.steps):
+        if not round_.exhausted():
             round_.issued += 1
             return self._result(id_, {"items": items, "next": self._token(round_)})
+        # 结束批：给出新游标（§6.8）。信封预留只覆盖 "cursor":null，游标串的字节另计
+        if round_.cursor is None:
+            round_.cursor = encode_cursor(self._source, round_.marks)
+        cursor_value: str | None = round_.cursor
+        if used + _size(cursor_value) > budget:
+            if items:
+                # 本批放不下游标：以 next 结束本批，下一批单独给出空 items 与游标
+                round_.issued += 1
+                return self._result(id_, {"items": items, "next": self._token(round_)})
+            # 游标本身超过单条预算：本轮不提供游标（不发超限消息，§6.5）。运行器保留已缓存的
+            # 游标，下一轮从旧位置重扫（§6.8）——范围不缩小就会一直如此，需要调大单条上限
+            cursor_value = None
         self._round = None
-        return self._result(id_, {"items": items, "cursor": None, "incremental": False})
+        return self._result(
+            id_, {"items": items, "cursor": cursor_value, "incremental": round_.incremental}
+        )
 
-    def _open_round(self) -> _Round:
+    def _open_round(self, cursor: str | None) -> _Round:
+        current = self._enumerate()
+        previous = None if cursor is None else decode_cursor(cursor, self._source)
+        self._rounds += 1
+        if previous is None:  # 全量轮：没有游标，或游标解释不了（§6.8 回退，不报错）
+            steps = [_Step(issue=issue) for issue in current]
+            return _Round(self._rounds, steps, incremental=False, previous={}, marks={})
+        alive = {issue.id for issue in current}
+        steps = [
+            _Step(delete_uri=issue_uri(self.prefix, previous[issue_id][0]))
+            for issue_id in sorted(previous, key=int)
+            if issue_id not in alive
+        ]
+        owners: dict[str, str] = {}  # 上一轮的 key → id
+        for issue_id, (key, _) in previous.items():
+            owners.setdefault(key, issue_id)
+        if len(owners) != len(previous) or any(
+            owners.get(issue.key, issue.id) != issue.id for issue in current
+        ):
+            # 游标与本轮自相矛盾（见模块说明）：不冒险删除，按全量轮处理
+            steps = [_Step(issue=issue) for issue in current]
+            return _Round(self._rounds, steps, incremental=False, previous={}, marks={})
+        marks: Marks = {}
+        for issue in current:
+            old = previous.get(issue.id)
+            if old is None or (old[0] == issue.key and old[1] != issue.updated):
+                steps.append(_Step(issue=issue))
+            elif old[0] != issue.key:
+                steps.append(_Step(issue=issue, moved_from=old[0]))
+            else:
+                marks[issue.id] = old  # 没变：跳过
+        return _Round(self._rounds, steps, incremental=True, previous=previous, marks=marks)
+
+    def _enumerate(self) -> list[_Issue]:
+        """枚举范围内全部工单（按 id 升序）；不完整就抛异常，绝不返回截断的结果。"""
         assert self._client is not None
         steps: list[_Issue] = []
         seen: set[str] = set()
@@ -319,15 +433,21 @@ class Serve:
             if not isinstance(issues, list):
                 raise _bad_page()
             for issue in issues:
+                fields = issue.get("fields") if isinstance(issue, dict) else None
+                updated = fields.get("updated") if isinstance(fields, dict) else None
                 if (
                     not isinstance(issue, dict)
                     or not isinstance(issue.get("id"), str)
+                    or not is_issue_id(issue["id"])
                     or not isinstance(issue.get("key"), str)
+                    or not issue["key"]
+                    or not isinstance(updated, str)
+                    or not updated
                 ):
                     raise _bad_page()
                 if issue["id"] not in seen:  # 翻页期间工单变化可能导致重复，按 id 去重
                     seen.add(issue["id"])
-                    steps.append(_Issue(issue["id"], issue["key"]))
+                    steps.append(_Issue(issue["id"], issue["key"], updated))
             # 是否还有下一页以 nextPageToken 为准；isLast 若给出必须与之一致。宁可中止本轮也不在
             # 截断的枚举之后发出全量结束批——那会让运行器删掉没列出的文档（§6.8）
             token = page.get("nextPageToken")
@@ -342,43 +462,97 @@ class Serve:
                 raise UnexpectedResponse("搜索响应重复给出同一个 nextPageToken")
             tokens.add(token)
             page_token = token
-        self._rounds += 1
-        return _Round(self._rounds, steps)
+        return steps
 
     # ------------------------------------------------------------------ 批次
 
-    def _next_batch(self, round_: _Round, max_items: int, budget: int) -> list[dict[str, Any]]:
+    def _next_batch(
+        self, round_: _Round, max_items: int, budget: int
+    ) -> tuple[list[dict[str, Any]], int]:
+        """装一批，返回（条目, 已用字节）。"""
         items: list[dict[str, Any]] = []
         total = 0
         while len(items) < max_items:
             room = budget - total - (1 if items else 0)
             if round_.pending is not None:
+                assert round_.pending_out is not None
                 payload = self._next_segment(round_, room)
                 if payload is None:
                     if items:
                         break
+                    # 取全文时已按预算筛过，正常到不了这里；万一到了，如实上报并沿用旧记录
                     uri = round_.pending[0]
                     round_.pending = None
+                    round_.revert(round_.pending_out.issue_id)
+                    round_.pending_out = None
                     payload = _error_item(uri, "content_invalid", "分段无法在单条预算内继续", False)
-            elif round_.position >= len(round_.steps):
-                break
+                elif round_.pending is None:  # 末段：文档完整发出
+                    round_.commit(round_.pending_out)
+                    round_.pending_out = None
             else:
-                item = self._step_item(round_)
-                payload = self._fit(round_, item, room, at_head=not items)
+                if not round_.queue:
+                    if round_.position >= len(round_.steps):
+                        break
+                    step = round_.steps[round_.position]
+                    round_.queue = self._run_step(round_, step, budget)
+                    round_.position += 1
+                    continue
+                out = round_.queue[0]
+                payload = self._fit(round_, out.item, room, at_head=not items)
                 if payload is None:
-                    break  # 留到下一批（scanned 保留，不重取）
-                round_.position += 1
-                round_.scanned = None
+                    break  # 留到下一批（已取得的条目留在队列里，不重取）
+                round_.queue.pop(0)
+                if payload is out.item:
+                    round_.commit(out)
+                elif round_.pending is not None:
+                    round_.pending_out = out  # 首段：末段发出时再写入记录
+                else:
+                    round_.revert(out.issue_id)  # 改判为 error
             items.append(payload)
             total += _size(payload) + (1 if len(items) > 1 else 0)
-        return items
+        return items, total
 
-    def _step_item(self, round_: _Round) -> dict[str, Any]:
-        if round_.scanned is not None and round_.scanned[0] == round_.position:
-            return round_.scanned[1]
-        item = self._issue_item(round_.steps[round_.position])
-        round_.scanned = (round_.position, item)
-        return item
+    def _run_step(self, round_: _Round, step: _Step, budget: int) -> list[_Out]:
+        """执行一步，返回它产出的待发条目。新游标的记录在文档完整发出时才写入。"""
+        if step.delete_uri is not None:
+            return [_Out({"kind": "delete", "file_uri": step.delete_uri})]
+        issue = step.issue
+        assert issue is not None
+        item = self._issue_item(issue)
+        move: dict[str, Any] | None = None
+        if step.moved_from is not None:
+            move = {
+                "kind": "move",
+                "from_uri": issue_uri(self.prefix, step.moved_from),
+                "to_uri": item["file_uri"],
+            }
+        limit = budget - 2 * _SEGMENT_SLACK
+        if item["kind"] == "document" and not self._expressible(item, limit):
+            item = _error_item(
+                item["file_uri"], "content_invalid", "工单超过单条消息预算，无法分段", False
+            )
+        elif move is not None and _size(move) > limit:
+            item = _error_item(
+                item["file_uri"], "content_invalid", "移动条目超过单条消息预算", False
+            )
+        if item["kind"] != "document":  # 失败：沿用旧记录，下一轮重新尝试（含移动）
+            round_.revert(issue.id)
+            return [_Out(item)]
+        document = _Out(item, issue.id, (issue.key, issue.updated))
+        return [document] if move is None else [_Out(move), document]
+
+    @staticmethod
+    def _expressible(item: dict[str, Any], limit: int) -> bool:
+        """文档能否在单条预算内发出：带文档对象的首段头部装得下，且每页都能单独成段。
+
+        ``limit`` 已扣两份余量：后续批次的预算会因请求 id 变长略小，而 ``_fit`` 分段时自己还要
+        扣一份——这样通过这里的文档到了批首一定装得下或分得开，``move`` 不会落单。
+        """
+        head = _size({**item, "pages": [], "continued": True})
+        base = _size(
+            {"kind": "document", "file_uri": item["file_uri"], "pages": [], "continued": True}
+        )
+        return head <= limit and all(base + _size(page) <= limit for page in item["pages"])
 
     def _issue_item(self, ref: _Issue) -> dict[str, Any]:
         """取一个工单的全文与全部评论并映射；不可恢复的失败中止本轮（``_RoundAborted``）。"""
@@ -436,6 +610,8 @@ class Serve:
         if any(base + _size(page) > room - _SEGMENT_SLACK for page in pages):
             return _error_item(uri, "content_invalid", "单页超过单条消息预算，无法分段", False)
         first = {**item, "pages": [], "continued": True}
+        if _size(first) > room - _SEGMENT_SLACK:
+            return _error_item(uri, "content_invalid", "文档头部超过单条消息预算", False)
         count = self._fill(pages, room - _size(first))
         first["pages"] = pages[:count]
         round_.pending = (uri, pages[count:])

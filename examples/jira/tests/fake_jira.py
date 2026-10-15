@@ -9,7 +9,10 @@
 key 取全文时返回 404（模拟枚举之后被删）；``redirect[路径] = URL`` 让该路径返回 302；
 ``search_override`` 替换搜索响应（模拟不规范的分页字段）；``reject_search`` 让搜索返回 400
 （JQL 不合法或项目不存在）；``not_json`` 里的路径返回 200 的 HTML（站点不是 Jira API）；
-``server_error`` 里的路径返回 500；``gone_endpoints`` 里的路径返回 404（端点被移除）。
+``server_error`` 里的路径返回 500；``gone_endpoints`` 里的路径返回 404（端点被移除）；
+``search_fail_from`` 让起始位置不小于它的搜索页返回 500（前面的页正常，模拟部分页失败）。
+
+源的变化用 ``touch``（改 updated）、``rekey``（换 key，模拟换项目）、``remove``（删除）。
 数据由用例用 ``add_issue`` 构造；``requests`` 记下每个请求的（方法, 路径）。
 """
 
@@ -58,6 +61,7 @@ class FakeJira:
     not_json: set[str] = field(default_factory=set)
     server_error: set[str] = field(default_factory=set)
     gone_endpoints: set[str] = field(default_factory=set)
+    search_fail_from: int | None = None
     requests: list[tuple[str, str]] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -85,6 +89,21 @@ class FakeJira:
             },
         }
         self.comments[str(issue_id)] = list(comments or [])
+
+    def touch(self, issue_id: int, updated: str, **fields: Any) -> None:
+        """改一个工单：updated 换新值，并更新给出的字段。"""
+        self.issues[str(issue_id)]["fields"].update(updated=updated, **fields)
+
+    def rekey(self, issue_id: int, key: str, updated: str | None = None) -> None:
+        """换 key（工单被移到另一个项目）；``updated`` 给出时一并更新。"""
+        issue = self.issues[str(issue_id)]
+        issue["key"] = key
+        if updated is not None:
+            issue["fields"]["updated"] = updated
+
+    def remove(self, issue_id: int) -> None:
+        del self.issues[str(issue_id)]
+        del self.comments[str(issue_id)]
 
     # ------------------------------------------------------------------ 路由
 
@@ -135,6 +154,8 @@ class FakeJira:
             index = int(body.get("nextPageToken") or 0)
             return 200, self.search_override[min(index, len(self.search_override) - 1)], {}
         start = int(body.get("nextPageToken") or 0)
+        if self.search_fail_from is not None and start >= self.search_fail_from:
+            return 500, {"errorMessages": ["search backend unavailable"]}, {}
         ordered = self._ordered()
         page = ordered[start : start + self.search_page_size]
         result: dict[str, Any] = {
