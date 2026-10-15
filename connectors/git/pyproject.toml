@@ -106,5 +106,8 @@ files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--strict-markers"]
+markers = [
+    "scenarios: 端到端场景（#215，真实 dpe-run + 插件 + 参考服务端 + 记录代理）；CI 中单独一个 job",
+]
 testpaths = ["tests"]
 pythonpath = ["tests"]

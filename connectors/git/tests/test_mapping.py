@@ -444,6 +444,9 @@ def test_large_commit_message_is_split_with_metadata_copied(tmp_path: Path) -> N
     assert all(element["category"] == "NarrativeText" for element in elements)
     assert all(element_bytes(element) <= ELEMENT_BUDGET_BYTES for element in elements)
     assert "".join(element["text"] for element in elements) == text
+    # 切在行边界（#215）：每个片段都以完整的行结尾，没有半行
+    assert all(element["text"].endswith("\n") for element in elements)
+    assert all(element["text"].startswith("第 ") for element in elements)
     assert {element["metadata"]["commit"] for element in elements} == {sha}
     # 片段共享同一组 metadata（含同一个 SHA 与作者）
     assert {element["metadata"]["author"] for element in elements} == {"Bob <bob@example.invalid>"}
