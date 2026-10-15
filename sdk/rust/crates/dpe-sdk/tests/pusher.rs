@@ -457,9 +457,10 @@ fn view(results: &[PushResult]) -> Vec<String> {
 
 #[tokio::test]
 async fn mid_page_insert_uploads_only_new_objects() {
-    // 验收②：中间插一页，只上传新页对象与新增元素对象（小 max_payload_bytes 强制走暂存）。
-    // 缺失清单由服务端给出（这里按两版文档之差脚本化），判别点是推送器经 deliver 只上传
-    // 清单里的对象、引用会话提交，不回退快路径整篇重发。
+    // 验收②：中间插一页，只传新增的内容对象。整篇内联超过 SMALL_UPDATE_BYTES（这里因
+    // max_payload_bytes 小而必然超过）的更新走差量路径（core §3.2，#212）：negotiate 只交
+    // 文档对象得到缺失的页，再 negotiate 一次只附带缺失的页，commit 引用会话并只内联缺失的
+    // 元素。缺失清单按服务端口径脚本化；判别点是已有的页与元素一次都不出现在请求里。
     let fake = Fake::new();
     *fake.max_payload_bytes.lock().unwrap() = 1500;
     let server = fake.server();
@@ -491,22 +492,24 @@ async fn mid_page_insert_uploads_only_new_objects() {
     assert!(old.pages.iter().all(|page| page.page_hash != new_page_hash));
     fake.script(
         Route::Negotiate(A.into()),
-        vec![reply(Reply::json(
-            200,
-            json!({
-                "missing_pages": [new_page_hash],
-                "missing_content_hashes": [new_element],
-                "staging_session": {"id": "s1", "expires_at": "2026-10-01T00:00:00Z"},
-            }),
-        ))],
-    );
-    fake.script(
-        Route::Staging,
-        vec![reply(Reply::json_with(
-            201,
-            json!({}),
-            &[("DPE-Session-Expires", "2026-10-01T00:00:00Z")],
-        ))],
+        vec![
+            reply(Reply::json(
+                200,
+                json!({
+                    "missing_pages": [new_page_hash],
+                    "missing_content_hashes": [],
+                    "staging_session": {"id": "s1", "expires_at": "2026-10-01T00:00:00Z"},
+                }),
+            )),
+            reply(Reply::json(
+                200,
+                json!({
+                    "missing_pages": [],
+                    "missing_content_hashes": [new_element],
+                    "staging_session": {"id": "s1", "expires_at": "2026-10-01T00:00:00Z"},
+                }),
+            )),
+        ],
     );
     fake.script(
         Route::Commit(A.into()),
@@ -529,20 +532,31 @@ async fn mid_page_insert_uploads_only_new_objects() {
         results[0].precondition,
         Some(Precondition::BaseHash(doc_hash(&doc1)))
     );
-    let uploads: Vec<String> = server
+    assert!(server
         .requests()
         .iter()
-        .filter(|request| request.method == "PUT" && request.target.starts_with("/staging/"))
-        .map(|request| request.target.clone())
+        .all(|request| !request.target.starts_with("/staging/"))); // 不逐个上传
+    let negotiates: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == "POST" && request.target.starts_with("/negotiate"))
         .collect();
-    assert_eq!(
-        uploads,
-        [
-            format!("/staging/s1/pages/{new_page_hash}"),
-            format!("/staging/s1/objects/{new_element}"),
-        ]
-    );
-    // 提交引用会话、不内联整篇（快路径会带全部页与元素对象）
+    assert_eq!(negotiates.len(), 2);
+    assert!(body_json(&negotiates[0]).get("pages").is_none());
+    let carried: Vec<String> = body_json(&negotiates[1])["pages"]
+        .as_array()
+        .expect("第二次 negotiate 附带缺失的页")
+        .iter()
+        .map(|page| {
+            dpe_sdk::models::PageObject::parse(&page.to_string(), dpe_sdk::CONTRACT)
+                .and_then(|page| page.page_hash(dpe_sdk::CONTRACT))
+                .expect("合法页")
+        })
+        .collect();
+    // 只附带新页
+    assert_eq!(carried, [new_page_hash]);
+
+    // 提交引用会话，只内联新元素（快路径会带全部页与元素对象）
     let commit = server
         .requests()
         .into_iter()
@@ -550,9 +564,18 @@ async fn mid_page_insert_uploads_only_new_objects() {
         .expect("有 commit");
     let body = body_json(&commit);
     assert_eq!(body["staging_session"], json!("s1"));
-    assert!(body.get("objects").map_or(true, |objects| objects
+    assert!(body.get("pages").is_none());
+    let inlined: Vec<String> = body["objects"]
         .as_array()
-        .map_or(true, Vec::is_empty)));
+        .expect("内联缺失元素")
+        .iter()
+        .map(|object| {
+            dpe_sdk::models::ElementObject::parse(&object.to_string(), dpe_sdk::CONTRACT)
+                .and_then(|element| element.content_hash(dpe_sdk::CONTRACT))
+                .expect("合法元素")
+        })
+        .collect();
+    assert_eq!(inlined, [new_element]);
 }
 
 #[tokio::test]

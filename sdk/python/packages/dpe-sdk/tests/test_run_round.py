@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import os
 import sys
@@ -21,7 +22,7 @@ from urllib.parse import unquote
 import dpe_hash
 import httpx
 import pytest
-from client_helpers import PREFIX, REMOTE, in_process_client
+from client_helpers import PREFIX, REMOTE, ClientRecorder, in_process_client
 from dpe_sdk.credentials import CredentialProvider, StaticCredentialProvider
 from dpe_sdk.models import Document
 from dpe_sdk.protocol import BaseHash, IfAbsent
@@ -1082,6 +1083,59 @@ async def test_awaiting_move_of_an_aborted_round_is_retryable(tmp_path: Path) ->
         assert result.fatal is not None and result.fatal.code == "remote_unavailable"
         moves = [f for f in result.failures if f.to_report().get("to_uri") == P + "b.md"]
         assert [(f.code, f.retryable) for f in moves] == [("DPE_NOT_FOUND", True)]
+
+
+# ---------------------------------------------------------------------- 只传变更（#212）
+
+
+async def test_inserting_a_middle_page_sends_only_the_new_objects(tmp_path: Path) -> None:
+    """北极星验收（重点 2）：一轮里在一篇较大的文档中间插入一页，线上只传新增的内容对象——
+    negotiate 只交文档对象、再只附带新页，commit 引用会话并只内联新页的元素（core §3.2）；
+    旧页与旧元素一次都不出现在请求里。"""
+    recorders: list[ClientRecorder] = []
+
+    def wrap(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+        recorders.append(ClientRecorder(inner))
+        return recorders[0]
+
+    def page(tag: str, count: int) -> dict[str, Any]:
+        return {
+            "elements": _text(*(f"{tag}-{i} " + "lorem ipsum dolor " * 5 for i in range(count)))
+        }
+
+    def item(*pages: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "kind": "document",
+            "file_uri": P + "big.md",
+            "document": {"file_type": "md"},
+            "pages": list(pages),
+        }
+
+    async with harness(tmp_path, wrap) as h:
+        first = await h.round({"batches": [[item(page("a", 300), page("b", 300))]]})
+        assert first.outcome == "succeeded" and first.counts.created == 1
+        recorder = recorders[0]
+        recorder.requests.clear()
+        recorder.bodies.clear()
+        second = await h.round(
+            {"batches": [[item(page("a", 300), page("new", 2), page("b", 300))]]}
+        )
+        assert second.outcome == "succeeded", codes(second)
+        assert second.counts.updated == 1
+        sent = [
+            (request, json.loads(gzip.decompress(body) if body[:2] == b"\x1f\x8b" else body))
+            for request, body in zip(recorder.requests, recorder.bodies, strict=True)
+            if body
+        ]
+        commits = [body for request, body in sent if request.url.path.endswith("/documents")]
+        assert len(commits) == 1
+        inlined = [element["text"] for element in commits[0].get("objects") or []]
+        assert sorted(inlined) == sorted(e["text"] for e in page("new", 2)["elements"])
+        assert not commits[0].get("pages")
+        assert not [r for r, _ in sent if "/staging/" in r.url.path]  # 没有逐个上传
+        carried = [p for _, body in sent for p in body.get("pages") or []]
+        new_elements = [dpe_hash.content_hash(e) for e in page("new", 2)["elements"]]
+        assert [p["elements"] for p in carried] == [new_elements]  # 只有新页随 negotiate 附带
 
 
 # ---------------------------------------------------------------------- 游标与全量轮

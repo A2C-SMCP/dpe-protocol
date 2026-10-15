@@ -112,6 +112,7 @@ __all__ = [
     "ERROR_CODE_HEADER",
     "PROTOCOL",
     "SESSION_EXPIRES_HEADER",
+    "SMALL_UPDATE_BYTES",
     "UPLOAD_OFFSET_HEADER",
     "BaseHash",
     "BlobRange",
@@ -143,6 +144,10 @@ ERROR_CODE_HEADER = "DPE-Error-Code"
 SESSION_EXPIRES_HEADER = "DPE-Session-Expires"
 #: 分块上传与断点查询的本会话已收字节数（HTTP 绑定 §4.7）
 UPLOAD_OFFSET_HEADER = "DPE-Upload-Offset"
+#: 更新走快路径（整篇内联重传）的上限（core §3.2，#212）：整篇内联请求体不超过它的更新，重传的
+#: 代价与多一次往返相当；更大的更新走差量路径，只传缺失的页与元素。新建不受它限制。两个 SDK
+#: 取同一值
+SMALL_UPDATE_BYTES = 64 * 1024
 
 _JSON = "application/json"
 _PROBLEM_JSON = "application/problem+json"
@@ -289,8 +294,9 @@ class Session:
 class Negotiated:
     """``negotiate`` 的结果（HTTP 绑定 §4.5）：会话与逐层缺失清单。
 
-    ``missing_content_hashes`` 只在附带页对象时非空——本 SDK 不附带页对象，页引用的缺失元素
-    由各页上传的响应给出（``upload_page`` 的返回值）。
+    ``missing_content_hashes`` 只在附带页对象时非空：公开的 ``negotiate`` 不附带页对象，页引用的
+    缺失元素由各页上传的响应给出（``upload_page`` 的返回值）；``deliver`` 的差量路径附带缺失的
+    页，由它给出其中缺失的元素（#212）。
     """
 
     session: Session
@@ -778,17 +784,21 @@ class ProtocolCore:
     def negotiate(self, uri: str, document: Document) -> Operation[Negotiated]:
         """``POST negotiate``（HTTP 绑定 §4.5）：开启暂存会话并返回逐层缺失清单。
 
-        只提交文档对象——规范允许附带部分页对象（MAY），本 SDK 暂不提供该开关：增量场景下
-        附带会把服务端已有的页也当请求体重传，收益方向相反。``uri`` 不合法（core §1.1）时
-        本地即抛 dpe_hash 的错误，不发请求。
+        只提交文档对象——规范允许附带部分页对象（MAY）；附带哪些页要先知道哪些缺失，这由
+        ``deliver`` 的差量路径（两次 negotiate，#212）完成，公开接口不提供该开关。``uri``
+        不合法（core §1.1）时本地即抛 dpe_hash 的错误，不发请求。
         """
         if not isinstance(document, Document):
             raise TypeError(f"document 必须是 dpe_sdk.Document，实际为 {type(document).__name__}")
         return (yield from self._negotiate(uri, self._wire_parts(document)))
 
-    def _negotiate(self, uri: str, parts: _Parts) -> Generator[Request, Response, Negotiated]:
+    def _negotiate(
+        self, uri: str, parts: _Parts, *, pages: Sequence[Any] = ()
+    ) -> Generator[Request, Response, Negotiated]:
+        """``pages``：附带的页对象（差量路径只附带缺失的页，#212）——它们存入会话，缺失清单因此
+        给出其中缺失的元素（HTTP 绑定 §4.5）。"""
         expected_uri = dpe_hash.normalize_file_uri(uri)
-        body = {"file_uri": uri, "document": parts.document}
+        body = self._negotiate_body(uri, parts, pages)
         response = yield self._request("POST", "negotiate", body)
         _expect(response)
         result = _parse(response, NegotiateResult)
@@ -801,6 +811,13 @@ class ProtocolCore:
             missing_pages=result.missing_pages,
             missing_content_hashes=result.missing_content_hashes,
         )
+
+    @staticmethod
+    def _negotiate_body(uri: str, parts: _Parts, pages: Sequence[Any]) -> dict[str, Any]:
+        body: dict[str, Any] = {"file_uri": uri, "document": parts.document}
+        if pages:
+            body["pages"] = list(pages)
+        return body
 
     def _session(self, raw: StagingSession, uri: str, response: Response) -> Session:
         """由 negotiate 响应对构造客户端会话；``expires_at`` 是 RFC 3339 UTC。"""
@@ -1209,8 +1226,16 @@ class ProtocolCore:
     ) -> Operation[CommitResult]:
         """投递一篇文档（core §3.2）：自动选择快路径或暂存路径，只传变更。
 
-        - 内联请求体不超过 ``max_payload_bytes`` 时走快路径（一次 ``commit``）；否则逐层协商
-          （negotiate → 缺失页 → 缺失元素 → 缺失 blob → commit 引用会话），只传缺失的部分；
+        - 选路只看前置条件与本地算出的请求体大小，不额外读 remote（core §3.2，#212）：
+          - 新建（``IfAbsent``）：整篇内联放得下 ``max_payload_bytes`` 就走快路径（一次
+            ``commit``）；
+          - 更新（``BaseHash`` / ``Force``）：整篇内联不超过 ``SMALL_UPDATE_BYTES``（且放得下）走
+            快路径；否则走**差量路径**，只传缺失、往返数有上限——``negotiate`` 只交文档对象
+            得到缺失的页；有缺失的页时再 ``negotiate`` 一次、只附带这些页，得到其中缺失的元素；
+            ``commit`` 引用会话并只内联缺失的元素（缺失的 blob 由 commit 的缺失清单给出、补传
+            后重提）；请求体放不下时按清单逐层上传；
+          - 以上都放不下时逐层协商（negotiate → 缺失页 → 缺失元素 → 缺失 blob → commit 引用
+            会话），只传缺失的部分；
         - ``DPE_MISSING_CONTENT``：按分层清单把缺失对象补传进**同一会话**后重新 commit；快路径
           下用「内联 + staging_session」的请求体，其余对象不必重传（blob 永远不能内联，是快路径
           唯一可能缺的一层）；
@@ -1243,8 +1268,13 @@ class ProtocolCore:
                     yield from self._staged(uri, parts, precondition, session, blobs, None, tracker)
                 )
             inline = self._inline_body(parts, force=isinstance(precondition, Force))
-            if len(self._json_body(inline)) <= self.limits.max_payload_bytes:
+            size = len(self._json_body(inline))
+            limit = self.limits.max_payload_bytes
+            creating = isinstance(precondition, IfAbsent)
+            if size <= (limit if creating else min(SMALL_UPDATE_BYTES, limit)):
                 return (yield from self._inline(uri, parts, inline, precondition, blobs, tracker))
+            if not creating:
+                return (yield from self._delta(uri, parts, precondition, blobs, tracker))
             negotiated = yield from self._negotiate(uri, parts)
             return (
                 yield from self._staged(
@@ -1274,10 +1304,18 @@ class ProtocolCore:
         precondition: CommitPrecondition,
         blobs: Callable[[str], BlobSource | bytes] | None,
         tracker: _WriteAttempts,
+        *,
+        session: Session | None = None,
+        delta: bool = False,
     ) -> Operation[CommitResult]:
-        """快路径，含缺内容的恢复：开会话把缺失对象补进去，再以「内联 + staging_session」重提。"""
+        """内联提交，含缺内容的恢复：开会话（或沿用已有会话）把缺失对象补进去，再以「内联 +
+        staging_session」重提。
+
+        ``delta``：请求体是差量路径的「会话 + 缺失对象」（``session`` 为其会话，#212）；换会话
+        时重新附页 negotiate、重算请求体。否则是快路径：``inline`` 为整篇内联体，换会话时加上
+        会话 id 重提。请求体放不下时，会话已开出，改由暂存路径继续。
+        """
         body = dict(inline)
-        session: Session | None = None
         pending: MissingContentError | None = None
         budget = self.max_resends
         uploaded: set[str] = set()  # 本会话已上传（换会话时清空）
@@ -1303,7 +1341,8 @@ class ProtocolCore:
                             raise
                         budget -= 1
                     if session is None:
-                        session = (yield from self._negotiate(uri, parts)).session
+                        negotiated = yield from self._negotiate(uri, parts)
+                        session = negotiated.session
                         recovery = self._recovery_body(inline, session)
                         if recovery is None:
                             return (
@@ -1317,18 +1356,30 @@ class ProtocolCore:
                     if budget <= 0:
                         raise
                     budget -= 1
-                    session = (yield from self._negotiate(uri, parts)).session
+                    if delta:
+                        negotiated, recovery = yield from self._delta_open(uri, parts, precondition)
+                        session = negotiated.session
+                    else:
+                        negotiated = yield from self._negotiate(uri, parts)
+                        session = negotiated.session
+                        recovery = self._recovery_body(inline, session)
                     uploaded.clear()
-                    recovery = self._recovery_body(inline, session)
                     if recovery is None:
                         return (
                             yield from self._staged(
-                                uri, parts, precondition, session, blobs, None, tracker
+                                uri,
+                                parts,
+                                precondition,
+                                session,
+                                blobs,
+                                negotiated if delta else None,
+                                tracker,
                             )
                         )
                     body = recovery
         except Exception as exc:
-            _attach_session(exc, session)
+            # 内层（差量协商、暂存路径）已附上更新的会话时以它为准（同 Rust：附当前会话）
+            _attach_session(exc, getattr(exc, "session", None) or session)
             raise
 
     def _recovery_body(self, inline: dict[str, Any], session: Session) -> dict[str, Any] | None:
@@ -1339,6 +1390,104 @@ class ProtocolCore:
         if len(self._json_body(body)) > self.limits.max_payload_bytes:
             return None
         return body
+
+    def _delta(
+        self,
+        uri: str,
+        parts: _Parts,
+        precondition: CommitPrecondition,
+        blobs: Callable[[str], BlobSource | bytes] | None,
+        tracker: _WriteAttempts,
+    ) -> Operation[CommitResult]:
+        """差量路径（core §3.2，#212）：逐层协商只传缺失，commit 引用会话并只内联缺失的元素；
+        恢复与快路径同一个循环（``_inline``）。请求体放不下时按最近一次 negotiate 的清单逐层
+        上传。"""
+        negotiated, body = yield from self._delta_open(uri, parts, precondition)
+        if body is None:
+            return (
+                yield from self._staged(
+                    uri, parts, precondition, negotiated.session, blobs, negotiated, tracker
+                )
+            )
+        return (
+            yield from self._inline(
+                uri,
+                parts,
+                body,
+                precondition,
+                blobs,
+                tracker,
+                session=negotiated.session,
+                delta=True,
+            )
+        )
+
+    def _delta_open(
+        self, uri: str, parts: _Parts, precondition: CommitPrecondition
+    ) -> Generator[Request, Response, tuple[Negotiated, dict[str, Any] | None]]:
+        """差量路径的协商（core §3.2，#212），往返数有上限、不随新页数量增长：
+
+        1. ``negotiate`` 只交文档对象，得到缺失的页；没有缺失的页（如只调整了页序或文档字段）
+           即可提交；
+        2. 否则再 ``negotiate`` 一次、只附带缺失的页（它们存入会话），得到其中缺失的元素。会话以
+           最近一次返回的为准（core §3.4：不假定复用或新开）。
+
+        返回（最近一次 negotiate 的结果，commit 请求体）；请求体放不下时为 ``None``，调用方按
+        返回的清单逐层上传（第二次 negotiate 本身放不下时，清单是第一次的缺失页）。
+        """
+        negotiated = yield from self._negotiate(uri, parts)
+        try:
+            if negotiated.missing_pages:
+                pages = [
+                    self._listed(parts.page_by_hash, page_hash, "页")
+                    for page_hash in dict.fromkeys(negotiated.missing_pages)
+                ]
+                limit = self.limits.max_payload_bytes
+                if len(self._json_body(self._negotiate_body(uri, parts, pages))) > limit:
+                    return negotiated, None
+                negotiated = yield from self._negotiate(uri, parts, pages=pages)
+            return negotiated, self._delta_body(parts, precondition, negotiated)
+        except Exception as exc:
+            _attach_session(exc, negotiated.session)  # 会话已开出（同 Rust `settle`）
+            raise
+
+    def _delta_body(
+        self, parts: _Parts, precondition: CommitPrecondition, negotiated: Negotiated
+    ) -> dict[str, Any] | None:
+        """差量路径的 commit 请求体：文档对象、会话，以及 negotiate 列出的缺失元素（去重范围之外
+        的才内联，core §3.3 第 6 步）；放不下 ``max_payload_bytes`` 时为 ``None``。附带过的页已
+        存入会话，不再内联；清单仍列出缺失的页（只附带了部分页时）则一并内联。清单里出现不属于
+        本文档的 hash 是服务端问题，抛 ``UnexpectedResponseError``。"""
+        pages = [
+            self._listed(parts.page_by_hash, page_hash, "页")
+            for page_hash in dict.fromkeys(negotiated.missing_pages)
+        ]
+        objects = [
+            self._listed(parts.object_by_hash, content_hash, "元素")
+            for content_hash in dict.fromkeys(negotiated.missing_content_hashes)
+        ]
+        body: dict[str, Any] = {
+            "document": parts.document,
+            "staging_session": negotiated.session.id,
+        }
+        if pages:
+            body["pages"] = pages
+        if objects:
+            body["objects"] = objects
+        if isinstance(precondition, Force):
+            body["force"] = True
+        if len(self._json_body(body)) > self.limits.max_payload_bytes:
+            return None
+        return body
+
+    @staticmethod
+    def _listed(table: Mapping[str, Any], hash_: str, what: str) -> Any:
+        found = table.get(hash_)
+        if found is None:
+            raise UnexpectedResponseError(
+                f"negotiate 缺失清单里的{what} {hash_} 不是本次提交引用的对象", status=200
+            )
+        return found
 
     def _staged(
         self,

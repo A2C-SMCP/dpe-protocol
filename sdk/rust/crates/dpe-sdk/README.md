@@ -61,6 +61,7 @@ assert_eq!(result.status.as_str(), "created");
   - 关闭代理：不设这些变量，或设 `NO_PROXY=*`；
   - 连不上代理、HTTPS 隧道（`CONNECT`）被代理拒绝都按「确定未发出」处理；明文 HTTP 经代理转发时代理的应答（如 502）是普通响应。
 
+- **`deliver` 的选路**（core §3.2，#212，与 Python 一致）：新建（`IfAbsent`）整篇内联放得下 `max_payload_bytes` 就走快路径（一次 commit）；更新（`BaseHash` / `Force`）只有整篇内联不超过 `protocol::SMALL_UPDATE_BYTES`（64 KiB）才走快路径，否则走差量路径，**页与元素都只传缺失**：`negotiate` 只交文档对象得到缺失的页（没有就直接 commit，两次往返），再 `negotiate` 一次只附带这些页、得到其中缺失的元素，commit 引用会话并只内联缺失的元素（不缺 blob 时三次往返，与新页数量无关）；缺失的 blob 由 commit 的缺失清单给出、补传后重提；请求体放不下时逐层上传。选路只看前置条件与本地算出的大小，不额外读 remote；CAS 失败后以 `session` 复用会话时，差量路径内联过的元素不在会话里，会经缺失清单再上传一次；
 - 缺省超时 30 秒、不跟随重定向、大 blob 的源读取进工作线程；`send` / `drive` 是公开的驱动缝；
 - 所有操作的 future 都是 `Send`，可以交给 `tokio::spawn`。`deliver` 与推送器 `push` 的 `blobs` 回调（`BlobProvider`）须为 `Send`：捕获 `Rc`、`RefCell`、`Cell` 等非 `Send` 状态的闭包不能编译，请改用 `Arc`、`Mutex`、原子类型，或直接捕获 `&mut` 局部变量（见下文「媒体来源」的示例）。
 

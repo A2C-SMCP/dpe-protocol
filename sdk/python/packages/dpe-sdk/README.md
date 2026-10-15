@@ -54,6 +54,7 @@ with DpeClient(
     conf = client.capabilities().limits  # capabilities 快照（契约与 limits 与它绑定）
 ```
 
+- **`deliver` 的选路**（core §3.2，#212，两个 SDK 一致）：新建（`IfAbsent`）整篇内联放得下 `max_payload_bytes` 就走快路径（一次 commit）；更新（`BaseHash` / `Force`）只有整篇内联不超过 `SMALL_UPDATE_BYTES`（64 KiB，`dpe_sdk.protocol` 导出）才走快路径，否则走差量路径，**页与元素都只传缺失**：`negotiate` 只交文档对象得到缺失的页（没有就直接 commit，两次往返），再 `negotiate` 一次只附带这些页、得到其中缺失的元素，commit 引用会话并只内联缺失的元素（不缺 blob 时三次往返，与新页数量无关）；缺失的 blob 由 commit 的缺失清单给出、补传后重提；请求体放不下时逐层上传。选路只看前置条件与本地算出的大小，不额外读 remote；CAS 失败后以 `session` 复用会话时，差量路径内联过的元素不在会话里，会经缺失清单再上传一次；
 - **remote**：按 HTTP 绑定 §1 的文法校验（`dpe_sdk.remote_url.check_remote_url`，即 dpe-hash 的同一函数：http / https、已是 core §1.1 规范化形式、无查询串与片段、不带凭证信息（凭证走 `CredentialProvider`）、不写默认端口、路径不以 `/` 结尾且无点段），合法即原样使用；capabilities 在实例内快照一次，服务端变更能力后新建客户端；
 - **凭证**：`CredentialProvider`（`dpe_sdk.credentials`）在每个请求发送前调用一次（传输层内部的重发同样重新取，轮换中的短时凭证在长等待后仍可用），返回 `Authorization` 头的完整值（含方案名）；SDK 不感知鉴权方案，也不解释凭证内容；
 - **gzip**：服务端 capabilities 声明 `gzip`、请求体是 `application/json`、不小于 1024 字节且不是分块请求（带 `Content-Range`）时才压缩；分块上传按规范（§7）MUST NOT 压缩；
@@ -118,7 +119,7 @@ with DpeClient("https://example.com/anything/r/42") as client:
         # side：move 的问题发生在源侧（"from"）还是目标侧（"to"）
 ```
 
-- **只推变化**：本地算 doc_hash（N）与 `batch_head` 读到的 remote 值（R）比较；R == N 记 `achieved` 并跳过写入。快路径 / 逐层协商的分界完全复用核心 `deliver`（inline 请求体 ≤ `capabilities.limits.max_payload_bytes`），本模块不引入任何阈值；`concurrency` 只限制并发度（各条独立）；
+- **只推变化**：本地算 doc_hash（N）与 `batch_head` 读到的 remote 值（R）比较；R == N 记 `achieved` 并跳过写入。快路径 / 差量 / 逐层协商的选路完全复用核心 `deliver`（见上文「`deliver` 的选路」），本模块不引入任何阈值；`concurrency` 只限制并发度（各条独立）；
 - **删除与移动**（§7.2 同一张判定表，move 取 `from_uri` 的 L 与 R）：delete 的 R 不存在＝目标状态已达成（`deleted`，不发写）；move 的源不存在时查 `head(to)`——等于 base 即已达成（`moved`，迁条目），否则条目失败（`side="from"`）；源不存在且源无 L 时以目标侧的 L 作 base，因此重放自己已成功的 move 判已达成（「已达成」只表示目标状态成立，不担保移动由本实例发生）；目标被占（`DPE_ALREADY_EXISTS`）为条目失败（`side="to"`），源被改写为冲突（`side="from"`）；例外是目标已持有与源相同的内容（读到的目标值等于 base，如失败轮已建出目标，#165）——不发 move，以 base 删除源并判 `moved`，删源遇源被改写为冲突、遇源已不存在为已达成；成功与已达成都维护同步状态条目（delete 删、move 迁）；同一批 move 中，任何 URI 在 from 与 to 合集里出现两次（链式 a→b、b→c，共用目标 a→c、b→c）即整批抛 `ValueError`——这类输入的生效依赖顺序（connector §6.5），保序拆批归调用方；
 - **同步状态 + 意图日志**（§7.2）：同步状态（L）是每篇文档最近一次确认的 remote doc_hash，决定写入的前置条件（`if_absent` / `base_hash`）；写入前先把意图持久化到 `StateStore`（commit 记内容 hash、delete 记「不存在」、move **两侧一起**记），`save` 返回后才发写请求；结果确定即清除、只有结果未知（`unknown=True`）才保留，下一轮按意图对账恢复。缺省 `MemoryStateStore` 只在进程内、**不保证崩溃持久**；落盘实现属运行器的状态目录（契约 §4.4）；
 - **冲突如实上报**：`status == "conflict"`，带读到的（或冲突后重读的）remote 状态；**绝不自动 force、不自动重提**——`source_wins` / `report` 等策略与轮内重试上限归调用方（推送器不设 `retryable`、不在内部重试冲突，§7.1 的「超过重试上限取 true」由运行器计数），重提用 `expected_base` 覆盖前置条件（值为 `None` 表示确认「不存在」；move 以 `from_uri` 为键）；
