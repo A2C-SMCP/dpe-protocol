@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,7 @@ from dpe_git_connector.gitrepo import (
     GitRepo,
     RepoDir,
     discover_repos,
+    expand_submodules,
     git_version,
     looks_like_repo,
 )
@@ -485,12 +486,15 @@ class Serve:
     def _open_round(self, cursor: str | None) -> _Round:
         """开始一轮：重新发现数据源，按游标排好本轮的步骤（§6.3 跨轮重启是 MAY，不依赖进程内状态）。
 
-        单仓库模式的标识取仓库目录名；root 模式重新发现仓库集合。
+        单仓库模式的标识取仓库目录名，它的已初始化子模块同样展开（#221，与 root 模式同一仓库
+        产出同一组文档）；root 模式重新发现仓库集合。
 
         **增量轮**（游标可解释）：现存仓库与上一轮的记录比较，状态指纹相同即跳过（``_source_item``）；
         远端单元素上限与游标里记的不同时（``_Round.rescan``，#170）不按指纹跳过、逐个重扫，其余照旧；
         **消失的仓库**（上一轮有、本轮发现不到）表达为显式意图（§6.5：删除与移动 MUST 是显式
-        条目）——只在 root 模式：
+        条目），两种模式同一套判定。单仓库模式下配置的那个仓库本身总在本轮条目里、不会消失；
+        消失的只能是它的子模块（身份以 ``<目录名>/`` 开头）——不在这个命名空间里的记录走
+        防御路径，如实上报 error（``_unexpressible``），不产意图：
 
         - 消失的仓库与本轮新出现的仓库**移动键相同且一一对应**（根提交集合 + 默认分支名，#96）
           → ``move``；同键多对多（如同一仓库的多份克隆同时改名）无法确定配对 → 按 delete + 新建；
@@ -504,9 +508,9 @@ class Serve:
         """
         assert self._source is not None and self._mapper is not None
         if self._source.repo_path is not None:
-            name = os.path.basename(os.path.normpath(self._source.repo_path))
-            entries = [RepoDir(path=self._source.repo_path, identifier=os.fsencode(name))]
-            unreadable: list[RepoDir] = []
+            main = RepoDir(path=self._source.repo_path, identifier=self._repo_identifier())
+            submodules, unreadable = expand_submodules([main])
+            entries = [main, *submodules]
         else:
             assert self._source.root_path is not None
             entries, unreadable = discover_repos(self._source.root_path)
@@ -545,14 +549,19 @@ class Serve:
             previous_limit=previous_limit,
             baseline=baseline,
         )
-        if not gone:
-            round_.steps = tail
-            return round_
+        reported: list[_Step] = []
         if self._source.repo_path is not None:
-            # 单仓库模式的身份只随配置变化（游标随之失效）：正常走不到这里。防御性地保留记录，
-            # 并以条目级 error 如实上报——不静默（§6.5），本轮不会成为推进游标的成功轮
-            round_.marks.update({key: previous[key] for key in gone})
-            round_.steps = [self._unexpressible(gone), *tail]
+            # 单仓库模式：配置的仓库本身不会消失，消失的只能是它的子模块。命名空间之外的记录
+            # 正常走不到（身份只随配置变化，游标随之失效）：防御性地保留记录、以条目级 error
+            # 如实上报——不静默（§6.5），本轮不会成为推进游标的成功轮
+            namespace = self._repo_identifier() + b"/"
+            foreign = [key for key in gone if not key.startswith(namespace)]
+            gone = [key for key in gone if key.startswith(namespace)]
+            if foreign:
+                round_.marks.update({key: previous[key] for key in foreign})
+                reported.append(self._unexpressible(foreign))
+        if not gone:
+            round_.steps = reported + tail
             return round_
 
         appeared = [entry for entry in entries if entry.identifier not in previous]
@@ -561,7 +570,7 @@ class Serve:
         for entry in appeared:
             try:
                 keys[entry.identifier] = self._mapper.move_key_of(
-                    GitRepo(entry.path), self._source.spec
+                    GitRepo(entry.path), self._spec_for(entry)
                 )
             except Exception as exc:
                 file_uri = self._mapper.file_uri(entry)
@@ -579,13 +588,31 @@ class Serve:
             round_.marks.update({key: previous[key] for key in gone})
         else:
             intents = self._intents(gone, previous, appeared, keys, round_)
-        round_.steps = intents + [
-            _Step(item=held[step.repo.identifier])
-            if step.repo is not None and step.repo.identifier in held
-            else step
-            for step in tail
-        ]
+        round_.steps = (
+            reported
+            + intents
+            + [
+                _Step(item=held[step.repo.identifier])
+                if step.repo is not None and step.repo.identifier in held
+                else step
+                for step in tail
+            ]
+        )
         return round_
+
+    def _repo_identifier(self) -> bytes:
+        """单仓库模式下配置的仓库的身份：目录名（原始字节）。"""
+        assert self._source is not None and self._source.repo_path is not None
+        return os.fsencode(os.path.basename(os.path.normpath(self._source.repo_path)))
+
+    def _spec_for(self, entry: RepoDir) -> RepoSpec:
+        """作用于该仓库的规则：``since`` 只属于单仓库模式配置的那个仓库本身（它是那个仓库里的
+        提交，子模块里解析不到）；``default_branch`` 与 ``branches`` 作用于每篇文档（#221）。"""
+        assert self._source is not None
+        spec = self._source.spec
+        if spec.since is None or entry.identifier == self._repo_identifier():
+            return spec
+        return replace(spec, since=None)
 
     def _intents(
         self,
@@ -752,7 +779,7 @@ class Serve:
         item, mark = self._mapper.scan(
             GitRepo(entry.path),
             entry,
-            self._source.spec,
+            self._spec_for(entry),
             # move 目标总是产出（#178）；上限变了不按指纹跳过：同一状态的产出可能不同（#170）
             unchanged_if=(
                 None if previous is None or always or round_.rescan else previous.fingerprint

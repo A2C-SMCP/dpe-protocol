@@ -37,6 +37,7 @@ import codecs
 import logging
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ __all__ = [
     "RepoDir",
     "TagRecord",
     "discover_repos",
+    "expand_submodules",
     "first_parent_chain",
     "git_version",
     "looks_like_repo",
@@ -227,7 +229,8 @@ def discover_repos(root: str) -> tuple[list[RepoDir], list[RepoDir]]:
 
     规则（README「映射规则」）：
 
-    - 每发现一个仓库即停止下探：仓库工作树内的目录（含子模块）不是独立仓库；
+    - 每发现一个仓库即停止下探：仓库工作树内的普通目录与未登记的嵌套仓库不是独立仓库；
+      **已初始化的子模块**例外，由 ``expand_submodules`` 按 ``.gitmodules`` 逐个展开（#221）；
     - **同一仓库只算一篇**：按「共同 git 目录」归并（``_common_git_dir``）——``git worktree
       add`` 出来的 linked worktree 与主仓库共用同一个共同目录。worktree 只是别名，永不成为
       文档：组内只保留主工作树（优先）或裸目录；主仓库不在 ``root`` 下时该仓库不出现，只记
@@ -272,8 +275,146 @@ def discover_repos(root: str) -> tuple[list[RepoDir], list[RepoDir]]:
 
     walk(base)
     found.sort(key=lambda item: item.identifier)
+    repos = _one_per_repository(found)
+    submodules, hidden = expand_submodules(repos)
+    unreadable += hidden
     unreadable.sort(key=lambda item: item.identifier)
-    return _one_per_repository(found), unreadable
+    return sorted(repos + submodules, key=lambda item: item.identifier), unreadable
+
+
+def expand_submodules(repos: Sequence[RepoDir]) -> tuple[list[RepoDir], list[RepoDir]]:
+    """各仓库工作树里**已初始化的子模块**（递归含嵌套子模块）：返回（子模块, 无法读取的项）。
+
+    子模块各成一篇文档（#221），身份 = 父仓库身份 + ``/`` + 子模块路径，映射规则与独立仓库
+    相同。判据：父仓库工作树里的 ``.gitmodules`` 登记了该路径，且该路径下有 ``.git``（文件或
+    目录——老式子模块的 ``.git`` 是目录）。``.gitmodules`` 由 ``git config --file`` 解析（不
+    自写 git-config 解析器；``--no-includes`` 保证只读这一个文件），只决定「发现」，不进内容。
+
+    - 登记了但没有 ``.git``（未初始化）：只记 warn（只带相对路径），不是错误；
+    - 路径是绝对路径、含 ``.`` / ``..`` / ``.git`` 段，或经过符号链接：记 warn 并跳过，不跟随；
+    - ``.gitmodules`` 读不了或解析失败、子模块目录读不了：记入第二个返回值，调用方出条目级
+      error，本轮 delete / move 按 fail-closed 暂缓（与「子孙目录读不了」一致）。
+    """
+    found: list[RepoDir] = []
+    unreadable: list[RepoDir] = []
+    pending = list(repos)
+    while pending:
+        parent = pending.pop()
+        for submodule in _submodules_of(parent, unreadable):
+            found.append(submodule)
+            pending.append(submodule)
+    found.sort(key=lambda item: item.identifier)
+    unreadable.sort(key=lambda item: item.identifier)
+    return found, unreadable
+
+
+def _submodules_of(parent: RepoDir, unreadable: list[RepoDir]) -> list[RepoDir]:
+    """一个仓库 ``.gitmodules`` 里登记、且已初始化的子模块（不递归）。
+
+    「读不了」与「不存在」严格分开（fail-closed）：只有 ``FileNotFoundError`` /
+    ``NotADirectoryError`` 算不存在，其余 ``OSError`` 一律记入 ``unreadable``——否则一次权限
+    问题就会让已同步的子模块被当成消失而删除。因此不用 ``pathlib`` 的 ``exists`` / ``is_file``
+    （Python 3.14 起它们把任何 ``OSError`` 吞成 ``False``），也不让 git 自己去读文件（``git
+    config --file`` 对读不了的文件与「没有匹配」同样返回 1）：先读出字节，再经 stdin 交给 git。
+    """
+    gitmodules = Path(parent.path) / ".gitmodules"
+    marker = RepoDir(path=str(gitmodules), identifier=parent.identifier + b"/.gitmodules")
+    try:
+        status = _lstat(gitmodules)
+        if status is None or not (stat.S_ISREG(status.st_mode) or stat.S_ISLNK(status.st_mode)):
+            return []
+        if stat.S_ISLNK(status.st_mode):
+            _log.warning("%s 是符号链接，不跟随，不展开子模块", _shown(marker.identifier))
+            return []
+        data = gitmodules.read_bytes()
+        # 在父仓库里运行：git config 即便读 stdin 也会从当前目录发现仓库，插件进程的当前目录
+        # 可能恰好是损坏的仓库（实测：.git 文件指向不存在的目录时返回 128）
+        completed = _exec_git(
+            [
+                "-C",
+                parent.path,
+                "config",
+                "--no-includes",
+                "--file",
+                "-",
+                "--null",
+                "--get-regexp",
+                r"^submodule\..*\.path$",
+            ],
+            label="config --file .gitmodules",
+            stdin=data,
+        )
+    except (OSError, GitError):
+        unreadable.append(marker)
+        return []
+    if completed.returncode == 1:  # 内容已读到：1 只表示没有登记任何子模块路径
+        return []
+    if completed.returncode != 0:
+        unreadable.append(marker)
+        return []
+    paths: set[bytes] = set()
+    for record in completed.stdout.split(b"\x00"):
+        _, newline, value = record.partition(b"\n")
+        if not newline:
+            continue
+        relative = _submodule_path(value)
+        if relative is None:
+            _log.warning(
+                "%s：子模块路径不合法（绝对路径或含 . / .. / .git 段），跳过",
+                _shown(parent.identifier + b"/" + value),
+            )
+            continue
+        paths.add(relative)  # 规范化之后去重：a//b 与 a/b/ 是同一个子模块
+    found: list[RepoDir] = []
+    for relative in sorted(paths):
+        identifier = parent.identifier + b"/" + relative
+        target = Path(parent.path)
+        try:
+            state = "present"
+            for part in relative.split(b"/"):
+                target = target / os.fsdecode(part)
+                status = _lstat(target)
+                if status is None:
+                    state = "missing"
+                    break
+                if stat.S_ISLNK(status.st_mode):
+                    state = "symlink"
+                    break
+            if state == "present" and _lstat(target / ".git") is None:
+                state = "missing"
+        except OSError:
+            unreadable.append(RepoDir(path=str(target), identifier=identifier))
+            continue
+        if state == "present":
+            found.append(RepoDir(path=str(target), identifier=identifier))
+        elif state == "symlink":
+            _log.warning("%s：子模块路径经过符号链接，不跟随，跳过", _shown(identifier))
+        else:
+            _log.warning("%s 是未初始化的子模块，不同步", _shown(identifier))
+    return found
+
+
+def _lstat(path: Path) -> os.stat_result | None:
+    """``os.lstat``：不存在返回 ``None``，其余 ``OSError``（权限等）照抛，由调用方记为读不了。"""
+    try:
+        return os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _submodule_path(raw: bytes) -> bytes | None:
+    """``.gitmodules`` 里的路径 → 规范的相对路径字节；不安全或不合法时 ``None``。"""
+    if not raw or raw.startswith(b"/"):
+        return None
+    parts = [part for part in raw.split(b"/") if part]
+    if not parts or any(part in (b".", b"..") or part.lower() == b".git" for part in parts):
+        return None
+    return b"/".join(parts)
+
+
+def _shown(identifier: bytes) -> str:
+    """日志里的身份（相对路径字节）：不是 UTF-8 的字节转义显示，不带绝对路径。"""
+    return identifier.decode("utf-8", "backslashreplace")
 
 
 #: ``_common_git_dir`` 的优先级里 linked worktree 的取值（它永不成为代表）
@@ -330,7 +471,7 @@ def _one_per_repository(found: list[RepoDir]) -> list[RepoDir]:
             _log.warning(
                 "%s 是 linked worktree，它的主仓库不在 root 下，不同步；"
                 "请把主工作树或裸仓库放进 root",
-                worktree.identifier.decode("utf-8", "backslashreplace"),
+                _shown(worktree.identifier),
             )
     return sorted(kept, key=lambda item: item.identifier)
 
