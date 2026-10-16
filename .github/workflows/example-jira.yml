@@ -27,6 +27,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 常规用例几分钟内跑完；挂住时不要空耗 CI（基准的全部工作负载不进 CI，见 bench/README.md）
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
