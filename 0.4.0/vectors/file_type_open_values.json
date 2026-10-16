@@ -1,0 +1,164 @@
+{
+  "name": "file_type_open_values",
+  "kind": "document",
+  "description": "file_type 是开放取值（core.md §2.5）：推荐登记表之外的语法合法取值照常被接受并进 doc_hash——含旧枚举下会被拒的 `markdown`（与 `md` 是两个取值，无别名等价），以及数字开头、长度上界 32 的取值；33 字符与 `md\\n`（尾随换行，全串匹配）见拒绝类用例。",
+  "documents": {
+    "registered": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "unregistered": {
+      "file_type": "custom_format_v2",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "old_alias": {
+      "file_type": "markdown",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "digit_leading": {
+      "file_type": "3mf",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "max_length": {
+      "file_type": "max_length_value_0123456789abcde",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "registered": {
+      "dpe1": {
+        "doc_hash": "dpe1:4347236ded7b1947764651896291907887c5e108379673b000d77daf32751dde",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "unregistered": {
+      "dpe1": {
+        "doc_hash": "dpe1:3f45e2b4f0612737d2d29ef837eea760a769e39a8dd0205da6bbabc42ad3ea39",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "old_alias": {
+      "dpe1": {
+        "doc_hash": "dpe1:b7ae7d14a4815564b1f299be5a61cde992c6d1102bb8ae3cddfe79c3ab16dfce",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "digit_leading": {
+      "dpe1": {
+        "doc_hash": "dpe1:85964617d10238a6667eb3184db03a99ef080007ae3eaed0897de3a92bf1deaa",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    },
+    "max_length": {
+      "dpe1": {
+        "doc_hash": "dpe1:0c06a07ce7ce1306b5fc6e721fa011e91ed845a113ca2a0ed2b6f1c4454c2288",
+        "pages": [
+          {
+            "page_hash": "dpe1:75e86dc9863b11b799025f1e83b7ca8d6eb0c25840aaf03892f697d9ebf35023",
+            "elements": [
+              "dpe1:0d4afe2c5d450653b90ca4dc5f26e2b0380d0855a1a8618eae5ffe772c819224"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "registered.pages.0.page_hash",
+        "unregistered.pages.0.page_hash",
+        "old_alias.pages.0.page_hash",
+        "digit_leading.pages.0.page_hash",
+        "max_length.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "registered.doc_hash",
+        "unregistered.doc_hash",
+        "old_alias.doc_hash",
+        "digit_leading.doc_hash",
+        "max_length.doc_hash"
+      ]
+    }
+  ]
+}

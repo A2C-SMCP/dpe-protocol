@@ -1,0 +1,213 @@
+{
+  "name": "file_uri_normalization",
+  "kind": "uri",
+  "description": "file_uri 的语法规范化（core.md §1.1）：cases 为合法输入与其规范化输出（幂等不动点），invalid_cases 为必须被拒绝（DPE_VALIDATION）的输入。",
+  "cases": [
+    {
+      "input": "HTTP://EXAMPLE.com/Path",
+      "normalized": "http://example.com/Path"
+    },
+    {
+      "input": "feishu://DOC/Path",
+      "normalized": "feishu://doc/Path"
+    },
+    {
+      "input": "s3://Bucket.Name:9000/K",
+      "normalized": "s3://bucket.name:9000/K"
+    },
+    {
+      "input": "https://User@Example.com/A",
+      "normalized": "https://User@example.com/A"
+    },
+    {
+      "input": "https://[2001:DB8::A]/x",
+      "normalized": "https://[2001:db8::a]/x"
+    },
+    {
+      "input": "https://[FE80::1]:8080/x",
+      "normalized": "https://[fe80::1]:8080/x"
+    },
+    {
+      "input": "weird+scheme.1-2://A/b",
+      "normalized": "weird+scheme.1-2://a/b"
+    },
+    {
+      "input": "s3://b/K?Q=ABC#Frag",
+      "normalized": "s3://b/K?Q=ABC#Frag"
+    },
+    {
+      "input": "feishu://doc/%7Euser",
+      "normalized": "feishu://doc/~user"
+    },
+    {
+      "input": "feishu://doc/%2f",
+      "normalized": "feishu://doc/%2F"
+    },
+    {
+      "input": "s3://b/k?a=%2b",
+      "normalized": "s3://b/k?a=%2B"
+    },
+    {
+      "input": "s3://b/%7a",
+      "normalized": "s3://b/z"
+    },
+    {
+      "input": "s3://b/%41",
+      "normalized": "s3://b/A"
+    },
+    {
+      "input": "s3://b/100%25a",
+      "normalized": "s3://b/100%25a"
+    },
+    {
+      "input": "http://ex%c3%a4mple.com/",
+      "normalized": "http://ex%C3%A4mple.com/"
+    },
+    {
+      "input": "http://%45XAMPLE.com/",
+      "normalized": "http://example.com/"
+    },
+    {
+      "input": "s3://us%7eer@Bucket/k",
+      "normalized": "s3://us~er@bucket/k"
+    },
+    {
+      "input": "s3://%41@B/k",
+      "normalized": "s3://A@b/k"
+    },
+    {
+      "input": "s3://bucket/k?x=%7e",
+      "normalized": "s3://bucket/k?x=~"
+    },
+    {
+      "input": "https://example.com:443/a",
+      "normalized": "https://example.com:443/a"
+    },
+    {
+      "input": "http://example.com:080/x",
+      "normalized": "http://example.com:080/x"
+    },
+    {
+      "input": "s3://bucket/key/",
+      "normalized": "s3://bucket/key/"
+    },
+    {
+      "input": "https://example.com",
+      "normalized": "https://example.com"
+    },
+    {
+      "input": "s3://b/a/../c",
+      "normalized": "s3://b/a/../c"
+    },
+    {
+      "input": "feishu://doc/%2e%2E",
+      "normalized": "feishu://doc/.."
+    },
+    {
+      "input": "FEISHU:xxx",
+      "normalized": "feishu:xxx"
+    },
+    {
+      "input": "FEISHU:Doc/A%2fB",
+      "normalized": "feishu:Doc/A%2FB"
+    },
+    {
+      "input": "urn:ISBN:0-395-36341-1",
+      "normalized": "urn:ISBN:0-395-36341-1"
+    },
+    {
+      "input": "urn:example:%7e",
+      "normalized": "urn:example:~"
+    },
+    {
+      "input": "feishu://doc/a#gid=0",
+      "normalized": "feishu://doc/a#gid=0"
+    },
+    {
+      "input": "file:///a/b",
+      "normalized": "file:///a/b"
+    },
+    {
+      "input": "file://User@/a",
+      "normalized": "file://User@/a"
+    },
+    {
+      "input": "HTTP://EX%43AMPLE.com:8080/A%2Fb?q=%7e#%2F",
+      "normalized": "http://excample.com:8080/A%2Fb?q=~#%2F"
+    }
+  ],
+  "invalid_cases": [
+    {
+      "input": "",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "a/b",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "/abs/path",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "1http://x",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "http//example.com",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "%41:b",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/季度报告",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "https://例子.example/",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/a b",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "http://ex ample.com/",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/a\\b",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/\u0000",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/a\"b",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/a{b}",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/%",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/%2",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/%zz",
+      "code": "DPE_VALIDATION"
+    },
+    {
+      "input": "feishu://doc/%2g",
+      "code": "DPE_VALIDATION"
+    }
+  ]
+}

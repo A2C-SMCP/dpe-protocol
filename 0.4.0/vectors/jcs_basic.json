@@ -1,0 +1,65 @@
+{
+  "name": "jcs_basic",
+  "kind": "jcs",
+  "description": "JCS 字面量、字符串转义、键排序（UTF-16 码元序）。",
+  "cases": [
+    {
+      "input": null,
+      "canonical": "null",
+      "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "input": [
+        true,
+        false,
+        null,
+        "",
+        []
+      ],
+      "canonical": "[true,false,null,\"\",[]]",
+      "sha256": "d7cc87ef1ae1475bc5b9297df8e7a8d2894a8c3f3afbc49d478320a77d6a2538"
+    },
+    {
+      "input": {
+        "b": 1,
+        "a": 2,
+        "A": 3,
+        "é": 4,
+        "10": 5,
+        "1": 6
+      },
+      "canonical": "{\"1\":6,\"10\":5,\"A\":3,\"a\":2,\"b\":1,\"é\":4}",
+      "sha256": "9a0f588ee913773a3223268a6c9d46d6eab659fba3c327657958cbc53307dc47"
+    },
+    {
+      "input": {
+        "text": "line1\nline2\ttab \"quote\" \\ \u0007bell \u001f"
+      },
+      "canonical": "{\"text\":\"line1\\nline2\\ttab \\\"quote\\\" \\\\ \\u0007bell \\u001f\"}",
+      "sha256": "eb51b24bbc98289611b1d8edc80efb505e3497c98e3565ab56712e86d5195ca9"
+    },
+    {
+      "input": {
+        "｡": "halfwidth",
+        "𐀀": "surrogate"
+      },
+      "canonical": "{\"𐀀\":\"surrogate\",\"｡\":\"halfwidth\"}",
+      "sha256": "0e5a5b12aaeaac41e64b7a7f806bc81eaa5ca156dcefec40fcb789c42f994191"
+    },
+    {
+      "input": {
+        "nested": {
+          "z": [
+            1,
+            {
+              "y": null
+            }
+          ],
+          "a": "中文 🚀"
+        }
+      },
+      "canonical": "{\"nested\":{\"a\":\"中文 🚀\",\"z\":[1,{\"y\":null}]}}",
+      "sha256": "53cdaeada70fae405382b70db2be749a6eb67f9435ed841bb12219ba93d9cf5c"
+    }
+  ]
+}

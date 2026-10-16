@@ -1,0 +1,250 @@
+{
+  "name": "doc_title",
+  "kind": "document",
+  "description": "文档对象可选 title 与页 title 对称：缺省与 null 等价，\"\" 是独立的值；title 变化只改变 doc_hash，页与元素 hash 不变；title 与 doc_metadata 中的 filename 是不同的源属性。",
+  "documents": {
+    "absent": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "正文"
+            }
+          ]
+        }
+      ],
+      "doc_metadata": {
+        "filename": "report_v3_final.docx"
+      }
+    },
+    "null": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "正文"
+            }
+          ]
+        }
+      ],
+      "doc_metadata": {
+        "filename": "report_v3_final.docx"
+      },
+      "title": null
+    },
+    "empty": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "正文"
+            }
+          ]
+        }
+      ],
+      "title": "",
+      "doc_metadata": {
+        "filename": "report_v3_final.docx"
+      }
+    },
+    "titled": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "正文"
+            }
+          ]
+        }
+      ],
+      "title": "季度报告",
+      "doc_metadata": {
+        "filename": "report_v3_final.docx"
+      }
+    },
+    "renamed": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "正文"
+            }
+          ]
+        }
+      ],
+      "title": "年度报告",
+      "doc_metadata": {
+        "filename": "report_v3_final.docx"
+      }
+    },
+    "filename_only": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "正文"
+            }
+          ]
+        }
+      ],
+      "doc_metadata": {
+        "filename": "季度报告"
+      }
+    },
+    "title_only": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "正文"
+            }
+          ]
+        }
+      ],
+      "title": "季度报告"
+    }
+  },
+  "expected": {
+    "absent": {
+      "dpe1": {
+        "doc_hash": "dpe1:859deb0c58f2ad0964b7b7f26db7370f04c2d021f6f8d5c8c34e579eda9ae92c",
+        "pages": [
+          {
+            "page_hash": "dpe1:73fc824c804901d9469b6bc03fa3e7b13fa9a6437f26f882ddd2eefb3968f284",
+            "elements": [
+              "dpe1:f08c9a2f6e2a399297c48d16a9f6221a09e4ce4831064b4c1d8a47d25e725bb2"
+            ]
+          }
+        ]
+      }
+    },
+    "null": {
+      "dpe1": {
+        "doc_hash": "dpe1:859deb0c58f2ad0964b7b7f26db7370f04c2d021f6f8d5c8c34e579eda9ae92c",
+        "pages": [
+          {
+            "page_hash": "dpe1:73fc824c804901d9469b6bc03fa3e7b13fa9a6437f26f882ddd2eefb3968f284",
+            "elements": [
+              "dpe1:f08c9a2f6e2a399297c48d16a9f6221a09e4ce4831064b4c1d8a47d25e725bb2"
+            ]
+          }
+        ]
+      }
+    },
+    "empty": {
+      "dpe1": {
+        "doc_hash": "dpe1:de83f2372d97cc4251115160700097ca3cbee041c49f238ecef3ef1702c1a275",
+        "pages": [
+          {
+            "page_hash": "dpe1:73fc824c804901d9469b6bc03fa3e7b13fa9a6437f26f882ddd2eefb3968f284",
+            "elements": [
+              "dpe1:f08c9a2f6e2a399297c48d16a9f6221a09e4ce4831064b4c1d8a47d25e725bb2"
+            ]
+          }
+        ]
+      }
+    },
+    "titled": {
+      "dpe1": {
+        "doc_hash": "dpe1:36d1735d5a1585534e9137f7c69ecd1e46ebfbcbc8bcfc38f10764734ac94f11",
+        "pages": [
+          {
+            "page_hash": "dpe1:73fc824c804901d9469b6bc03fa3e7b13fa9a6437f26f882ddd2eefb3968f284",
+            "elements": [
+              "dpe1:f08c9a2f6e2a399297c48d16a9f6221a09e4ce4831064b4c1d8a47d25e725bb2"
+            ]
+          }
+        ]
+      }
+    },
+    "renamed": {
+      "dpe1": {
+        "doc_hash": "dpe1:7d780618a6c3d8fa6ce61c8c5ebb20854030c2e0c3629105c03d403f36dac745",
+        "pages": [
+          {
+            "page_hash": "dpe1:73fc824c804901d9469b6bc03fa3e7b13fa9a6437f26f882ddd2eefb3968f284",
+            "elements": [
+              "dpe1:f08c9a2f6e2a399297c48d16a9f6221a09e4ce4831064b4c1d8a47d25e725bb2"
+            ]
+          }
+        ]
+      }
+    },
+    "filename_only": {
+      "dpe1": {
+        "doc_hash": "dpe1:016ae58afc850da6b8b729a06f2420aa536be88dbaf25925c4bdbe70f12ebd57",
+        "pages": [
+          {
+            "page_hash": "dpe1:73fc824c804901d9469b6bc03fa3e7b13fa9a6437f26f882ddd2eefb3968f284",
+            "elements": [
+              "dpe1:f08c9a2f6e2a399297c48d16a9f6221a09e4ce4831064b4c1d8a47d25e725bb2"
+            ]
+          }
+        ]
+      }
+    },
+    "title_only": {
+      "dpe1": {
+        "doc_hash": "dpe1:28752c4888321f637fc109de1deddc3588132a77229a45d9d334a52ce8f8c1b3",
+        "pages": [
+          {
+            "page_hash": "dpe1:73fc824c804901d9469b6bc03fa3e7b13fa9a6437f26f882ddd2eefb3968f284",
+            "elements": [
+              "dpe1:f08c9a2f6e2a399297c48d16a9f6221a09e4ce4831064b4c1d8a47d25e725bb2"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "absent.doc_hash",
+        "null.doc_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "absent.doc_hash",
+        "empty.doc_hash",
+        "titled.doc_hash",
+        "renamed.doc_hash"
+      ]
+    },
+    {
+      "equal": [
+        "absent.pages.0.page_hash",
+        "titled.pages.0.page_hash",
+        "renamed.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "filename_only.doc_hash",
+        "title_only.doc_hash"
+      ]
+    }
+  ]
+}
