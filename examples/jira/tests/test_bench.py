@@ -1,11 +1,14 @@
 """基准测试的冒烟用例（#237）：基准代码本身不失效，项目模式的变体是正确的。
 
-真跑 dpe-run + 参考服务端 + 模拟 Jira，规模很小（几十个工单），不测性能：
+真跑 dpe-run + 参考服务端 + 模拟 Jira，规模很小（几十个工单），只用秒级的轮次，不测性能。全部
+工作负载（含 W6 的 2,000 条评论热点工单，单篇超过单请求上限、要逐对象上传上万次）不进常规 CI，
+留给手动的 ``python -m bench run``：
 
 - 项目模式的增量收敛：经历加评论、改状态、新建、删除、换项目之后，增量实例在 remote 上的结果
   等于同一源状态在空前缀上的全量结果（逐篇比较 doc_hash 与按序的 page_hash）；
 - 项目模式的文档形态：每个项目一篇，工单页带 ``issue_id`` / ``issue_key``，正文页带标题；
-- W1–W12 两种模式都跑通，失败类工作负载的结果符合预期（W9a 项目模式波及整个项目）；
+- 项目模式整篇失败后的恢复：同一轮删除、移出工单且另一个工单读不到，故障消失后的下一轮与全量
+  结果一致（项目记录带成员指纹，不会被误跳过）；
 - 命令行一条命令产出 ``results.json`` 与 ``report.md``。
 """
 
@@ -21,7 +24,7 @@ from bench.__main__ import main
 from bench._harness import reference_server
 from bench.runner import Instance, Snapshot, snapshot
 from bench.synth import build, load_profile
-from bench.workloads import _Source, run_tier
+from bench.workloads import _Source
 
 
 def _relative(shot: Snapshot, prefix: str) -> dict[str, tuple[str, tuple[str, ...]]]:
@@ -105,28 +108,6 @@ def test_project_mode_recovers_after_a_failed_round_with_deletes_and_moves(
             assert actual == expected
         finally:
             instance.close()
-
-
-def test_all_workloads_run_in_both_modes(tmp_path: Path) -> None:
-    results = run_tier(tmp_path, load_profile(), 24, 2, 237, None, lambda _: None)
-    expected = {
-        **{name: "succeeded" for name in ("W1", "W2", "W3", "W4", "W5", "W6", "W7", "W8")},
-        "W9a": "partial",
-        "W9b": "failed",
-        "W10": "succeeded",
-        "W11": "succeeded",
-        "W12": "partial",
-        "W12-after": "partial",
-    }
-    for name, outcome in expected.items():
-        for mode in ("issue", "project"):
-            assert results[name][mode]["outcome"] == outcome, (name, mode, results[name][mode])
-    assert results["W2"]["issue"]["dpe_writes"] == results["W2"]["project"]["dpe_writes"] == 0
-    # 失败影响面：工单模式只波及读不到的那 1 个工单，项目模式波及整个项目
-    assert results["W9a"]["issue"]["impacted_issues"] == 1
-    assert results["W9a"]["project"]["impacted_issues"] > 1
-    # 项目模式每轮有变化都要重拉整个项目：W3 的 Jira 请求明显更多
-    assert results["W3"]["project"]["jira_requests"] > results["W3"]["issue"]["jira_requests"]
 
 
 def test_cli_writes_results_and_report(tmp_path: Path) -> None:
