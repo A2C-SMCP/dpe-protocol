@@ -31,7 +31,8 @@ def _request_id(line: str) -> object:
     return message.get("id") if isinstance(message, dict) else None
 
 
-def main() -> int:
+def main(serve: Serve | None = None) -> int:
+    """``serve`` 缺省为正式插件（``Serve``）；基准测试的变体传入自己的实例（#237）。"""
     for stream in (sys.stdin, sys.stdout):
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
@@ -41,7 +42,7 @@ def main() -> int:
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, stop)
-    serve = Serve()
+    serve = Serve() if serve is None else serve
     for raw in sys.stdin:
         line = raw.rstrip("\n")
         try:

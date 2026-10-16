@@ -196,6 +196,15 @@ _Ref = tuple[str, str]
 
 
 @dataclass(frozen=True)
+class _Prepared:
+    """一轮开头枚举与解释游标的结果；``previous`` 为 ``None`` 即全量轮。"""
+
+    current: list[_Issue]
+    projects: list[_Project]
+    previous: dict[_Ref, tuple[str, str]] | None
+
+
+@dataclass(frozen=True)
 class _Step:
     """一轮中的一步：删除一篇消失的文档（``delete_uri``），取一个工单的全文（``issue``），或取
     一个项目的组件与版本（``project``）；``moved_from`` 为移动前的 key。"""
@@ -581,17 +590,18 @@ class Serve:
             id_, {"items": items, "cursor": cursor_value, "incremental": round_.incremental}
         )
 
-    def _open_round(self, cursor: str | None) -> _Round:
+    def _prepare_round(self, cursor: str | None) -> _Prepared:
+        """一轮开头的共用部分：数据源摘要、枚举工单与项目、解释游标。
+
+        游标解释不了（没有、作废、与本轮自相矛盾）时 ``previous`` 为 ``None``，调用方按全量轮处理。
+        """
         self._source = self._source_digest()
         current = self._enumerate()
         projects = self._fetch_projects(current)
         decoded = None if cursor is None else decode_cursor(cursor, self._source)
         self._rounds += 1
-        full = [_Step(issue=issue) for issue in current] + [
-            _Step(project=project) for project in projects
-        ]
         if decoded is None:  # 全量轮：没有游标，或游标解释不了（§6.8 回退，不报错）
-            return _Round(self._rounds, full, incremental=False, previous={}, marks={})
+            return _Prepared(current, projects, None)
         previous: dict[_Ref, tuple[str, str]] = {
             **{("issue", k): v for k, v in decoded[0].items()},
             **{("project", k): v for k, v in decoded[1].items()},
@@ -600,14 +610,33 @@ class Serve:
         now += [("project", p.id, p.key) for p in projects]
         if _contradicts(previous, now):
             # 游标与本轮自相矛盾（见模块说明）：不冒险删除，按全量轮处理
-            return _Round(self._rounds, full, incremental=False, previous={}, marks={})
-        alive = {(kind, entry_id) for kind, entry_id, _ in now}
-        steps = [
+            return _Prepared(current, projects, None)
+        return _Prepared(current, projects, previous)
+
+    def _deletions(
+        self, prepared: _Prepared, kinds: tuple[str, ...] = ("issue", "project")
+    ) -> list[_Step]:
+        """上一轮有、本轮没有的文档 → ``delete``（按类别、再按 id 升序）。"""
+        assert prepared.previous is not None
+        previous = prepared.previous
+        alive = {("issue", i.id) for i in prepared.current}
+        alive |= {("project", p.id) for p in prepared.projects}
+        return [
             _Step(delete_uri=self._uri(kind, previous[(kind, entry_id)][0]))
-            for kind in ("issue", "project")
+            for kind in kinds
             for entry_id in sorted((i for k, i in previous if k == kind), key=int)
             if (kind, entry_id) not in alive
         ]
+
+    def _open_round(self, cursor: str | None) -> _Round:
+        prepared = self._prepare_round(cursor)
+        current, projects, previous = prepared.current, prepared.projects, prepared.previous
+        if previous is None:
+            full = [_Step(issue=issue) for issue in current] + [
+                _Step(project=project) for project in projects
+            ]
+            return _Round(self._rounds, full, incremental=False, previous={}, marks={})
+        steps = self._deletions(prepared)
         marks: dict[_Ref, tuple[str, str]] = {}
         for issue in current:
             old = previous.get(("issue", issue.id))

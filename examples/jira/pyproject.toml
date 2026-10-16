@@ -51,9 +51,9 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.mypy]
 strict = true
 python_version = "3.11"
-files = ["src", "tests"]
+files = ["src", "tests", "bench"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib", "--strict-markers"]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+pythonpath = ["tests", "."]
