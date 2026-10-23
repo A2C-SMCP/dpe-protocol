@@ -139,6 +139,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "dpe-sdk", extra = ["server"] },
+    { name = "httpx" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
@@ -150,6 +151,7 @@ requires-dist = [{ name = "dpe-hash", editable = "../../sdk/python/packages/dpe-
 [package.metadata.requires-dev]
 dev = [
     { name = "dpe-sdk", extras = ["server"], editable = "../../sdk/python/packages/dpe-sdk" },
+    { name = "httpx", specifier = ">=0.27,<1" },
     { name = "mypy", specifier = ">=1.13" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.8" },

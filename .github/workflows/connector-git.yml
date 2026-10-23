@@ -64,3 +64,22 @@ jobs:
       - run: git --version
       - run: uv sync --locked
       - run: uv run pytest -m scenarios -v
+
+  # 外部模式的本地变体（#68）：参考服务端带 --require-auth --grant 起需凭证的 remote，
+  # 前面加本地 TLS 终结器，再以外部模式环境变量跑同一套 scenarios。连接真实 remote 的运行
+  # 不进常规 CI。
+  scenarios-external:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: connectors/git
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+      - run: git --version
+      - run: openssl version
+      - run: uv sync --locked
+      - run: uv run python tests/run_external.py
