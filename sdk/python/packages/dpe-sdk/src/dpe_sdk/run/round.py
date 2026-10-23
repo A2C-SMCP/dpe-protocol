@@ -69,7 +69,6 @@ fail-closed 的代价只是重跑一轮（commit 由内容幂等、意图可对�
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
@@ -81,6 +80,7 @@ from typing import Any, Literal, TypeVar
 import httpx
 from dpe_hash import DpeHashError, normalize_file_uri
 
+from dpe_sdk._plain import plain
 from dpe_sdk.errors import (
     ClientError,
     ContractUnsupportedError,
@@ -671,7 +671,7 @@ class _Round:
 
     async def prepare(self, ready: ReadyDocument) -> Document | None:
         """读取 blob、换成真实引用，再做文档层校验（§6.6 第 3–4 步）。"""
-        pages = copy.deepcopy(ready.pages)
+        pages = plain(ready.pages)
         for slot in ready.blobs:
             ref = await self.stage.resolve(slot.spec)
             if isinstance(ref, ItemFailure):

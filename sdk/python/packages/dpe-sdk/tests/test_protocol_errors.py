@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 import dpe_hash
 import pytest
 from dpe_sdk import errors
 from dpe_sdk.protocol import Response, _parse, error_from_response
-from dpe_sdk.wire import Capabilities, Missing
+from dpe_sdk.wire import Capabilities, Missing, Skeleton
 
 #: core §6 错误码表：code → retryable
 CORE_ERROR_TABLE = {
@@ -239,3 +240,29 @@ def test_problem_with_lone_surrogate_is_not_a_problem() -> None:
     )
     with_code = Response(400, {**headers, "DPE-Error-Code": "DPE_VALIDATION"}, body)
     assert isinstance(error_from_response(with_code), errors.ValidationError)
+
+
+def test_parse_deep_response_is_unexpected_response() -> None:
+    """响应体超深（超过 core §2.8 第 0 步的 64 层）转成 ``UnexpectedResponseError``，
+    不逃出 ``RecursionError``。取当前解释器 ``parse_ijson`` 窗口内较深的点（3.11: 700；
+    3.12: 5000），以覆盖旧实现会崩在 ``_plain`` 的 3.12 窗口。"""
+    depth = 5000 if sys.version_info >= (3, 12) else 700
+    deep = '{"k": ' * (depth - 1) + "{}" + "}" * (depth - 1)
+    body = (
+        '{"file_uri": "dpe://src/a.md", "doc_hash": "dpe1:' + "0" * 64 + '", '
+        '"document": {"file_type": "md", "doc_metadata": ' + deep + ', "pages": []}, "pages": []}'
+    ).encode()
+    with pytest.raises(errors.UnexpectedResponseError) as info:
+        _parse(Response(200, {}, body), Skeleton)
+    assert "嵌套深度" in str(info.value)
+
+
+def test_parse_wraps_recursion_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """防御性兜底：模型校验若仍抛 ``RecursionError``，同样转成 ``UnexpectedResponseError``。"""
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RecursionError("too deep")
+
+    monkeypatch.setattr(Capabilities, "model_validate", boom)
+    with pytest.raises(errors.UnexpectedResponseError):
+        _parse(Response(200, {}, b"{}"), Capabilities)

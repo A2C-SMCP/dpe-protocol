@@ -74,6 +74,14 @@ def _text(*texts: str) -> list[dict[str, Any]]:
     return [{"category": "NarrativeText", "text": t} for t in texts]
 
 
+def _nested(levels: int) -> dict[str, Any]:
+    """恰好 levels 层的对象链，最深一层是空对象。"""
+    value: dict[str, Any] = {}
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
 def doc_item(name: str, *texts: str, **extra: Any) -> dict[str, Any]:
     """一页文本的 document 产出项。"""
     return {
@@ -227,6 +235,28 @@ async def test_each_item_kind_lands_and_the_cursor_advances(tmp_path: Path) -> N
         assert await h.foreign.head(P + "c.md") == expected("A")
         assert [p.get("cursor") for p in h.requests("scan") if "next" not in p] == [None, "c1"]
         assert h.store.cursor == "c2"
+
+
+async def test_deep_document_fails_at_the_document_layer(tmp_path: Path) -> None:
+    """插件输出超深文档：第 4 步文档层校验得到 DPE_VALIDATION 的 ItemFailure（§6.6）。"""
+    async with harness(tmp_path) as h:
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        {
+                            "kind": "document",
+                            "file_uri": P + "deep.md",
+                            "document": {"file_type": "md", "doc_metadata": _nested(500)},
+                            "pages": [],
+                        }
+                    ]
+                ],
+                "cursor": "c1",
+            }
+        )
+    assert result.outcome == "partial"
+    assert codes(result) == ["DPE_VALIDATION"]
 
 
 async def test_out_of_prefix_and_invalid_items_are_rejected_and_hold_the_cursor(

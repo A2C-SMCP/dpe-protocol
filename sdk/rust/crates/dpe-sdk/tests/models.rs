@@ -10,7 +10,7 @@ use dpe_sdk::{
     DocumentObject, ElementObject, ExpandedDocument, ExpandedPage, PageObject, CONTRACT,
     DRILL_CONTRACT,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 // ---------------------------------------------------------------------------
 // 辅助
@@ -547,4 +547,25 @@ fn literal_assembly_validated_in_spec_order() {
     let err = doc.hashes(CONTRACT).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::CategoryUnknown);
     assert_eq!(err.path(), "/pages/1/elements/0/category");
+}
+
+#[test]
+fn extremely_deep_value_is_validation_not_recursion() {
+    // 100000 层数组：json! 的序列化与 Value 的 drop 都是递归的，故手工拼 Value::Array 并在
+    // 断言后 forget（与 Python 的 100000 层用例对等）。
+    let mut deep = Value::Array(Vec::new());
+    for _ in 0..100_000 {
+        deep = Value::Array(vec![deep]);
+    }
+    let mut metadata = Map::new();
+    metadata.insert("deep".to_owned(), deep);
+    let mut object = Map::new();
+    object.insert("category".to_owned(), Value::String("Title".to_owned()));
+    object.insert("metadata".to_owned(), Value::Object(metadata));
+    // ManuallyDrop：断言失败时也不会递归 drop 10 万层 Value（会栈溢出、丢失失败信息）
+    let value = std::mem::ManuallyDrop::new(Value::Object(object));
+    let err = ElementObject::from_value(&value, CONTRACT).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::Validation);
+    assert_eq!(err.code(), "DPE_VALIDATION");
+    assert_eq!(err.path(), "");
 }
