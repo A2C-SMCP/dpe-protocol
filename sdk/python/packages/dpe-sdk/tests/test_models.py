@@ -127,7 +127,9 @@ def test_invalid_vectors_page_standalone(vectors_dir: Path) -> None:
         for case in vec["cases"]:
             if case["object_kind"] != "expanded_document" or "path" not in case:
                 continue
-            page = case["input"]["pages"][0]
+            # input_json 用例（孤立代理项）用宽松读取构造 Python 对象，正好检验对象级入口
+            raw = case["input"] if "input" in case else json.loads(case["input_json"])
+            page = raw["pages"][0]
             with pytest.raises(DpeHashError) as info:
                 Page.model_validate(page)
             assert info.value.code == case["code"]

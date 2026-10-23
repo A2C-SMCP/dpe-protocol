@@ -44,6 +44,7 @@ from dpe_hash.constants import (
 from dpe_hash.errors import (
     CategoryUnknownError,
     ContractUnsupportedError,
+    DpeHashError,
     FileTypeInvalidError,
     InvalidUnicodeError,
     UndefinedFieldError,
@@ -443,16 +444,14 @@ _T = TypeVar("_T")
 def _ijson_first(top: object, compute: Callable[[], _T]) -> _T:
     """core §2.8 第 0 步：I-JSON 违例先于其他所有校验，位置为对象自身。
 
-    孤立代理项在逐字段序列化时才会遇到。若在此之前已因 ``DPE_CATEGORY_UNKNOWN`` /
-    ``DPE_CONTRACT_UNSUPPORTED`` 失败，再整体扫描一次输入；只在出错时扫描，合法输入不多花一遍。
-    （同为 ``DPE_VALIDATION`` 的更早违例无需改判：多处违例时报告哪一处由实现决定。）
+    孤立代理项在逐字段序列化时才会遇到。若 ``compute`` 因任何校验违例失败，再整体扫描一次
+    输入：违例分属不同步骤时位置按最早步骤确定，因此第 1–4 步的违例都改判为第 0 步。
+    只在出错时扫描，合法输入不多花一遍（保留 #31 的性能意图）。
     """
     message = "字符串或对象键含孤立代理项，报文不是 I-JSON（core §2.8 第 0 步）"
     try:
         return compute()
-    except InvalidUnicodeError:
-        raise InvalidUnicodeError(message) from None
-    except (CategoryUnknownError, ContractUnsupportedError):
+    except DpeHashError:
         if has_invalid_unicode(top):
             raise InvalidUnicodeError(message) from None
         raise

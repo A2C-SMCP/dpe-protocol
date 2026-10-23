@@ -159,6 +159,18 @@ def test_layered_entries_check_depth() -> None:
     assert (info.value.code, info.value.path) == (V, "")
 
 
+def test_deep_expanded_document_rejects_iteratively() -> None:
+    """document_hashes 的深度判定在 compute 内：catch-all 回扫第 0 步也必须迭代，
+    超深输入仍抛 ``DPE_VALIDATION``、位置 ``""``，不落进解释器递归限额（Issue #246）。"""
+    deep: dict[str, Any] = {"file_type": "md", "doc_metadata": {"k": {}}, "pages": []}
+    node: Any = deep["doc_metadata"]
+    for _ in range(5000):
+        node["k"] = {"k": node["k"]}
+    with pytest.raises(DpeHashError) as info:
+        document_hashes(cast(ExpandedDocument, deep))
+    assert (info.value.code, info.value.path) == (V, "")
+
+
 def test_unknown_object_kind_still_raises_value_error() -> None:
     """未知 kind 与既有行为一致：抛 ``ValueError``，不是 ``KeyError``。"""
     for call in (

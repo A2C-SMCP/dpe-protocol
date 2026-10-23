@@ -116,6 +116,8 @@ def test_invalid_ijson_vectors(vectors_dir: Path) -> None:
         for case in vec["cases"]:
             if "input_json" not in case:
                 continue
+            if case["object_kind"] == "expanded_document":
+                continue  # 展开视图不是线上形态（由 dpe-hash 的对象级入口测试覆盖）
             if case["object_kind"] == "document":
                 body = ('{"document": ' + case["input_json"] + "}").encode()
             else:

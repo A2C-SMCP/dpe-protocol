@@ -1706,7 +1706,8 @@ def bad(
     path: str | None = None,
     contract: str = "dpe1",
 ) -> dict[str, Any]:
-    """拒绝类用例：只有一处违例时给出 path；多处违例只断言 code（core §2.8）。"""
+    """拒绝类用例：``path`` 是期望的违例位置。跨步骤的多处违例可以给出（位置由校验顺序
+    唯一确定，core §2.8）；同一步骤内位置由实现决定的情形不给出。"""
     case: dict[str, Any] = {
         "name": name,
         "object_kind": kind,
@@ -1739,7 +1740,7 @@ V, CU, CTU = "DPE_VALIDATION", "DPE_CATEGORY_UNKNOWN", "DPE_CONTRACT_UNSUPPORTED
 INVALID_VECTORS: list[dict[str, Any]] = [
     {
         "name": "invalid_objects",
-        "description": "拒绝类一致性用例（core.md §2.8 校验顺序）：每条输入都 MUST 被拒绝且错误码一致；只有一处违例的用例另断言违例位置 path（RFC 6901）。多处违例的用例只断言错误码，用来固定校验顺序。",
+        "description": "拒绝类一致性用例（core.md §2.8 校验顺序）：每条输入都 MUST 被拒绝且错误码一致；声明了违例位置 path（RFC 6901）的用例，位置也 MUST 一致。跨步骤的多处违例位置由校验顺序唯一确定，这类用例可以声明 path；不带 path 的用例只断言错误码（含同一步骤内位置由实现决定的情形），用来固定校验顺序。",
         "cases": [
             # 元素对象
             bad("element_not_object", "element", ["NarrativeText"], V, ""),
@@ -2024,12 +2025,78 @@ INVALID_VECTORS: list[dict[str, Any]] = [
                 "element",
                 '{"category": "Video", "text": "\\ud800"}',
                 V,
+                "",
             ),
             raw(
                 "ijson_before_children",
                 "page",
                 '{"title": "\\ud800", "elements": ["a"]}',
                 V,
+                "",
+            ),
+            # 跨步骤的多处违例：位置按最早步骤（第 0 步）确定，均为 ""（core §2.8，Issue #246）
+            raw(
+                "ijson_before_undefined_field_value",
+                "element",
+                '{"category": "Title", "text": "\\ud800", "bogus": 1}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_undefined_field_key",
+                "element",
+                '{"category": "Title", "metadata": {"\\ud800": 1}, "bogus": 1}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_missing_required",
+                "element",
+                '{"text": "\\ud800"}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_category_not_string",
+                "element",
+                '{"category": 1, "text": "\\ud800"}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_field_type",
+                "element",
+                '{"category": "Title", "text": 1, "metadata": {"a": "\\ud800"}}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_file_type",
+                "document",
+                '{"file_type": "Markdown", "title": "\\ud800", "pages": []}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_page_undefined_field",
+                "page",
+                '{"title": "\\ud800", "elements": [], "bogus": 1}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_document_undefined_field",
+                "document",
+                '{"file_type": "md", "pages": [], "bogus": "\\ud800"}',
+                V,
+                "",
+            ),
+            raw(
+                "ijson_before_expanded_document_field",
+                "expanded_document",
+                '{"file_type": "md", "zz": 1, "pages": [{"elements": [{"category": "Title", "text": "\\ud800"}]}]}',
+                V,
+                "",
             ),
             raw(
                 "ijson_duplicate_key",
