@@ -7,7 +7,9 @@
 - HTTP §4.6、§4.7：201 / 200 与断点查询的偏移**只按本会话**判定（同一文档的另一个会话也不算）；
 - core §3.3 第 2 步 + §8：无写授权的请求一律 ``403``——不因内容与当前相同而回 ``unchanged``，
   不因文档存在与否而改变结论（delete、move 两侧的各种状态）；
-- 去重范围下界：本文档当前状态可得的对象不列为缺失（页层见 large 章，元素层与 blob 层在本章）。
+- 去重范围下界：本文档当前状态可得的对象不列为缺失（页、元素与 blob 三层都在本章）；
+- 不开会话的引用提交（core §3.3 第 6 步）：引用本文档已有页 / 元素、重复页、与他文档对象的
+  混合引用，都不重传、不把本文档已有对象列为缺失；delta 按元素多重集计（#250）。
 
 「无写授权」用 scoped 身份；未配置时依赖它的检查显式 skip 并计入计数。
 """
@@ -15,6 +17,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, cast
@@ -35,7 +38,9 @@ from dpe_conformance.support import (
     build_document,
     commit,
     commit_with_session,
+    commit_without_session,
     delete,
+    expected_delta,
     inside_scoped,
     move,
     negotiate,
@@ -393,3 +398,189 @@ def test_objects_held_by_current_state_are_not_missing(
         if_match=version1.doc_hash,
     )
     assert_commit_success(committed, status=200, status_text="updated", doc_hash=version2.doc_hash)
+
+
+# ---------------------------------------------------------------------- 不开会话的引用提交（#250）
+
+
+def _read_skeleton(target: Target, uri: str, *, identity: Identity) -> dict[str, Any]:
+    response = target.send("GET", "documents", identity=identity, params={"uri": uri})
+    assert response.status_code == 200, f"读回 {uri} 失败：{response.status_code}"
+    return cast(dict[str, Any], response.json())
+
+
+def _multiset(skeleton: Mapping[str, Any]) -> Counter[str]:
+    return Counter(h for page in skeleton["pages"] for h in page["elements"])
+
+
+def test_reference_to_current_page_without_session(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """core §3.3 第 6 步：不开会话、不内联已有页，只内联新页与其元素 → updated。delta 与
+    get_skeleton 读回的多重集互相印证；读回中的已有页仍是完整页对象。"""
+    uri = conformance_target.uri(f"security/ref-page/{uuid.uuid4().hex}")
+    existing = text_element("A")
+    version1 = build_document([[existing]])
+    seed(conformance_target, uri, version1, identity=full_identity)
+
+    new = text_element("N")
+    version2 = build_document([[existing], [new]])
+    response = commit_without_session(
+        conformance_target,
+        uri,
+        version2,
+        identity=full_identity,
+        pages=[version2.pages[1]],
+        objects=[new],
+        if_match=version1.doc_hash,
+    )
+    body = assert_commit_success(
+        response, status=200, status_text="updated", doc_hash=version2.doc_hash
+    )
+    skeleton = _read_skeleton(conformance_target, uri, identity=full_identity)
+    after = _multiset(skeleton)
+    assert after == version2.content_multiset(), "读回的元素多重集必须等于提交内容"
+    assert body["delta"] == expected_delta(version1.content_multiset(), after), (
+        f"delta 必须等于读回多重集之差：{body['delta']!r}"
+    )
+    assert dpe_hash.object_hash(skeleton["pages"][0], "page") == version1.page_hashes[0], (
+        "读回中未重传的页必须与写入页内容等价（按 page_hash 判定，不比较表示）"
+    )
+
+
+def test_reference_to_current_element_without_session(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """core §3.3 第 6 步：新页引用当前状态已有的元素，只内联新页与新元素 → updated；
+    已有元素不重传，delta 只计入新元素，读回页对象完整。"""
+    uri = conformance_target.uri(f"security/ref-element/{uuid.uuid4().hex}")
+    existing = text_element("shared")
+    version1 = build_document([[existing]])
+    seed(conformance_target, uri, version1, identity=full_identity)
+
+    new = text_element("new")
+    version2 = build_document([[existing], [existing, new]])
+    response = commit_without_session(
+        conformance_target,
+        uri,
+        version2,
+        identity=full_identity,
+        pages=[version2.pages[1]],
+        objects=[new],
+        if_match=version1.doc_hash,
+    )
+    body = assert_commit_success(
+        response, status=200, status_text="updated", doc_hash=version2.doc_hash
+    )
+    skeleton = _read_skeleton(conformance_target, uri, identity=full_identity)
+    after = _multiset(skeleton)
+    assert after == version2.content_multiset()
+    # 复用元素不必重传，但它在新页里多出现一次：delta 按元素多重集计，added = 复用的 1 + 新的 1
+    assert body["delta"] == {"added": 2, "removed": 0, "retained": 1}
+    assert dpe_hash.object_hash(skeleton["pages"][1], "page") == version2.page_hashes[1], (
+        "读回的新页必须与提交页内容等价（按 page_hash 判定，不比较表示）"
+    )
+
+
+def test_duplicate_page_without_session(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """HTTP §4.3 + core §3.3：文档引用重复页时，页来自当前状态、不内联也不列为缺失；
+    读回按出现次数重复，delta 按元素多重集计（P 两次即两份）。"""
+    uri = conformance_target.uri(f"security/duplicate-page/{uuid.uuid4().hex}")
+    element = text_element("dup")
+    version1 = build_document([[element]])
+    seed(conformance_target, uri, version1, identity=full_identity)
+
+    version2 = build_document([[element], [element]])
+    assert version2.page_hashes[0] == version2.page_hashes[1], "同一页在两个位置是重复页"
+    response = commit_without_session(
+        conformance_target, uri, version2, identity=full_identity, if_match=version1.doc_hash
+    )
+    body = assert_commit_success(
+        response, status=200, status_text="updated", doc_hash=version2.doc_hash
+    )
+    assert body["delta"] == {"added": 1, "removed": 0, "retained": 1}, (
+        f"重复页的元素按两次计：{body['delta']!r}"
+    )
+    skeleton = _read_skeleton(conformance_target, uri, identity=full_identity)
+    assert [dpe_hash.object_hash(page, "page") for page in skeleton["pages"]] == [
+        version1.page_hashes[0],
+        version1.page_hashes[0],
+    ], "读回必须按出现次数重复页对象，且与写入页内容等价（HTTP §4.3）"
+    assert _multiset(skeleton) == version2.content_multiset()
+
+    version3 = build_document([[element]])
+    response3 = commit_without_session(
+        conformance_target, uri, version3, identity=full_identity, if_match=version2.doc_hash
+    )
+    body3 = assert_commit_success(
+        response3, status=200, status_text="updated", doc_hash=version3.doc_hash
+    )
+    assert body3["delta"] == {"added": 0, "removed": 1, "retained": 1}
+    assert _multiset(_read_skeleton(conformance_target, uri, identity=full_identity)) == (
+        version3.content_multiset()
+    )
+
+
+def test_mixed_reference_missing_page_without_session(
+    conformance_target: Target,
+    full_identity: Identity,
+    caller: tuple[Identity, Callable[[str], str], str],
+) -> None:
+    """core §3.3 第 6 步 + §8：同一 commit 引用本文档当前页 A 与他文档页 B、不开会话 →
+    只把 B 列为缺失（下界：A 不缺；上界：B 缺）。"""
+    identity, mine, other = caller
+    own = text_element("A")
+    version1 = build_document([[own]])
+    uri = mine("mixed-page")
+    seed(conformance_target, uri, version1, identity=identity)
+
+    foreign = text_element("B")
+    seed(conformance_target, other, build_document([[foreign]]), identity=full_identity)
+
+    version2 = build_document([[own], [foreign]])
+    response = commit_without_session(
+        conformance_target, uri, version2, identity=identity, if_match=version1.doc_hash
+    )
+    problem = assert_problem(response, status=400, code="DPE_MISSING_CONTENT")
+    assert problem["missing"] == {
+        "pages": [version2.page_hashes[1]],
+        "content_hashes": [],
+        "blobs": [],
+    }, f"缺失清单必须恰为他文档的页：{problem['missing']!r}"
+
+
+def test_mixed_reference_missing_element_without_session(
+    conformance_target: Target,
+    full_identity: Identity,
+    caller: tuple[Identity, Callable[[str], str], str],
+) -> None:
+    """core §3.3 第 6 步 + §8：内联新页 N，N 引用他文档持有的元素 E 且不内联 E →
+    缺失清单恰为 {content_hashes: [E]}。"""
+    identity, mine, other = caller
+    own = text_element("A")
+    version1 = build_document([[own]])
+    uri = mine("mixed-element")
+    seed(conformance_target, uri, version1, identity=identity)
+
+    foreign = text_element("E")
+    seed(conformance_target, other, build_document([[foreign]]), identity=full_identity)
+
+    new = text_element("N")
+    version2 = build_document([[own], [foreign, new]])
+    response = commit_without_session(
+        conformance_target,
+        uri,
+        version2,
+        identity=identity,
+        pages=[version2.pages[1]],
+        objects=[new],
+        if_match=version1.doc_hash,
+    )
+    problem = assert_problem(response, status=400, code="DPE_MISSING_CONTENT")
+    assert problem["missing"] == {
+        "pages": [],
+        "content_hashes": [_content_hash(foreign)],
+        "blobs": [],
+    }, f"缺失清单必须恰为他文档的元素：{problem['missing']!r}"

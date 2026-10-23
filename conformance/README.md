@@ -41,6 +41,7 @@
 - 文档对象超过 `max_payload_bytes` 时，negotiate 与 commit 都返回 `413` + `DPE_PAYLOAD_TOO_LARGE`（v1 的规模边界，core.md §3.2）。
 - commit 缺少对象时，`DPE_MISSING_CONTENT` 的 problem 体按层列出缺失的 hash；补传到同一会话后重新 commit 成功。
 - 在中间插入一页后再次提交：`missing_pages` 只含新页，其余页对象不重传；doc_hash 变化。
+- 在 `max_payload_bytes` 内构造页数最多的文档对象（再多一页就超限）提交：不得返回 `413`；`DPE_MISSING_CONTENT` 的清单未截断时页集合与构造集合相等、后两层为空，截断时三层合计为非空子集（commit 的截断没有体积门槛，HTTP §4.6 的分块页判据不适用）。
 - 对调两页：`missing_pages` 为空，commit 返回 `updated`，delta 为零。
 - 元素对象上传响应的 `missing_blobs`、未分块页对象上传响应的 `missing_content_hashes` 与实际缺失一致（不截断）；分块上传的页对象：`missing_truncated` 为 `false` 时与实际缺失一致，为 `true` 时是实际缺失的非空子集，且未截断时的整个响应体按 JCS 序列化后的 UTF-8 字节数超过 `max_payload_bytes`（http §4.6）。
 - negotiate 对无写授权的 URI → `403` + `DPE_FORBIDDEN`，不返回会话与缺失清单；upload 不重复判定授权（会话可用即放行，commit 才重新授权，core.md §3.4、§5 总则）。
@@ -56,6 +57,7 @@
 - **delete**：删除后原样重试，返回 `DPE_NOT_FOUND`。
 - **会话失效**：过期、已消费、伪造 id、他人会话一律返回 `410` + `DPE_SESSION_EXPIRED`，`retryable: false`；会话不存在不得返回 404。
 - **会话跨版本复用**：开会话并上传后，他人写入该文档（未移除本次提交依赖的对象）；原 commit 得到 `DPE_PRECONDITION_FAILED`，以新 `If-Match` 引用同一会话重新 commit 成功，无需重传内容。
+- **依赖被他人移除**：调用方读到 v1 后他人写入 v2 并去掉页 A；带 `If-Match: v1` 提交引用 A 的 v3 → `DPE_PRECONDITION_FAILED`（前置条件先于可得性）；改用 force 提交同一 v3 → `DPE_MISSING_CONTENT`，`missing` 恰为 A，head 仍为 v2。
 - **分块续传的响应不确定**（服务端断言）：中间块 `202` 响应丢失后原样重发 → `400` + `DPE-Upload-Offset` 头；断点查询不续期（`DPE-Session-Expires` 不变）。客户端「先断点查询再续传」是 SDK 侧义务（core.md §3.4），由两个 SDK 的对等测试覆盖（#49 / #50），非跑分项。
 - 引用属于同一调用者、但属于另一 file_uri 的会话，返回 `410` + `DPE_SESSION_EXPIRED`。
 - **同级写入**：服务端经自身入口修改内容后，`head` 的 doc_hash 变化；来源基于新 doc_hash 的 commit 成功覆盖。
@@ -84,6 +86,8 @@
   - A 在自己的会话中上传 X，首次必须返回 `201`（不因 X 存在于别处而返回 `200`）；`HEAD` blob 的 `DPE-Upload-Offset` 只反映本会话。
 - 上传状态只按本会话判定：同一文档、同一调用者的另一个未提交会话里已上传的元素与 blob，在新会话中首次上传仍为 `201`，blob 的断点偏移仍为 `0`，且仍列入元素上传响应的 `missing_blobs`。服务端对同一文档与调用者复用已打开的会话时，无法构造另一个会话，该项如实 skip。
 - 去重范围下界：本文档当前状态可得的对象不列为缺失。页层见「大文档与逐层协商」（插入一页只缺新页）；元素层与 blob 层：新页复用当前状态已有的元素、并新增一个引用当前状态已有 blob 的元素时，页上传响应只列新元素，新元素上传响应的 `missing_blobs` 为空。
+- 不开会话的引用提交（core §3.3 第 6 步）：新版本引用本文档当前状态已有的页 / 元素而不内联、也不开暂存会话时，commit 成功；delta 与 `get_skeleton` 读回的元素多重集互相印证，读回中未重传的页是完整页对象。文档引用重复页时，重复页来自当前状态、不列为缺失；读回按出现次数重复页对象，delta 按元素多重集计（页出现两次即两份，增加 / 去掉一份分别计入 added / removed）。
+- 混合引用（core §3.3 第 6 步 + §8）：同一 commit 同时引用本文档当前页与他文档页、不开会话时，只把他文档的页列为缺失（`missing` 恰为它）；内联新页引用他文档持有的元素时，只把他文档的元素列为缺失。调用者对该他文档有无写授权不影响结论。
 - 对无写授权的 URI 提交与其当前内容相同的 commit，必须返回 `403`，而不是 `unchanged`。
 - 对无写授权的 URI 做 delete，无论文档是否存在都返回 `403`；对源或目标任一侧无写授权的 move，无论两侧状态如何都返回 `403`（#6 F3）。
 

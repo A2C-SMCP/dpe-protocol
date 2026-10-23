@@ -202,9 +202,7 @@ def commit(
 ) -> httpx.Response:
     """发一次 commit：前置条件按 HTTP §3.2 的载体（条件头；force 在请求体）。"""
     assert not (if_match is not None and if_none_match_star), "条件头互斥（HTTP §3.2）"
-    headers: dict[str, str] = {}
-    if if_match is not None:
-        headers["If-Match"] = f'"{if_match}"'
+    headers = _if_match_headers(if_match)
     if if_none_match_star:
         headers["If-None-Match"] = "*"
     body = document.commit_body()
@@ -269,6 +267,7 @@ __all__ = [
     "chunk_upload",
     "commit",
     "commit_with_session",
+    "commit_without_session",
     "delete",
     "expected_delta",
     "expires_at_header",
@@ -304,6 +303,37 @@ def limits_of(target: Target, *, identity: Identity | None = None) -> Mapping[st
     limits = response.json()["limits"]
     assert isinstance(limits, dict), f"limits 必须是对象：{limits!r}"
     return cast(Mapping[str, int], limits)
+
+
+def _if_match_headers(if_match: str | None) -> dict[str, str]:
+    """``If-Match`` 条件头（HTTP §3.2）：与 ``commit`` 共用同一组装口径。"""
+    return {} if if_match is None else {"If-Match": f'"{if_match}"'}
+
+
+def commit_without_session(
+    target: Target,
+    uri: str,
+    document: WireDocument,
+    *,
+    identity: Identity,
+    pages: Sequence[Mapping[str, Any]] = (),
+    objects: Sequence[Mapping[str, Any]] = (),
+    if_match: str | None = None,
+    force: bool = False,
+) -> httpx.Response:
+    """不开暂存会话的 commit：只内联给定的页 / 元素对象，其余按本文档当前状态引用
+    （core §3.3 第 6 步）。用于验证「不开会话的引用提交」这一路径（#250）。"""
+    headers = _if_match_headers(if_match)
+    body: dict[str, Any] = {"document": document.document}
+    if pages:
+        body["pages"] = list(pages)
+    if objects:
+        body["objects"] = list(objects)
+    if force:
+        body["force"] = True
+    return target.send(
+        "PUT", "documents", identity=identity, params={"uri": uri}, headers=headers, json=body
+    )
 
 
 def negotiate(

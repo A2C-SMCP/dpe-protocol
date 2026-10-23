@@ -7,7 +7,9 @@
 - CORE §3.3：求值顺序——报文校验 → 授权 → 前置条件存在性（428「即使内容未变」）→
   unchanged（先于条件求值，HTTP §3.2 与 CORE §5.2 的幂等）→ 条件求值；``delta`` 是多集差的
   规范量（元素 content_hash 计），跑分器校验它与 get_skeleton 读回互相印证；
-- CORE §5.1：condition 为真的字面值比较（不匹配 → ``DPE_PRECONDITION_FAILED``）。
+- CORE §5.1：condition 为真的字面值比较（不匹配 → ``DPE_PRECONDITION_FAILED``）；
+- CORE §3.3 第 5/6 步：依赖被他人移除时，前置条件先于可得性（412 而不是 400）；改用 force
+  仍报告缺失且不改变文档（#250）。
 """
 
 from __future__ import annotations
@@ -24,7 +26,9 @@ from dpe_conformance.support import (
     assert_problem,
     build_document,
     commit,
+    commit_without_session,
     expected_delta,
+    seed,
     skeleton_multiset,
     text_element,
 )
@@ -307,3 +311,54 @@ def test_commit_force_without_permission_is_forbidden(
     changed = build_document([[text_element("changed")]])
     overwrite = commit(conformance_target, uri, changed, identity=no_force_identity, force=True)
     assert_problem(overwrite, status=403, code="DPE_FORBIDDEN")
+
+
+def test_reference_to_removed_page_without_session(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """core §3.3 第 5/6 步 + §3.4：调用方读到 v1 后他人写入 v2 并去掉页 A。
+    带 ``If-Match: v1`` 提交引用 A 的 v3 → 412（前置条件先于可得性）；改用 force 同一 v3 →
+    400 ``DPE_MISSING_CONTENT``，missing 恰为 A，head 仍为 v2（无效果）。"""
+    uri = conformance_target.uri("commit/removed-dependency")
+    a = text_element("A")
+    version1 = build_document([[a]])
+    seed(conformance_target, uri, version1, identity=full_identity)
+
+    version2 = build_document([[text_element("C")]])
+    written = commit(
+        conformance_target, uri, version2, identity=full_identity, if_match=version1.doc_hash
+    )
+    assert_commit_success(written, status=200, status_text="updated", doc_hash=version2.doc_hash)
+
+    d = text_element("D")
+    version3 = build_document([[a], [d]])
+    stale = commit_without_session(
+        conformance_target,
+        uri,
+        version3,
+        identity=full_identity,
+        pages=[version3.pages[1]],
+        objects=[d],
+        if_match=version1.doc_hash,
+    )
+    assert_problem(stale, status=412, code="DPE_PRECONDITION_FAILED")
+
+    forced = commit_without_session(
+        conformance_target,
+        uri,
+        version3,
+        identity=full_identity,
+        pages=[version3.pages[1]],
+        objects=[d],
+        force=True,
+    )
+    problem = assert_problem(forced, status=400, code="DPE_MISSING_CONTENT")
+    assert problem["missing"] == {
+        "pages": [version3.page_hashes[0]],
+        "content_hashes": [],
+        "blobs": [],
+    }, f"force 也必须报告缺失的页：{problem['missing']!r}"
+
+    head = conformance_target.send("HEAD", "documents", identity=full_identity, params={"uri": uri})
+    assert head.status_code == 200, f"head 失败：{head.status_code}"
+    assert head.headers.get("DPE-Doc-Hash") == version2.doc_hash, "失败的 commit 不得改变 head"
