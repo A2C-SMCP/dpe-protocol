@@ -15,9 +15,8 @@ import shutil
 import sys
 from pathlib import Path
 
-import dpe_hash
 import pytest
-from dpe_sdk.transport import DpeClient
+from dpe_sdk.protocol import SMALL_UPDATE_BYTES
 from e2e_harness import (
     Runner,
     Seen,
@@ -27,6 +26,8 @@ from e2e_harness import (
     foreign_modify,
     make_repo,
     runner,
+    sent_element_hashes,
+    sent_page_hashes,
 )
 from helpers import FixtureRepo, requires_git, run_git
 
@@ -45,7 +46,9 @@ def _writes(requests: list[Seen]) -> list[tuple[str, str]]:
 def test_basic_six_rounds(tmp_path: Path) -> None:
     """基础 6 轮：全量 → 无变化 → 大仓库新提交（#212 流量断言）→ 新分支 → 改名 → 移出 root。"""
     root = tmp_path / "root"
-    big_repo(root / "big", per_month=150)
+    big = big_repo(root / "big", per_month=150)
+    # 夹具不变量：文档内联超过 SMALL_UPDATE_BYTES（提交说明字节数是下限），更新才走差量路径
+    assert len(run_git(big.root, "log", "--format=%B", "main").encode()) > SMALL_UPDATE_BYTES
     make_repo(root / "small", "small 初始化")
     with runner(tmp_path, {"root": str(root), "branches": ["dev"]}) as r:
         # ① 全量
@@ -56,33 +59,44 @@ def test_basic_six_rounds(tmp_path: Path) -> None:
         # ② 无变化：只有 capabilities，counts 为空
         second = r.round()
         assert second.changed() == {}
-        assert [(q.method, q.target) for q in second.requests] == [("GET", "capabilities")]
+        # 精确请求序列只在本地参考服务端下断言（#68 决策 5）
+        if r.local_remote:
+            assert [(q.method, q.target) for q in second.requests] == [("GET", "capabilities")]
 
         # ③ 大仓库当月（2 月）新提交：只传新增的内容对象（#212）
-        with DpeClient(r.upstream) as client:
-            skeleton = client.get_skeleton("git://inc/big")
+        with r.client() as client:
+            skeleton = client.get_skeleton(r.uri("big"))
         assert skeleton is not None and len(skeleton.pages) == 2
         january = skeleton.document.pages[0]
         january_elements = skeleton.pages[0].elements
         advance(root / "big", "2 月的新提交", "2026-02-27T12:00:00+00:00")
         third = r.round()
         assert third.changed() == {"updated": 1}
-        assert _writes(third.requests) == [
-            ("POST", "negotiate"),
-            ("POST", "negotiate"),
-            ("PUT", "documents"),
-        ]
-        first_negotiate, second_negotiate, commit = (
-            q.json() for q in _write_requests(third.requests)
-        )
-        assert "pages" not in first_negotiate  # 只交文档对象
-        assert len(second_negotiate["pages"]) == 1  # 只附带变化的 2 月页
-        assert len(commit["objects"]) == 1 and "pages" not in commit  # 只内联新提交
+        if r.local_remote:
+            assert _writes(third.requests) == [
+                ("POST", "negotiate"),
+                ("POST", "negotiate"),
+                ("PUT", "documents"),
+            ]
+            first_negotiate, second_negotiate, commit = (
+                q.json() for q in _write_requests(third.requests)
+            )
+            assert "pages" not in first_negotiate  # 只交文档对象
+            assert len(second_negotiate["pages"]) == 1  # 只附带变化的 2 月页
+            assert len(commit["objects"]) == 1 and "pages" not in commit  # 只内联新提交
         after = r.assert_converged()
         assert after["big"][1][0] == january == before["big"][1][0]  # 1 月页的 page_hash 不变
-        # 页对象只随第二次 negotiate 出现，且只有新的 2 月页；1 月的元素一次都不出现
-        (feb,) = second_negotiate["pages"]
-        assert dpe_hash.object_hash(feb, "page") == after["big"][1][1] != before["big"][1][1]
+        # 规范性质（外部模式同样断言）：本轮送出的页恰好是变化的 2 月页，送出的元素恰好是
+        # 新增元素。内联与 staging 逐层上传都是合规路径，按集合断言，不绑定请求形状。
+        assert after["big"][1][1] != before["big"][1][1]
+        assert sent_page_hashes(third.requests) == {after["big"][1][1]}
+        with r.client() as client:
+            new_skeleton = client.get_skeleton(r.uri("big"))
+        assert new_skeleton is not None
+        old_elements = set(skeleton.pages[0].elements) | set(skeleton.pages[1].elements)
+        new_elements = set(new_skeleton.pages[1].elements) - old_elements
+        assert len(new_elements) == 1
+        assert sent_element_hashes(third.requests) == new_elements
         for request in third.requests:
             assert not any(e.encode() in request.body for e in january_elements)
 
@@ -92,13 +106,14 @@ def test_basic_six_rounds(tmp_path: Path) -> None:
         _branch(small, "dev", "dev 的独有提交", "2026-01-08T10:00:00+00:00")
         fourth = r.round()
         assert fourth.changed() == {"updated": 1}
-        assert _writes(fourth.requests) == [("PUT", "documents")]
-        (put,) = [q for q in fourth.requests if q.is_write]
-        assert "staging_session" not in put.json()  # 快路径，不开会话
+        if r.local_remote:
+            assert _writes(fourth.requests) == [("PUT", "documents")]
+            (put,) = [q for q in fourth.requests if q.is_write]
+            assert "staging_session" not in put.json()  # 快路径，不开会话
         snapshot = r.assert_converged()
         assert len(snapshot["small"][1]) == len(after["small"][1]) + 1
-        with DpeClient(r.upstream) as client:
-            small_skeleton = client.get_skeleton("git://inc/small")
+        with r.client() as client:
+            small_skeleton = client.get_skeleton(r.uri("small"))
         assert small_skeleton is not None and len(small_skeleton.pages[-1].elements) == 1
 
         # ⑤ 目录改名：只有 move，doc_hash 不变（不重传内容）
@@ -106,7 +121,8 @@ def test_basic_six_rounds(tmp_path: Path) -> None:
         fifth = r.round()
         # 目标 document 总是紧跟 move（#178），内容未变判 unchanged、不发写
         assert fifth.changed() == {"moved": 1, "unchanged": 1}
-        assert _writes(fifth.requests) == [("POST", "move")]
+        if r.local_remote:
+            assert _writes(fifth.requests) == [("POST", "move")]
         moved = r.assert_converged()
         assert moved["renamed"] == snapshot["small"]
 
@@ -114,7 +130,8 @@ def test_basic_six_rounds(tmp_path: Path) -> None:
         shutil.move(str(root / "big"), str(tmp_path / "outside"))
         sixth = r.round()
         assert sixth.changed() == {"deleted": 1}
-        assert _writes(sixth.requests) == [("DELETE", "documents")]
+        if r.local_remote:
+            assert _writes(sixth.requests) == [("DELETE", "documents")]
         assert set(r.assert_converged()) == {"renamed"}
 
 
@@ -139,8 +156,8 @@ def test_branch_pages_s1_s2(tmp_path: Path) -> None:
     config = {"root": str(tmp_path / "root"), "branches": ["zeta", "ötest", "mid", "alpha"]}
 
     def refs(r: Runner) -> list[str]:
-        with DpeClient(r.upstream) as client:
-            skeleton = client.get_skeleton("git://inc/repo")
+        with r.client() as client:
+            skeleton = client.get_skeleton(r.uri("repo"))
         assert skeleton is not None
         return [str((page.page_metadata or {})["ref"]) for page in skeleton.pages]
 
@@ -186,8 +203,8 @@ def test_merge_months_and_force_push_s3_s5(tmp_path: Path) -> None:
         r.round()
         merged = r.assert_converged()["repo"]
         assert len(merged[1]) == 2 and merged[1][0] == one_month[1][0]
-        with DpeClient(r.upstream) as client:
-            skeleton = client.get_skeleton("git://inc/repo")
+        with r.client() as client:
+            skeleton = client.get_skeleton(r.uri("repo"))
         assert skeleton is not None and len(skeleton.pages[1].elements) == 3
 
         # S4：3 月的新提交 → 新增 3 月页，1、2 月页不变
@@ -228,31 +245,35 @@ def test_conflict_policies_s6_s8(tmp_path: Path) -> None:
         r.assert_converged()
 
         # S6
-        theirs = foreign_modify(r.upstream, "git://inc/a")
+        theirs = foreign_modify(r, "a")
         advance(root / "a", "a：他人改写之后的源变化", "2026-01-07T10:00:00+00:00")
         overwritten = r.round()
         assert overwritten.report["outcome"] == "succeeded"
         assert overwritten.changed() == {"updated": 1}
         # 写前判定发现 R ≠ L（冲突），按 source_wins 以重读到的他人值为前置条件提交——经 CAS，
-        # 不 force
-        (commit,) = [q for q in overwritten.requests if q.is_write]
-        assert theirs in commit.headers["if-match"]
-        assert not (commit.json() or {}).get("force")
+        # 不 force。单写解包只在本地参考服务端下断言，外部模式对每个写请求断言同一性质。
+        writes = [q for q in overwritten.requests if q.is_write]
+        assert writes
+        for commit in writes:
+            assert theirs in commit.headers.get("if-match", "")
+            assert not (commit.json() or {}).get("force")
         r.assert_converged()
 
         # S7
-        foreign_delete(r.upstream, "git://inc/a")
+        foreign_delete(r, "a")
         advance(root / "a", "a：他人删除之后的源变化", "2026-01-08T10:00:00+00:00")
         revived = r.round()
         assert revived.report["outcome"] == "succeeded"
         assert revived.changed() == {"created": 1}
-        (recreate,) = [q for q in revived.requests if q.is_write and q.status < 400]
-        assert recreate.headers.get("if-none-match") == "*"  # 以 if_absent 复活
+        recreates = [q for q in revived.requests if q.is_write and q.status < 400]
+        assert recreates
+        for recreate in recreates:
+            assert recreate.headers.get("if-none-match") == "*"  # 以 if_absent 复活
         r.assert_converged()
 
         # S8
         r.policy = {"commit": "report"}
-        foreign_modify(r.upstream, "git://inc/b")
+        foreign_modify(r, "b")
         advance(root / "b", "b：report 下的源变化", "2026-01-09T10:00:00+00:00")
         held = r.round(expect=1)
         assert held.report["outcome"] == "partial"
@@ -333,7 +354,7 @@ def test_report_partial_then_restore_s9c(tmp_path: Path) -> None:
     with runner(tmp_path, {"root": str(root), "branches": []}) as r:
         r.round()
         r.policy = {"commit": "report"}
-        foreign_modify(r.upstream, "git://inc/notes")
+        foreign_modify(r, "notes")
         advance(root / "notes", "notes：report 下的源变化", "2026-01-07T10:00:00+00:00")
         shutil.move(str(root / "scratch"), str(tmp_path / "scratch.away"))
         partial = r.round(expect=1)
@@ -401,8 +422,8 @@ def test_repo_mode_and_since(tmp_path: Path) -> None:
         assert first.changed() == {"created": 1}
         pages = r.assert_converged()["solo"][1]
         assert len(pages) == 2  # 2 月页 + dev 页（1 月被 since 裁掉）
-        with DpeClient(r.upstream) as client:
-            skeleton = client.get_skeleton("git://inc/solo")
+        with r.client() as client:
+            skeleton = client.get_skeleton(r.uri("solo"))
         assert skeleton is not None
         assert [p.page_metadata for p in skeleton.pages] == [
             {"ref": "main", "period": "2026-02"},
