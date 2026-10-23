@@ -114,6 +114,15 @@ def test_closed_schema_violations_are_validation_failures(raw: Any) -> None:
     assert (result.code, result.source, result.retryable) == ("DPE_VALIDATION", "validation", False)
 
 
+def test_page_step_zero_violation_reports_page_position_only() -> None:
+    """core §2.8 第 0 步的位置为对象自身：run 层只补页的位置，不出现多余指针（Issue #246）。"""
+    raw = doc(elements=[{"category": "Title", "text": "\ud800", "bogus": 1}])
+    parsed = parse_item(raw, P)
+    result = failure(parsed.error if isinstance(parsed, DocumentSegment) else parsed)
+    assert (result.code, result.source) == ("DPE_VALIDATION", "validation")
+    assert result.message.endswith("（位置 /pages/0）")
+
+
 def test_error_items() -> None:
     reported = failure(
         parse_item(

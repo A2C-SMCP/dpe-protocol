@@ -194,7 +194,10 @@ fn invalid_vectors_page_standalone() {
             // /pages/1/... 的用例，这里需按 path 的页下标取页
             let label = case["name"].as_str().unwrap();
             let contract = case["contract"].as_str().unwrap();
-            let err = ExpandedPage::from_value(&case["input"]["pages"][0], contract)
+            let Some(input) = case.get("input") else {
+                continue; // input_json 用例（孤立代理项）止于严格解析阶段，不经页模型
+            };
+            let err = ExpandedPage::from_value(&input["pages"][0], contract)
                 .map(|_| ())
                 .expect_err(label);
             assert_eq!(err.code(), case["code"].as_str().unwrap(), "{label}: {err}");

@@ -1,7 +1,7 @@
 {
   "name": "invalid_objects",
   "kind": "invalid",
-  "description": "拒绝类一致性用例（core.md §2.8 校验顺序）：每条输入都 MUST 被拒绝且错误码一致；只有一处违例的用例另断言违例位置 path（RFC 6901）。多处违例的用例只断言错误码，用来固定校验顺序。",
+  "description": "拒绝类一致性用例（core.md §2.8 校验顺序）：每条输入都 MUST 被拒绝且错误码一致；声明了违例位置 path（RFC 6901）的用例，位置也 MUST 一致。跨步骤的多处违例位置由校验顺序唯一确定，这类用例可以声明 path；不带 path 的用例只断言错误码（含同一步骤内位置由实现决定的情形），用来固定校验顺序。",
   "cases": [
     {
       "name": "element_not_object",
@@ -550,6 +550,7 @@
       "object_kind": "element",
       "contract": "dpe1",
       "code": "DPE_VALIDATION",
+      "path": "",
       "input_json": "{\"category\": \"Video\", \"text\": \"\\ud800\"}"
     },
     {
@@ -557,7 +558,80 @@
       "object_kind": "page",
       "contract": "dpe1",
       "code": "DPE_VALIDATION",
+      "path": "",
       "input_json": "{\"title\": \"\\ud800\", \"elements\": [\"a\"]}"
+    },
+    {
+      "name": "ijson_before_undefined_field_value",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"category\": \"Title\", \"text\": \"\\ud800\", \"bogus\": 1}"
+    },
+    {
+      "name": "ijson_before_undefined_field_key",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"category\": \"Title\", \"metadata\": {\"\\ud800\": 1}, \"bogus\": 1}"
+    },
+    {
+      "name": "ijson_before_missing_required",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"text\": \"\\ud800\"}"
+    },
+    {
+      "name": "ijson_before_category_not_string",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"category\": 1, \"text\": \"\\ud800\"}"
+    },
+    {
+      "name": "ijson_before_field_type",
+      "object_kind": "element",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"category\": \"Title\", \"text\": 1, \"metadata\": {\"a\": \"\\ud800\"}}"
+    },
+    {
+      "name": "ijson_before_file_type",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"file_type\": \"Markdown\", \"title\": \"\\ud800\", \"pages\": []}"
+    },
+    {
+      "name": "ijson_before_page_undefined_field",
+      "object_kind": "page",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"title\": \"\\ud800\", \"elements\": [], \"bogus\": 1}"
+    },
+    {
+      "name": "ijson_before_document_undefined_field",
+      "object_kind": "document",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"file_type\": \"md\", \"pages\": [], \"bogus\": \"\\ud800\"}"
+    },
+    {
+      "name": "ijson_before_expanded_document_field",
+      "object_kind": "expanded_document",
+      "contract": "dpe1",
+      "code": "DPE_VALIDATION",
+      "path": "",
+      "input_json": "{\"file_type\": \"md\", \"zz\": 1, \"pages\": [{\"elements\": [{\"category\": \"Title\", \"text\": \"\\ud800\"}]}]}"
     },
     {
       "name": "ijson_duplicate_key",

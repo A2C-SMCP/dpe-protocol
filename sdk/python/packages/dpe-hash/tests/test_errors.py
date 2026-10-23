@@ -316,23 +316,50 @@ def test_expanded_view_checks_document_fields_before_pages() -> None:
     )
 
 
-def test_ijson_precedes_category_and_contract_checks() -> None:
-    """core §2.8 第 0 步：孤立代理项先于 category / 子 hash 前缀判定，位置为对象自身。"""
+def test_ijson_precedes_all_other_checks() -> None:
+    """core §2.8 第 0 步：孤立代理项先于第 1–4 步的所有违例，位置为对象自身（Issue #246）。
+
+    对象级入口直接收到已解析的值；跨步骤的多处违例按最早步骤（第 0 步）确定位置。
+    """
+    s = "\ud800"
+    elements = [
+        {"category": "Title", "text": s, "bogus": 1},  # 未定义字段（值里、键名里各一）
+        {"category": "Title", "metadata": {s: 1}, "bogus": 1},
+        {"text": s},  # 缺必填字段
+        {"category": 1, "text": s},  # category 非字符串
+        {"category": "Title", "text": 1, "metadata": {"a": s}},  # 内容字段类型错误
+        {"category": "Video", "text": s},  # category 未知
+    ]
+    for element in elements:
+        _raises(InvalidUnicodeError, "DPE_VALIDATION", "", content_hash, element)
+        _raises(InvalidUnicodeError, "DPE_VALIDATION", "", object_hash, element, "element")
+        _raises(InvalidUnicodeError, "DPE_VALIDATION", "", children, element, "element")
+
+    _raises(InvalidUnicodeError, "DPE_VALIDATION", "", page_hash, {"title": s, "bogus": 1}, [])
+    _raises(InvalidUnicodeError, "DPE_VALIDATION", "", page_hash, {}, [s])
+    for page in ({"elements": [s]}, {"title": s, "elements": [], "bogus": 1}):
+        _raises(InvalidUnicodeError, "DPE_VALIDATION", "", object_hash, page, "page")
+        _raises(InvalidUnicodeError, "DPE_VALIDATION", "", children, page, "page")
+
+    document = {"file_type": "md", "pages": [], "bogus": s}
+    _raises(InvalidUnicodeError, "DPE_VALIDATION", "", doc_hash, document, [])
     _raises(
         InvalidUnicodeError,
         "DPE_VALIDATION",
         "",
-        object_hash,
-        {"category": "Video", "text": "\ud800"},
-        "element",
+        doc_hash,
+        {"file_type": "Markdown", "title": s},
+        [],
     )
-    _raises(InvalidUnicodeError, "DPE_VALIDATION", "", page_hash, {"title": "\ud800"}, ["a" * 64])
+    _raises(InvalidUnicodeError, "DPE_VALIDATION", "", object_hash, document, "document")
+    _raises(InvalidUnicodeError, "DPE_VALIDATION", "", children, document, "document")
+
     _raises(
         InvalidUnicodeError,
         "DPE_VALIDATION",
         "",
         document_hashes,
-        {"file_type": "md", "pages": [{"elements": [{"category": "Video", "text": "\ud800"}]}]},
+        {"file_type": "md", "zz": 1, "pages": [{"elements": [{"category": "Title", "text": s}]}]},
     )
 
 
