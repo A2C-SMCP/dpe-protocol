@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from dpe_hash import (
 )
 from dpe_hash import ValidationError as DpeValidationError
 from dpe_sdk import Document, DocumentObject, ElementObject, Page, PageObject
+from dpe_sdk._plain import plain
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
@@ -209,6 +212,100 @@ def test_lone_surrogate_rejected_at_parse_phase() -> None:
             ElementObject.model_validate_json(raw)
         assert type(info.value) is InvalidUnicodeError
         assert (info.value.code, info.value.path) == ("DPE_VALIDATION", "")
+
+
+def _nested(levels: int) -> dict[str, Any]:
+    """恰好 levels 层的对象链，最深一层是空对象。"""
+    value: dict[str, Any] = {}
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
+#: 五个模型的深链入口：模型类与一份合法骨架（深链放在各自的 metadata 字段）
+_DEEP_MODELS: list[tuple[type[Any], Callable[[dict[str, Any]], dict[str, Any]]]] = [
+    (ElementObject, lambda deep: {"category": "Title", "metadata": deep}),
+    (PageObject, lambda deep: {"page_metadata": deep, "elements": []}),
+    (DocumentObject, lambda deep: {"file_type": "md", "doc_metadata": deep, "pages": []}),
+    (Page, lambda deep: {"page_metadata": deep, "elements": []}),
+    (Document, lambda deep: {"file_type": "md", "doc_metadata": deep, "pages": []}),
+]
+
+
+@pytest.mark.parametrize(("model", "make"), _DEEP_MODELS)
+@pytest.mark.parametrize("depth", [500, 5000, 100_000])
+@pytest.mark.parametrize("entry", ["model_validate", "kwargs"])
+def test_all_models_deep_input_is_validation(
+    model: type[Any],
+    make: Callable[[dict[str, Any]], dict[str, Any]],
+    depth: int,
+    entry: str,
+) -> None:
+    """5 个模型的对象级入口（含关键字构造）在超深输入上给出 DPE_VALIDATION，
+    而不是 RecursionError。"""
+    data = make(_nested(depth))
+    with pytest.raises(DpeValidationError) as info:
+        if entry == "model_validate":
+            model.model_validate(data)
+        else:
+            model(**data)
+    assert (info.value.code, info.value.path) == ("DPE_VALIDATION", "")
+
+
+def test_deep_text_input_is_validation_not_recursion() -> None:
+    """文本入口在 ``parse_ijson`` 能解析的超深文本上给出 DPE_VALIDATION。深度取当前解释器
+    窗口内较深的点（3.11: 700；3.12: 5000），确保走到模型层的第 0 步而不是解析阶段拒绝。"""
+    depth = 5000 if sys.version_info >= (3, 12) else 700
+    deep = '{"k": ' * (depth - 1) + "{}" + "}" * (depth - 1)
+    text = '{"category": "Title", "text": "x", "metadata": ' + deep + "}"
+    with pytest.raises(DpeValidationError) as info:
+        ElementObject.model_validate_json(text)
+    assert (info.value.code, info.value.path) == ("DPE_VALIDATION", "")
+    assert "嵌套深度" in str(info.value)  # 确实走到模型层第 0 步，而不是解析阶段先拒绝
+
+
+def test_depth_boundary_matches_nesting_depth_vectors() -> None:
+    """元素对象深度的 64/65 边界与 ``vectors/nesting_depth.json`` 口径一致。"""
+    ElementObject.model_validate({"category": "Title", "metadata": _nested(63)})
+    with pytest.raises(DpeValidationError) as info:
+        ElementObject.model_validate({"category": "Title", "metadata": _nested(64)})
+    assert (info.value.code, info.value.path) == ("DPE_VALIDATION", "")
+
+
+def test_plain_copies_deep_values_iteratively() -> None:
+    """``plain`` 的迭代深拷贝：100000 层不递归，且与输入隔离。"""
+    original = _nested(100_000)
+    copied = plain(original)
+    assert copied is not original and copied["k"] is not original["k"]
+    node = copied
+    for _ in range(99_999):
+        node = node["k"]
+    assert node == {}
+
+
+def test_plain_converts_models_and_sequences() -> None:
+    element = ElementObject(category="Title", metadata={"a": (1, 2)})
+    assert plain(element) == {"category": "Title", "metadata": {"a": [1, 2]}}
+
+
+def test_plain_rejects_cycles() -> None:
+    """环状引用无法由 JSON 文本产生；迭代实现必须终止并报 DPE_VALIDATION。"""
+    cyclic: dict[str, Any] = {}
+    cyclic["self"] = cyclic
+    with pytest.raises(DpeValidationError) as info:
+        plain(cyclic)
+    assert (info.value.code, info.value.path) == ("DPE_VALIDATION", "")
+    with pytest.raises(DpeValidationError):
+        ElementObject.model_validate({"category": "Title", "metadata": cyclic})
+
+
+def test_plain_preserves_shared_children_without_false_cycle() -> None:
+    """共享子对象是 DAG 不是环：不得误报，且按既有语义各自复制一份。"""
+    shared = {"x": 1}
+    copied = plain({"a": shared, "b": shared})
+    assert copied == {"a": {"x": 1}, "b": {"x": 1}}
+    assert copied["a"] is not copied["b"]
+    ElementObject.model_validate({"category": "Title", "metadata": {"a": shared, "b": shared}})
 
 
 # ---------------------------------------------------------------------------

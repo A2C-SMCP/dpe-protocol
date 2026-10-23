@@ -527,7 +527,7 @@ def _expect(response: Response, status: int = 200) -> None:
 def _parse(response: Response, model: type[_M], context: Mapping[str, Any] | None = None) -> _M:
     try:
         return model.model_validate(parse_ijson(response.body), context=context)
-    except (DpeHashError, PydanticValidationError) as exc:
+    except (DpeHashError, PydanticValidationError, RecursionError) as exc:
         raise UnexpectedResponseError(
             f"响应体不是合法的 {model.__name__}：{exc}", status=response.status
         ) from None

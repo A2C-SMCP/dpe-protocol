@@ -249,3 +249,76 @@ def test_segment_rule_violations_fail_the_whole_document_once() -> None:
     assembler.feed(seg("e", first=True, continued=True))
     assert [failure(e).code for e in assembler.finish()] == ["segment_unclosed"]
     assert assembler.finish() == []
+
+
+def _nested(levels: int) -> dict[str, Any]:
+    """恰好 levels 层的对象链，最深一层是空对象。"""
+    value: dict[str, Any] = {}
+    for _ in range(levels - 1):
+        value = {"k": value}
+    return value
+
+
+def test_deep_page_is_validation_failure_not_recursion() -> None:
+    """插件输出超深页：得到 DPE_VALIDATION 的条目失败，而不是 RecursionError。"""
+    deep = _nested(100_000)
+    result = segment(
+        parse_item(
+            doc(elements=[{"category": "NarrativeText", "text": "t", "metadata": deep}]),
+            P,
+        )
+    )
+    assert result.error is not None
+    assert result.error.code == "DPE_VALIDATION"
+
+
+def test_element_depth_does_not_preempt_earlier_element_validation() -> None:
+    """§2.8 逐个对象：元素 0 的 category 先于元素 1 的深度，深度预扫不得抢先报错。"""
+    raw = doc(
+        elements=[
+            {"category": "Nope"},
+            {"category": "Title", "metadata": _nested(64)},
+        ]
+    )
+    result = segment(parse_item(raw, P))
+    assert result.error is not None
+    assert result.error.code == "DPE_CATEGORY_UNKNOWN"
+
+
+def test_document_depth_does_not_preempt_page_validation() -> None:
+    """connector §6.6：第 2 步页/元素校验先于第 4 步文档层校验，文档深度不得抢先报错。"""
+    raw = {
+        "kind": "document",
+        "file_uri": P + "mixed.md",
+        "document": {"file_type": "md", "doc_metadata": _nested(64)},
+        "pages": [{"elements": [{"category": "Nope"}]}],
+    }
+    result = segment(parse_item(raw, P))
+    assert result.error is not None
+    assert result.error.code == "DPE_CATEGORY_UNKNOWN"
+
+
+def test_run_depth_boundary_matches_the_vectors() -> None:
+    """run 层的 64/65 边界与 ``vectors/nesting_depth.json`` 口径一致：恰好 64 层接受。"""
+    # 页：page_metadata 63 层 → 页深度 64；64 层 → 65
+    for name, deep, accepted in (("page", 63, True), ("page-over", 64, False)):
+        page_raw: dict[str, Any] = {
+            "kind": "document",
+            "file_uri": P + name + ".md",
+            "document": {"file_type": "md"},
+            "pages": [{"page_metadata": _nested(deep), "elements": []}],
+        }
+        result = segment(parse_item(page_raw, P))
+        assert (result.error is None) is accepted, name
+
+    # 元素：metadata 63 层 → 元素深度 64；64 层 → 65
+    for name, deep, accepted in (("el", 63, True), ("el-over", 64, False)):
+        result = segment(
+            parse_item(
+                doc(
+                    elements=[{"category": "NarrativeText", "text": "t", "metadata": _nested(deep)}]
+                ),
+                P,
+            )
+        )
+        assert (result.error is None) is accepted, name

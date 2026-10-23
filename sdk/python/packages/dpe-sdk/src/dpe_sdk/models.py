@@ -40,21 +40,9 @@ from pydantic import (
 )
 from pydantic import ValidationError as PydanticValidationError
 
+from dpe_sdk._plain import plain as _plain
+
 __all__ = ["Document", "DocumentObject", "ElementObject", "Page", "PageObject"]
-
-
-def _plain(value: Any) -> Any:
-    """深拷贝成纯 JSON 值：模型实例取其序列化结果，Mapping → dict，tuple → list。
-
-    校验与模型都基于这份拷贝，调用方之后修改自己的 dict 不会影响模型。
-    """
-    if isinstance(value, BaseModel):
-        value = value.model_dump()
-    if isinstance(value, Mapping):
-        return {k: _plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    return value
 
 
 def _contract(info: ValidationInfo) -> str:

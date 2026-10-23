@@ -17,7 +17,6 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
-import copy
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -25,6 +24,7 @@ from typing import Any
 import dpe_hash
 from dpe_hash import DpeHashError
 
+from dpe_sdk._plain import plain
 from dpe_sdk.models import Page
 from dpe_sdk.run.errors import ItemFailure, ProtocolFailure
 
@@ -310,7 +310,11 @@ def _parse_document(raw: dict[str, Any], uri_prefix: str) -> DocumentSegment | I
         if "pages" in document:
             segment.error = _invalid("document 不得含 pages（页由产出项给出）", file_uri=uri)
             return segment
-        segment.document = copy.deepcopy(document)
+        try:
+            segment.document = plain(document)
+        except DpeHashError as exc:
+            segment.error = _invalid(exc.message, file_uri=uri)
+            return segment
     elif "document" in raw:
         segment.error = _invalid("document 不得为 null", file_uri=uri)
         return segment
@@ -334,7 +338,15 @@ def _parse_page(page: Any, index: int) -> tuple[dict[str, Any], list[BlobSlot]] 
     at = f"/pages/{index}"
     if not isinstance(page, dict):
         return _invalid(f"页必须是对象（位置 {at}）")
-    working = copy.deepcopy(page)
+    try:
+        working = plain(page)
+    except DpeHashError as exc:
+        return ItemFailure(exc.code, f"{exc.message}（位置 {at}）", source="validation")
+    if dpe_hash.nesting_depth(working, "elements") > dpe_hash.MAX_NESTING_DEPTH:
+        return _invalid(
+            f"页对象的嵌套深度超过上限 {dpe_hash.MAX_NESTING_DEPTH} 层"
+            f"（core §2.8 第 0 步）（位置 {at}）"
+        )
     sources: list[tuple[int, Any]] = []
     elements = working.get("elements")
     if isinstance(elements, list):
