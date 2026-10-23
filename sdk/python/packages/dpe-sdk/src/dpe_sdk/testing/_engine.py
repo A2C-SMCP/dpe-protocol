@@ -23,12 +23,11 @@ from functools import partial
 from typing import Any, Literal, Protocol, TypeVar
 
 import dpe_hash
-from dpe_hash import DpeHashError, has_invalid_unicode
+from dpe_hash import DpeHashError, parse_ijson
 
 # RFC 6901、JCS 与 UTF-16 码元序工具复用 dpe_hash 的同一份实现（dpe-sdk 精确依赖同版本 dpe-hash）
 from dpe_hash.jcs import jcs, pointer, utf16_key
 
-from dpe_sdk import _ijson
 from dpe_sdk.errors import (
     AlreadyExistsError,
     ContractUnsupportedError,
@@ -282,12 +281,9 @@ def _parse_body(body: bytes, limit: int) -> Any:
 def _parse_json(body: bytes) -> Any:
     """I-JSON 解析（core §2.8 第 0 步）；分块到齐后的字节同样经这里解析。"""
     try:
-        data = _ijson.loads(body)
+        return parse_ijson(body)
     except DpeHashError as exc:
         raise from_hash_error(exc) from None
-    if has_invalid_unicode(data):
-        raise ValidationError("字符串或对象键含孤立代理项，报文不是 I-JSON")
-    return data
 
 
 def _envelope(data: Any, allowed: frozenset[str]) -> dict[str, Any]:

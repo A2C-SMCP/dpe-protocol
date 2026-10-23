@@ -8,7 +8,7 @@
 //! （北极星 P2），实现不得引入任何保留键。数值字面量在这里自行校验语法后，逐字面量交给
 //! serde_json 构造 `Number`（该路径不含用户对象，不存在上述歧义）。
 //!
-//! 与 Python dpe-sdk 的 `_ijson.loads` 行为对等：违规同为 `DPE_VALIDATION`、位置为对象自身。
+//! 与 Python `dpe_hash.parse_ijson` 行为对等：违规同为 `DPE_VALIDATION`、位置为对象自身。
 //! 解析器的防护上限见 [`PARSE_DEPTH_GUARD`]：它只防递归耗尽栈，不对应规范的嵌套深度上界
 //! （core §2.8，由 `crate::depth::check_depth` 按对象自身判定）。独立的解析实现仍在
 //! `tests/common/mod.rs`（只用于读向量夹具，不依赖本模块）。

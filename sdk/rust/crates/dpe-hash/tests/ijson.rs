@@ -45,6 +45,86 @@ fn invalid_vector_input_json() {
     assert!(overflow >= 2, "向量应有数值越界用例");
 }
 
+/// 0.4.0 的解析语义原样保留，与 Python ``tests/test_ijson.py`` 的
+/// ``v0_4_semantics_preserved_{rejects,accepts}`` 使用同一组输入（不含仅 Python 可构造的
+/// bytes / 原始代理项 / 无显式深度上限用例）。
+#[test]
+fn v0_4_semantics_preserved() {
+    let rejected = [
+        // 重复键（任意深度）
+        r#"{"category": "Title", "category": "Video"}"#,
+        r#"{"a": {"b": 1, "b": 2}}"#,
+        r#"[{"a": 1, "a": 1}]"#,
+        // 非 JSON 数值字面量
+        r#"{"x": NaN}"#,
+        r#"{"x": Infinity}"#,
+        r#"{"x": -Infinity}"#,
+        // 坏 JSON：结构、转义、控制字符
+        r#"{"category": "Title""#,
+        r#"{"a": 1,}"#,
+        "[1,]",
+        r#"{"a" 1}"#,
+        "{a: 1}",
+        "[1 2]",
+        "{,}",
+        "",
+        "   ",
+        "1 2",
+        "truex",
+        r#"{"a":}"#,
+        "{",
+        r#"{"a": "\x"}"#,
+        r#"{"a": "\u12G4"}"#,
+        r#"{"a": "\u123"}"#,
+        r#"{"a": "\uD834"}"#,
+        r#"{"a": "\uDD1E"}"#,
+        r#"{"a": "\uD834A"}"#,
+        "{\"a\": \"\t\"}",
+        "{\"a\": \"\u{0000}\"}",
+        // 数字语法
+        "01",
+        "-",
+        "+1",
+        ".5",
+        "1.",
+        "1e",
+        "1e+",
+        "- 1",
+        "0x1",
+        "1_000",
+    ];
+    for text in rejected {
+        let e = parse_ijson(text).expect_err(text);
+        assert_eq!(e.kind(), ErrorKind::Validation, "{text}");
+        assert_eq!(e.code(), "DPE_VALIDATION", "{text}");
+        assert_eq!(e.path(), "", "{text}");
+    }
+
+    let accepted = [
+        r#"{"a": [1, 2.5, "x", null, true], "b": {"c": []}, "d": 9007199254740991}"#,
+        r#"{"s": "中文 emoji 😀 A 𝄞 \" \\ \/ \b \f \n \r \t"}"#,
+        r#"{"n": [-0, 0.5, 1e2, 1E+2, 1e-2, 1.0, 0.1]}"#,
+        "[]",
+        "{}",
+        "[[[[[1]]]]]",
+        "{\"k\": \"\u{7f}\u{10ffff}\"}",
+        r#"{"a": "\u0000"}"#,
+        r#"{"𝄞": "𝄞"}"#,
+        r#"{"a": "𝄞 x\ty", "b": "A"}"#,
+        "0",
+        "-0",
+        "0.5",
+        "1e2",
+        "1E+2",
+        "1e-2",
+        "9007199254740993",
+        "1e400",
+    ];
+    for text in accepted {
+        parse_ijson(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+    }
+}
+
 /// 重复键在任意深度都被拒绝（对象嵌套、对象数组内）。
 #[test]
 fn duplicate_keys_rejected_at_any_depth() {

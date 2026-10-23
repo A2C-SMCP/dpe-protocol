@@ -38,16 +38,23 @@ class _Invalid(Exception):
 
 
 def has_invalid_unicode(value: Any) -> bool:
-    """I-JSON 检查：字符串或对象键中是否含孤立代理项（core §2.8 第 0 步）。"""
-    if isinstance(value, str):
-        return _SURROGATE.search(value) is not None
-    if isinstance(value, Mapping):
-        return any(
-            (isinstance(k, str) and _SURROGATE.search(k) is not None) or has_invalid_unicode(v)
-            for k, v in value.items()
-        )
-    if isinstance(value, (list, tuple)):
-        return any(has_invalid_unicode(v) for v in value)
+    """I-JSON 检查：字符串或对象键中是否含孤立代理项（core §2.8 第 0 步）。
+
+    迭代扫描（不递归），深报文不会因解释器递归上限被误判。
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if _SURROGATE.search(item) is not None:
+                return True
+        elif isinstance(item, Mapping):
+            for key, child in item.items():
+                if isinstance(key, str) and _SURROGATE.search(key) is not None:
+                    return True
+                stack.append(child)
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
     return False
 
 

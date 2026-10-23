@@ -12,12 +12,10 @@ import json
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from dpe_hash import ValidationError
+from dpe_hash import ValidationError, parse_ijson
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic import ValidationError as PydanticValidationError
 
-from dpe_sdk import _ijson
-from dpe_sdk.run._json import has_lone_surrogate
 from dpe_sdk.run.errors import ProtocolFailure
 
 __all__ = [
@@ -113,11 +111,9 @@ class Response:
 def parse_response(line: bytes) -> Response:
     """解析插件发来的一行；不是合法的 JSON-RPC 2.0 响应即抛 ``ProtocolFailure``。"""
     try:
-        message = _ijson.loads(line)
+        message = parse_ijson(line)
     except ValidationError as exc:
         raise ProtocolFailure(f"插件消息不是合法的 I-JSON（§6.2）：{exc}") from None
-    if has_lone_surrogate(message):
-        raise ProtocolFailure("插件消息含孤立代理项，不是 I-JSON（§6.2）")
     if isinstance(message, list):
         raise ProtocolFailure("插件发送了 JSON-RPC 批量数组（§6.2）")
     if not isinstance(message, dict):

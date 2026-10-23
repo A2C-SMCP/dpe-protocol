@@ -26,6 +26,7 @@ from dpe_hash import (
     nesting_depth,
     object_hash,
     page_hash,
+    parse_ijson,
 )
 
 V = "DPE_VALIDATION"
@@ -65,6 +66,24 @@ def test_nesting_depth_vector_entries(vectors_dir: Path) -> None:
                 continue
             with pytest.raises(DpeHashError) as info:
                 call(case["input"], case["contract"])
+            assert info.value.code == case["code"], label
+            if "path" in case:
+                assert info.value.path == case["path"], label
+
+
+def test_text_entry_agrees_with_object_entry(vectors_dir: Path) -> None:
+    """``input_json`` 经 ``parse_ijson`` 后与 ``input`` 直接走对象级入口同判（core §2.8）。"""
+    vec = _load(vectors_dir)
+    for case in vec["cases"]:
+        label = f"{vec['name']}/{case['name']}"
+        parsed = parse_ijson(case["input_json"])
+        assert parsed == case["input"], label
+        for call in _entries(case["object_kind"]):
+            if case.get("accept"):
+                call(parsed, case["contract"])
+                continue
+            with pytest.raises(DpeHashError) as info:
+                call(parsed, case["contract"])
             assert info.value.code == case["code"], label
             if "path" in case:
                 assert info.value.path == case["path"], label

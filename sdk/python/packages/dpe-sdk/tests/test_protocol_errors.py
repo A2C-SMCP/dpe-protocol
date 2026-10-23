@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import dpe_hash
 import pytest
 from dpe_sdk import errors
-from dpe_sdk.wire import Missing
+from dpe_sdk.protocol import Response, _parse, error_from_response
+from dpe_sdk.wire import Capabilities, Missing
 
 #: core §6 错误码表：code → retryable
 CORE_ERROR_TABLE = {
@@ -197,3 +199,43 @@ def test_from_problem_ignores_declared_retryable_for_known_codes() -> None:
         }
     )
     assert isinstance(truncated, errors.MissingContentError) and truncated.truncated is False
+
+
+#: 最小的合法 capabilities 响应（HTTP 绑定 §4.1）
+_CAPABILITIES = {
+    "protocol": "dpe/1",
+    "hash_contracts": ["dpe1"],
+    "limits": {
+        "max_payload_bytes": 1,
+        "page_max_bytes": 1,
+        "staging_ttl_seconds": 3600,
+        "blob_max_bytes": 1,
+        "blob_chunk_bytes": 1,
+        "batch_head_max": 1,
+        "list_page_max": 1,
+    },
+    "content_encodings": [],
+    "features": [],
+}
+
+
+def test_response_with_lone_surrogate_in_non_dpe_field_is_rejected() -> None:
+    """响应信封对未知成员宽容（extra=ignore），但整个报文 MUST 是 I-JSON（core §2.8）：
+    非 DPE 字段中的孤立代理项同样在解析阶段拒绝。"""
+    # 对照：fixture 本身合法
+    _parse(Response(200, {}, json.dumps(_CAPABILITIES).encode()), Capabilities)
+    body = json.dumps({**_CAPABILITIES, "extra": "\ud800"}).encode()
+    with pytest.raises(errors.UnexpectedResponseError) as info:
+        _parse(Response(200, {}, body), Capabilities)
+    assert "孤立代理项" in str(info.value)  # 拒绝原因必须是代理项，而非模型字段漂移
+
+
+def test_problem_with_lone_surrogate_is_not_a_problem() -> None:
+    """problem 体不是 I-JSON 时视同没有 problem：按 ``DPE-Error-Code`` 头回落，否则非协议错误。"""
+    body = b'{"code": "DPE_VALIDATION", "detail": "\\ud800"}'
+    headers = {"content-type": "application/problem+json"}
+    assert isinstance(
+        error_from_response(Response(400, headers, body)), errors.UnexpectedResponseError
+    )
+    with_code = Response(400, {**headers, "DPE-Error-Code": "DPE_VALIDATION"}, body)
+    assert isinstance(error_from_response(with_code), errors.ValidationError)

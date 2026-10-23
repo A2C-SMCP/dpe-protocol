@@ -69,11 +69,10 @@ from urllib.parse import quote
 import dpe_hash
 
 # Retry-After 的解析（HTTP 绑定 §5）在 dpe-hash，与跑分器共用；此处重新导出，公开路径不变
-from dpe_hash import DpeHashError, retry_after_seconds
+from dpe_hash import DpeHashError, parse_ijson, retry_after_seconds
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
-from dpe_sdk import _ijson
 from dpe_sdk.errors import (
     AlreadyExistsError,
     ContractUnsupportedError,
@@ -380,7 +379,7 @@ def _problem(response: Response) -> Mapping[str, Any] | None:
     if _media_type(response) != _PROBLEM_JSON or not response.body:
         return None
     try:
-        problem = _ijson.loads(response.body)
+        problem = parse_ijson(response.body)
     except DpeHashError:
         return None
     if isinstance(problem, Mapping):
@@ -527,7 +526,7 @@ def _expect(response: Response, status: int = 200) -> None:
 
 def _parse(response: Response, model: type[_M], context: Mapping[str, Any] | None = None) -> _M:
     try:
-        return model.model_validate(_ijson.loads(response.body), context=context)
+        return model.model_validate(parse_ijson(response.body), context=context)
     except (DpeHashError, PydanticValidationError) as exc:
         raise UnexpectedResponseError(
             f"响应体不是合法的 {model.__name__}：{exc}", status=response.status
