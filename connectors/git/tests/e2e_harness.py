@@ -19,8 +19,6 @@ CA 的 remote），``DPE_E2E_URI_PREFIX`` 是可配置的根前缀（每次运�
 
 from __future__ import annotations
 
-import contextlib
-import gzip
 import json
 import os
 import secrets
@@ -30,18 +28,19 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.client import HTTPConnection, HTTPSConnection
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 import dpe_hash
 import httpx
 import pytest
+from _relay import handler_for, redact, redact_headers, relative_path
 from dpe_sdk.credentials import StaticCredentialProvider
 from dpe_sdk.errors import NotFoundError, PreconditionFailedError
 from dpe_sdk.transport import DpeClient
@@ -67,8 +66,6 @@ ENV_TIMEOUT = "DPE_E2E_TIMEOUT"
 LOCAL_CREDENTIAL_ENV = "DPE_E2E_LOCAL_AUTHORIZATION"
 #: 缺省根前缀；每次运行追加唯一后缀
 DEFAULT_ROOT = "git://"
-#: 脱敏时替换凭证值的固定标记
-REDACTED = "[REDACTED]"
 
 #: 超时上限（可经 ``DPE_E2E_TIMEOUT`` 配置）：防止 CI 卡死
 TIMEOUT = float(os.environ.get(ENV_TIMEOUT, "120"))
@@ -79,13 +76,6 @@ def _secret_values(credential: str | None) -> tuple[str, ...]:
     if not credential:
         return ()
     return tuple(dict.fromkeys([credential, *credential.split(None, 1)[1:]]))
-
-
-def _redact(text: str, secrets: Sequence[str]) -> str:
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, REDACTED)
-    return text
 
 
 def _normalized_root(root: str) -> str:
@@ -234,14 +224,12 @@ class Seen:
         )
 
 
-_HOP = {"connection", "keep-alive", "transfer-encoding", "host"}
-
-
 class RecordingProxy:
     """透明转发到 ``upstream``，记录全部请求；``hold_next_write`` 后扣住下一个写请求的响应。
 
     客户端到代理是明文 HTTP；上游按 URL 的 scheme 选 HTTP / HTTPS，并按 scheme 补默认端口
-    （#68）。``authorization`` 头在记录时脱敏，转发时原样保留。
+    （#68）。``authorization`` 头在记录时脱敏，转发时原样保留。转发本身与 ``TLSProxy``
+    共用 ``_relay.RelayingHandler``。
     """
 
     def __init__(
@@ -275,90 +263,41 @@ class RecordingProxy:
         self.held_request: Seen | None = None
         self.held = threading.Event()
         self._release = threading.Event()
-        proxy = self
-
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def _forward(self) -> None:
-                try:
-                    self._relay()
-                except Exception as exc:  # 代理自身的故障：记下原因、回 502，由用例断言
-                    proxy.errors.append(
-                        _redact(f"{self.command} {self.path}: {exc!r}", proxy._secrets)
-                    )
-                    with contextlib.suppress(OSError):
-                        self.send_error(502)
-
-            def _relay(self) -> None:
-                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
-                    raise AssertionError("记录代理不支持 chunked 请求体")
-                length = int(self.headers.get("Content-Length") or 0)
-                body = self.rfile.read(length) if length else b""
-                headers = {k: v for k, v in self.headers.items() if k.lower() not in _HOP}
-                upstream = proxy._connect()
-                try:
-                    upstream.request(self.command, self.path, body=body or None, headers=headers)
-                    reply = upstream.getresponse()
-                    data = reply.read()
-                finally:
-                    upstream.close()
-                raw = body
-                if raw and (self.headers.get("Content-Encoding") or "").lower() == "gzip":
-                    raw = gzip.decompress(raw)
-                # base 是 URL 里的原始（可能 pct-encoded）路径：先按原串剥离，再解码剩余部分
-                raw_path = self.path
-                if raw_path.startswith(proxy._base + "/"):
-                    raw_path = raw_path[len(proxy._base) + 1 :]
-                path = unquote(raw_path)
-                lowered = {
-                    key.lower(): (REDACTED if key.lower() == "authorization" else value)
-                    for key, value in self.headers.items()
-                }
-                seen = Seen(self.command, path, raw, reply.status, lowered)
-                with proxy._lock:
-                    proxy.seen.append(seen)
-                    hold = proxy._hold and seen.is_write
-                    if hold:
-                        proxy._hold = False
-                        proxy.held_request = seen
-                if hold:
-                    # 写入已在服务端生效：通知测试，等它终止运行器后再（向已断开的连接）回响应
-                    proxy.held.set()
-                    proxy._release.wait(proxy._timeout)
-                try:
-                    self.send_response(reply.status)
-                    skip = _HOP | {"date", "server"}
-                    if self.command != "HEAD":  # HEAD 原样保留上游的 Content-Length
-                        skip = skip | {"content-length"}
-                    for key, value in reply.getheaders():
-                        if key.lower() not in skip:
-                            self.send_header(key, value)
-                    if self.command != "HEAD":
-                        self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    if self.command != "HEAD":
-                        self.wfile.write(data)
-                except OSError:
-                    pass  # 运行器已被终止：响应无人接收
-
-            do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = _forward
-
-            def log_message(self, format: str, *args: Any) -> None:
-                pass
-
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self))
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
-    def _connect(self) -> HTTPConnection:
+    def connect(self) -> HTTPConnection:
         if self._scheme == "https":
             assert self._ssl_context is not None
             return HTTPSConnection(
                 self._host, self._port, timeout=self._timeout, context=self._ssl_context
             )
         return HTTPConnection(self._host, self._port, timeout=self._timeout)
+
+    def on_relayed(
+        self,
+        method: str,
+        path: str,
+        body: bytes,
+        headers: Mapping[str, str],
+        status: int,
+    ) -> None:
+        seen = Seen(method, relative_path(path, self._base), body, status, redact_headers(headers))
+        with self._lock:
+            self.seen.append(seen)
+            hold = self._hold and seen.is_write
+            if hold:
+                self._hold = False
+                self.held_request = seen
+        if hold:
+            # 写入已在服务端生效：通知测试，等它终止运行器后再（向已断开的连接）回响应
+            self.held.set()
+            self._release.wait(self._timeout)
+
+    def on_error(self, method: str, path: str, exc: BaseException) -> None:
+        self.errors.append(redact(f"{method} {path}: {exc!r}", self._secrets))
 
     @property
     def url(self) -> str:
@@ -599,10 +538,10 @@ class Runner:
             env=self._environ,
             timeout=TIMEOUT,
         )
-        assert not self.proxy.errors, _redact(
+        assert not self.proxy.errors, redact(
             repr(self.proxy.errors), _secret_values(self.credential)
         )
-        assert proc.returncode == expect, _redact(
+        assert proc.returncode == expect, redact(
             proc.stdout + proc.stderr, _secret_values(self.credential)
         )
         return Round(json.loads(proc.stdout), _events(proc.stderr), self.proxy.since(mark))
@@ -639,7 +578,7 @@ class Runner:
             try:
                 if not self.proxy.held.wait(TIMEOUT) or self.proxy.held_request is None:
                     stderr.seek(0)
-                    detail = _redact(stderr.read(), _secret_values(self.credential))
+                    detail = redact(stderr.read(), _secret_values(self.credential))
                     pytest.fail(f"运行器没有发出写请求（exited={exited.is_set()}）：{detail}")
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait(TIMEOUT)
@@ -650,7 +589,7 @@ class Runner:
                     proc.wait(TIMEOUT)
                 # 进程已回收，旁路线程随即结束：等它结束，晚到的唤醒不会落进下一次调用
                 watcher.join(TIMEOUT)
-        assert not self.proxy.errors, _redact(
+        assert not self.proxy.errors, redact(
             repr(self.proxy.errors), _secret_values(self.credential)
         )
         held = self.proxy.held_request
@@ -690,7 +629,7 @@ class Runner:
             env=self._environ,
             timeout=TIMEOUT,
         )
-        assert proc.returncode == 0, _redact(
+        assert proc.returncode == 0, redact(
             proc.stdout + proc.stderr, _secret_values(self.credential)
         )
         assert json.loads(proc.stdout)["incremental"] is False
@@ -721,7 +660,7 @@ class Runner:
                 try:
                     self._delete_if_present(client, uri)
                 except Exception as exc:
-                    failures.append(_redact(f"{uri}: {exc!r}", _secret_values(self.credential)))
+                    failures.append(redact(f"{uri}: {exc!r}", _secret_values(self.credential)))
             if failures:
                 raise RuntimeError("清理本次前缀下的文档失败：" + "; ".join(failures))
 

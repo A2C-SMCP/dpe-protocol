@@ -41,6 +41,8 @@ dev = [
     # 测试按运行器的方式驱动插件：清单校验、实例定义与插件宿主都来自 dpe-sdk；server extra
     # 提供独立监听的参考服务端（增量收敛的端到端验收，#66）
     "dpe-sdk[server]>=0.4,<0.5",
+    # e2e harness 直接构造带测试 CA 的 httpx transport（#68）：被直接 import 的传递依赖须显式声明
+    "httpx>=0.27,<1",
     "pytest>=8.3",
     "mypy>=1.13",
     "ruff>=0.8",

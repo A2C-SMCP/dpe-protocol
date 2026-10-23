@@ -14,9 +14,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+from _relay import REDACTED
 from dpe_sdk.transport import DpeClient
 from e2e_harness import (
-    REDACTED,
     Runner,
     ServerOptions,
     _active,

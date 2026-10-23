@@ -11,14 +11,13 @@ HTTPS → 参考服务端」的链路。测试 CA 与服务器证书由 openssl 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import shutil
 import ssl
 import subprocess
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,19 +25,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from _relay import handler_for, redact
+
 #: 终结器到 upstream 的 HTTP 超时（秒）
 TIMEOUT = 120.0
-
-_HOP = {"connection", "keep-alive", "transfer-encoding", "host"}
-#: 脱敏时替换凭证值的固定标记
-REDACTED = "[REDACTED]"
-
-
-def _redact(text: str, secrets: Sequence[str]) -> str:
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, REDACTED)
-    return text
 
 
 _CERT_CONFIG = """\
@@ -206,55 +196,25 @@ class TLSProxy:
         self.errors: list[str] = []
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(cert_file), str(key_file))
-        proxy = self
-
-        class Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def _forward(self) -> None:
-                try:
-                    self._relay()
-                except Exception as exc:
-                    proxy.errors.append(
-                        _redact(f"{self.command} {self.path}: {exc!r}", proxy._secrets)
-                    )
-                    with contextlib.suppress(OSError):
-                        self.send_error(502)
-
-            def _relay(self) -> None:
-                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
-                    raise AssertionError("TLS 终结器不支持 chunked 请求体")
-                length = int(self.headers.get("Content-Length") or 0)
-                body = self.rfile.read(length) if length else b""
-                headers = {k: v for k, v in self.headers.items() if k.lower() not in _HOP}
-                upstream = HTTPConnection(proxy._host, proxy._port, timeout=proxy._timeout)
-                try:
-                    upstream.request(self.command, self.path, body=body or None, headers=headers)
-                    reply = upstream.getresponse()
-                    data = reply.read()
-                finally:
-                    upstream.close()
-                self.send_response(reply.status)
-                skip = _HOP | {"date", "server"}
-                if self.command != "HEAD":
-                    skip = skip | {"content-length"}
-                for key, value in reply.getheaders():
-                    if key.lower() not in skip:
-                        self.send_header(key, value)
-                if self.command != "HEAD":
-                    self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                if self.command != "HEAD":
-                    self.wfile.write(data)
-
-            do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = _forward
-
-            def log_message(self, format: str, *args: Any) -> None:
-                pass
-
-        self._server = _TLSServer(("127.0.0.1", 0), Handler, context, self)
+        self._server = _TLSServer(("127.0.0.1", 0), handler_for(self), context, self)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
+
+    def connect(self) -> HTTPConnection:
+        return HTTPConnection(self._host, self._port, timeout=self._timeout)
+
+    def on_relayed(
+        self,
+        method: str,
+        path: str,
+        body: bytes,
+        headers: Mapping[str, str],
+        status: int,
+    ) -> None:
+        """终结器只转发，不记录请求。"""
+
+    def on_error(self, method: str, path: str, exc: BaseException) -> None:
+        self.errors.append(redact(f"{method} {path}: {exc!r}", self._secrets))
 
     @property
     def url(self) -> str:
