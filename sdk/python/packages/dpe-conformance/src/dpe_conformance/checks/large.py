@@ -6,7 +6,8 @@
 - HTTP §4.6：页/元素对象上传（201/200 语义、响应给出下一层缺失清单、按本会话判定）；
 - HTTP §4.7：单页对象超限时的分块上传与断点续传（偏移、丢弃归零）；
 - conformance/README「大文档与逐层协商」：暂存期间中间态对读接口不可见、插入一页只缺新页、
-  对调两页 delta 为零。
+  对调两页 delta 为零；限额内页数最多的文档对象不得触发 413，缺失清单按未截断 / 截断口径
+  判定（#250）。
 
 规模由 ``capabilities.limits`` 推导（不写死数值）；构造会撞上其他限额（如 ``page_max_bytes``）
 或超上传预算时，按「显式 skip 并写明原因」处理——合规的大规模服务端不得被判失败。
@@ -39,6 +40,7 @@ from dpe_conformance.support import (
     limits_of,
     list_all,
     negotiate,
+    payload_limit_within_budget,
     session_of,
     stage_all,
     text_element,
@@ -636,3 +638,66 @@ def test_breakpoint_offset_states(conformance_target: Target, full_identity: Ide
         conformance_target, session_id, kind="blobs", ref=ref, identity=full_identity
     )
     assert upload_offset(discarded) == 0, "到齐校验失败后，该对象已收内容被丢弃、偏移回 0"
+
+
+# ---------------------------------------------------------------------- 限额内最大文档对象（#250）
+
+
+def _max_pages_document(max_payload_bytes: int) -> tuple[bytes, list[str]]:
+    """在单请求限额内构造页数最多的文档对象：紧凑 JSON 序列化，按实际发送的字节计，
+    并断言再多一项就会超过 ``max_payload_bytes``。"""
+    hash_bytes = len(f'"dpe1:{0:064x}",')  # 固定长度：引号 + scheme + 64 hex + 引号 + 逗号
+
+    def body(count: int) -> bytes:
+        pages = [f"dpe1:{index:064x}" for index in range(count)]
+        document = {"file_type": "md", "pages": pages}
+        return json.dumps({"document": document}, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+
+    if len(body(1)) > max_payload_bytes:
+        pytest.skip(f"max_payload_bytes={max_payload_bytes} 小于单页文档体，无法构造引用样本")
+    base = len(body(0))
+    count = (max_payload_bytes - base + 1) // hash_bytes
+    while len(body(count + 1)) <= max_payload_bytes:
+        count += 1
+    while count > 1 and len(body(count)) > max_payload_bytes:
+        count -= 1
+    data = body(count)
+    assert len(data) <= max_payload_bytes, "构造的文档对象必须放得进 max_payload_bytes"
+    assert len(body(count + 1)) > max_payload_bytes, "必须取到再多一页就超限的页数"
+    hashes = [f"dpe1:{index:064x}" for index in range(count)]
+    return data, hashes
+
+
+def _assert_missing_truncation(problem: Mapping[str, Any], expected: set[str]) -> None:
+    """commit 的缺失清单（HTTP §5）：逐层复用 ``_assert_missing_layer`` 的严格相等 / 子集口径，
+    截断时另断言三层合计非空。commit 的截断没有体积门槛，不套用分块页上传的判据（HTTP §4.6）。"""
+    truncated = problem.get("missing_truncated")
+    assert isinstance(truncated, bool), f"missing_truncated 必须是布尔值：{truncated!r}"
+    _assert_missing_layer(problem, "pages", expected)
+    _assert_missing_layer(problem, "content_hashes", set())
+    _assert_missing_layer(problem, "blobs", set())
+    if truncated:
+        assert any(problem["missing"][layer] for layer in ("pages", "content_hashes", "blobs")), (
+            "截断时三层合计不得为空"
+        )
+
+
+def test_max_reference_document_within_payload(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """core §3.2 + §3.3 第 6 步：在 ``max_payload_bytes`` 内构造页数最多的文档对象（再多一页
+    就超限），提交不得返回 413；缺失清单按未截断 / 截断两种口径判定。"""
+    limit = payload_limit_within_budget(conformance_target, full_identity)
+    body, pages = _max_pages_document(limit)
+    response = conformance_target.send(
+        "PUT",
+        "documents",
+        identity=full_identity,
+        params={"uri": conformance_target.uri("large/max-reference-document")},
+        headers={"If-None-Match": "*", "Content-Type": "application/json"},
+        content=body,
+    )
+    problem = assert_problem(response, status=400, code="DPE_MISSING_CONTENT")
+    _assert_missing_truncation(problem, set(pages))

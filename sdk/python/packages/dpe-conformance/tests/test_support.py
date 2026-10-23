@@ -248,3 +248,108 @@ def test_missing_layer_subset_when_truncated_flag_on_top_level() -> None:
     large_checks._assert_missing_layer(problem, "blobs", {"sha256:x"})  # 被截空也可接受
     with pytest.raises(AssertionError):
         large_checks._assert_missing_layer(problem, "content_hashes", {"dpe1:other"})
+
+
+# ------------------------------------------------ 限额内最大文档对象（#250 追加单元）
+
+
+class _StubReferenceDocument:
+    """最小桩 Target：capabilities 给出限额，PUT documents 按脚本返回缺失清单。"""
+
+    def __init__(
+        self,
+        limit: int,
+        *,
+        truncated: bool,
+        drop: bool = False,
+        empty: bool = False,
+        unexpected: bool = False,
+    ) -> None:
+        self._limit = limit
+        self._truncated = truncated
+        self._drop = drop
+        self._empty = empty
+        self._unexpected = unexpected
+
+    def uri(self, path: str) -> str:
+        return "dpe://conformance/stub/" + path.lstrip("/")
+
+    def send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        request = httpx.Request(method, f"http://dpe.test/{path}")
+        if path == "capabilities":
+            return httpx.Response(
+                200, json={"limits": {"max_payload_bytes": self._limit}}, request=request
+            )
+        pages = json.loads(kwargs["content"])["document"]["pages"]
+        if self._empty:
+            listed = []
+        elif self._unexpected:
+            listed = [pages[0], "dpe1:" + "f" * 64]
+        elif self._truncated:
+            listed = pages[: max(1, len(pages) // 2)]
+        else:
+            listed = pages
+        if self._drop and not self._truncated:
+            listed = listed[:-1]
+        problem = {
+            "code": "DPE_MISSING_CONTENT",
+            "type": "urn:dpe:error:missing-content",
+            "title": "missing content",
+            "retryable": False,
+            "missing": {"pages": listed, "content_hashes": [], "blobs": []},
+            "missing_truncated": self._truncated,
+        }
+        return httpx.Response(
+            400,
+            content=json.dumps(problem).encode(),
+            headers={
+                "content-type": "application/problem+json",
+                "DPE-Error-Code": "DPE_MISSING_CONTENT",
+                "Vary": "DPE-Hash-Contract",
+            },
+            request=request,
+        )
+
+
+def _run_reference_document_check(stub: _StubReferenceDocument) -> None:
+    large_checks.test_max_reference_document_within_payload(cast(Target, stub), _stub_identity())
+
+
+def test_stub_reference_document_over_budget_skips() -> None:
+    """服务端声明的上限超过预算 → 显式 skip（不构造大体量请求、不判红）。"""
+    with pytest.raises(pytest.skip.Exception, match="预算"):
+        _run_reference_document_check(_StubReferenceDocument(1 << 40, truncated=False))
+
+
+def test_stub_reference_document_tiny_limit_skips() -> None:
+    """限额放不下单页文档体 → 显式 skip，不判红。"""
+    with pytest.raises(pytest.skip.Exception, match="单页文档体"):
+        _run_reference_document_check(_StubReferenceDocument(64, truncated=False))
+
+
+def test_stub_reference_document_truncated_subset_passes() -> None:
+    """截断：三层合计为非空子集即通过。"""
+    _run_reference_document_check(_StubReferenceDocument(4096, truncated=True))
+
+
+def test_stub_reference_document_truncated_empty_fails() -> None:
+    """截断却返回空清单 → 判失败（三层合计必须非空）。"""
+    with pytest.raises(AssertionError):
+        _run_reference_document_check(_StubReferenceDocument(4096, truncated=True, empty=True))
+
+
+def test_stub_reference_document_truncated_outside_subset_fails() -> None:
+    """截断却列出构造集合之外的 hash → 判失败（必须是子集）。"""
+    with pytest.raises(AssertionError):
+        _run_reference_document_check(_StubReferenceDocument(4096, truncated=True, unexpected=True))
+
+
+def test_stub_reference_document_untruncated_exact_passes() -> None:
+    """未截断：页清单与构造集合严格相等即通过。"""
+    _run_reference_document_check(_StubReferenceDocument(4096, truncated=False))
+
+
+def test_stub_reference_document_untruncated_mismatch_fails() -> None:
+    """未截断却少列一页 → 判失败（真实协议违例）。"""
+    with pytest.raises(AssertionError):
+        _run_reference_document_check(_StubReferenceDocument(4096, truncated=False, drop=True))
