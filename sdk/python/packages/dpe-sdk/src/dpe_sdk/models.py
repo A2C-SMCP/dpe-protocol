@@ -29,7 +29,7 @@ from collections.abc import Mapping
 from typing import Any, Self, cast
 
 import dpe_hash
-from dpe_hash import CONTRACT, DocumentHashes, DpeHashError
+from dpe_hash import CONTRACT, DocumentHashes, DpeHashError, parse_ijson
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -39,8 +39,6 @@ from pydantic import (
     model_validator,
 )
 from pydantic import ValidationError as PydanticValidationError
-
-from dpe_sdk import _ijson
 
 __all__ = ["Document", "DocumentObject", "ElementObject", "Page", "PageObject"]
 
@@ -109,11 +107,10 @@ class _DpeModel(BaseModel):
     def model_validate_json(
         cls, json_data: str | bytes | bytearray, *args: Any, **kwargs: Any
     ) -> Self:
-        """按 I-JSON 严格解析（拒绝重复键，core §2.8 第 0 步）后校验，不用 pydantic 的 JSON 解析器。
-
-        pydantic 的解析器对重复键后写覆盖，满足不了 I-JSON。
+        """按 I-JSON 严格解析（拒绝重复键与孤立代理项，core §2.8 第 0 步）后校验，不用
+        pydantic 的 JSON 解析器（它对重复键后写覆盖，满足不了 I-JSON）。
         """
-        return cls.model_validate(_ijson.loads(json_data), *args, **kwargs)
+        return cls.model_validate(parse_ijson(json_data), *args, **kwargs)
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:

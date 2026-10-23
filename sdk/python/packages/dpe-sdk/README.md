@@ -27,7 +27,7 @@ doc.hashes()  # {"doc_hash", "pages": [{"page_hash", "elements"}…]}
 ```
 
 - 校验全部交给 `dpe-hash`，顺序与错误码遵循 core §2.8；封闭 schema、category 允许的字段、file_type 的语法校验都取自 `dpe_hash`（file_type 是开放取值，未登记但语法合法的取值照常接受）；
-- 构造、`model_validate`、`model_validate_json` 失败时抛 `dpe_hash.DpeHashError`，带规范错误码 `code` 与违例位置 `path`（RFC 6901）；`model_validate_json` 按 I-JSON 严格解析（拒绝重复键）；
+- 构造、`model_validate`、`model_validate_json` 失败时抛 `dpe_hash.DpeHashError`，带规范错误码 `code` 与违例位置 `path`（RFC 6901）；`model_validate_json` 按 I-JSON 严格解析（拒绝重复键与孤立代理项）；
 - 模型保留输入的原样表示，序列化只输出显式给出的字段；null 与缺省、metadata 缺省与 `{}` 是否等价由 hash 判定（core §2.7）。
 
 ## 协议错误与响应报文

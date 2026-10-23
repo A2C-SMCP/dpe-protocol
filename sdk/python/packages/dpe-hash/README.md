@@ -1,6 +1,6 @@
 # dpe-hash
 
-[DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），并导出契约常量。
+[DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），提供 I-JSON 严格解析（`parse_ijson`，core §2.8 第 0 步），并导出契约常量。
 
 > **从 0.3 升级**：全部不兼容变更与行为变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处「升级须知」只是摘要。
 
@@ -39,6 +39,7 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 | `blob_ref(data)` | blob 字节的引用 `sha256:<hex>` |
 | `BlobHasher()` → `.update(data)` / `.length` / `.finish()` | 分块增量计算同一引用（大 blob 流式哈希、不整读进内存），结果与 `blob_ref(整段)` 相同 |
 | `jcs(value)` | RFC 8785 规范化字符串 |
+| `parse_ijson(text)` | I-JSON 严格解析（core §2.8 第 0 步）：拒绝重复键、`NaN` / `Infinity` 与孤立代理项；数值越界不在解析阶段拒绝。文本入口与对象级入口对嵌套深度及接受/拒绝结论同判；跨步骤组合违例的诊断位置尚未统一（#246） |
 | `normalize_file_uri(uri)` | file_uri 的语法规范化（core.md §1.1），身份的比较形式；非法输入抛 `ValidationError`（`DPE_VALIDATION`） |
 | `check_remote_url(url)` | remote URL 的文法判定（HTTP 绑定 §1），合法时原样返回；不合法抛 `RemoteUrlError`（`ValueError` 的子类，是调用方的配置错误、没有规范错误码，不属于 `DpeHashError`），消息不回显 URL。dpe-sdk 与 dpe-conformance 共用这一判定 |
 | `retry_after_seconds(value, *, now=None)` | `Retry-After` 字段值换算成等待秒数（HTTP 绑定 §5，只接受 RFC 9110 文法）；不合文法或缺省为 `None`（视同没有提示），合法但无法表示的 delay-seconds 为 `math.inf`；任何输入都不抛异常。dpe-sdk 与 dpe-conformance 共用 |
@@ -71,7 +72,4 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 | `CategoryUnknownError` | `DPE_CATEGORY_UNKNOWN` |
 | `ContractUnsupportedError` | `DPE_CONTRACT_UNSUPPORTED` |
 
-本包接收的是已解析的对象。core §2.8 第 0 步要求整个请求体是 I-JSON，这一步先于契约头判定，由服务端负责：
-
-- **重复键**：解析时用拒绝重复键的解析器，例如 `json.loads(..., object_pairs_hook=...)`；
-- **孤立代理项**：解析后先用 `has_invalid_unicode(body)` 检查整个请求体（含 `staging_session` 等信封字段），命中即返回 `DPE_VALIDATION`。Python 的 `json` 会放行孤立代理项。
+core §2.8 第 0 步要求整个请求体是 I-JSON，这一步先于契约头判定。服务端解析请求体时直接使用 `parse_ijson`：它在解析阶段拒绝重复键、`NaN` / `Infinity` 与孤立代理项（含 `staging_session` 等信封字段）。`has_invalid_unicode(value)` 保留给已经用其他方式解析好的值。

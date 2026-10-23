@@ -12,6 +12,7 @@ from dpe_hash import (
     DpeHashError,
     FileTypeInvalidError,
     IntegerOutOfRangeError,
+    InvalidUnicodeError,
     UndefinedFieldError,
     content_hash,
 )
@@ -99,7 +100,8 @@ _MODELS: dict[str, type[ElementObject | PageObject | DocumentObject | Document]]
 def test_invalid_vectors(vectors_dir: Path) -> None:
     """每条都抛 DpeHashError 且错误码一致；声明了 path 的用例，位置也一致。
 
-    ``input_json`` 用例走 ``model_validate_json``：重复键在解析阶段就以 ``DPE_VALIDATION`` 拒绝。
+    ``input_json`` 用例走 ``model_validate_json``：重复键、非 JSON 数值与孤立代理项在解析阶段
+    就以 ``DPE_VALIDATION`` 拒绝。
     """
     seen = 0
     for vec in _load(vectors_dir, "invalid"):
@@ -193,6 +195,18 @@ def test_json_not_ijson_rejected(raw: bytes) -> None:
         ElementObject.model_validate_json(raw)
     assert info.value.code == "DPE_VALIDATION"
     assert info.value.path == ""
+
+
+def test_lone_surrogate_rejected_at_parse_phase() -> None:
+    """孤立代理项在解析阶段拒绝（含非 DPE 字段）：类型 ``InvalidUnicodeError``、位置 ""。"""
+    for raw in (
+        '{"category": "Title", "bogus": "\\ud800"}',
+        '{"category": "Title", "text": "\\ud800"}',
+    ):
+        with pytest.raises(InvalidUnicodeError) as info:
+            ElementObject.model_validate_json(raw)
+        assert type(info.value) is InvalidUnicodeError
+        assert (info.value.code, info.value.path) == ("DPE_VALIDATION", "")
 
 
 # ---------------------------------------------------------------------------
