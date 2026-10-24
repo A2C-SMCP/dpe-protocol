@@ -2,7 +2,7 @@
 
 [DPE](https://doc.turingfocus.cn/dpe/) **服务端一致性跑分器**：黑盒对任意实现了 [core.md](https://doc.turingfocus.cn/dpe/latest/spec/core/) + [HTTP 绑定](https://doc.turingfocus.cn/dpe/latest/spec/bindings/http/) 的 remote 运行协议检查（检查面见仓库 [`conformance/README.md`](https://github.com/A2C-SMCP/dpe-protocol/blob/main/conformance/README.md)）。跑分器本体只依赖 `dpe-hash`（期望 hash）与 HTTP，不依赖任何服务端实现。
 
-> **关于 0.4**：本包随 0.4.0 首次发布；同期规范与 SDK 的变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处「升级须知」只是摘要。
+> **从 0.4 升级**：全部不兼容变更与行为变化按读者汇总在 [0.5 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.5/)，下文各处「升级须知」只是摘要。
 
 ## 用法
 

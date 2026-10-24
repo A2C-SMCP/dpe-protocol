@@ -11,7 +11,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["dpe-hash>=0.4,<0.5"]
+dependencies = ["dpe-hash>=0.5,<0.6"]
 classifiers = ["Private :: Do Not Upload"]
 
 [project.scripts]
@@ -19,7 +19,7 @@ dpe-jira = "dpe_jira.cli:main"
 
 [dependency-groups]
 dev = [
-    "dpe-sdk[server]>=0.4,<0.5",
+    "dpe-sdk[server]>=0.5,<0.6",
     "pytest>=8.3",
     "mypy>=1.13",
     "ruff>=0.8",

@@ -2,7 +2,7 @@
 
 [DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的 Rust SDK：把结构化文档正确、增量、可靠地投递到任意 DPE 服务端。
 
-> **从 0.3 升级**：全部不兼容变更与行为变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处的升级说明只是摘要。
+> **从 0.4 升级**：全部不兼容变更与行为变化按读者汇总在 [0.5 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.5/)，下文各处的升级说明只是摘要。
 
 - sans-IO 协议核心 + reqwest / tokio 传输适配（默认 feature `http`，核心不绑定异步运行时）；
 - 数据模型（[`models`](https://docs.rs/dpe-sdk/latest/dpe_sdk/models/)）：文档 / 页 / 元素三层对象的封闭 schema（core §2），校验与 hash 全部委托 `dpe-hash`（错误码与位置同一致性向量），保留输入的原样表示；
