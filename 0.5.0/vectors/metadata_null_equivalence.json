@@ -1,0 +1,78 @@
+{
+  "name": "metadata_null_equivalence",
+  "kind": "document",
+  "description": "值为 null 的键与缺省等价（缺省 ≡ null，#3 S5）：两篇文档的全部 hash 相同。",
+  "documents": {
+    "plain": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "with_nulls": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "x",
+              "metadata": {
+                "lang": "zh",
+                "new_optional": null
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "plain": {
+      "dpe1": {
+        "doc_hash": "dpe1:f3a0a43c5a1b900e70a4b011b40cf2be6fc30189021b3a5755ca9e996925c614",
+        "pages": [
+          {
+            "page_hash": "dpe1:0379d9a9727534377f08fd355eee1109d96e671a3e7a36ab46813c4d0e770681",
+            "elements": [
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
+            ]
+          }
+        ]
+      }
+    },
+    "with_nulls": {
+      "dpe1": {
+        "doc_hash": "dpe1:f3a0a43c5a1b900e70a4b011b40cf2be6fc30189021b3a5755ca9e996925c614",
+        "pages": [
+          {
+            "page_hash": "dpe1:0379d9a9727534377f08fd355eee1109d96e671a3e7a36ab46813c4d0e770681",
+            "elements": [
+              "dpe1:60cfab8afdef1c844e3024059df23cbbc2df5cceecc25fe9917027e6c49afc08"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "plain.doc_hash",
+        "with_nulls.doc_hash"
+      ]
+    }
+  ]
+}

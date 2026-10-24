@@ -1,0 +1,71 @@
+{
+  "name": "unicode_text",
+  "kind": "document",
+  "description": "Unicode 不做规范化（hash 的是投递的内容）：NFC 与 NFD、emoji（代理对）、组合字符都按原样参与。",
+  "documents": {
+    "nfc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "café 🚀 中文"
+            }
+          ]
+        }
+      ]
+    },
+    "nfd": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "café 🚀 中文"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "nfc": {
+      "dpe1": {
+        "doc_hash": "dpe1:95a07c75b6cb6a5ef9ac1b69ad67e7f4243e2878b99c1fef4c8358928be9a179",
+        "pages": [
+          {
+            "page_hash": "dpe1:981b73512a3ac07e751028e664fd85aecba38e0313763256bb4e5fd8922cf8ab",
+            "elements": [
+              "dpe1:d91895923c836ab4e1e13f697ffa2d96718d07f23644b92c31541eb18a4d3ee5"
+            ]
+          }
+        ]
+      }
+    },
+    "nfd": {
+      "dpe1": {
+        "doc_hash": "dpe1:f2d158349289e64deb40ce3d94475c1d06d048d5b4a1edafd70537581b66125d",
+        "pages": [
+          {
+            "page_hash": "dpe1:fb2018cbfc3c6fe92ea99170337ed20dacaa1390512bb0c8ebf9b8a127e5c25a",
+            "elements": [
+              "dpe1:484163712f408921abb269c78e04f3c4a02b6a433387228f7dd13fac32972f66"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "nfc.doc_hash",
+        "nfd.doc_hash"
+      ]
+    }
+  ]
+}

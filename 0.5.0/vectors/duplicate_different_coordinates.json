@@ -1,0 +1,105 @@
+{
+  "name": "duplicate_different_coordinates",
+  "kind": "document",
+  "description": "同一文本出现在两处、坐标不同：坐标是内容，两处是不同的元素对象（content_hash 不同）；坐标相同时才共享同一元素对象。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "ListItem",
+              "text": "重复项",
+              "metadata": {
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.1
+                    ],
+                    [
+                      0.4,
+                      0.2
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            },
+            {
+              "category": "ListItem",
+              "text": "重复项",
+              "metadata": {
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.5
+                    ],
+                    [
+                      0.4,
+                      0.6
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            },
+            {
+              "category": "ListItem",
+              "text": "重复项",
+              "metadata": {
+                "coordinates": {
+                  "points": [
+                    [
+                      0.1,
+                      0.1
+                    ],
+                    [
+                      0.4,
+                      0.2
+                    ]
+                  ],
+                  "system": "PixelSpace"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:6e4ee6c5451aa34030eac7f3b1cd968d52e17866167962a4edbb432ef56f2fee",
+        "pages": [
+          {
+            "page_hash": "dpe1:8a12bc29d9f20bc47d2bb1c5cf7f438c28bc93afdf30a35f21d600ce425dbf52",
+            "elements": [
+              "dpe1:64aa2cda60e62b8dafa0585c1cc52ec5ebd4e3c36adb6aa220a02aa97253102d",
+              "dpe1:9b5a9a92dfdaca7563c18db0dd3f8c49693f5b38ee09505590a012e7de5bface",
+              "dpe1:64aa2cda60e62b8dafa0585c1cc52ec5ebd4e3c36adb6aa220a02aa97253102d"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "distinct": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.1"
+      ]
+    },
+    {
+      "equal": [
+        "doc.pages.0.elements.0",
+        "doc.pages.0.elements.2"
+      ]
+    }
+  ]
+}

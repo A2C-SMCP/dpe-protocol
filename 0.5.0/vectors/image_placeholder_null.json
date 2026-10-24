@@ -1,0 +1,73 @@
+{
+  "name": "image_placeholder_null",
+  "kind": "document",
+  "description": "占位图片：blob / mime 为 null 与缺省等价（null 键删除）。",
+  "documents": {
+    "absent": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "占位"
+            }
+          ]
+        }
+      ]
+    },
+    "null_fields": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "占位",
+              "blob": null,
+              "mime_type": null
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "absent": {
+      "dpe1": {
+        "doc_hash": "dpe1:d35877a0cee7817e61328058428951e0ceccdce4d039355cfd73b83c1d158186",
+        "pages": [
+          {
+            "page_hash": "dpe1:f9f08a52f7ed8488140f711814021e6b520e3e81c459d9dd393d5503f01980a0",
+            "elements": [
+              "dpe1:cd77023f6726c12e41c6638a0488f1deb552a1db3d0080d5d780f0adb99e39bc"
+            ]
+          }
+        ]
+      }
+    },
+    "null_fields": {
+      "dpe1": {
+        "doc_hash": "dpe1:d35877a0cee7817e61328058428951e0ceccdce4d039355cfd73b83c1d158186",
+        "pages": [
+          {
+            "page_hash": "dpe1:f9f08a52f7ed8488140f711814021e6b520e3e81c459d9dd393d5503f01980a0",
+            "elements": [
+              "dpe1:cd77023f6726c12e41c6638a0488f1deb552a1db3d0080d5d780f0adb99e39bc"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "absent.doc_hash",
+        "null_fields.doc_hash"
+      ]
+    }
+  ]
+}
