@@ -2,19 +2,19 @@
 
 [DPE（Document / Page / Element）协议](https://doc.turingfocus.cn/dpe/)的独立 hash 核心：按 [hash 契约 1](https://doc.turingfocus.cn/dpe/latest/spec/hash-contract-1/) 计算元素、页、文档三层 hash（`dpe1:` 前缀），提供 I-JSON 严格解析（`parse_ijson`，core §2.8 第 0 步），并导出契约常量。
 
-> **从 0.3 升级**：全部不兼容变更与行为变化按读者汇总在 [0.4 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.4/)，下文各处「升级须知」只是摘要。
+> **从 0.4 升级**：全部不兼容变更与行为变化按读者汇总在 [0.5 升级须知](https://doc.turingfocus.cn/dpe/latest/docs/upgrade/v0.5/)，下文各处「升级须知」只是摘要。
 
 - 零运行时依赖、纯 Python（≥ 3.11），带类型标记（`py.typed`）；
 - 逐字节通过规范仓库的一致性向量；
 - 规范与源码：<https://github.com/A2C-SMCP/dpe-protocol>。
 
 ```bash
-pip install "dpe-hash>=0.4,<0.5"
+pip install "dpe-hash>=0.5,<0.6"
 ```
 
 ## 版本约定
 
-包版本与 hash 契约版本相互独立：契约版本以 hash 前缀为准（当前为 `dpe1:`），包版本不随契约编号走。0.x 阶段规范或 SDK 出现不兼容变更时，文档与两个 SDK 一起升次版本（保持相同的 `X.Y`），兼容修订只升补丁号；下游按 `dpe-hash>=X.Y.0,<X.(Y+1)` 声明依赖，例如 `dpe-hash>=0.4,<0.5`。
+包版本与 hash 契约版本相互独立：契约版本以 hash 前缀为准（当前为 `dpe1:`），包版本不随契约编号走。0.x 阶段规范或 SDK 出现不兼容变更时，文档与两个 SDK 一起升次版本（保持相同的 `X.Y`），兼容修订只升补丁号；下游按 `dpe-hash>=X.Y.0,<X.(Y+1)` 声明依赖，例如 `dpe-hash>=0.5,<0.6`。
 
 ## API
 
