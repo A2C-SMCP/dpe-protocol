@@ -12,8 +12,9 @@
 ``from_hash_error`` 把它转换为对应的协议错误（服务端返回、或客户端统一上报时使用）。
 
 客户端本地异常（``ClientError`` 及其子类）不是协议错误：没有 core §6 的码，也不由服务端返回，
-而是客户端判定响应不合规（``UnexpectedResponseError``）、服务端不兼容（``IncompatibleServerError``）
-或 force 提交的结果无法确认（``ForceNotConfirmedError``）。
+而是客户端判定响应不合规（``UnexpectedResponseError``）、服务端不兼容（``IncompatibleServerError``）、
+force 提交的结果无法确认（``ForceNotConfirmedError``），或请求在本地构造阶段失败
+（``LocalRequestError``，请求确定未发出）。
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ __all__ = [
     "ForceNotConfirmedError",
     "HashMismatchError",
     "IncompatibleServerError",
+    "LocalRequestError",
     "MissingContentError",
     "NotFoundError",
     "PayloadTooLargeError",
@@ -200,12 +202,31 @@ class UnknownCodeError(DpeError):
         super().__init__(message, path, retry_after=retry_after)
 
 
+#: 写操作结果标记的属性名（``protocol.outcome_unknown`` 读取、``_mark_outcome`` 写入）：
+#: 只在 ``errors`` 定义一次，避免错误类型与核心各写一份字面量。
+OUTCOME_UNKNOWN_ATTR = "dpe_outcome_unknown"
+
+
 class ClientError(Exception):
     """客户端本地异常的共同基类：不是协议错误，没有 core §6 的码，一律不可原样重试。"""
 
     retryable = False
     #: 同 ``DpeError.session``：``deliver`` 失败时附加的当前暂存会话。
     session: Session | None = None
+
+
+class LocalRequestError(ClientError):
+    """本地请求构造失败（URL 主机非法、请求头字段值非法）：请求**确定未发出**。
+
+    消息固定，不回显 URL、主机或凭证；库的原始错误（如有）只经 ``__cause__`` 保留——它可能含
+    输入原文（如库消息里的请求头值），调用方不应直接记录 cause 链。
+    SDK 不重发这类确定性的本地失败，结果标记默认为「确定未生效」；写操作若此前已有一次尝试
+    可能已生效，外层会用累计状态把标记覆写为真（``outcome_unknown``）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__("本地请求构造失败，请求未发出")
+        setattr(self, OUTCOME_UNKNOWN_ATTR, False)
 
 
 class UnexpectedResponseError(ClientError):

@@ -16,7 +16,11 @@
 
 其余失败（``retry_safe`` 为假的请求可能已发出后的超时、读错误、响应丢失等）原样抛出，由
 ``drive`` / ``adrive`` 送回操作，按 core §5.2 处理。httpx 的异常不包装：调用方按异常类型区分
-连接失败、超时与响应丢失。写请求在连续建连失败时两级的预算会叠加（传输层每轮与核心的
+连接失败、超时与响应丢失。**例外（#207）**：URL 主机不是合法 A-label 或请求头字段值含 CTL 时，
+build 阶段抛 ``LocalRequestError``（本次尝试确定未发出、写操作不重发；整体结果仍按核心累计的
+写尝试状态判定）；send 阶段的 ``httpx.LocalProtocolError`` 判定不变，只把消息重抛为固定文本、
+原错误留在 ``__cause__``。
+写请求在连续建连失败时两级的预算会叠加（传输层每轮与核心的
 ``max_resends``，最坏 ``(1+max_retries)×(1+max_resends)`` 次尝试）——两者都只覆盖「请求确定
 未生效」的情形，叠加是安全的：建连失败确定未发出；带码的 ``DPE_RATE_LIMITED`` /
 ``DPE_UNAVAILABLE`` 依 core §6 表示请求未产生任何效果。
@@ -52,10 +56,11 @@ import anyio
 import anyio.to_thread
 import dpe_hash
 import httpx
+import idna
 
 from dpe_sdk._proxy import proxy_for
 from dpe_sdk.credentials import CredentialProvider
-from dpe_sdk.errors import DpeError
+from dpe_sdk.errors import DpeError, LocalRequestError
 from dpe_sdk.models import Document, ElementObject, PageObject
 from dpe_sdk.protocol import (
     BlobRange,
@@ -95,13 +100,31 @@ _MAX_RETRY_WAIT = 300.0
 #: 经代理建立隧道（``CONNECT`` 应答非 2xx）或 SOCKS 握手失败时抛出，都在请求发出之前
 _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError)
 
+#: send 阶段本地协议错误的重抛消息：库的原文可能回显请求头（含凭证），不得外泄（#207）
+_REDACTED_LOCAL_PROTOCOL = "本地协议错误（原始消息已隐去，见 __cause__）"
+
+
+def _field_value_is_valid(value: str) -> bool:
+    """RFC 9110 field-value：CTL（``%x00-08``、``%x0A-1F``、``%x7F``）不允许，HTAB 除外。
+
+    在 build 阶段由 SDK 自己判定（不依赖 h11 的实现）：命中即确定请求还没发出，抛
+    ``LocalRequestError``。非 ASCII 字符不在判定范围（#207：两侧对非 ASCII 凭证的判定不一致
+    属于规范空白，另开 spec Issue）。
+    """
+    for char in value:
+        code = ord(char)
+        if code == 0x7F or (code < 0x20 and char != "\t"):
+            return False
+    return True
+
 
 def not_sent(exc: BaseException) -> bool:
     """该异常是否表示请求**确定未发出**（如建连失败）。
 
-    传输层用它判定重发安全性，并在放弃发送时据此给异常打底标（``mark_request_not_sent``）。
-    **写操作结果的判定请用 ``protocol.outcome_unknown(exc)``**——写操作是多请求、核心内部还会
-    重发的复合操作，必须按单次尝试的判据整体判定，不能对最终异常套用本函数。
+    只覆盖传输层的建连失败类异常；``LocalRequestError``（本地请求构造失败）同样确定未发出，
+    但它是独立的 SDK 错误类型，不走本谓词。**写操作结果的判定请用
+    ``protocol.outcome_unknown(exc)``**——写操作是多请求、核心内部还会重发的复合操作，必须按
+    单次尝试的判据整体判定，不能对最终异常套用本函数。
     """
     return isinstance(exc, _NOT_SENT)
 
@@ -210,6 +233,13 @@ class _ClientBase:
             value = self._credential.authorization()
             if value is not None:
                 headers[_AUTHORIZATION] = value
+        return self._checked_headers(headers)
+
+    def _checked_headers(self, headers: dict[str, str]) -> dict[str, str]:
+        """请求头字段值必须符合 RFC 9110 field-value（#207）：非法时请求确定未发出。"""
+        for value in headers.values():
+            if not _field_value_is_valid(value):
+                raise LocalRequestError()
         return headers
 
     def _delay(self, response: Response) -> float | None:
@@ -282,6 +312,7 @@ class DpeClient(_ClientBase):
         """发送一个请求（``drive`` 的驱动回调），返回 ``Response``。
 
         可以自行重发的只有本模块 docstring 列出的三类；其余失败按 httpx 的异常类型原样抛出。
+        本地构造失败抛 ``LocalRequestError``；send 阶段的 ``LocalProtocolError`` 消息脱敏（#207）。
         """
         body = request.body_bytes()
         url, content, gzipped = self._wire(request, body)
@@ -289,7 +320,17 @@ class DpeClient(_ClientBase):
         while True:
             headers = self._headers(request, gzipped)  # 每轮重试重新取凭证
             try:
-                reply = self._http.request(request.method, url, headers=headers, content=content)
+                built = self._http.build_request(
+                    request.method, url, headers=headers, content=content
+                )
+            except (idna.IDNAError, httpx.InvalidURL) as exc:
+                # 非法 A-label 或 URL 本身不可构造：构造阶段失败，请求确定未发出（#207）
+                raise LocalRequestError() from exc
+            try:
+                reply = self._http.send(built)
+            except httpx.LocalProtocolError as exc:
+                # 判定不变（仍按可能已发出处理），只隐去可能含凭证的库原文
+                raise httpx.LocalProtocolError(_REDACTED_LOCAL_PROTOCOL) from exc
             except Exception as exc:
                 if attempt >= self._max_retries or not self._resendable(request, exc):
                     if not_sent(exc):
@@ -457,9 +498,17 @@ class AsyncDpeClient(_ClientBase):
         while True:
             headers = self._headers(request, gzipped)  # 每轮重试重新取凭证
             try:
-                reply = await self._http.request(
+                built = self._http.build_request(
                     request.method, url, headers=headers, content=content
                 )
+            except (idna.IDNAError, httpx.InvalidURL) as exc:
+                # 非法 A-label 或 URL 本身不可构造：构造阶段失败，请求确定未发出（#207）
+                raise LocalRequestError() from exc
+            try:
+                reply = await self._http.send(built)
+            except httpx.LocalProtocolError as exc:
+                # 判定不变（仍按可能已发出处理），只隐去可能含凭证的库原文
+                raise httpx.LocalProtocolError(_REDACTED_LOCAL_PROTOCOL) from exc
             except Exception as exc:
                 if attempt >= self._max_retries or not self._resendable(request, exc):
                     if not_sent(exc):

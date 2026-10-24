@@ -26,7 +26,8 @@ use dpe_sdk::{ErrorKind, ExpandedDocument};
 use serde_json::{json, Value};
 
 use http_common::{
-    capabilities_reply, committed, hash, heads_reply, http_date_in, MockServer, Recorded, Reply,
+    capabilities_reply, committed, hash, heads_reply, http_date_in, CountingProvider, MockServer,
+    Recorded, Reply,
 };
 
 /// 一页、每段文本一个 `NarrativeText` 元素的文档（元素总数 = 文本数）。
@@ -233,19 +234,6 @@ async fn chunked_requests_are_never_gzipped() {
 
 // ---------------------------------------------------------------------- 凭证
 
-#[derive(Default)]
-struct CountingProvider {
-    calls: AtomicUsize,
-    value: Option<String>,
-}
-
-impl dpe_sdk::credentials::CredentialProvider for CountingProvider {
-    fn authorization(&self) -> Option<String> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.value.clone()
-    }
-}
-
 struct RotatingProvider {
     calls: AtomicUsize,
 }
@@ -264,10 +252,7 @@ async fn credential_is_injected_into_every_request() {
         capabilities_reply(&["gzip"]),
         committed(&document, "created", 1, 0, 0),
     ]);
-    let provider = Arc::new(CountingProvider {
-        calls: AtomicUsize::new(0),
-        value: Some("Bearer full".to_owned()),
-    });
+    let provider = Arc::new(CountingProvider::new("Bearer full"));
     let client = DpeClient::builder(server.remote())
         .credential(provider.clone())
         .build()
@@ -277,7 +262,7 @@ async fn credential_is_injected_into_every_request() {
         .await
         .expect("提交成功");
     let requests = server.requests();
-    assert_eq!(provider.calls.load(Ordering::SeqCst), requests.len());
+    assert_eq!(provider.calls(), requests.len());
     assert!(requests
         .iter()
         .all(|request| request.header("authorization") == Some("Bearer full")));
@@ -292,7 +277,7 @@ async fn a_provider_returning_none_sends_no_authorization() {
         .build()
         .expect("remote 合法");
     client.capabilities().await.expect("能力");
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.calls(), 1);
     assert!(server.requests()[0].header("authorization").is_none());
 }
 

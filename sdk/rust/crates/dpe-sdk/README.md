@@ -51,6 +51,7 @@ assert_eq!(result.status.as_str(), "created");
 - 只接受 remote URL 与可插拔的 `CredentialProvider`（每个请求发送前取一次，轮换中的短时凭证在重发前会重新取）；
 - remote 按 HTTP 绑定 §1 的文法校验（`dpe_sdk::remote_url::check_remote_url`，即 dpe-hash 的同一函数，与实例定义的 `remote.url` 同一个判定）：http / https、已是 core §1.1 规范化形式、无查询串与片段、无 userinfo、不写默认端口、路径不以 `/` 结尾且无点段；合法即原样使用，不合法报 `InvalidArgument`；
 - 传输层只做 I/O：拼 URL、注入凭证、按策略 gzip（请求体，HTTP 绑定 §7）、把响应还原给核心；协议判定与写操作的重试全在 sans-IO 核心；
+- 请求在本地构造阶段失败（非法 A-label 主机、请求头字段值含 CTL）时，以 `ErrorKind::LocalRequest` 上报、默认 `outcome_unknown=false`（写操作此前有不确定尝试时最终仍为真）、不重发；消息固定，不回显 URL / 主机 / 凭证，原始库错误经 `source()` 取回（#207）；
 - 例外只有三类：`retry_safe` 的请求遇网络失败、任何请求遇「确定未发出」的建连失败、按 `code` 判定的可重试错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，等 `Retry-After` 后原样重发，等待超过 300 秒不吸收；`Retry-After` 只按 RFC 9110 文法解析，即 dpe-hash 的 `retry_after_seconds`，经 `dpe_sdk::protocol` 重新导出。0.4 起首尾只去 SP / HTAB（以前用 `trim()` 去掉全部 Unicode 空白），rfc850 两位年份在世纪交替前后改为取「不晚于现在加 50 年」的最晚年份，以前固定按当前世纪读）；
 - **代理只来自环境变量**（#132）：构造客户端时按下面的规则判定一次 remote 走哪个代理，**从不读操作系统的代理设置**（macOS / Windows 的系统代理、PAC 都不看）。两个 SDK 规则相同，共用一张用例表 `sdk/testdata/proxy_env.json`：
   - https remote 用 `HTTPS_PROXY`，http remote 用 `HTTP_PROXY`，都没有时用 `ALL_PROXY`；每个名字先看大写、再看小写，空值视为未设置；

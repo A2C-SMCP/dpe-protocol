@@ -34,6 +34,8 @@ remote 值作 ``expected_base`` 重提（文档已不存在即 ``if_absent`` 复
 
 **远端失败分层**（§7.1）：
 - 401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级 ``remote_incompatible``；
+- 本地请求构造失败（非法 A-label 主机、非法凭证头值）→ 轮级 ``remote_unavailable``
+  （临时口径，见 dpe-protocol#256：§7.1 闭集暂无专用码；SDK 不重发，每轮只失败一次）；
 - 响应不是 DPE 报文（无 problem 体也无 ``DPE-Error-Code`` 的非 2xx，含 3xx；或 2xx 报文
   不合规）→ 轮级 ``remote_protocol_error``（只有 5xx 可重试）；
 - 结果未知、可重试 DPE 错误重试耗尽、网络失败 → 轮级 ``remote_unavailable``（本轮作废）；
@@ -239,6 +241,9 @@ def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
     if isinstance(exc, IncompatibleServerError | ContractUnsupportedError):
         # remote 不支持运行器可用的协议或 hash 契约：不改动实例就无法恢复（§7.1 实例级）
         return InstanceFailure("remote_incompatible", f"remote 不兼容：{exc}", source="remote")
+    # LocalRequestError（非法 A-label 主机、非法凭证头值）暂按 §7.1 的 remote_unavailable 归类：
+    # 闭集里没有专用码，规范先行不挪用 remote_incompatible 的语义；SDK 已不重发，每轮只失败一次。
+    # 临时口径见 dpe-protocol#256（新增实例级 remote_request_invalid，0.6）。
     if isinstance(exc, UnexpectedResponseError):
         if exc.status == 401:
             return InstanceFailure(

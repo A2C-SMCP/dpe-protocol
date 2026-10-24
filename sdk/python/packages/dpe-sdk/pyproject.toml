@@ -21,6 +21,8 @@ dependencies = [
     "dpe-hash==0.4.1-dev",
     "pydantic>=2.7,<3",
     "httpx>=0.27,<1",
+    # 传输层直接 import idna 捕获非法 A-label（#207）；已是 httpx 的传递依赖，显式声明
+    "idna>=3,<4",
     # testing 的 ASGI 应用把引擎调用放到工作线程（引擎持线程锁，授权器可能慢或回调引擎）；
     # 已是 httpx 的传递依赖，被直接 import 须显式声明
     "anyio>=4,<5",

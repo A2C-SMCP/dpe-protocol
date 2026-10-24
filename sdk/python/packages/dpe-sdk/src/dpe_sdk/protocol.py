@@ -6,6 +6,8 @@
 
 **驱动约定**：发送请求时抛出的 ``Exception``（连接失败、超时等）由驱动方 ``throw`` 回操作，
 操作不处理时原样传出；需要据此判定结果的操作（如 force 提交的响应丢失）在操作内部处理。
+``LocalRequestError`` 是例外：它表示本次尝试在本地构造阶段失败、确定未发出，写操作 MUST NOT
+重发（``_send`` 直接抛出），由写操作外层用先前尝试的累计状态打结果标记（#207）。
 
 **写操作的重试**（core §5.2）：写操作把抛回的任何异常，以及无 DPE 错误码的 502 / 504（网关
 已转发、源站结果未知），都视为「请求可能已到达服务端、响应丢失」，由操作自己判定——commit
@@ -27,7 +29,8 @@ MUST NOT 自行重发；``retry_safe`` 为真的请求（只读操作与断点�
 2. 核心对写请求本身（commit / delete / move 的那个请求；不含 negotiate、upload 与 head）按
    **单次尝试**观察，判据是「正面依据」——只有三种结局算「确定」：收到带 DPE 错误码的响应
    （服务端明确裁决）、成功响应且核心自洽校验全部通过（校验失败会走异常路径、按未确定处理）、
-   传输层标明「确定未发出」。**其余一切结局都记「可能已生效」**：无底标的传输异常，以及任何
+   传输层标明「确定未发出」（建连失败或本地构造失败 ``LocalRequestError``）。**其余一切结局
+   都记「可能已生效」**：无底标的传输异常，以及任何
    无码响应——2xx 但校验/解析失败、未化解的裸 412、无码的 4xx（代理 401/404 等）与 5xx。
    写操作抛出的异常逃出时，核心显式打结果标记（读取用公开谓词 ``outcome_unknown``）。
 
@@ -74,11 +77,13 @@ from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
 from dpe_sdk.errors import (
+    OUTCOME_UNKNOWN_ATTR,
     AlreadyExistsError,
     ContractUnsupportedError,
     DpeError,
     ForceNotConfirmedError,
     IncompatibleServerError,
+    LocalRequestError,
     MissingContentError,
     NotFoundError,
     PayloadTooLargeError,
@@ -442,8 +447,6 @@ def _gateway_lost(response: Response) -> bool:
 
 #: 传输层在「确定未发出」的传输异常上打的底标（``mark_request_not_sent``）
 _REQUEST_NOT_SENT = "dpe_request_not_sent"
-#: 核心在写操作异常上打的「结果未知」标记（``outcome_unknown``）
-_OUTCOME_UNKNOWN = "dpe_outcome_unknown"
 
 
 def mark_request_not_sent(exc: BaseException) -> None:
@@ -482,7 +485,7 @@ def outcome_unknown(exc: BaseException) -> bool:
     - **无标记时一律返回 True**（保守：可能已生效）——不是从核心写路径抛出的异常、或标记因故
       没写上时，调用方（如 ``dpe_sdk.pusher`` 的待定意图）都应按「结果未知」处理。
     """
-    return getattr(exc, _OUTCOME_UNKNOWN, None) is not False
+    return getattr(exc, OUTCOME_UNKNOWN_ATTR, None) is not False
 
 
 @dataclass
@@ -512,7 +515,7 @@ def _note_response(tracker: _WriteAttempts | None, response: Response) -> None:
 def _mark_outcome(exc: BaseException, tracker: _WriteAttempts) -> None:
     """写操作的异常逃出时显式打结果标记（True / False）；设不上属性时保持无标记（按未知）。"""
     with contextlib.suppress(AttributeError, TypeError):
-        setattr(exc, _OUTCOME_UNKNOWN, tracker.possibly_applied)
+        setattr(exc, OUTCOME_UNKNOWN_ATTR, tracker.possibly_applied)
 
 
 def _expect(response: Response, status: int = 200) -> None:
@@ -1057,6 +1060,9 @@ class ProtocolCore:
             )
             try:
                 response = yield request
+            except LocalRequestError:
+                # 本地构造失败、确定未发出：不进入断点查询与重发（#207）
+                raise
             except Exception:
                 if recoveries <= 0:
                     raise
@@ -1174,6 +1180,9 @@ class ProtocolCore:
         if isinstance(precondition, Force):
             try:
                 response = yield request
+            except LocalRequestError:
+                # 本地构造失败、确定未发出：不进入 head 确认，也不记「可能已生效」（#207）
+                raise
             except Exception as exc:
                 _note_attempt(tracker, exc)
                 return (yield from self._confirm_force(uri, expected, total, exc))
@@ -1709,6 +1718,10 @@ class ProtocolCore:
         while True:
             try:
                 response = yield request
+            except LocalRequestError:
+                # 本次尝试确定未发出（本地构造失败）：不重发，也不记「可能已生效」；由写操作的
+                # 外层用先前尝试的累计状态打结果标记（#207）
+                raise
             except Exception as exc:
                 _note_attempt(tracker, exc)
                 if resends >= self.max_resends:

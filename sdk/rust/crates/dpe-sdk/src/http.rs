@@ -6,7 +6,9 @@
 //! 异步驱动用 [`DpeClient::drive`]（本模块），两者是同一契约的两种循环。与 Python 侧
 //! `dpe_sdk.transport` 行为对等。
 //!
-//! **传输层可以自行重发的情形只有三类**（其余失败原样抛出，交核心按 core §5.2 处理）：
+//! **传输层可以自行重发的情形只有三类**（其余失败原样抛出，交核心按 core §5.2 处理）。本地
+//! 构造失败（非法 URL 主机、请求头字段值含 CTL）不在其列：`send` 在发出前用
+//! [`local_request_error`] 标记返回，驱动层据此直接终止、不重发（#207）：
 //!
 //! 1. [`retry_safe`](Request::retry_safe) 为真的请求（只读操作与断点查询）遇网络失败——
 //!    超时、连接中断、响应丢失等；重发安全由该字段决定，**不按 HTTP 方法推断**（`batch_head`
@@ -76,9 +78,9 @@ use crate::credentials::CredentialProvider;
 use crate::errors::Error;
 use crate::models::{ElementObject, ExpandedDocument, PageObject};
 use crate::protocol::{
-    error_from_response, fetch_capabilities, not_sent, BlobProvider, BlobSource, Body, Method,
-    Negotiated, Operation, Precondition, ProtocolCore, Request, Response, Session, Step,
-    TransportError, DEFAULT_MAX_RESENDS,
+    error_from_response, fetch_capabilities, local_request_error, not_sent, BlobProvider,
+    BlobSource, Body, Method, Negotiated, Operation, Precondition, ProtocolCore, Request, Response,
+    Session, Step, TransportError, DEFAULT_MAX_RESENDS,
 };
 use crate::remote_url::check_remote_url;
 use crate::wire::{Capabilities, CommitResult, ListPage, MoveResult, Skeleton};
@@ -132,7 +134,8 @@ enum Failure {
     NotSent,
     /// 网络失败（超时、连接中断、响应丢失等）：只有 `retry_safe` 的请求可原样重发。
     Network,
-    /// 本地构造问题（URL / 头非法）、解压失败等：重发没有意义，原样抛出且不打标记。
+    /// 其余本地问题（如解压失败）：重发没有意义，原样抛出且不打标记。URL / 头字段值的构造
+    /// 失败在进入本分类之前就已被 [`local_request_error`] 标记（#207）。
     Other,
 }
 
@@ -184,11 +187,6 @@ fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(data)?;
     encoder.finish()
-}
-
-/// 本地构造问题（URL / 头非法等）：不是网络失败，重发没有意义。
-fn local_error(error: impl std::error::Error + Send + Sync + 'static) -> TransportError {
-    Box::new(error)
 }
 
 /// 连接阶段的超时预算：整体超时的 90%，保证连接计时器先于请求计时器到点（两者的启动差是
@@ -288,6 +286,9 @@ impl DpeClient {
 
     /// 发送一个请求，返回响应；自行重发的规则与「确定未发出」标记见模块说明。
     ///
+    /// 本地构造失败（非法 URL 主机、请求头字段值含 CTL）返回 [`LocalRequestError`] 标记（#207）；
+    /// 驱动层据此以 [`crate::ErrorKind::LocalRequest`] 终止操作、不重发。
+    ///
     /// 其余失败（网络失败的异常、以及交给核心的 4xx / 5xx 响应）原样抛出或原样返回——异常
     /// 类型不包装（reqwest 的错误类型可 `downcast_ref::<reqwest::Error>()` 取回），调用方按
     /// 类型区分连接失败、超时与响应丢失；写操作的结果判定请用核心的
@@ -300,8 +301,11 @@ impl DpeClient {
         let mut attempt: u32 = 0;
         loop {
             let headers = self.headers(&request, gzipped)?; // 每轮重发前重新取凭证
+
+            // 与 reqwest 内部同一个解析器预解析：非法 A-label 在发出前即失败（#207）
+            let target = reqwest::Url::parse(&url).map_err(local_request_error)?;
             let reply = self
-                .attempt(method.clone(), &url, headers, body.clone())
+                .attempt(method.clone(), target, headers, body.clone())
                 .await;
             match reply {
                 Ok(response) => {
@@ -330,7 +334,8 @@ impl DpeClient {
     }
 
     /// 异步驱动一个操作直到完成（[`drive`](crate::protocol::drive) 的异步版本，同一契约）：
-    /// [`send`](DpeClient::send) 的失败经 [`Operation::on_transport_error`] 回送。
+    /// [`send`](DpeClient::send) 的失败经 [`Operation::on_transport_error`] 回送。本地构造失败
+    /// 由操作按 [`LocalRequestError`] 直接终止、不重发（#207）。
     pub async fn drive<O: Operation>(&self, mut op: O) -> Result<O::Output, Error> {
         loop {
             match op.poll()? {
@@ -533,8 +538,8 @@ impl DpeClient {
     fn headers(&self, request: &Request, gzipped: bool) -> Result<HeaderMap, TransportError> {
         let mut headers = HeaderMap::new();
         for (name, value) in request.headers.iter() {
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(local_error)?;
-            let value = HeaderValue::from_str(value).map_err(local_error)?;
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(local_request_error)?;
+            let value = HeaderValue::from_str(value).map_err(local_request_error)?;
             headers.insert(name, value);
         }
         if gzipped {
@@ -545,7 +550,7 @@ impl DpeClient {
         }
         if let Some(provider) = &self.credential {
             if let Some(value) = provider.authorization() {
-                let value = HeaderValue::from_str(&value).map_err(local_error)?;
+                let value = HeaderValue::from_str(&value).map_err(local_request_error)?;
                 headers.insert(reqwest::header::AUTHORIZATION, value);
             }
         }
@@ -556,7 +561,7 @@ impl DpeClient {
     async fn attempt(
         &self,
         method: reqwest::Method,
-        url: &str,
+        url: reqwest::Url,
         headers: HeaderMap,
         body: Option<Vec<u8>>,
     ) -> Result<Response, reqwest::Error> {

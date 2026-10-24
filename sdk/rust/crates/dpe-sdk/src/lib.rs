@@ -36,8 +36,8 @@ pub mod wire;
 
 pub use errors::{Error, ErrorKind};
 pub use protocol::{
-    drive, error_from_response, fetch_capabilities, not_sent, Operation, ProtocolCore, Request,
-    Response, Step, TransportError,
+    drive, error_from_response, fetch_capabilities, local_request_error, not_sent,
+    LocalRequestError, Operation, ProtocolCore, Request, Response, Step, TransportError,
 };
 
 pub mod run;
