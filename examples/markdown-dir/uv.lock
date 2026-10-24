@@ -130,7 +130,7 @@ wheels = [
 
 [[package]]
 name = "dpe-hash"
-version = "0.5.0"
+version = "0.5.1.dev0"
 source = { editable = "../../sdk/python/packages/dpe-hash" }
 
 [[package]]
@@ -160,7 +160,7 @@ dev = [
 
 [[package]]
 name = "dpe-sdk"
-version = "0.5.0"
+version = "0.5.1.dev0"
 source = { editable = "../../sdk/python/packages/dpe-sdk" }
 dependencies = [
     { name = "anyio" },
