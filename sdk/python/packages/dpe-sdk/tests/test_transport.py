@@ -22,7 +22,7 @@ from typing import Any
 import dpe_hash
 import httpx
 import pytest
-from client_helpers import PREFIX, REMOTE, ClientRecorder
+from client_helpers import PREFIX, REMOTE, ClientRecorder, CountingProvider
 from client_helpers import in_process_client as in_process
 from dpe_sdk import protocol as protocol_module
 from dpe_sdk import transport as transport_module
@@ -328,18 +328,8 @@ async def test_no_gzip_when_the_server_does_not_offer_it() -> None:
 # ---------------------------------------------------------------------- 凭证
 
 
-class _CountingProvider:
-    def __init__(self, value: str | None) -> None:
-        self.value = value
-        self.calls = 0
-
-    def authorization(self) -> str | None:
-        self.calls += 1
-        return self.value
-
-
 async def test_credential_is_injected_into_every_request() -> None:
-    provider = _CountingProvider("Bearer full")
+    provider = CountingProvider("Bearer full")
     async with in_process(credential=provider) as (client, recorder):
         await client.commit("s3://bucket/a.md", _doc("hello"), IfAbsent())
     assert provider.calls == len(recorder.requests)

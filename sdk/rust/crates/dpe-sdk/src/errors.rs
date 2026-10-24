@@ -10,9 +10,10 @@
 //! - `path` 是违例位置（RFC 6901 JSON Pointer，core §2.8），只用于诊断；HTTP problem 体
 //!   不携带。
 //! - 客户端本地错误（[`ErrorKind::UnexpectedResponse`] / [`ErrorKind::IncompatibleServer`] /
-//!   [`ErrorKind::ForceNotConfirmed`] / [`ErrorKind::InvalidArgument`]）不是协议错误，没有
-//!   core §6 的码；传输异常经 [`ErrorKind::Transport`] 透传（见 [`crate::protocol`] 的驱动约定）；
-//!   增量推送器的状态存储故障经 [`ErrorKind::StateStore`] 透传（同样没有 core §6 的码）。
+//!   [`ErrorKind::ForceNotConfirmed`] / [`ErrorKind::InvalidArgument`] /
+//!   [`ErrorKind::LocalRequest`]）不是协议错误，没有 core §6 的码；传输异常经
+//!   [`ErrorKind::Transport`] 透传（见 [`crate::protocol`] 的驱动约定）；增量推送器的状态存储
+//!   故障经 [`ErrorKind::StateStore`] 透传（同样没有 core §6 的码）。
 
 use std::fmt;
 
@@ -69,6 +70,9 @@ pub enum ErrorKind {
     ForceNotConfirmed,
     /// 调用参数不合法（本地判定，不发请求；对应 Python 侧的 `ValueError` / `TypeError`）。
     InvalidArgument,
+    /// 请求在本地构造阶段失败（URL 主机或请求头字段值非法）：请求**确定未发出**，SDK 不重试
+    /// （对应 Python 侧的 `LocalRequestError`）。
+    LocalRequest,
     /// 驱动方回送的传输异常（连接失败、超时等）：操作未处理时经
     /// [`Error::transport`] 原样上报，`source()` 可取回原始错误。
     Transport,
@@ -104,6 +108,7 @@ impl ErrorKind {
             | ErrorKind::IncompatibleServer
             | ErrorKind::ForceNotConfirmed
             | ErrorKind::InvalidArgument
+            | ErrorKind::LocalRequest
             | ErrorKind::Transport
             | ErrorKind::StateStore => return None,
         })
@@ -245,6 +250,14 @@ impl Error {
         let mut wrapped = Self::new(ErrorKind::Transport, error.to_string());
         wrapped.details_mut().transport = Some(error);
         wrapped
+    }
+
+    /// 请求在本地构造阶段失败、确定未发出（[`ErrorKind::LocalRequest`]）：消息固定，不回显
+    /// URL / 主机 / 凭证；原始库错误经 `source()` 取回。
+    pub(crate) fn local_request(error: TransportError) -> Self {
+        let mut wrapped = Self::new(ErrorKind::LocalRequest, "本地请求构造失败，请求未发出");
+        wrapped.details_mut().transport = Some(error);
+        wrapped.with_outcome_unknown(false)
     }
 
     /// 增量推送器的状态存储读写失败（[`ErrorKind::StateStore`]），原始错误经 `source()` 取回。
@@ -427,8 +440,9 @@ impl Error {
     /// 失败时置位；**只针对写请求本身**，不含 `negotiate` / `upload_*` / `head` 的失败）。
     ///
     /// **只有三种结局算「确定」（不置真）**：带 DPE 错误码的响应；成功响应且核心的自洽校验
-    /// 全部通过；带 [`NotSent`](crate::protocol::NotSent) 标记的传输错误（传输层确定请求没
-    /// 发出）。其余一律为真——无 `NotSent` 的传输错误、任何**无码**响应（无码 4xx / 5xx、
+    /// 全部通过；传输层确定请求没发出（带 [`NotSent`](crate::protocol::NotSent) 标记的建连失败，
+    /// 或本地构造失败 [`ErrorKind::LocalRequest`]）。其余一律为真——无标记的传输错误、任何
+    /// **无码**响应（无码 4xx / 5xx、
     /// 2xx 但自洽校验或解析失败、没能化解的裸 412）。经 `head` 判定化解的裸 412 与
     /// `negotiate` / `upload_*` / `head` 阶段的失败不影响本值（后者在写请求未发出时为假）。
     /// **没有置位的错误（`None`）保守地返回真**——调用方对不确定的结果应先重新读取。

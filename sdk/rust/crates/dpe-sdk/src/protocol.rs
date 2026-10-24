@@ -6,7 +6,11 @@
 //! 同步传输用 [`drive`]，异步传输按同一契约自行循环——核心不引入任何异步运行时。
 //!
 //! **驱动约定**：发送请求失败的传输异常（连接失败、超时等）经 `on_transport_error` 回送给
-//! 操作。写操作（commit / delete / move）把回送的任何异常，以及无 DPE 错误码的 502 / 504
+//! 操作。本地构造失败（[`LocalRequestError`]，请求确定未发出）是例外：操作 MUST NOT 重发，
+//! 直接以 [`ErrorKind::LocalRequest`] 终止；写操作把先前尝试累计的「可能已生效」状态带进该
+//! 错误（#207）。force 提交的响应丢失后，head 确认阶段的本地构造失败保留
+//! [`ErrorKind::ForceNotConfirmed`]（cause 为本地构造失败），与 Python 对等。
+//! 写操作（commit / delete / move）把回送的任何异常，以及无 DPE 错误码的 502 / 504
 //! （网关已转发、源站结果未知），都视为「请求可能已到达服务端、响应丢失」，由操作自己判定
 //! ——只有操作知道自己在重发。请求的 [`retry_safe`](Request::retry_safe) 为 `false` 时，一旦
 //! 请求可能已经发出，传输层 **MUST NOT 自行重发**；确定未发出的失败（如建连失败）与
@@ -113,6 +117,57 @@ pub fn not_sent(error: impl Into<TransportError>) -> TransportError {
 /// 该传输错误是否确定「请求没发出」。
 fn is_not_sent(error: &TransportError) -> bool {
     error.downcast_ref::<NotSent>().is_some()
+}
+
+/// 「请求在本地构造阶段失败」（URL 主机或请求头字段值非法）：请求**确定没有发出**。
+///
+/// 传输层在能自己证明这一点时用 [`local_request_error`] 包装；驱动层据此直接终止操作，不把
+/// 它回送给写操作按「响应丢失」重发（#207）。与 [`NotSent`] 的区别：后者是建连失败这类
+/// 「可原样重发」的确定未发出，前者是确定性的本地失败，重发没有意义。
+#[derive(Debug)]
+pub struct LocalRequestError(TransportError);
+
+impl LocalRequestError {
+    /// 原始库错误（URL / 头字段值解析失败）。
+    pub fn error(&self) -> &(dyn std::error::Error + 'static) {
+        self.0.as_ref()
+    }
+
+    /// 取出原始错误（驱动层转换 [`Error`] 时用）。
+    pub(crate) fn into_inner(self) -> TransportError {
+        self.0
+    }
+}
+
+impl fmt::Display for LocalRequestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("本地请求构造失败，请求未发出")
+    }
+}
+
+impl std::error::Error for LocalRequestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+/// 把本地构造失败包装为「确定未发出」标记（驱动层据此直接终止操作）。
+pub fn local_request_error(error: impl Into<TransportError>) -> TransportError {
+    Box::new(LocalRequestError(error.into()))
+}
+
+/// 若传输错误是本地构造失败，转成终态 [`ErrorKind::LocalRequest`]（`outcome_unknown` 由调用方
+/// 按已累计的写尝试状态给出）；不是则原样返回，交操作按既有规则处理（#207）。
+fn local_request_failure(
+    error: TransportError,
+    outcome_unknown: bool,
+) -> Result<TransportError, Error> {
+    match error.downcast::<LocalRequestError>() {
+        Ok(local) => {
+            Err(Error::local_request(local.into_inner()).with_outcome_unknown(outcome_unknown))
+        }
+        Err(error) => Ok(error),
+    }
 }
 
 /// HTTP 方法（v1 绑定只用到这五个）。
@@ -540,7 +595,8 @@ pub trait Operation {
 }
 
 /// 同步驱动一个操作直到完成；`send` 的错误经 [`Operation::on_transport_error`] 回送（见模块
-/// 说明的驱动约定）。
+/// 说明的驱动约定）。本地构造失败由操作按 [`LocalRequestError`] 直接终止、不重发（#207）；
+/// force 的 head 确认阶段例外，保留 `ForceNotConfirmed` 载荷。
 pub fn drive<O: Operation>(
     mut op: O,
     mut send: impl FnMut(Request) -> Result<Response, TransportError>,
@@ -1406,6 +1462,7 @@ impl Operation for CapabilitiesOp {
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
         self.phase.fail()?;
+        let error = local_request_failure(error, false)?;
         Err(Error::transport(error))
     }
 }
@@ -1430,6 +1487,7 @@ impl Operation for HeadOp<'_> {
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
         self.phase.fail()?;
+        let error = local_request_failure(error, false)?;
         Err(Error::transport(error))
     }
 }
@@ -1541,6 +1599,7 @@ impl Operation for BatchHeadOp<'_> {
         self.accept()?;
         self.terminal = true;
         self.awaiting = None;
+        let error = local_request_failure(error, false)?;
         Err(Error::transport(error))
     }
 }
@@ -1579,6 +1638,7 @@ impl Operation for GetSkeletonOp<'_> {
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
         self.phase.fail()?;
+        let error = local_request_failure(error, false)?;
         Err(Error::transport(error))
     }
 }
@@ -1614,6 +1674,7 @@ impl Operation for ListPageOp<'_> {
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
         self.phase.fail()?;
+        let error = local_request_failure(error, false)?;
         Err(Error::transport(error))
     }
 }
@@ -1958,6 +2019,13 @@ impl Operation for CommitOp<'_> {
         let outcome = match self.phase {
             // force：响应丢失不重放，先 head 判定
             CommitPhase::Submit if self.precondition == Precondition::Force => {
+                let error = match local_request_failure(error, self.outcome_unknown) {
+                    Ok(error) => error,
+                    Err(error) => {
+                        self.phase = CommitPhase::Finished;
+                        return Err(error);
+                    }
+                };
                 self.outcome_unknown |= !is_not_sent(&error);
                 self.cause = Some(Error::transport(error));
                 self.resends = 0;
@@ -1966,6 +2034,13 @@ impl Operation for CommitOp<'_> {
             }
             // 写请求可能已到达：原样重发（幂等由内容保证），至多 max_resends 次
             CommitPhase::Submit | CommitPhase::Resend412 => {
+                let error = match local_request_failure(error, self.outcome_unknown) {
+                    Ok(error) => error,
+                    Err(error) => {
+                        self.phase = CommitPhase::Finished;
+                        return Err(error);
+                    }
+                };
                 self.outcome_unknown |= !is_not_sent(&error);
                 if self.resends < self.core.max_resends() {
                     self.resends += 1;
@@ -1974,17 +2049,43 @@ impl Operation for CommitOp<'_> {
                     Err(Error::transport(error))
                 }
             }
-            // head 是只读请求：同样可原样重发
+            // head 是只读请求：网络失败可原样重发；本地构造失败不重发
             CommitPhase::HeadAfter412 { .. } => {
+                // 本地构造失败：head 未完成、裸 412 仍未化解 → 可能已生效
+                let error = match local_request_failure(error, true) {
+                    Ok(error) => error,
+                    Err(error) => {
+                        self.outcome_unknown = true; // 与错误标记保持一致（deliver 会读这个字段）
+                        self.phase = CommitPhase::Finished;
+                        return Err(error);
+                    }
+                };
                 if self.resends < self.core.max_resends() {
+                    // 可重试的中间失败不置位：重发的 head 仍可能化解这个 412
                     self.resends += 1;
                     Ok(())
                 } else {
+                    // head 判定最终失败：未化解的裸 412 无从确定
+                    self.outcome_unknown = true;
                     Err(Error::transport(error))
                 }
             }
-            // force 的 head 确认失败（重发已用尽）：无法确认
+            // force 的 head 确认失败：无法确认；本地构造失败不重试，但保留 ForceNotConfirmed 载荷
             CommitPhase::ConfirmForce => {
+                if error.is::<LocalRequestError>() {
+                    let local = error
+                        .downcast::<LocalRequestError>()
+                        .expect("已判定为本地构造失败");
+                    self.phase = CommitPhase::Finished;
+                    return Err(Error::unconfirmed_force(
+                        "force 提交的响应丢失，head 也失败，无法确认是否生效",
+                        self.expected.clone(),
+                        None,
+                        false,
+                        Error::local_request(local.into_inner()),
+                    )
+                    .with_outcome_unknown(self.outcome_unknown));
+                }
                 let cause = Error::transport(error);
                 if self.resends < self.core.max_resends() {
                     self.resends += 1;
@@ -2196,6 +2297,13 @@ impl Operation for DeleteOp<'_> {
         self.awaiting = false;
         let outcome = match self.phase {
             DeletePhase::Submit | DeletePhase::Resend412 => {
+                let error = match local_request_failure(error, self.outcome_unknown) {
+                    Ok(error) => error,
+                    Err(error) => {
+                        self.phase = DeletePhase::Finished;
+                        return Err(error);
+                    }
+                };
                 self.outcome_unknown |= !is_not_sent(&error);
                 if self.resends < self.core.max_resends() {
                     self.resends += 1;
@@ -2206,10 +2314,22 @@ impl Operation for DeleteOp<'_> {
                 }
             }
             DeletePhase::HeadAfter412 { .. } => {
+                // 本地构造失败：head 未完成、裸 412 仍未化解 → 可能已生效
+                let error = match local_request_failure(error, true) {
+                    Ok(error) => error,
+                    Err(error) => {
+                        self.outcome_unknown = true; // 与错误标记保持一致（deliver 会读这个字段）
+                        self.phase = DeletePhase::Finished;
+                        return Err(error);
+                    }
+                };
                 if self.resends < self.core.max_resends() {
+                    // 可重试的中间失败不置位：重发的 head 仍可能化解这个 412
                     self.resends += 1;
                     Ok(())
                 } else {
+                    // head 判定最终失败：未化解的裸 412 无从确定
+                    self.outcome_unknown = true;
                     Err(Error::transport(error))
                 }
             }
@@ -2324,6 +2444,13 @@ impl Operation for MoveOp<'_> {
         self.awaiting = false;
         let outcome = match self.phase {
             MovePhase::Submit => {
+                let error = match local_request_failure(error, self.outcome_unknown) {
+                    Ok(error) => error,
+                    Err(error) => {
+                        self.phase = MovePhase::Finished;
+                        return Err(error);
+                    }
+                };
                 self.outcome_unknown |= !is_not_sent(&error);
                 if self.resends < self.core.max_resends() {
                     self.resends += 1;
@@ -2407,6 +2534,7 @@ impl Operation for NegotiateOp<'_> {
 
     fn on_transport_error(&mut self, error: TransportError) -> Result<(), Error> {
         self.phase.fail()?;
+        let error = local_request_failure(error, false)?;
         Err(Error::transport(error))
     }
 }
@@ -2764,6 +2892,13 @@ impl<'a> UploadRunner<'a> {
         error: TransportError,
         core: &ProtocolCore,
     ) -> Result<(), Error> {
+        let error = match local_request_failure(error, false) {
+            Ok(error) => error,
+            Err(error) => {
+                self.finish();
+                return Err(error);
+            }
+        };
         match &mut self.phase {
             UploadPhase::Whole { resends, .. } => {
                 if *resends < core.max_resends() {

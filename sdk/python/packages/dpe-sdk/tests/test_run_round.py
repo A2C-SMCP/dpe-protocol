@@ -1512,6 +1512,17 @@ def test_incompatible_remote_is_instance_level() -> None:
         assert (failure.level, failure.code) == ("instance", "remote_incompatible")
 
 
+def test_local_request_failure_is_round_level_retryable_until_256() -> None:
+    """#256 前的临时口径：本地构造失败归 remote_unavailable（轮级可重试）；SDK 本身不重发。"""
+    from dpe_sdk.errors import LocalRequestError
+    from dpe_sdk.run.round import _classify_remote
+
+    failure = _classify_remote(LocalRequestError(), unknown=True)
+    assert (failure.level, failure.code) == ("round", "remote_unavailable")
+    assert failure.retryable is True
+    assert "Bearer" not in failure.message
+
+
 async def test_achieved_on_reread_is_confirmed_even_without_retry_budget(tmp_path: Path) -> None:
     made, wrap = _hooks()
     async with harness(tmp_path, wrap) as h:

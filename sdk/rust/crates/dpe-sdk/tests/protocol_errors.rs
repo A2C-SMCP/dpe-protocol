@@ -60,6 +60,7 @@ fn local_kinds_have_no_code() {
         ErrorKind::IncompatibleServer,
         ErrorKind::ForceNotConfirmed,
         ErrorKind::InvalidArgument,
+        ErrorKind::LocalRequest,
         ErrorKind::Transport,
         ErrorKind::StateStore,
     ] {

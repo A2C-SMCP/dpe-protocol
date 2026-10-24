@@ -878,6 +878,63 @@ def test_commit_marks_unknown_when_a_bare_412_cannot_be_resolved() -> None:
     assert outcome_unknown(excinfo.value) is True
 
 
+def test_bare_412_resolved_after_a_lost_head_is_determined() -> None:
+    """head 的一次可重试丢失不污染结果：重发后化解 412 仍为「确定」。"""
+    server = Script(bare_412(), lost(), head_found(H2))
+    with pytest.raises(errors.PreconditionFailedError) as excinfo:
+        drive(core().commit(URI, DOC, BaseHash(H1)), server)
+    assert outcome_unknown(excinfo.value) is False
+
+
+def test_bare_412_head_local_failure_marks_unknown() -> None:
+    """head 判定本身在本地构造阶段失败：未化解的裸 412 仍可能已生效（#207）。"""
+    calls = 0
+
+    def send(request: Any) -> Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return bare_412()
+        raise errors.LocalRequestError()
+
+    with pytest.raises(errors.LocalRequestError) as excinfo:
+        drive(core().commit(URI, DOC, BaseHash(H1)), send)
+    assert outcome_unknown(excinfo.value) is True
+
+
+def test_force_head_local_failure_is_force_not_confirmed() -> None:
+    """force 提交丢失后，确认 head 的本地构造失败保留 ForceNotConfirmed 载荷（#207）。"""
+    calls = 0
+
+    def send(request: Any) -> Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return Response(504, {"Content-Type": "text/html"}, b"gw")
+        raise errors.LocalRequestError()
+
+    with pytest.raises(errors.ForceNotConfirmedError) as excinfo:
+        drive(core().commit(URI, DOC, Force()), send)
+    assert outcome_unknown(excinfo.value) is True
+    assert excinfo.value.checked is False
+
+
+def test_deliver_bare_412_head_local_failure_marks_unknown() -> None:
+    """deliver 包装的 commit 同样不得把未化解裸 412 降级为确定未生效（#207）。"""
+    calls = 0
+
+    def send(request: Any) -> Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return bare_412()
+        raise errors.LocalRequestError()
+
+    with pytest.raises(errors.LocalRequestError) as excinfo:
+        drive(core().deliver(URI, DOC, BaseHash(H1)), send)
+    assert outcome_unknown(excinfo.value) is True
+
+
 def test_resolved_bare_412_is_determined_for_if_match() -> None:
     """经 head 化解的裸 412（If-Match：head 显示内容不同，条件不成立）→ False。"""
     server = Script(bare_412(), head_found(H2))

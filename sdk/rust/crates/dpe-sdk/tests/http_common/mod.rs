@@ -11,13 +11,43 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use dpe_sdk::credentials::CredentialProvider;
 use dpe_sdk::wire::Capabilities;
 use serde_json::{json, Value};
+
+/// 计数凭证 provider：记录取用次数，固定返回一个值（`None` 表示不带凭证）。
+#[derive(Default)]
+pub struct CountingProvider {
+    value: Option<String>,
+    calls: AtomicUsize,
+}
+
+impl CountingProvider {
+    /// 固定返回 `value`。
+    pub fn new(value: impl Into<String>) -> Self {
+        CountingProvider {
+            value: Some(value.into()),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// 到目前为止的取用次数。
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl CredentialProvider for CountingProvider {
+    fn authorization(&self) -> Option<String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.value.clone()
+    }
+}
 
 /// 服务端记录的一次请求（头字段名统一小写）。
 #[derive(Debug, Clone)]

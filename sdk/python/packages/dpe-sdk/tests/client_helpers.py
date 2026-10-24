@@ -22,6 +22,18 @@ REMOTE = "http://dpe.test/r/1"
 PREFIX = "/r/1"
 
 
+class CountingProvider:
+    """计数凭证 provider：记录取用次数，固定返回一个值（``None`` 表示不带凭证）。"""
+
+    def __init__(self, value: str | None) -> None:
+        self.value = value
+        self.calls = 0
+
+    def authorization(self) -> str | None:
+        self.calls += 1
+        return self.value
+
+
 class ClientRecorder(httpx.AsyncBaseTransport):
     """记录每个请求（头与体）后转发给内层 transport。"""
 
