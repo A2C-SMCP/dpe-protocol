@@ -1,3 +1,4 @@
+# vector-kind: pattern
 """connector 契约 §4.1.1 正则子集：实现行为与一致性向量（vectors/config_schema_patterns.json）。"""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# vector-kind: nesting_depth
 """core §2.8 第 0 步第三项（#94）：嵌套深度上界的文本入口与参考服务端。
 
 消费 ``vectors/nesting_depth.json``：文本入口（严格解析 ``input_json`` 后校验，本文件）与

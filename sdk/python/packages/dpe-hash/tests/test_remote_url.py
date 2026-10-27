@@ -1,3 +1,4 @@
+# vector-kind: remote_url
 """remote URL 的文法（HTTP 绑定 §1）：``check_remote_url`` 逐例通过 vectors/remote_url.json。
 
 SDK 的客户端构造与实例定义入口见 dpe-sdk 的 ``tests/test_remote_url_entry_points.py``，

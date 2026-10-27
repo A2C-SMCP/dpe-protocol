@@ -3,6 +3,7 @@
 ```
 pyproject.toml            # workspace 根（不是包）：开发工具链、ruff / mypy / pytest 配置、SDK 版本管理
 conftest.py               # vectors_dir 夹具：读取仓库根目录 vectors/（可用 DPE_VECTORS_DIR 覆盖）
+vector-consumers.json     # 跨包的向量消费登记（kind → 消费文件），由 dpe-hash 的 test_vectors.py 核验
 tools/check_packages.py   # 打包约束检查（CI 与发布共用）
 tools/bench_hash.py       # dpe-hash 10 万元素原位重算基准（CI 只报告、不设门槛）
 packages/dpe-hash/        # import dpe_hash：零运行时依赖、纯 Python 的 hash 核心

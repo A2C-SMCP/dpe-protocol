@@ -34,6 +34,7 @@ from dpe_sdk.errors import (
     NotFoundError,
     PreconditionFailedError,
     RateLimitedError,
+    UnavailableError,
     UnexpectedResponseError,
 )
 from dpe_sdk.models import Document
@@ -454,6 +455,30 @@ async def test_retryable_error_budget_exhausted_is_reported() -> None:
     ):
         client.capabilities()
     assert (len(requests), excinfo.value.retryable, excinfo.value.retry_after) == (3, True, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("code", "status", "error_type"),
+    [
+        ("DPE_RATE_LIMITED", 429, RateLimitedError),
+        ("DPE_UNAVAILABLE", 503, UnavailableError),
+    ],
+)
+async def test_a_write_is_determined_when_every_attempt_is_a_coded_retryable_rejection(
+    code: str, status: int, error_type: type[Exception]
+) -> None:
+    """写请求的每次尝试都得到带码 429 / 503（服务端明确裁决「未处理」）→ 结果确定。"""
+    transport, requests = _scripted(
+        httpx.Response(200, json=CAPABILITIES),
+        _problem(code, status, **{"Retry-After": "0"}),
+    )
+    with (
+        DpeClient(REMOTE, transport=transport, max_retries=2) as client,
+        pytest.raises(error_type) as excinfo,
+    ):
+        client.commit("s3://bucket/a.md", _doc("x"), IfAbsent())
+    assert len(requests) == 4  # capabilities + 首发 + 两次重发
+    assert protocol_module.outcome_unknown(excinfo.value) is False
 
 
 async def test_absurd_retry_after_is_not_retried() -> None:
