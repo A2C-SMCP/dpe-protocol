@@ -43,10 +43,11 @@ from dpe_sdk.pusher import (
     PushResult,
     StatefulPusher,
     StateSnapshot,
+    _PusherBase,
 )
 from dpe_sdk.testing import PrefixAuthorizer, create_app
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
-from engine_helpers import make_engine, text_doc
+from engine_helpers import inline, make_engine, text_doc
 from protocol_helpers import CAPABILITIES
 from server_helpers import spawn_server
 
@@ -271,18 +272,46 @@ async def test_mid_page_insert_uploads_only_new_objects() -> None:
     assert uploaded_objects | inlined == new_objects - old_objects  # 只有新增元素
 
 
-async def test_old_contract_state_entries_are_treated_as_missing() -> None:
-    """契约一致（§7.2）：同步状态中与当前契约不一致的条目按缺失处理，退回以 R 作 base。"""
+async def test_old_contract_state_entries_are_used_when_still_accepted() -> None:
+    """§7.2：L 的契约仍被服务端接受时，L 直接作 base，不因请求声明的契约已切换而按缺失。"""
+    engine = make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT))
+    store = MemoryStateStore()
+    async with in_process_client(engine) as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({URI: _doc("v1")})
+        # 升级前留下的旧契约 L：内容未变，只是值带 dpex 前缀
+        stale = inline(text_doc(["v1"]), dpe_hash.DRILL_CONTRACT).doc_hash
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        # 新建推送器才会从 store 真载入这条旧契约的条目（内存态只在构造时载入一次）
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        before = len(recorder.requests)
+        changed = await reloaded.push({URI: _doc("v2")})
+        commits = [
+            (request, headers)
+            for request, headers in zip(
+                recorder.requests[before:], recorder.headers[before:], strict=True
+            )
+            if request.method == "PUT" and request.url.path.endswith("/documents")
+        ]
+
+    assert [r.status for r in changed] == ["updated"]
+    assert isinstance(changed[0].precondition, BaseHash)
+    assert changed[0].precondition.value == stale
+    assert len(commits) == 1
+    assert commits[0][1]["if-match"] == f'"{stale}"'
+
+
+async def test_old_contract_state_entries_are_missing_when_no_longer_accepted() -> None:
+    """§7.2：服务端已不再接受 L 的契约时，条目按缺失处理，退回以 R 作 base。"""
     store = MemoryStateStore()
     async with in_process_client() as (client, _recorder):
         pusher = AsyncStatefulPusher(client, state=store)
         await pusher.push({URI: _doc("v1")})
         current = await _state(store)
-        # 伪造一条非当前契约的同步状态（如升级前留下的旧契约值，这里借用演练契约 dpex 的前缀）：
-        # 若被当成 L，服务端按值比较必然 412
+        # 服务端只声明 dpe1：dpex 条目不属于任何受支持契约，按缺失处理
         stale = "dpex:" + "9" * 64
         store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
-        # 新建推送器才会从 store 真载入这条非当前契约的条目（内存态只在构造时载入一次）
         reloaded = AsyncStatefulPusher(client, state=store)
 
         changed = await reloaded.push({URI: _doc("v2")})
@@ -290,6 +319,223 @@ async def test_old_contract_state_entries_are_treated_as_missing() -> None:
     assert [r.status for r in changed] == ["updated"]
     assert isinstance(changed[0].precondition, BaseHash)
     assert changed[0].precondition.value == current.synced[URI]  # 以读到的 R 作 base，而不是旧条目
+
+
+async def test_expected_base_accepts_a_still_supported_old_contract_value() -> None:
+    """调用方（运行器）传入的预期值也可以是服务端仍接受的旧契约 hash。"""
+    engine = make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT))
+    store = MemoryStateStore()
+    async with in_process_client(engine) as (client, _recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({URI: _doc("v1")})
+        stale = inline(text_doc(["v1"]), dpe_hash.DRILL_CONTRACT).doc_hash
+
+        changed = await pusher.push({URI: _doc("v2")}, expected_base={URI: stale})
+
+    assert [r.status for r in changed] == ["updated"]
+    assert isinstance(changed[0].precondition, BaseHash)
+    assert changed[0].precondition.value == stale
+
+
+# ------------------------------------------------------ 契约升级期（#218）
+
+
+TARGET = "dpe://docs/b.md"
+
+
+def _dpex(text: str) -> str:
+    return inline(text_doc([text]), dpe_hash.DRILL_CONTRACT).doc_hash
+
+
+async def test_delete_across_contracts_uses_old_contract_base() -> None:
+    """DELETE 以服务端仍接受的旧契约 L 作 If-Match，由服务端 CAS 裁决（§7.2）。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    async with in_process_client(transport=httpx.ASGITransport(app=app)) as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({URI: _doc("v1")})
+        stale = _dpex("v1")
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        before = len(recorder.requests)
+        results = await reloaded.delete([URI])
+        deletes = [
+            (request, headers)
+            for request, headers in zip(
+                recorder.requests[before:], recorder.headers[before:], strict=True
+            )
+            if request.method == "DELETE"
+        ]
+        assert await client.head(URI) is None
+
+    assert [r.status for r in results] == ["deleted"]
+    assert len(deletes) == 1
+    assert deletes[0][1]["if-match"] == f'"{stale}"'
+
+
+async def test_move_across_contracts_migrates_to_declared_contract_hash() -> None:
+    """move 以旧契约 L 作 base；结果按请求声明的契约给出，同步状态迁到该值而非旧 base。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    current = _doc("v1").doc_hash()
+    async with in_process_client(transport=httpx.ASGITransport(app=app)) as (client, recorder):
+        pusher = AsyncStatefulPusher(client, state=store)
+        await pusher.push({URI: _doc("v1")})
+        stale = _dpex("v1")
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        before = len(recorder.requests)
+        results = await reloaded.move([(URI, TARGET)])
+        moves = [
+            json.loads(_decode(headers, body))
+            for request, headers, body in zip(
+                recorder.requests[before:],
+                recorder.headers[before:],
+                recorder.bodies[before:],
+                strict=True,
+            )
+            if request.method == "POST" and request.url.path.endswith("/move")
+        ]
+        assert await client.head(URI) is None
+        assert await client.head(TARGET) == current
+        state = await _state(store)
+
+    assert [r.status for r in results] == ["moved"]
+    assert len(moves) == 1 and moves[0]["base_hash"] == stale
+    assert state.synced == {TARGET: current}
+
+
+async def test_move_across_contracts_target_holding_same_content_deletes_source() -> None:
+    """目标已持有同一内容：重读源与目标，仍用旧契约 L 删源（§7.2）。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    current = _doc("v1").doc_hash()
+    async with in_process_client(transport=httpx.ASGITransport(app=app)) as (client, recorder):
+        async with AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign:
+            await foreign.commit(URI, _doc("v1"), IfAbsent())
+            await foreign.commit(TARGET, _doc("v1"), IfAbsent())
+        stale = _dpex("v1")
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        before = len(recorder.requests)
+        results = await reloaded.move([(URI, TARGET)])
+        deletes = [
+            headers
+            for request, headers in zip(
+                recorder.requests[before:], recorder.headers[before:], strict=True
+            )
+            if request.method == "DELETE"
+        ]
+        assert await client.head(URI) is None
+        assert await client.head(TARGET) == current
+        state = await _state(store)
+
+    assert [r.status for r in results] == ["moved"]
+    assert deletes and all(headers["if-match"] == f'"{stale}"' for headers in deletes)
+    assert state.synced == {TARGET: current}
+
+
+async def test_move_across_contracts_target_occupied_by_different_content_fails() -> None:
+    """目标被不同内容占用：条目失败 ``side="to"``，不删除、不覆盖任何文档。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    async with in_process_client(transport=httpx.ASGITransport(app=app)) as (client, _recorder):
+        async with AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign:
+            await foreign.commit(URI, _doc("v1"), IfAbsent())
+            await foreign.commit(TARGET, _doc("theirs"), IfAbsent())
+        stale = _dpex("v1")
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        results = await reloaded.move([(URI, TARGET)])
+        assert await client.head(URI) == _doc("v1").doc_hash()
+        assert await client.head(TARGET) == _doc("theirs").doc_hash()
+
+    [result] = results
+    assert (result.status, result.side) == ("failed", "to")
+    assert result.remote is not None and result.remote.doc_hash == _doc("theirs").doc_hash()
+
+
+async def test_move_across_contracts_source_changed_target_equal_still_conflicts() -> None:
+    """源被他人改写、目标恰好等于改写后的值：删源仍用旧 L，由服务端 CAS 判冲突（#165 的因果）。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    async with in_process_client(transport=httpx.ASGITransport(app=app)) as (client, _recorder):
+        async with AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign:
+            await foreign.commit(URI, _doc("v1"), IfAbsent())
+            await foreign.commit(URI, _doc("v2"), BaseHash(_doc("v1").doc_hash()))
+            await foreign.commit(TARGET, _doc("v2"), IfAbsent())
+        stale = _dpex("v1")
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        results = await reloaded.move([(URI, TARGET)])
+        assert await client.head(URI) == _doc("v2").doc_hash()
+        assert await client.head(TARGET) == _doc("v2").doc_hash()
+
+    [result] = results
+    assert (result.status, result.side) == ("conflict", "from")
+
+
+class _BareDelete412(httpx.AsyncBaseTransport):
+    """DELETE 直接返回无 problem 体的 412（模拟网关自行求值），其余请求转发给参考服务端。"""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            return httpx.Response(412, content=b"")
+        return await self._inner.handle_async_request(request)
+
+
+async def test_delete_across_contracts_bare_412_is_a_conservative_conflict() -> None:
+    """D：裸 412 的 head 判定按请求声明的契约返回值，与旧契约 If-Match 不可比——按冲突处理。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    current = _doc("v1").doc_hash()
+    async with in_process_client(transport=_BareDelete412(httpx.ASGITransport(app=app))) as (
+        client,
+        _recorder,
+    ):
+        async with AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign:
+            await foreign.commit(URI, _doc("v1"), IfAbsent())
+        stale = _dpex("v1")
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        results = await reloaded.delete([URI])
+        assert await client.head(URI) == current  # 保守：没有删除
+
+    [result] = results
+    assert result.status == "conflict"
+    assert result.remote is not None and result.remote.doc_hash == current
+
+
+async def test_old_contract_intent_is_a_conservative_conflict_without_overwrite() -> None:
+    """E：旧契约待定意图与 R 不可比，对账不认它——误报冲突，但绝不覆盖他人内容。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    current = _doc("v2").doc_hash()
+    async with in_process_client(transport=httpx.ASGITransport(app=app)) as (client, _recorder):
+        async with AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign:
+            await foreign.commit(URI, _doc("v2"), IfAbsent())
+        # 切换契约前：同步状态是 A 的旧契约值，待定意图是 B 的旧契约值（B 已写入 remote）
+        store.save(
+            REMOTE,
+            StateSnapshot(synced={URI: _dpex("v1")}, intents={URI: _dpex("v2")}),
+        )
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        results = await reloaded.push({URI: _doc("v3")})
+        assert await client.head(URI) == current  # 他人的 v2 未被覆盖
+
+    [result] = results
+    assert result.status == "conflict"
+    assert result.remote is not None and result.remote.doc_hash == current
 
 
 # ---------------------------------------------------------------------- 冲突（验收③）
@@ -2474,3 +2720,128 @@ def test_sync_locating_stops_issuing_reads_after_a_round_level_failure() -> None
         with pytest.raises(httpx.ConnectError):
             pusher.delete(uris)
     assert seen["head"] <= 4  # 至多已在途的两条及其各自的一次尝试，远少于 40
+
+
+# ------------------------------------------------- 判定表逐格（#208 第 5 条）
+
+
+D = dpe_hash.DRILL_CONTRACT
+
+
+def _h(contract: str, digit: str) -> str:
+    return f"{contract}:{digit * 64}"
+
+
+def _pure(
+    synced: Mapping[str, str] | None = None,
+    intents: Mapping[str, str | None] | None = None,
+) -> _PusherBase:
+    store = MemoryStateStore()
+    if synced or intents:
+        store.save(REMOTE, StateSnapshot(synced=synced or {}, intents=intents or {}))
+    return _PusherBase(REMOTE, state=store)
+
+
+def _commit_cell(
+    base: _PusherBase,
+    document: Document,
+    head: str | None,
+    expected: Mapping[str, str | None] | None = None,
+) -> tuple[str, object]:
+    entries, expected_map = base._prepare({URI: document}, expected, C, (C, D))
+    plan = base._plan_commit(entries, [head], expected_map, C, (C, D))[0]
+    return plan.action, plan.precondition
+
+
+def _delete_cell(
+    base: _PusherBase,
+    head: str | None,
+    expected: Mapping[str, str | None] | None = None,
+) -> tuple[str, object]:
+    uris, expected_map = base._prepare_uris([URI], expected, C, (C, D))
+    plan = base._plan_delete(uris, [head], expected_map, C, (C, D))[0]
+    return plan.action, plan.precondition
+
+
+def _move_cell(
+    base: _PusherBase,
+    from_head: str | None,
+    to_head: str | None,
+    expected: Mapping[str, str | None] | None = None,
+) -> Any:
+    pairs, expected_map = base._prepare_moves([(URI, TARGET)], expected, C, (C, D))
+    return base._plan_move(pairs, [from_head], [to_head], expected_map, C, (C, D))[0]
+
+
+def test_commit_precondition_table_cells() -> None:
+    """commit 的 R/L/N 六格（同契约）。"""
+    document = _doc("v")
+    n = document.doc_hash()
+    r1, r2 = _h(C, "1"), _h(C, "2")
+    assert _commit_cell(_pure(), document, n)[0] == "achieved"
+    assert _commit_cell(_pure(), document, None) == ("write", IfAbsent())
+    assert _commit_cell(_pure(), document, r1) == ("write", BaseHash(r1))
+    assert _commit_cell(_pure({URI: r1}), document, r1) == ("write", BaseHash(r1))
+    assert _commit_cell(_pure({URI: r1}), document, r2)[0] == "conflict"
+    assert _commit_cell(_pure({URI: r1}), document, None)[0] == "conflict"
+    # expected_base 覆盖 L / 确认「不存在」
+    assert _commit_cell(_pure({URI: r1}), document, None, {URI: None}) == ("write", IfAbsent())
+    assert _commit_cell(_pure(), document, r1, {URI: None})[0] == "conflict"
+    assert _commit_cell(_pure({URI: r1}), document, r2, {URI: r2}) == ("write", BaseHash(r2))
+
+
+def test_commit_precondition_table_cross_contract_cells() -> None:
+    """commit 的跨契约格：R 存在以旧 L 为 base；R 不存在按冲突；R == N 仍已达成。"""
+    document = _doc("v")
+    old, r = _h(D, "1"), _h(C, "2")
+    assert _commit_cell(_pure({URI: old}), document, r) == ("write", BaseHash(old))
+    assert _commit_cell(_pure({URI: old}), document, None)[0] == "conflict"
+    assert _commit_cell(_pure({URI: old}), document, document.doc_hash())[0] == "achieved"
+
+
+def test_delete_precondition_table_cells() -> None:
+    """delete 的 R/L 各格（同契约与跨契约）。"""
+    r1, r2 = _h(C, "1"), _h(C, "2")
+    old = _h(D, "1")
+    assert _delete_cell(_pure(), None)[0] == "achieved"
+    assert _delete_cell(_pure(), r1) == ("write", BaseHash(r1))
+    assert _delete_cell(_pure({URI: r1}), r1) == ("write", BaseHash(r1))
+    assert _delete_cell(_pure({URI: r1}), r2)[0] == "conflict"
+    assert _delete_cell(_pure(), r1, {URI: None})[0] == "conflict"
+    assert _delete_cell(_pure({URI: old}), r1) == ("write", BaseHash(old))
+    assert _delete_cell(_pure({URI: old}), None)[0] == "achieved"
+
+
+def test_move_precondition_table_cells() -> None:
+    """move 的 R/L 各格与跨契约处置。"""
+    r1, r2 = _h(C, "1"), _h(C, "2")
+    old = _h(D, "1")
+    plan = _move_cell(_pure(), r1, None)
+    assert (plan.action, plan.precondition, plan.base, plan.to_hash) == (
+        "write",
+        BaseHash(r1),
+        r1,
+        r1,
+    )
+    plan = _move_cell(_pure({URI: r1}), r1, None)
+    assert (plan.action, plan.base, plan.delete_source) == ("write", r1, False)
+    assert _move_cell(_pure({URI: r1}), r2, None).action == "conflict"
+    plan = _move_cell(_pure({URI: r1}), None, r1)
+    assert (plan.action, plan.base, plan.to_hash) == ("achieved", r1, r1)
+    plan = _move_cell(_pure({URI: r1}), None, r2)
+    assert plan.action == "failed" and getattr(plan.error, "code", None) == "DPE_NOT_FOUND"
+    # 目标已持有同一内容（同契约）：计划删源
+    plan = _move_cell(_pure({URI: r1}), r1, r1)
+    assert (plan.action, plan.delete_source) == ("write", True)
+    # 跨契约：直接发 move，to_hash 取源在请求声明契约下的值，目标侧不预判
+    plan = _move_cell(_pure({URI: old}), r1, r1)
+    assert plan.action == "write"
+    assert plan.precondition == BaseHash(old)
+    assert (plan.base, plan.to_hash, plan.cross_contract, plan.delete_source) == (
+        old,
+        r1,
+        True,
+        False,
+    )
+    # 跨契约且源不存在：沿用条目失败，不新增语义
+    assert _move_cell(_pure({URI: old}), None, r1).action == "failed"

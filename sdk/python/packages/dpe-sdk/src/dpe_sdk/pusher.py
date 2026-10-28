@@ -11,7 +11,8 @@
   键为 core §1.1 规范化后的 file_uri；只作缓存，丢失时退化为以即时读到的 R 作 base、
   冲突保护只覆盖读写之间的竞态窗口，结果仍然正确。
 - **意图日志**：写入请求发出前先持久化本次写入预期的 remote 状态——commit 记 ``uri → N``、
-  delete 记 ``uri → 不存在``、move 同时记两侧 ``from_uri → 不存在``、``to_uri → base_hash``——
+  delete 记 ``uri → 不存在``、move 同时记两侧 ``from_uri → 不存在``、``to_uri → 本次 move 将
+  达成的内容在请求声明契约下的 doc_hash``（跨契约时不能记旧契约的 base_hash）——
   本模块**在 ``StateStore.save`` 返回之后才发出写请求**。结果一旦确定（成功、失败、含冲突）
   即清除对应意图；只有结果未知才保留——判据是核心的 ``outcome_unknown`` 标记：写请求本身
   任何一次尝试结果不确定（传输异常未带「确定未发出」底标、或无 DPE 错误码的任何响应——
@@ -39,8 +40,8 @@
 ``expected_base`` 存在时覆盖 L，值为 ``None`` 即调用方确认「不存在」）：
 
 - commit：R == N → 已达成，跳过（``achieved``）——这一行先于 ``expected_base`` 的判定：内容
-  已相同，即使调用方声明「不存在」也记 ``achieved``；无 L（含契约不一致的条目按缺失）、
-  R 不存在 → ``if_absent``；R 存在 → 以 R 作 base；有 L、R == L → 以 L 作 base；有 L、
+  已相同，即使调用方声明「不存在」也记 ``achieved``；无 L（服务端已不再接受其契约的条目按
+  缺失）、R 不存在 → ``if_absent``；R 存在 → 以 R 作 base；有 L、R == L → 以 L 作 base；有 L、
   R ≠ L 或 R 不存在；以及 ``expected_base`` 声明「不存在」而 R 存在 → **冲突**，不发写、
   如实回报（不自动重提；上层可用 ``expected_base`` 覆盖后重提）。
 - delete / move 用同一张表（move 取 ``from_uri`` 的 L 与 R，并以 ``head(to_uri)`` 判已达成）：
@@ -51,7 +52,10 @@
     不发写），否则**条目失败**（源已不存在、目标未达成，§7.2）；源 R ≠ base → **冲突**
     （``side="from"``）；写后目标被占（``DPE_ALREADY_EXISTS``）→ **条目失败**（``side="to"``，
     §7.2 列为不可由策略重判定）、源被改写（413 前置条件不符）→ **冲突**（``side="from"``）。
-- 比较 MUST 在同一 hash 契约下进行：同步状态中与当前契约不一致的条目按缺失处理。
+- 比较 MUST 在同一 hash 契约下进行：R 与 L 只在同一契约下才能相等比较。L 的契约仍被服务端
+  接受时，L 可直接作前置条件（即使请求声明的契约已切换），由服务端 CAS 裁决；只有服务端已
+  不再接受 L 的契约时才按缺失处理（§7.2）。跨契约的 move 在目标被占后重读源与目标：目标等于
+  源时仍用旧契约的 L 删源，源被改写由 CAS 判冲突。
 
 **写后冲突的重读先套用「已达成」行**（§7.2 冲突处置表，与策略无关，#140）：写入得到 CAS
 冲突后推送器重读该 URI——commit 重读值等于本次内容 N 记 ``achieved``（确认 L = N、清意图），
@@ -117,6 +121,7 @@ from dpe_sdk.protocol import (
     BaseHash,
     BlobSource,
     IfAbsent,
+    ProtocolCore,
     mark_outcome_not_sent,
     outcome_unknown,
 )
@@ -278,6 +283,11 @@ class _Plan:
     #: move：目标 uri（归一化）与本次使用的 base_hash（已达成 / 迁移条目时也用）
     to_uri: str | None = None
     base: str | None = None
+    #: move：本次 move 将达成的内容在请求声明契约下的 doc_hash（迁移条目、意图对账用；
+    #: 旧契约的 base 不能用于这个值）
+    to_hash: str | None = None
+    #: move：base 是服务端仍接受的旧契约值，无法与 R 直接比较；写后目标被占时重读源与目标
+    cross_contract: bool = False
     #: move：目标已持有与源相同的内容（目标 R == base）——不发 move，以 base 删除源（§7.2，#165）
     delete_source: bool = False
     #: action == "failed" 时的判定错误（未发写）
@@ -290,6 +300,10 @@ class _Outcome:
 
     result: CommitResult | None = None
     error: Exception | None = None
+    #: move 成功时目标文档在请求声明契约下的 doc_hash（迁移同步状态用；旧契约 base 不能当这个值）
+    move_hash: str | None = None
+    #: 运行期为「目标已持有同一内容」改为删源（#165 的跨契约路径）
+    delete_source: bool = False
     #: 出错时的归类：``conflict``（CAS 裁决）、``achieved``（服务端报「不存在」的 delete）、
     #: ``failed``（其余已确定失败；未确定的另见 ``unknown``）
     kind: Literal["ok", "conflict", "achieved", "failed"] = "ok"
@@ -327,12 +341,36 @@ def _reached_absent(outcome: _Outcome) -> bool:
 
 
 def _matches_contract(value: str, contract: str) -> bool:
-    """同步状态中的值是否属于当前契约（旧契约条目按缺失处理）。"""
+    """同步状态中的值是否属于指定契约。"""
     try:
         dpe_hash.parse_hash(value, (contract,))
     except DpeHashError:
         return False
     return True
+
+
+def _matches_any_contract(value: str, contracts: tuple[str, ...]) -> bool:
+    """值是否属于本次会话支持的任何契约。"""
+    try:
+        dpe_hash.parse_hash(value, contracts)
+    except DpeHashError:
+        return False
+    return True
+
+
+def _contract_of(value: str) -> str:
+    """合法 hash 值的前缀契约（值已由 ``_check_base_hash`` / ``_base_of`` 校验过）。"""
+    contract, _ = dpe_hash.parse_hash(value, dpe_hash.KNOWN_CONTRACTS)
+    return contract
+
+
+def _supported_contracts(core: ProtocolCore) -> tuple[str, ...]:
+    """这次会话可用的契约：服务端声明支持、且本 SDK 认识（capabilities ∩ KNOWN_CONTRACTS）。"""
+    return tuple(
+        contract
+        for contract in core.capabilities.hash_contracts
+        if contract in dpe_hash.KNOWN_CONTRACTS
+    )
 
 
 _log = logging.getLogger("dpe_sdk.pusher")
@@ -427,6 +465,7 @@ class _PusherBase:
         documents: Mapping[str, Document],
         expected_base: Mapping[str, str | None] | None,
         contract: str,
+        contracts: tuple[str, ...],
     ) -> tuple[list[_Entry], dict[str, str | None]]:
         """本地校验并归一化：uri 文法（core §1.1）、归一化后重复、``expected_base`` 的范围与取值。
 
@@ -449,13 +488,14 @@ class _PusherBase:
                 raise ValueError(f"归一化后重复的 file_uri：{seen[normalized]!r} 与 {uri!r}")
             seen[normalized] = uri
             entries.append(_Entry(normalized, document, document.doc_hash(contract)))
-        return entries, self._prepare_expected(expected_base, set(seen), contract)
+        return entries, self._prepare_expected(expected_base, set(seen), contract, contracts)
 
     def _prepare_uris(
         self,
         uris: Sequence[str],
         expected_base: Mapping[str, str | None] | None,
         contract: str,
+        contracts: tuple[str, ...],
     ) -> tuple[list[str], dict[str, str | None]]:
         """delete 的输入校验与归一化（与 ``_prepare`` 同一口径：整批拒绝）。"""
         if isinstance(uris, (str, bytes)) or not isinstance(uris, Sequence):
@@ -468,13 +508,14 @@ class _PusherBase:
                 raise ValueError(f"归一化后重复的 file_uri：{seen[value]!r} 与 {uri!r}")
             seen[value] = uri
             normalized.append(value)
-        return normalized, self._prepare_expected(expected_base, set(seen), contract)
+        return normalized, self._prepare_expected(expected_base, set(seen), contract, contracts)
 
     def _prepare_moves(
         self,
         moves: Sequence[tuple[str, str]],
         expected_base: Mapping[str, str | None] | None,
         contract: str,
+        contracts: tuple[str, ...],
     ) -> tuple[list[tuple[str, str]], dict[str, str | None]]:
         """move 的输入校验与归一化；``expected_base`` 以 from_uri 为键（§7.2 取源的 L）。
 
@@ -504,15 +545,17 @@ class _PusherBase:
                 seen[normalized] = raw
             sources.add(source)
             pairs.append((source, target))
-        return pairs, self._prepare_expected(expected_base, sources, contract)
+        return pairs, self._prepare_expected(expected_base, sources, contract, contracts)
 
     def _prepare_expected(
         self,
         expected_base: Mapping[str, str | None] | None,
         allowed: set[str],
         contract: str,
+        contracts: tuple[str, ...],
     ) -> dict[str, str | None]:
-        """校验 ``expected_base``：键必须属于本次操作的目标，值必须是本契约的 hash 或 ``None``。"""
+        """校验 ``expected_base``：键必须属于本次操作的目标，值必须是任一受支持契约的 hash
+        （过渡期内旧契约的同步状态值照常可用）或 ``None``。"""
         expected: dict[str, str | None] = {}
         for uri, value in (expected_base or {}).items():
             normalized = dpe_hash.normalize_file_uri(uri)
@@ -526,10 +569,12 @@ class _PusherBase:
                         f"expected_base[{uri!r}] 必须是 doc_hash 或 None，"
                         f"实际为 {type(value).__name__}"
                     )
-                if not _matches_contract(value, contract):
+                try:
+                    dpe_hash.parse_hash(value, contracts)
+                except DpeHashError:
                     raise ValueError(
-                        f"expected_base[{uri!r}] 不是契约 {contract} 的 hash：{value!r}"
-                    )
+                        f"expected_base[{uri!r}] 不是受支持契约的 hash：{value!r}"
+                    ) from None
             expected[normalized] = value
         return expected
 
@@ -547,9 +592,14 @@ class _PusherBase:
                 self._synced[uri] = confirmed
 
     def _base_of(
-        self, uri: str, expected: Mapping[str, str | None], contract: str
+        self,
+        uri: str,
+        expected: Mapping[str, str | None],
+        contract: str,
+        contracts: tuple[str, ...],
     ) -> tuple[str | None, bool]:
-        """解出 L：``expected_base`` 覆盖同步状态（``None`` = 确认「不存在」）；旧契约条目按缺失。
+        """解出 L：``expected_base`` 覆盖同步状态（``None`` = 确认「不存在」）；服务端仍接受其
+        契约的旧条目照常作 L，其余按缺失（connector 契约 §7.2）。
 
         返回 ``(base, known_absent)``：``base`` 为 ``None`` 时可能是「无 L」也可能是「确认不存在」，
         由 ``known_absent`` 区分（后者在 R 存在时判冲突，不静默覆盖）。
@@ -558,7 +608,7 @@ class _PusherBase:
             base = expected[uri]
             return base, base is None
         base = self._synced.get(uri)
-        if base is not None and not _matches_contract(base, contract):
+        if base is not None and not _matches_any_contract(base, contracts):
             base = None
         return base, False
 
@@ -568,6 +618,7 @@ class _PusherBase:
         heads: Sequence[str | None],
         expected: Mapping[str, str | None],
         contract: str,
+        contracts: tuple[str, ...],
     ) -> list[_Plan]:
         """commit 的判定表（§7.2）：只更新内存状态，持久化归 ``_persist`` / ``_save``。"""
 
@@ -591,7 +642,7 @@ class _PusherBase:
         for entry, head in zip(entries, heads, strict=True):
             uri = entry.uri
             self._reconcile(uri, head)
-            base, known_absent = self._base_of(uri, expected, contract)
+            base, known_absent = self._base_of(uri, expected, contract, contracts)
             remote = RemoteState(head)
             if head == entry.new_hash:
                 plans.append(plan(entry, "achieved", remote))
@@ -604,6 +655,11 @@ class _PusherBase:
                     plans.append(plan(entry, "conflict", remote))
                 else:
                     plans.append(plan(entry, "write", remote, BaseHash(head)))
+            elif head is None:
+                plans.append(plan(entry, "conflict", remote))
+            elif _contract_of(base) != contract:
+                # 跨契约：R 与 L 不可比；以 L 为 base 写入，由服务端 CAS 裁决（§7.2）
+                plans.append(plan(entry, "write", remote, BaseHash(base)))
             elif head == base:
                 plans.append(plan(entry, "write", remote, BaseHash(base)))
             else:
@@ -616,12 +672,13 @@ class _PusherBase:
         heads: Sequence[str | None],
         expected: Mapping[str, str | None],
         contract: str,
+        contracts: tuple[str, ...],
     ) -> list[_Plan]:
         """delete 的判定表（§7.2）：R 不存在＝目标状态已达成（不发写）。"""
         plans: list[_Plan] = []
         for uri, head in zip(uris, heads, strict=True):
             self._reconcile(uri, head)
-            base, known_absent = self._base_of(uri, expected, contract)
+            base, known_absent = self._base_of(uri, expected, contract, contracts)
             remote = RemoteState(head)
             if head is None:
                 plans.append(_Plan("delete", "achieved", uri, remote))
@@ -629,6 +686,9 @@ class _PusherBase:
                 plans.append(_Plan("delete", "conflict", uri, remote))  # 确认不存在而存在
             elif base is None:
                 plans.append(_Plan("delete", "write", uri, remote, precondition=BaseHash(head)))
+            elif _contract_of(base) != contract:
+                # 跨契约：R 与 L 不可比；以 L 为 base 删除，由服务端 CAS 裁决（§7.2）
+                plans.append(_Plan("delete", "write", uri, remote, precondition=BaseHash(base)))
             elif head == base:
                 plans.append(_Plan("delete", "write", uri, remote, precondition=BaseHash(base)))
             else:
@@ -642,6 +702,7 @@ class _PusherBase:
         to_heads: Sequence[str | None],
         expected: Mapping[str, str | None],
         contract: str,
+        contracts: tuple[str, ...],
     ) -> list[_Plan]:
         """move 的判定表（§7.2「取 from_uri 的 L 与 R」；源不存在时以目标侧判已达成）。
 
@@ -650,6 +711,10 @@ class _PusherBase:
         源被改写 → 冲突（``side="from"``）。源可写入且目标 R 也等于 base → 目标已持有同一内容：
         仍是 ``write``，但置 ``delete_source``——不发 move（服务端会以 ALREADY_EXISTS 拒绝、重放
         永不收敛），改为以 base 删除源（§7.2「move 的目标已持有同一内容」，#165）。
+
+        L 是服务端仍接受的旧契约值时，目标 R 与 base 不可比：直接发 move（``cross_contract``），
+        写后目标被占再重读源与目标决定是否删源（§7.2）。此时 ``to_hash`` 记源在请求声明契约下
+        读到的值——move 成功后目标的值，也是意图对账与迁移条目要用的值（不能记旧契约的 base）。
 
         源不存在且源无 L 时，以目标侧的 L 作 base 候选：迁移后的条目就是本实例完成过的 move
         （成功后条目已从源迁到目标；未确认的 to 侧意图也已由上面的对账并入），重放据此判已达成，
@@ -661,9 +726,9 @@ class _PusherBase:
         for (from_uri, to_uri), from_head, to_head in zip(moves, from_heads, to_heads, strict=True):
             self._reconcile(from_uri, from_head)
             self._reconcile(to_uri, to_head)
-            base, known_absent = self._base_of(from_uri, expected, contract)
+            base, known_absent = self._base_of(from_uri, expected, contract, contracts)
             if from_head is None and base is None and not known_absent:
-                base, _ = self._base_of(to_uri, {}, contract)
+                base, _ = self._base_of(to_uri, {}, contract, contracts)
             remote = RemoteState(from_head)
             if known_absent and from_head is not None:
                 # 调用方确认「不存在」而源实际存在：与确认矛盾，判冲突（不静默覆盖）
@@ -671,7 +736,15 @@ class _PusherBase:
             elif from_head is None or known_absent:
                 if base is not None and to_head == base:
                     plans.append(
-                        _Plan("move", "achieved", from_uri, remote, to_uri=to_uri, base=base)
+                        _Plan(
+                            "move",
+                            "achieved",
+                            from_uri,
+                            remote,
+                            to_uri=to_uri,
+                            base=base,
+                            to_hash=to_head,
+                        )
                     )
                 else:
                     plans.append(
@@ -686,23 +759,54 @@ class _PusherBase:
                             ),
                         )
                     )
-            elif base is None or from_head == base:
-                # 无 L 时以读到的 R 为 base（§7.2「无 L，R 存在」的退化）
-                base = from_head
-                plans.append(
-                    _Plan(
-                        "move",
-                        "write",
-                        from_uri,
-                        remote,
-                        precondition=BaseHash(base),
-                        to_uri=to_uri,
-                        base=base,
-                        delete_source=to_head == base,
-                    )
-                )
             else:
-                plans.append(_Plan("move", "conflict", from_uri, remote, to_uri=to_uri))
+                assert from_head is not None
+                if base is None:
+                    # 无 L 时以读到的 R 为 base（§7.2「无 L，R 存在」的退化）
+                    plans.append(
+                        _Plan(
+                            "move",
+                            "write",
+                            from_uri,
+                            remote,
+                            precondition=BaseHash(from_head),
+                            to_uri=to_uri,
+                            base=from_head,
+                            to_hash=from_head,
+                            delete_source=to_head == from_head,
+                        )
+                    )
+                elif _contract_of(base) != contract:
+                    # 旧契约 L：直接发 move，由服务端 CAS 裁决；目标侧待写后重读（§7.2）
+                    plans.append(
+                        _Plan(
+                            "move",
+                            "write",
+                            from_uri,
+                            remote,
+                            precondition=BaseHash(base),
+                            to_uri=to_uri,
+                            base=base,
+                            to_hash=from_head,
+                            cross_contract=True,
+                        )
+                    )
+                elif from_head == base:
+                    plans.append(
+                        _Plan(
+                            "move",
+                            "write",
+                            from_uri,
+                            remote,
+                            precondition=BaseHash(base),
+                            to_uri=to_uri,
+                            base=base,
+                            to_hash=from_head,
+                            delete_source=to_head == base,
+                        )
+                    )
+                else:
+                    plans.append(_Plan("move", "conflict", from_uri, remote, to_uri=to_uri))
         return plans
 
     # ------------------------------------------------------------------
@@ -754,14 +858,17 @@ class _PusherBase:
             raise
 
     def _move_intents(self, plans: Sequence[_Plan]) -> dict[str, str | None]:
-        """move 写前的一批意图：两侧一起记（``from → 不存在``、``to → base``）。"""
+        """move 写前的一批意图：两侧一起记（``from → 不存在``、``to → 将达成的值``）。
+
+        ``to`` 记请求声明契约下的值（跨契约时不能记旧契约的 base）：对账拿它与 R 比较。
+        """
         intents: dict[str, str | None] = {}
         for plan in plans:
             if plan.action != "write":
                 continue
-            assert plan.to_uri is not None and plan.base is not None
+            assert plan.to_uri is not None and plan.to_hash is not None
             intents[plan.uri] = None
-            intents[plan.to_uri] = plan.base
+            intents[plan.to_uri] = plan.to_hash
         return intents
 
     def _confirm(self, uri: str, doc_hash: str | None) -> None:
@@ -778,11 +885,19 @@ class _PusherBase:
         if plan.to_uri is not None:
             self._intents.pop(plan.to_uri, None)
 
-    def _migrate(self, plan: _Plan) -> None:
-        """move 成功/已达成：条目从 from 迁到 to（值不变），两侧意图清除。"""
-        assert plan.to_uri is not None and plan.base is not None
+    def _migrate(self, plan: _Plan, value: str | None = None) -> None:
+        """move 成功/已达成：条目从 from 迁到 to，两侧意图清除。
+
+        值取请求声明契约下的目标 doc_hash（``value`` 优先，其次计划里的 ``to_hash``，最后才回退
+        到 base）；跨契约时 base 是旧契约的值，不能写进同步状态。
+        """
+        assert plan.to_uri is not None
+        target = value if value is not None else plan.to_hash
+        if target is None:
+            target = plan.base
+        assert target is not None
         self._synced.pop(plan.uri, None)
-        self._synced[plan.to_uri] = plan.base
+        self._synced[plan.to_uri] = target
         self._clear_intents(plan)
 
     def _outcome_failure(self, plan: _Plan, outcome: _Outcome) -> PushResult:
@@ -953,10 +1068,10 @@ class _PusherBase:
                 continue
             assert outcome is not None
             if outcome.error is not None:
-                if plan.delete_source and _reached_absent(outcome):
+                if (plan.delete_source or outcome.delete_source) and _reached_absent(outcome):
                     # 删源时服务端裁决「源不存在」、或 CAS 冲突后重读源不存在：move 的目标状态
                     # （源不存在、目标为 base）已达成，同 delete 的口径；原错误一并带上供归因
-                    self._migrate(plan)
+                    self._migrate(plan, outcome.move_hash)
                     results.append(
                         PushResult(
                             "move",
@@ -972,14 +1087,14 @@ class _PusherBase:
                     results.append(self._outcome_failure(plan, outcome))
                 continue
             # 写入成功：迁移条目；删源路径带判定时读到的源侧 R
-            self._migrate(plan)
+            self._migrate(plan, outcome.move_hash)
             results.append(
                 PushResult(
                     "move",
                     uri,
                     "moved",
                     plan.precondition,
-                    remote=plan.remote if plan.delete_source else None,
+                    remote=plan.remote if (plan.delete_source or outcome.delete_source) else None,
                     to_uri=plan.to_uri,
                 )
             )
@@ -1018,8 +1133,10 @@ class StatefulPusher(_PusherBase):
         ``blobs`` 原样交给每条 ``deliver``：按 ``sha256:`` 引用给出服务端缺少的 blob 字节
         （``BlobSource`` 或内存字节），缺省时缺字节由核心如实报错（不自行解引用任何来源）。
         """
-        contract = self._client.core().contract
-        entries, expected = self._prepare(documents, expected_base, contract)
+        core = self._client.core()
+        contract = core.contract
+        contracts = _supported_contracts(core)
+        entries, expected = self._prepare(documents, expected_base, contract, contracts)
         if not entries:
             return []
         heads, denied = self._read([entry.uri for entry in entries])
@@ -1032,7 +1149,11 @@ class StatefulPusher(_PusherBase):
         wrote = False
         if kept:
             plans = self._plan_commit(
-                [entries[i] for i in kept], [heads[i] for i in kept], expected, contract
+                [entries[i] for i in kept],
+                [heads[i] for i in kept],
+                expected,
+                contract,
+                contracts,
             )
             wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
@@ -1054,8 +1175,10 @@ class StatefulPusher(_PusherBase):
         - 冲突（他人改写）如实回报，绝不自动 force；``source_wins`` 等策略归上层（用重读到的
           值作 ``expected_base`` 重提）。
         """
-        contract = self._client.core().contract
-        normalized, expected = self._prepare_uris(uris, expected_base, contract)
+        core = self._client.core()
+        contract = core.contract
+        contracts = _supported_contracts(core)
+        normalized, expected = self._prepare_uris(uris, expected_base, contract, contracts)
         if not normalized:
             return []
         heads, denied = self._read(normalized)
@@ -1068,7 +1191,11 @@ class StatefulPusher(_PusherBase):
         wrote = False
         if kept:
             plans = self._plan_delete(
-                [normalized[i] for i in kept], [heads[i] for i in kept], expected, contract
+                [normalized[i] for i in kept],
+                [heads[i] for i in kept],
+                expected,
+                contract,
+                contracts,
             )
             wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: None for plan in plans if plan.action == "write"})
@@ -1096,8 +1223,10 @@ class StatefulPusher(_PusherBase):
           删除源，判 ``moved``（§7.2，#165）；删源遇源被改写为冲突（``side="from"``），遇源已不存在
           为已达成。
         """
-        contract = self._client.core().contract
-        pairs, expected = self._prepare_moves(moves, expected_base, contract)
+        core = self._client.core()
+        contract = core.contract
+        contracts = _supported_contracts(core)
+        pairs, expected = self._prepare_moves(moves, expected_base, contract, contracts)
         if not pairs:
             return []
         # 一次读全部 move 的两侧：先全部源、再全部目标（本批 URI 两两不同）
@@ -1119,6 +1248,7 @@ class StatefulPusher(_PusherBase):
                 [heads[i + count] for i in kept],
                 expected,
                 contract,
+                contracts,
             )
             wrote = any(plan.action == "write" for plan in plans)
             self._persist(self._move_intents(plans))
@@ -1215,14 +1345,41 @@ class StatefulPusher(_PusherBase):
         assert plan.to_uri is not None and plan.base is not None  # write 计划必有
         if plan.delete_source:
             # 目标已持有同一内容（#165）：以 base 删除源，结局归类同 delete，冲突标源侧
-            return _source_side(self._delete_one(plan))
+            return _source_side(replace(self._delete_one(plan), move_hash=plan.to_hash))
         try:
-            self._client.move(plan.uri, plan.to_uri, plan.base)
+            result = self._client.move(plan.uri, plan.to_uri, plan.base)
         except PreconditionFailedError as exc:
             remote, re_error = self._re_read(plan.uri)  # 源被改写：重读源侧
             return _move_conflict(exc, remote, re_error)
         except AlreadyExistsError as exc:
             remote, re_error = self._re_read(plan.to_uri)  # 目标被占：重读目标侧
+            if plan.cross_contract:
+                source, source_error = self._re_read(plan.uri)
+                if (
+                    source is not None
+                    and source.doc_hash is not None
+                    and remote is not None
+                    and source.doc_hash == remote.doc_hash
+                ):
+                    # 目标已持有与源相同的内容：仍用旧契约的 L 删源（不用重读到的源值），
+                    # 源被他人改写时由服务端 CAS 判冲突（§7.2）
+                    outcome = self._delete_one(plan)
+                    return _source_side(
+                        replace(outcome, delete_source=True, move_hash=remote.doc_hash)
+                    )
+                if source is not None and source.doc_hash is None:
+                    # 重读时源已不存在：沿用「源已不存在、目标未达成」的条目失败
+                    return _Outcome(
+                        error=NotFoundError(
+                            f"{plan.uri} 已不存在，且目标 {plan.to_uri} 未达成（重读）"
+                        ),
+                        kind="failed",
+                        side="from",
+                        remote=remote,
+                        remote_error=re_error,
+                    )
+                if source_error is not None and re_error is None:
+                    re_error = source_error
             return _Outcome(
                 error=exc, kind="failed", side="to", remote=remote, remote_error=re_error
             )
@@ -1231,7 +1388,7 @@ class StatefulPusher(_PusherBase):
             return _Outcome(error=exc, kind="failed", side="from")
         except Exception as exc:
             return _Outcome(error=exc, unknown=outcome_unknown(exc))
-        return _Outcome()
+        return _Outcome(move_hash=result.doc_hash)
 
     def _re_read(self, uri: str) -> tuple[RemoteState | None, Exception | None]:
         try:
@@ -1262,8 +1419,10 @@ class AsyncStatefulPusher(_PusherBase):
         blobs: BlobLookup | None = None,
     ) -> list[PushResult]:
         """``StatefulPusher.push`` 的异步版本：语义完全相同。"""
-        contract = (await self._client.core()).contract
-        entries, expected = self._prepare(documents, expected_base, contract)
+        core = await self._client.core()
+        contract = core.contract
+        contracts = _supported_contracts(core)
+        entries, expected = self._prepare(documents, expected_base, contract, contracts)
         if not entries:
             return []
         heads, denied = await self._read([entry.uri for entry in entries])
@@ -1276,7 +1435,11 @@ class AsyncStatefulPusher(_PusherBase):
         wrote = False
         if kept:
             plans = self._plan_commit(
-                [entries[i] for i in kept], [heads[i] for i in kept], expected, contract
+                [entries[i] for i in kept],
+                [heads[i] for i in kept],
+                expected,
+                contract,
+                contracts,
             )
             wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
@@ -1292,8 +1455,10 @@ class AsyncStatefulPusher(_PusherBase):
         expected_base: Mapping[str, str | None] | None = None,
     ) -> list[PushResult]:
         """``StatefulPusher.delete`` 的异步版本：语义完全相同。"""
-        contract = (await self._client.core()).contract
-        normalized, expected = self._prepare_uris(uris, expected_base, contract)
+        core = await self._client.core()
+        contract = core.contract
+        contracts = _supported_contracts(core)
+        normalized, expected = self._prepare_uris(uris, expected_base, contract, contracts)
         if not normalized:
             return []
         heads, denied = await self._read(normalized)
@@ -1306,7 +1471,11 @@ class AsyncStatefulPusher(_PusherBase):
         wrote = False
         if kept:
             plans = self._plan_delete(
-                [normalized[i] for i in kept], [heads[i] for i in kept], expected, contract
+                [normalized[i] for i in kept],
+                [heads[i] for i in kept],
+                expected,
+                contract,
+                contracts,
             )
             wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: None for plan in plans if plan.action == "write"})
@@ -1322,8 +1491,10 @@ class AsyncStatefulPusher(_PusherBase):
         expected_base: Mapping[str, str | None] | None = None,
     ) -> list[PushResult]:
         """``StatefulPusher.move`` 的异步版本：语义完全相同。"""
-        contract = (await self._client.core()).contract
-        pairs, expected = self._prepare_moves(moves, expected_base, contract)
+        core = await self._client.core()
+        contract = core.contract
+        contracts = _supported_contracts(core)
+        pairs, expected = self._prepare_moves(moves, expected_base, contract, contracts)
         if not pairs:
             return []
         heads, denied = await self._read([f for f, _ in pairs] + [t for _, t in pairs])
@@ -1344,6 +1515,7 @@ class AsyncStatefulPusher(_PusherBase):
                 [heads[i + count] for i in kept],
                 expected,
                 contract,
+                contracts,
             )
             wrote = any(plan.action == "write" for plan in plans)
             self._persist(self._move_intents(plans))
@@ -1434,14 +1606,41 @@ class AsyncStatefulPusher(_PusherBase):
         assert plan.to_uri is not None and plan.base is not None  # write 计划必有
         if plan.delete_source:
             # 目标已持有同一内容（#165）：以 base 删除源，结局归类同 delete，冲突标源侧
-            return _source_side(await self._delete_one(plan))
+            return _source_side(replace(await self._delete_one(plan), move_hash=plan.to_hash))
         try:
-            await self._client.move(plan.uri, plan.to_uri, plan.base)
+            result = await self._client.move(plan.uri, plan.to_uri, plan.base)
         except PreconditionFailedError as exc:
             remote, re_error = await self._re_read(plan.uri)  # 源被改写：重读源侧
             return _move_conflict(exc, remote, re_error)
         except AlreadyExistsError as exc:
             remote, re_error = await self._re_read(plan.to_uri)  # 目标被占：重读目标侧
+            if plan.cross_contract:
+                source, source_error = await self._re_read(plan.uri)
+                if (
+                    source is not None
+                    and source.doc_hash is not None
+                    and remote is not None
+                    and source.doc_hash == remote.doc_hash
+                ):
+                    # 目标已持有与源相同的内容：仍用旧契约的 L 删源（不用重读到的源值），
+                    # 源被他人改写时由服务端 CAS 判冲突（§7.2）
+                    outcome = await self._delete_one(plan)
+                    return _source_side(
+                        replace(outcome, delete_source=True, move_hash=remote.doc_hash)
+                    )
+                if source is not None and source.doc_hash is None:
+                    # 重读时源已不存在：沿用「源已不存在、目标未达成」的条目失败
+                    return _Outcome(
+                        error=NotFoundError(
+                            f"{plan.uri} 已不存在，且目标 {plan.to_uri} 未达成（重读）"
+                        ),
+                        kind="failed",
+                        side="from",
+                        remote=remote,
+                        remote_error=re_error,
+                    )
+                if source_error is not None and re_error is None:
+                    re_error = source_error
             return _Outcome(
                 error=exc, kind="failed", side="to", remote=remote, remote_error=re_error
             )
@@ -1450,7 +1649,7 @@ class AsyncStatefulPusher(_PusherBase):
             return _Outcome(error=exc, kind="failed", side="from")
         except Exception as exc:
             return _Outcome(error=exc, unknown=outcome_unknown(exc))
-        return _Outcome()
+        return _Outcome(move_hash=result.doc_hash)
 
     async def _re_read(self, uri: str) -> tuple[RemoteState | None, Exception | None]:
         try:

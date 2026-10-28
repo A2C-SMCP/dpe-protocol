@@ -90,6 +90,8 @@ struct Fake {
     peak: AtomicUsize,
     /// capabilities 的 `max_payload_bytes`（缺省大，走快路径）。
     max_payload_bytes: Mutex<u64>,
+    /// capabilities 的 `hash_contracts`（缺省只有 dpe1）。
+    contracts: Mutex<Vec<String>>,
     /// 读被拒的 URI（#145）：含其中任一 URI 的批量读整体 403，单篇读该 URI 同样 403。
     denied_reads: Mutex<HashSet<String>>,
     /// 一切批量读都 403（拒绝与具体 URI 无关，#145）。
@@ -108,7 +110,13 @@ impl Fake {
     fn new() -> Arc<Fake> {
         let fake = Fake::default();
         *fake.max_payload_bytes.lock().unwrap() = 8_388_608;
+        *fake.contracts.lock().unwrap() = vec!["dpe1".to_owned()];
         Arc::new(fake)
+    }
+
+    /// 让 capabilities 额外声明支持 `contracts`（契约升级期的用例）。
+    fn accept_contracts(&self, contracts: &[&str]) {
+        *self.contracts.lock().unwrap() = contracts.iter().map(|c| (*c).to_owned()).collect();
     }
 
     fn set(&self, uri: &str, head: Option<String>) {
@@ -152,6 +160,7 @@ impl Fake {
                 body["limits"]["batch_head_max"] = json!(100);
                 body["limits"]["max_payload_bytes"] =
                     json!(*self.max_payload_bytes.lock().unwrap());
+                body["hash_contracts"] = json!(self.contracts.lock().unwrap().clone());
                 return Reply::json(200, body);
             }
             ("POST", "/heads") => {
@@ -581,7 +590,7 @@ async fn mid_page_insert_uploads_only_new_objects() {
 }
 
 #[tokio::test]
-async fn old_contract_state_entries_are_treated_as_missing() {
+async fn old_contract_state_entries_are_missing_when_not_accepted() {
     let fake = Fake::new();
     let server = fake.server();
     let client = client(&server);
@@ -589,7 +598,7 @@ async fn old_contract_state_entries_are_treated_as_missing() {
     let v1 = text("v1");
     let v2 = text("v2");
     fake.set(A, Some(doc_hash(&v1)));
-    // 伪造一条旧契约的同步状态：若被当成 L，服务端按值比较必然 412
+    // 服务端只声明 dpe1：dpex 的同步状态按缺失，退回以 R 作 base
     let stale = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "9".repeat(64));
     store
         .save(
@@ -610,6 +619,219 @@ async fn old_contract_state_entries_are_treated_as_missing() {
         changed[0].precondition,
         Some(Precondition::BaseHash(doc_hash(&v1)))
     );
+}
+
+#[tokio::test]
+async fn old_contract_state_entries_are_used_when_accepted() {
+    let fake = Fake::new();
+    fake.accept_contracts(&["dpe1", dpe_sdk::DRILL_CONTRACT]);
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = text("v1");
+    let v2 = text("v2");
+    fake.set(A, Some(doc_hash(&v1)));
+    let stale = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "9".repeat(64));
+    store
+        .save(
+            &server.remote(),
+            &StateSnapshot::new(synced(&[(A, stale.clone())]), BTreeMap::new()),
+        )
+        .unwrap();
+    fake.script(Route::Commit(A.into()), vec![updated(A, &v2)]);
+    let mut reloaded = pusher(&client, &store);
+
+    let changed = reloaded
+        .push(&docs(&[(A, &v2)]), &none(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&changed), [PushStatus::Updated]);
+    assert_eq!(changed[0].precondition, Some(Precondition::BaseHash(stale)));
+}
+
+#[tokio::test]
+async fn delete_uses_old_contract_base_when_accepted() {
+    let fake = Fake::new();
+    fake.accept_contracts(&["dpe1", dpe_sdk::DRILL_CONTRACT]);
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = text("v1");
+    fake.set(A, Some(doc_hash(&v1)));
+    let stale = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "9".repeat(64));
+    store
+        .save(
+            &server.remote(),
+            &StateSnapshot::new(synced(&[(A, stale.clone())]), BTreeMap::new()),
+        )
+        .unwrap();
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(Reply::new(204, ""), A, None)],
+    );
+
+    let results = pusher(&client, &store)
+        .delete(&[A.to_owned()], &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Deleted]);
+    assert_eq!(results[0].precondition, Some(Precondition::BaseHash(stale)));
+    assert_eq!(fake.get(A), None);
+}
+
+#[tokio::test]
+async fn delete_bare_412_with_old_contract_base_is_a_conservative_conflict() {
+    let fake = Fake::new();
+    fake.accept_contracts(&["dpe1", dpe_sdk::DRILL_CONTRACT]);
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = text("v1");
+    let current = doc_hash(&v1);
+    fake.set(A, Some(current.clone()));
+    let stale = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "9".repeat(64));
+    store
+        .save(
+            &server.remote(),
+            &StateSnapshot::new(synced(&[(A, stale.clone())]), BTreeMap::new()),
+        )
+        .unwrap();
+    // DELETE 直接得到无 problem 体的 412；head 返回请求声明契约下的当前值，与旧契约
+    // If-Match 不可比 → 按冲突处理（D，保守）
+    fake.script(Route::Delete(A.into()), vec![reply(Reply::new(412, ""))]);
+
+    let results = pusher(&client, &store)
+        .delete(&[A.to_owned()], &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Conflict]);
+    assert_eq!(results[0].precondition, Some(Precondition::BaseHash(stale)));
+    assert_eq!(fake.get(A), Some(current), "保守：没有删除");
+}
+
+#[tokio::test]
+async fn move_uses_old_contract_base_and_migrates_to_declared_contract_hash() {
+    let fake = Fake::new();
+    fake.accept_contracts(&["dpe1", dpe_sdk::DRILL_CONTRACT]);
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = text("v1");
+    let current = doc_hash(&v1);
+    fake.set(A, Some(current.clone()));
+    let stale = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "9".repeat(64));
+    store
+        .save(
+            &server.remote(),
+            &StateSnapshot::new(synced(&[(A, stale.clone())]), BTreeMap::new()),
+        )
+        .unwrap();
+    fake.script(
+        Route::Move(A.into()),
+        vec![Step {
+            reply: moved_reply(&current),
+            then: vec![(A.to_owned(), None), (B.to_owned(), Some(current.clone()))],
+        }],
+    );
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Moved]);
+    assert_eq!(results[0].precondition, Some(Precondition::BaseHash(stale)));
+    assert_eq!(
+        state(&store, &server).synced.get(B),
+        Some(&current),
+        "同步状态迁到请求声明契约下的值，而不是旧 base"
+    );
+}
+
+#[tokio::test]
+async fn move_across_contracts_target_holding_same_content_deletes_source() {
+    let fake = Fake::new();
+    fake.accept_contracts(&["dpe1", dpe_sdk::DRILL_CONTRACT]);
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = text("v1");
+    let current = doc_hash(&v1);
+    fake.set(A, Some(current.clone()));
+    fake.set(B, Some(current.clone()));
+    let stale = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "9".repeat(64));
+    store
+        .save(
+            &server.remote(),
+            &StateSnapshot::new(synced(&[(A, stale.clone())]), BTreeMap::new()),
+        )
+        .unwrap();
+    fake.script(
+        Route::Move(A.into()),
+        vec![reply(problem("DPE_ALREADY_EXISTS", 409))],
+    );
+    fake.script(
+        Route::Delete(A.into()),
+        vec![reply_then(Reply::new(204, ""), A, None)],
+    );
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Moved]);
+    assert_eq!(results[0].precondition, Some(Precondition::BaseHash(stale)));
+    assert_eq!(state(&store, &server).synced.get(B), Some(&current));
+    assert_eq!(fake.get(A), None);
+}
+
+#[tokio::test]
+async fn old_contract_intent_is_a_conservative_conflict_without_overwrite() {
+    let fake = Fake::new();
+    fake.accept_contracts(&["dpe1", dpe_sdk::DRILL_CONTRACT]);
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v2 = text("v2");
+    let v3 = text("v3");
+    let current = doc_hash(&v2);
+    fake.set(A, Some(current.clone()));
+    let stale_a = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "1".repeat(64));
+    let stale_b = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "2".repeat(64));
+    store
+        .save(
+            &server.remote(),
+            &StateSnapshot::new(
+                synced(&[(A, stale_a.clone())]),
+                BTreeMap::from([(A.to_owned(), Some(stale_b))]),
+            ),
+        )
+        .unwrap();
+    fake.script(
+        Route::Commit(A.into()),
+        vec![reply_then(
+            problem("DPE_PRECONDITION_FAILED", 412),
+            A,
+            Some(current.clone()),
+        )],
+    );
+    let mut reloaded = pusher(&client, &store);
+
+    let changed = reloaded
+        .push(&docs(&[(A, &v3)]), &none(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&changed), [PushStatus::Conflict]);
+    assert_eq!(
+        changed[0].precondition,
+        Some(Precondition::BaseHash(stale_a))
+    );
+    assert_eq!(fake.get(A), Some(current), "他人的内容未被覆盖");
 }
 
 // ---------------------------------------------------------------------- 冲突
