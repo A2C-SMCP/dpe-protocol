@@ -367,6 +367,11 @@ pub(crate) struct Plan<'d> {
     /// move：目标 uri（归一化）与本次使用的 base_hash（已达成 / 迁移条目时也用）。
     pub(crate) to_uri: Option<String>,
     pub(crate) base: Option<String>,
+    /// move：本次 move 将达成的内容在请求声明契约下的 doc_hash（迁移条目、意图对账用；
+    /// 旧契约的 base 不能用于这个值）。
+    pub(crate) to_hash: Option<String>,
+    /// move：base 是服务端仍接受的旧契约值，无法与 R 直接比较；写后目标被占时重读源与目标。
+    pub(crate) cross_contract: bool,
     /// move：目标已持有与源相同的内容（目标 R == base）——不发 move，以 base 删除源
     /// （§7.2「move 的目标已持有同一内容」，#165）。
     pub(crate) delete_source: bool,
@@ -386,6 +391,8 @@ impl<'d> Plan<'d> {
             new_hash: None,
             to_uri: None,
             base: None,
+            to_hash: None,
+            cross_contract: false,
             delete_source: false,
             error: None,
         }
@@ -416,6 +423,10 @@ pub(crate) struct Outcome {
     /// 冲突后的重读结果；`None` 表示重读失败或未重读。
     pub(crate) remote: Option<RemoteState>,
     pub(crate) remote_error: Option<Error>,
+    /// move 成功时目标文档在请求声明契约下的 doc_hash（旧契约 base 不能当这个值）。
+    pub(crate) move_hash: Option<String>,
+    /// 运行期为「目标已持有同一内容」改为删源（#165 的跨契约路径）。
+    pub(crate) delete_source: bool,
 }
 
 impl Outcome {
@@ -429,6 +440,8 @@ impl Outcome {
             side: None,
             remote: None,
             remote_error: None,
+            move_hash: None,
+            delete_source: false,
         }
     }
 
@@ -442,6 +455,8 @@ impl Outcome {
             side: None,
             remote: None,
             remote_error: None,
+            move_hash: None,
+            delete_source: false,
         }
     }
 
@@ -471,6 +486,16 @@ impl Outcome {
         self
     }
 
+    pub(crate) fn with_move_hash(mut self, value: String) -> Self {
+        self.move_hash = Some(value);
+        self
+    }
+
+    pub(crate) fn with_delete_source(mut self) -> Self {
+        self.delete_source = true;
+        self
+    }
+
     /// 附上重读结果（成功为 `remote`，失败为 `remote_error`）。
     pub(crate) fn with_reread(mut self, reread: Result<Option<String>, Error>) -> Self {
         match reread {
@@ -481,9 +506,16 @@ impl Outcome {
     }
 }
 
-/// 同步状态中的值是否属于当前契约（旧契约条目按缺失处理）。
-fn matches_contract(value: &str, contract: &str) -> bool {
-    dpe_hash::parse_hash_with(value, &[contract]).is_ok()
+/// 值是否属于本次会话支持的任何契约。
+fn matches_any_contract(value: &str, contracts: &[&str]) -> bool {
+    dpe_hash::parse_hash_with(value, contracts).is_ok()
+}
+
+/// 合法 hash 值的前缀契约（值已由 `check_base_hash` / `base_of` 校验过）。
+fn contract_of(value: &str) -> &str {
+    dpe_hash::parse_hash_with(value, dpe_hash::KNOWN_CONTRACTS)
+        .map(|(contract, _)| contract)
+        .expect("base_of 已保证值属于受支持契约")
 }
 
 /// core §1.1 规范化（错误按 dpe-hash 的同码协议错误上报，同核心各入口）。
@@ -529,6 +561,7 @@ impl PusherState {
         documents: &'d [(String, ExpandedDocument)],
         expected_base: &HashMap<String, Option<String>>,
         contract: &str,
+        contracts: &[&str],
     ) -> Result<(Vec<Entry<'d>>, Expected), Error> {
         let mut entries = Vec::with_capacity(documents.len());
         let mut seen: HashMap<String, &str> = HashMap::new();
@@ -548,7 +581,7 @@ impl PusherState {
             });
         }
         let allowed: HashSet<String> = seen.into_keys().collect();
-        let expected = Self::prepare_expected(expected_base, &allowed, contract)?;
+        let expected = Self::prepare_expected(expected_base, &allowed, contracts)?;
         Ok((entries, expected))
     }
 
@@ -556,7 +589,7 @@ impl PusherState {
     pub(crate) fn prepare_uris(
         uris: &[String],
         expected_base: &HashMap<String, Option<String>>,
-        contract: &str,
+        contracts: &[&str],
     ) -> Result<(Vec<String>, Expected), Error> {
         let mut normalized = Vec::with_capacity(uris.len());
         let mut seen: HashMap<String, &str> = HashMap::new();
@@ -571,7 +604,7 @@ impl PusherState {
             normalized.push(value);
         }
         let allowed: HashSet<String> = seen.into_keys().collect();
-        let expected = Self::prepare_expected(expected_base, &allowed, contract)?;
+        let expected = Self::prepare_expected(expected_base, &allowed, contracts)?;
         Ok((normalized, expected))
     }
 
@@ -583,7 +616,7 @@ impl PusherState {
     pub(crate) fn prepare_moves(
         moves: &[(String, String)],
         expected_base: &HashMap<String, Option<String>>,
-        contract: &str,
+        contracts: &[&str],
     ) -> Result<(Vec<(String, String)>, Expected), Error> {
         let mut pairs = Vec::with_capacity(moves.len());
         let mut sources: HashSet<String> = HashSet::new();
@@ -608,15 +641,16 @@ impl PusherState {
             sources.insert(source.clone());
             pairs.push((source, target));
         }
-        let expected = Self::prepare_expected(expected_base, &sources, contract)?;
+        let expected = Self::prepare_expected(expected_base, &sources, contracts)?;
         Ok((pairs, expected))
     }
 
-    /// 校验 `expected_base`：键必须属于本次操作的目标，值必须是本契约的 hash 或 `None`。
+    /// 校验 `expected_base`：键必须属于本次操作的目标，值必须是任一受支持契约的 hash 或
+    /// `None`（过渡期内旧契约的同步状态值照常可用）。
     fn prepare_expected(
         expected_base: &HashMap<String, Option<String>>,
         allowed: &HashSet<String>,
-        contract: &str,
+        contracts: &[&str],
     ) -> Result<Expected, Error> {
         let mut expected = HashMap::with_capacity(expected_base.len());
         for (uri, value) in expected_base {
@@ -627,9 +661,9 @@ impl PusherState {
                 )));
             }
             if let Some(value) = value {
-                if !matches_contract(value, contract) {
+                if !matches_any_contract(value, contracts) {
                     return Err(Error::invalid_argument(format!(
-                        "expected_base[{uri:?}] 不是契约 {contract} 的 hash：{value:?}"
+                        "expected_base[{uri:?}] 不是受支持契约的 hash：{value:?}"
                     )));
                 }
             }
@@ -656,7 +690,8 @@ impl PusherState {
         }
     }
 
-    /// 解出 L：`expected_base` 覆盖同步状态（`None` = 确认「不存在」）；旧契约条目按缺失。
+    /// 解出 L：`expected_base` 覆盖同步状态（`None` = 确认「不存在」）；服务端仍接受其契约的
+    /// 旧条目照常作 L，其余按缺失（connector 契约 §7.2）。
     ///
     /// 返回 `(base, known_absent)`：`base` 为 `None` 时可能是「无 L」也可能是「确认不存在」，
     /// 由 `known_absent` 区分（后者在 R 存在时判冲突，不静默覆盖）。
@@ -664,7 +699,7 @@ impl PusherState {
         &self,
         uri: &str,
         expected: &Expected,
-        contract: &str,
+        contracts: &[&str],
     ) -> (Option<String>, bool) {
         if let Some(base) = expected.get(uri) {
             return (base.clone(), base.is_none());
@@ -672,7 +707,7 @@ impl PusherState {
         let base = self
             .synced
             .get(uri)
-            .filter(|value| matches_contract(value, contract))
+            .filter(|value| matches_any_contract(value, contracts))
             .cloned();
         (base, false)
     }
@@ -684,13 +719,14 @@ impl PusherState {
         heads: &[Option<String>],
         expected: &Expected,
         contract: &str,
+        contracts: &[&str],
     ) -> Vec<Plan<'d>> {
         debug_assert_eq!(entries.len(), heads.len());
         let mut plans = Vec::with_capacity(entries.len());
         for (entry, head) in entries.into_iter().zip(heads) {
             let uri = entry.uri.as_str();
             self.reconcile(uri, head.as_deref());
-            let (base, known_absent) = self.base_of(uri, expected, contract);
+            let (base, known_absent) = self.base_of(uri, expected, contracts);
             let remote = RemoteState {
                 doc_hash: head.clone(),
             };
@@ -704,10 +740,18 @@ impl PusherState {
                     Some(_) if known_absent => (Action::Conflict, None),
                     Some(value) => (Action::Write, Some(Precondition::BaseHash(value.clone()))),
                 }
-            } else if head == &base {
-                (Action::Write, base.map(Precondition::BaseHash))
             } else {
-                (Action::Conflict, None)
+                let base = base.expect("上一分支已排除 base 缺失");
+                if head.is_none() {
+                    (Action::Conflict, None)
+                } else if contract_of(&base) != contract {
+                    // 跨契约：R 与 L 不可比；以 L 为 base 写入，由服务端 CAS 裁决（§7.2）
+                    (Action::Write, Some(Precondition::BaseHash(base)))
+                } else if head.as_deref() == Some(base.as_str()) {
+                    (Action::Write, Some(Precondition::BaseHash(base)))
+                } else {
+                    (Action::Conflict, None)
+                }
             };
             let mut plan = Plan::new(PushOp::Commit, action, uri, remote);
             plan.precondition = precondition;
@@ -725,12 +769,13 @@ impl PusherState {
         heads: &[Option<String>],
         expected: &Expected,
         contract: &str,
+        contracts: &[&str],
     ) -> Vec<Plan<'static>> {
         debug_assert_eq!(uris.len(), heads.len());
         let mut plans = Vec::with_capacity(uris.len());
         for (uri, head) in uris.iter().zip(heads) {
             self.reconcile(uri, head.as_deref());
-            let (base, known_absent) = self.base_of(uri, expected, contract);
+            let (base, known_absent) = self.base_of(uri, expected, contracts);
             let remote = RemoteState {
                 doc_hash: head.clone(),
             };
@@ -739,6 +784,10 @@ impl PusherState {
                 Some(_) if known_absent => (Action::Conflict, None), // 确认不存在而存在
                 Some(value) => match base {
                     None => (Action::Write, Some(Precondition::BaseHash(value.clone()))),
+                    Some(base) if contract_of(&base) != contract => {
+                        // 跨契约：R 与 L 不可比；以 L 为 base 删除，由服务端 CAS 裁决（§7.2）
+                        (Action::Write, Some(Precondition::BaseHash(base)))
+                    }
                     Some(base) if &base == value => {
                         (Action::Write, Some(Precondition::BaseHash(base)))
                     }
@@ -770,6 +819,7 @@ impl PusherState {
         to_heads: &[Option<String>],
         expected: &Expected,
         contract: &str,
+        contracts: &[&str],
     ) -> Vec<Plan<'static>> {
         debug_assert_eq!(moves.len(), from_heads.len());
         debug_assert_eq!(moves.len(), to_heads.len());
@@ -778,9 +828,9 @@ impl PusherState {
         {
             self.reconcile(from_uri, from_head.as_deref());
             self.reconcile(to_uri, to_head.as_deref());
-            let (mut base, known_absent) = self.base_of(from_uri, expected, contract);
+            let (mut base, known_absent) = self.base_of(from_uri, expected, contracts);
             if from_head.is_none() && base.is_none() && !known_absent {
-                base = self.base_of(to_uri, &HashMap::new(), contract).0;
+                base = self.base_of(to_uri, &HashMap::new(), contracts).0;
             }
             let remote = RemoteState {
                 doc_hash: from_head.clone(),
@@ -792,6 +842,7 @@ impl PusherState {
             } else if from_head.is_none() || known_absent {
                 if base.is_some() && to_head == &base {
                     plan.action = Action::Achieved;
+                    plan.to_hash = to_head.clone();
                     plan.base = base;
                 } else {
                     plan.action = Action::Failed;
@@ -803,14 +854,32 @@ impl PusherState {
             } else {
                 let from_head = from_head.clone().expect("上一分支已排除源不存在");
                 // 无 L 时以读到的 R 为 base（§7.2「无 L，R 存在」的退化）；有 L 而 R ≠ L 即源被
-                // 改写：冲突
-                if base.is_none() || base.as_deref() == Some(from_head.as_str()) {
-                    plan.action = Action::Write;
-                    plan.precondition = Some(Precondition::BaseHash(from_head.clone()));
-                    // 目标已持有同一内容：不发 move（服务端会以 ALREADY_EXISTS 拒绝、重放永不
-                    // 收敛），改为以 base 删除源（#165）
-                    plan.delete_source = to_head.as_deref() == Some(from_head.as_str());
-                    plan.base = Some(from_head);
+                // 改写：冲突。L 是旧契约值时直接发 move，目标侧待写后重读（§7.2）。
+                match base {
+                    None => {
+                        plan.action = Action::Write;
+                        plan.precondition = Some(Precondition::BaseHash(from_head.clone()));
+                        // 目标已持有同一内容：不发 move（服务端会以 ALREADY_EXISTS 拒绝、重放永不
+                        // 收敛），改为以 base 删除源（#165）
+                        plan.delete_source = to_head.as_deref() == Some(from_head.as_str());
+                        plan.base = Some(from_head.clone());
+                        plan.to_hash = Some(from_head);
+                    }
+                    Some(base) if contract_of(&base) != contract => {
+                        plan.action = Action::Write;
+                        plan.precondition = Some(Precondition::BaseHash(base.clone()));
+                        plan.base = Some(base);
+                        plan.to_hash = Some(from_head);
+                        plan.cross_contract = true;
+                    }
+                    Some(base) if Some(base.as_str()) == Some(from_head.as_str()) => {
+                        plan.action = Action::Write;
+                        plan.precondition = Some(Precondition::BaseHash(base.clone()));
+                        plan.delete_source = to_head.as_deref() == Some(from_head.as_str());
+                        plan.base = Some(base);
+                        plan.to_hash = Some(from_head);
+                    }
+                    Some(_) => {}
                 }
             }
             plans.push(plan);
@@ -840,13 +909,23 @@ impl PusherState {
             .collect()
     }
 
-    /// move 写前的一批意图：两侧一起记（`from → 不存在`、`to → base`）。
+    /// move 写前的一批意图：两侧一起记（`from → 不存在`、`to → 将达成的值`）。
+    ///
+    /// `to` 记请求声明契约下的值（跨契约时不能记旧契约的 base）：对账拿它与 R 比较。
     pub(crate) fn move_intents(plans: &[Plan<'_>]) -> Intents {
         let mut intents = BTreeMap::new();
         for plan in plans.iter().filter(|plan| plan.action == Action::Write) {
             let to_uri = plan.to_uri.clone().expect("move 的 write 计划必有目标");
             intents.insert(plan.uri.clone(), None);
-            intents.insert(to_uri, plan.base.clone());
+            intents.insert(
+                to_uri,
+                Some(
+                    plan.to_hash
+                        .clone()
+                        .or_else(|| plan.base.clone())
+                        .expect("move 的 write 计划必有目标值"),
+                ),
+            );
         }
         intents
     }
@@ -887,12 +966,18 @@ impl PusherState {
         }
     }
 
-    /// move 成功/已达成：条目从 from 迁到 to（值不变），两侧意图清除。
-    fn migrate(&mut self, plan: &Plan<'_>) {
+    /// move 成功/已达成：条目从 from 迁到 to，两侧意图清除。
+    ///
+    /// 值取请求声明契约下的目标 doc_hash（`value` 优先，其次计划里的 `to_hash`，最后才回退到
+    /// base）；跨契约时 base 是旧契约的值，不能写进同步状态。
+    fn migrate(&mut self, plan: &Plan<'_>, value: Option<String>) {
         let to_uri = plan.to_uri.clone().expect("move 计划必有目标");
-        let base = plan.base.clone().expect("迁移的 move 计划必有 base");
+        let target = value
+            .or_else(|| plan.to_hash.clone())
+            .or_else(|| plan.base.clone())
+            .expect("迁移的 move 计划必有目标值");
         self.synced.remove(&plan.uri);
-        self.synced.insert(to_uri, base);
+        self.synced.insert(to_uri, target);
         self.clear_intents(plan);
     }
 
@@ -1048,7 +1133,7 @@ impl PusherState {
         for (plan, outcome) in plans.into_iter().zip(outcomes) {
             let mut result = match plan.action {
                 Action::Achieved => {
-                    self.migrate(&plan);
+                    self.migrate(&plan, None);
                     let mut result = PushResult::new(PushOp::Move, &plan.uri, PushStatus::Moved);
                     result.remote = Some(plan.remote);
                     result
@@ -1071,13 +1156,15 @@ impl PusherState {
                 Action::Write => {
                     let outcome = outcome.expect("write 计划必有执行结果");
                     if outcome.error.is_some() {
-                        if !(plan.delete_source && outcome.reached_absent()) {
+                        if !((plan.delete_source || outcome.delete_source)
+                            && outcome.reached_absent())
+                        {
                             results.push(self.outcome_failure(&plan, outcome));
                             continue;
                         }
                         // 删源时服务端裁决「源不存在」、或 CAS 冲突后重读源不存在：move 的目标
                         // 状态（源不存在、目标为 base）已达成，同 delete 的口径；原错误一并带上
-                        self.migrate(&plan);
+                        self.migrate(&plan, outcome.move_hash.clone());
                         let mut result =
                             PushResult::new(PushOp::Move, &plan.uri, PushStatus::Moved);
                         result.precondition = plan.precondition;
@@ -1086,11 +1173,11 @@ impl PusherState {
                         result
                     } else {
                         // 写入成功：迁移条目；删源路径带判定时读到的源侧 R
-                        self.migrate(&plan);
+                        self.migrate(&plan, outcome.move_hash.clone());
                         let mut result =
                             PushResult::new(PushOp::Move, &plan.uri, PushStatus::Moved);
                         result.precondition = plan.precondition;
-                        if plan.delete_source {
+                        if plan.delete_source || outcome.delete_source {
                             result.remote = Some(plan.remote);
                         }
                         result
@@ -1339,8 +1426,11 @@ mod driver {
             expected_base: &HashMap<String, Option<String>>,
             blobs: Option<BlobProvider<'_>>,
         ) -> Result<Vec<PushResult>, Error> {
-            let contract = self.client.core().await?.contract().to_owned();
-            let (entries, expected) = PusherState::prepare(documents, expected_base, &contract)?;
+            let core = self.client.core().await?;
+            let contract = core.contract().to_owned();
+            let contracts = core.accepted_contracts();
+            let (entries, expected) =
+                PusherState::prepare(documents, expected_base, &contract, &contracts)?;
             if entries.is_empty() {
                 return Ok(Vec::new());
             }
@@ -1365,9 +1455,9 @@ mod driver {
             let mut wrote = false;
             let mut results = Vec::new();
             if !kept.is_empty() {
-                let plans = self
-                    .state
-                    .plan_commit(kept, &kept_heads, &expected, &contract);
+                let plans =
+                    self.state
+                        .plan_commit(kept, &kept_heads, &expected, &contract, &contracts);
                 self.persist(PusherState::commit_intents(&plans))?;
                 wrote = has_writes(&plans);
                 let outcomes = self.run_all(&plans, Some(&Mutex::new(blobs))).await;
@@ -1388,8 +1478,11 @@ mod driver {
             uris: &[String],
             expected_base: &HashMap<String, Option<String>>,
         ) -> Result<Vec<PushResult>, Error> {
-            let contract = self.client.core().await?.contract().to_owned();
-            let (normalized, expected) = PusherState::prepare_uris(uris, expected_base, &contract)?;
+            let core = self.client.core().await?;
+            let contract = core.contract().to_owned();
+            let contracts = core.accepted_contracts();
+            let (normalized, expected) =
+                PusherState::prepare_uris(uris, expected_base, &contracts)?;
             if normalized.is_empty() {
                 return Ok(Vec::new());
             }
@@ -1411,9 +1504,9 @@ mod driver {
             let mut wrote = false;
             let mut results = Vec::new();
             if !kept.is_empty() {
-                let plans = self
-                    .state
-                    .plan_delete(&kept, &kept_heads, &expected, &contract);
+                let plans =
+                    self.state
+                        .plan_delete(&kept, &kept_heads, &expected, &contract, &contracts);
                 self.persist(PusherState::delete_intents(&plans))?;
                 wrote = has_writes(&plans);
                 let outcomes = self.run_all(&plans, None).await;
@@ -1441,8 +1534,10 @@ mod driver {
             moves: &[(String, String)],
             expected_base: &HashMap<String, Option<String>>,
         ) -> Result<Vec<PushResult>, Error> {
-            let contract = self.client.core().await?.contract().to_owned();
-            let (pairs, expected) = PusherState::prepare_moves(moves, expected_base, &contract)?;
+            let core = self.client.core().await?;
+            let contract = core.contract().to_owned();
+            let contracts = core.accepted_contracts();
+            let (pairs, expected) = PusherState::prepare_moves(moves, expected_base, &contracts)?;
             if pairs.is_empty() {
                 return Ok(Vec::new());
             }
@@ -1483,9 +1578,9 @@ mod driver {
             let mut wrote = false;
             let mut results = Vec::new();
             if !kept.is_empty() {
-                let plans = self
-                    .state
-                    .plan_move(&kept, &kept_from, &kept_to, &expected, &contract);
+                let plans = self.state.plan_move(
+                    &kept, &kept_from, &kept_to, &expected, &contract, &contracts,
+                );
                 self.persist(PusherState::move_intents(&plans))?;
                 wrote = has_writes(&plans);
                 let outcomes = self.run_all(&plans, None).await;
@@ -1645,23 +1740,74 @@ mod driver {
                 // 目标已持有同一内容（#165）：以 base 删除源，结局归类同 delete，只有 CAS 冲突
                 // 标源侧（侧别专指 move 的问题侧，其余错误不标，运行器据此分级）
                 let outcome = self.delete_one(plan).await;
-                return if outcome.kind == OutcomeKind::Conflict {
+                let outcome = if outcome.kind == OutcomeKind::Conflict {
                     outcome.with_side(Side::From)
                 } else {
                     outcome
                 };
+                return outcome
+                    .with_move_hash(plan.to_hash.clone().expect("删源的 move 计划必有目标值"));
             }
             match self.client.move_document(&plan.uri, to_uri, base).await {
-                Ok(_) => Outcome::ok(None),
+                Ok(result) => Outcome::ok(None).with_move_hash(result.doc_hash),
                 Err(error) => match error.kind() {
                     // 源被改写：重读源侧
                     ErrorKind::PreconditionFailed => Outcome::failure(error, OutcomeKind::Conflict)
                         .with_side(Side::From)
                         .with_reread(self.client.head(&plan.uri).await),
                     // 目标被占：重读目标侧
-                    ErrorKind::AlreadyExists => Outcome::failure(error, OutcomeKind::Failed)
-                        .with_side(Side::To)
-                        .with_reread(self.client.head(to_uri).await),
+                    ErrorKind::AlreadyExists => {
+                        let target = self.client.head(to_uri).await;
+                        if plan.cross_contract {
+                            let source = self.client.head(&plan.uri).await;
+                            if let (Ok(Some(target_hash)), Ok(Some(source_hash))) =
+                                (&target, &source)
+                            {
+                                if target_hash == source_hash {
+                                    // 目标已持有与源相同的内容：仍用旧契约的 L 删源（不用
+                                    // 重读到的源值），源被他人改写时由服务端 CAS 判冲突（§7.2）
+                                    let outcome = self.delete_one(plan).await;
+                                    let outcome = if outcome.kind == OutcomeKind::Conflict {
+                                        outcome.with_side(Side::From)
+                                    } else {
+                                        outcome
+                                    };
+                                    return outcome
+                                        .with_delete_source()
+                                        .with_move_hash(target_hash.clone());
+                                }
+                            }
+                            if matches!(&source, Ok(None)) {
+                                // 重读时源已不存在：沿用「源已不存在、目标未达成」的条目失败
+                                return Outcome::failure(
+                                    Error::protocol(
+                                        ErrorKind::NotFound,
+                                        format!(
+                                            "{} 已不存在，且目标 {to_uri} 未达成（重读）",
+                                            plan.uri
+                                        ),
+                                    ),
+                                    OutcomeKind::Failed,
+                                )
+                                .with_side(Side::From)
+                                .with_reread(target);
+                            }
+                            if let Err(source_error) = source {
+                                let mut outcome = Outcome::failure(error, OutcomeKind::Failed)
+                                    .with_side(Side::To)
+                                    .with_reread(target);
+                                // 与 Python 口径一致：目标侧重读失败时保留目标侧错误，
+                                // 只有目标侧成功才用源侧错误补位
+                                if outcome.remote_error.is_none() {
+                                    outcome.remote_error = Some(source_error);
+                                }
+                                return outcome;
+                            }
+                        }
+                        Outcome::failure(error, OutcomeKind::Failed)
+                            .with_side(Side::To)
+                            .with_reread(target)
+                    }
                     // 源已不存在、目标未达成（§7.2 条目失败）
                     ErrorKind::NotFound => {
                         Outcome::failure(error, OutcomeKind::Failed).with_side(Side::From)
@@ -1751,13 +1897,23 @@ mod tests {
         head: Option<String>,
         expected: &Expected,
     ) -> (Action, Option<Precondition>) {
+        commit_plan_with(state, document, head, expected, &[C])
+    }
+
+    fn commit_plan_with(
+        state: &mut PusherState,
+        document: &ExpandedDocument,
+        head: Option<String>,
+        expected: &Expected,
+        contracts: &[&str],
+    ) -> (Action, Option<Precondition>) {
         let entry = Entry {
             uri: A.to_owned(),
             document,
             new_hash: document.doc_hash(C).unwrap(),
         };
         let plan = state
-            .plan_commit(vec![entry], &[head], expected, C)
+            .plan_commit(vec![entry], &[head], expected, C, contracts)
             .pop()
             .unwrap();
         (plan.action, plan.precondition)
@@ -1861,9 +2017,9 @@ mod tests {
     }
 
     #[test]
-    fn old_contract_entries_are_treated_as_missing() {
+    fn old_contract_entries_are_missing_when_not_accepted() {
         let document = doc("正文");
-        // L 属于别的契约 → 按无 L：R 存在即以 R 作 base（而不是判冲突）
+        // 服务端只接受 dpe1：dpex 的 L 按无 L，R 存在即以 R 作 base（而不是判冲突）
         assert_eq!(
             commit_plan(
                 &mut with_synced(&[(A, drill('1'))]),
@@ -1872,6 +2028,22 @@ mod tests {
                 &none()
             ),
             (Action::Write, Some(Precondition::BaseHash(h('2'))))
+        );
+    }
+
+    #[test]
+    fn old_contract_entries_are_used_when_accepted() {
+        let document = doc("正文");
+        // 服务端仍接受 dpex：旧 L 直接作 base，由服务端 CAS 裁决
+        assert_eq!(
+            commit_plan_with(
+                &mut with_synced(&[(A, drill('1'))]),
+                &document,
+                Some(h('2')),
+                &none(),
+                &[C, dpe_hash::DRILL_CONTRACT],
+            ),
+            (Action::Write, Some(Precondition::BaseHash(drill('1'))))
         );
     }
 
@@ -1910,8 +2082,17 @@ mod tests {
         head: Option<String>,
         expected: &Expected,
     ) -> Plan<'static> {
+        delete_plan_with(state, head, expected, &[C])
+    }
+
+    fn delete_plan_with(
+        state: &mut PusherState,
+        head: Option<String>,
+        expected: &Expected,
+        contracts: &[&str],
+    ) -> Plan<'static> {
         state
-            .plan_delete(&[A.to_owned()], &[head], expected, C)
+            .plan_delete(&[A.to_owned()], &[head], expected, C, contracts)
             .pop()
             .unwrap()
     }
@@ -1940,6 +2121,28 @@ mod tests {
         assert_eq!(plan.action, Action::Conflict);
     }
 
+    #[test]
+    fn delete_cross_contract_table() {
+        let contracts = [C, dpe_hash::DRILL_CONTRACT];
+        let plan = delete_plan_with(
+            &mut with_synced(&[(A, drill('1'))]),
+            Some(h('1')),
+            &none(),
+            &contracts,
+        );
+        assert_eq!(
+            (plan.action, plan.precondition),
+            (Action::Write, Some(Precondition::BaseHash(drill('1'))))
+        );
+        let plan = delete_plan_with(
+            &mut with_synced(&[(A, drill('1'))]),
+            None,
+            &none(),
+            &contracts,
+        );
+        assert_eq!(plan.action, Action::Achieved);
+    }
+
     // ------------------------------------------------------------------ move
 
     fn move_plan(
@@ -1948,6 +2151,16 @@ mod tests {
         to_head: Option<String>,
         expected: &Expected,
     ) -> Plan<'static> {
+        move_plan_with(state, from_head, to_head, expected, &[C])
+    }
+
+    fn move_plan_with(
+        state: &mut PusherState,
+        from_head: Option<String>,
+        to_head: Option<String>,
+        expected: &Expected,
+        contracts: &[&str],
+    ) -> Plan<'static> {
         state
             .plan_move(
                 &[(A.to_owned(), B.to_owned())],
@@ -1955,6 +2168,7 @@ mod tests {
                 &[to_head],
                 expected,
                 C,
+                contracts,
             )
             .pop()
             .unwrap()
@@ -2025,6 +2239,54 @@ mod tests {
     }
 
     #[test]
+    fn move_cross_contract_table() {
+        let contracts = [C, dpe_hash::DRILL_CONTRACT];
+        // 旧契约 L：直接发 move，目标侧待写后重读；to_hash 取源在请求声明契约下的值
+        let plan = move_plan_with(
+            &mut with_synced(&[(A, drill('1'))]),
+            Some(h('1')),
+            Some(h('1')),
+            &none(),
+            &contracts,
+        );
+        assert_eq!(
+            (plan.action, plan.precondition, plan.base, plan.to_hash),
+            (
+                Action::Write,
+                Some(Precondition::BaseHash(drill('1'))),
+                Some(drill('1')),
+                Some(h('1')),
+            )
+        );
+        assert!(plan.cross_contract && !plan.delete_source);
+        // 跨契约且源不存在：沿用条目失败（不新增语义）
+        let plan = move_plan_with(
+            &mut with_synced(&[(A, drill('1'))]),
+            None,
+            Some(h('1')),
+            &none(),
+            &contracts,
+        );
+        assert_eq!(plan.action, Action::Failed);
+    }
+
+    #[test]
+    fn move_intents_record_the_declared_contract_value() {
+        let contracts = [C, dpe_hash::DRILL_CONTRACT];
+        let plans = vec![move_plan_with(
+            &mut with_synced(&[(A, drill('1'))]),
+            Some(h('1')),
+            Some(h('1')),
+            &none(),
+            &contracts,
+        )];
+        assert_eq!(
+            PusherState::move_intents(&plans).get(B),
+            Some(&Some(h('1')))
+        );
+    }
+
+    #[test]
     fn move_onto_target_holding_same_content_plans_source_delete() {
         // #165：源可写入且目标 R == base → 仍为 Write，但删源而不发 move（有 L / 无 L 两种 base）
         for state in [with_synced(&[(A, h('1'))]), PusherState::default()] {
@@ -2064,6 +2326,7 @@ mod tests {
             &[None],
             &none(),
             C,
+            &[C],
         );
         stage(&mut state, PusherState::move_intents(&plans));
         let results = state.finish_move(plans, vec![Some(Outcome::ok(None))]);
@@ -2109,6 +2372,7 @@ mod tests {
             &[None],
             &none(),
             C,
+            &[C],
         );
         assert_eq!(
             PusherState::move_intents(&plans),
@@ -2126,7 +2390,7 @@ mod tests {
     fn unknown_outcome_keeps_the_intent_and_determined_failure_clears_it() {
         for (unknown, kept) in [(true, true), (false, false)] {
             let mut state = PusherState::default();
-            let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C);
+            let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C, &[C]);
             stage(&mut state, PusherState::delete_intents(&plans));
             let results = state.finish_delete(
                 plans,
@@ -2144,7 +2408,7 @@ mod tests {
     fn server_conflict_clears_the_intent_but_plan_conflict_keeps_pending_ones() {
         // 服务端 CAS 裁决：结果已确定 → 清意图，回报带重读值
         let mut state = PusherState::default();
-        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C);
+        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C, &[C]);
         stage(&mut state, PusherState::delete_intents(&plans));
         let outcome = Outcome::failure(
             Error::protocol(ErrorKind::PreconditionFailed, "x"),
@@ -2163,7 +2427,7 @@ mod tests {
         // 判定表判出的冲突（未发写）：既有待定意图保留（那条写入的结果仍未知）
         let mut state = with_synced(&[(A, h('1'))]);
         state.intents.insert(A.to_owned(), Some(h('3')));
-        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('2'))], &none(), C);
+        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('2'))], &none(), C, &[C]);
         let results = state.finish_delete(plans, vec![None]);
         assert_eq!(results[0].status, PushStatus::Conflict);
         assert_eq!(state.intents.get(A), Some(&Some(h('3'))));
@@ -2188,7 +2452,7 @@ mod tests {
             document: &document,
             new_hash: n.clone(),
         };
-        let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C);
+        let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C, &[C]);
         stage(&mut state, PusherState::commit_intents(&plans));
         let outcome = conflicted(ErrorKind::PreconditionFailed, Some(Some(n.clone())));
 
@@ -2223,7 +2487,7 @@ mod tests {
             document: &document,
             new_hash: document.doc_hash(C).unwrap(),
         };
-        let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C);
+        let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C, &[C]);
         stage(&mut state, PusherState::commit_intents(&plans));
 
         let results = state.finish_commit(
@@ -2242,7 +2506,7 @@ mod tests {
     #[test]
     fn delete_conflict_whose_reread_is_absent_is_deleted() {
         let mut state = with_synced(&[(A, h('1'))]);
-        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C);
+        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C, &[C]);
         stage(&mut state, PusherState::delete_intents(&plans));
 
         let results = state.finish_delete(
@@ -2262,7 +2526,7 @@ mod tests {
     #[test]
     fn delete_conflict_with_failed_reread_stays_a_conflict() {
         let mut state = with_synced(&[(A, h('1'))]);
-        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C);
+        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C, &[C]);
         stage(&mut state, PusherState::delete_intents(&plans));
 
         let results = state.finish_delete(
@@ -2282,7 +2546,7 @@ mod tests {
     #[test]
     fn delete_server_not_found_is_achieved_with_the_error() {
         let mut state = with_synced(&[(A, h('1'))]);
-        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C);
+        let plans = state.plan_delete(&[A.to_owned()], &[Some(h('1'))], &none(), C, &[C]);
         let outcome = Outcome::failure(
             Error::protocol(ErrorKind::NotFound, "gone"),
             OutcomeKind::Achieved,
@@ -2309,7 +2573,7 @@ mod tests {
             document: &document,
             new_hash: document.doc_hash(C).unwrap(),
         };
-        let plans = state.plan_commit(vec![entry], &[None], &none(), C);
+        let plans = state.plan_commit(vec![entry], &[None], &none(), C, &[C]);
         stage(&mut state, PusherState::commit_intents(&plans));
         let committed = CommitResult {
             status: CommitStatus::Created,
@@ -2343,7 +2607,7 @@ mod tests {
             ("DPE://docs/a.md".to_owned(), document),
         ];
         assert_eq!(
-            invalid(PusherState::prepare(&dup, &none(), C).map(|_| ())),
+            invalid(PusherState::prepare(&dup, &none(), C, &[C]).map(|_| ())),
             ErrorKind::InvalidArgument
         );
         // uri 文法错误：同 dpe-hash 的同码协议错误
@@ -2351,24 +2615,56 @@ mod tests {
             invalid(PusherState::prepare_uris(
                 &["not a uri".to_owned()],
                 &none(),
-                C
+                &[C]
             )),
             ErrorKind::Validation
         );
-        // expected_base：键在批外、值不是本契约的 hash
+        // expected_base：键在批外、值不是受支持契约的 hash
         let uris = [A.to_owned()];
         assert_eq!(
-            invalid(PusherState::prepare_uris(&uris, &expected(&[(B, None)]), C)),
+            invalid(PusherState::prepare_uris(
+                &uris,
+                &expected(&[(B, None)]),
+                &[C]
+            )),
             ErrorKind::InvalidArgument
         );
         assert_eq!(
             invalid(PusherState::prepare_uris(
                 &uris,
                 &expected(&[(A, Some(drill('1')))]),
-                C
+                &[C]
             )),
             ErrorKind::InvalidArgument
         );
+    }
+
+    #[test]
+    fn expected_base_accepts_a_still_supported_old_contract() {
+        // 与 Python 的 test_expected_base_accepts_a_still_supported_old_contract_value 对等：
+        // expected_base 是 L 的覆盖值，口径同 base_of——服务端仍接受其契约时照常可用
+        let document = doc("正文");
+        let documents = vec![(A.to_owned(), document)];
+        let contracts = [C, dpe_hash::DRILL_CONTRACT];
+        assert!(PusherState::prepare(
+            &documents,
+            &expected(&[(A, Some(drill('1')))]),
+            C,
+            &contracts,
+        )
+        .is_ok());
+        let uris = [A.to_owned()];
+        assert!(
+            PusherState::prepare_uris(&uris, &expected(&[(A, Some(drill('1')))]), &contracts,)
+                .is_ok()
+        );
+        let moves = vec![(A.to_owned(), B.to_owned())];
+        assert!(PusherState::prepare_moves(
+            &moves,
+            &expected(&[(A, Some(drill('1')))]),
+            &contracts,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2387,7 +2683,7 @@ mod tests {
             pairs(&[("DPE://docs/a.md", A)]),         // 归一化后源＝目标
         ] {
             assert_eq!(
-                invalid(PusherState::prepare_moves(&moves, &none(), C)),
+                invalid(PusherState::prepare_moves(&moves, &none(), &[C])),
                 ErrorKind::InvalidArgument,
                 "{moves:?}"
             );
@@ -2397,13 +2693,15 @@ mod tests {
             invalid(PusherState::prepare_moves(
                 &pairs(&[(A, B)]),
                 &expected(&[(B, None)]),
-                C
+                &[C]
             )),
             ErrorKind::InvalidArgument
         );
-        assert!(
-            PusherState::prepare_moves(&pairs(&[(A, B), (X, "dpe://docs/y.md")]), &none(), C)
-                .is_ok()
-        );
+        assert!(PusherState::prepare_moves(
+            &pairs(&[(A, B), (X, "dpe://docs/y.md")]),
+            &none(),
+            &[C]
+        )
+        .is_ok());
     }
 }

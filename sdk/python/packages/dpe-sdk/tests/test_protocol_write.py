@@ -32,7 +32,7 @@ from dpe_sdk.protocol import (
 from dpe_sdk.testing import Engine
 from dpe_sdk.wire import CommitResult, MoveResult
 from engine_helpers import inline, make_engine, text_doc
-from protocol_helpers import H1, H2, H_DRILL, caps, core, ok, problem, run
+from protocol_helpers import H1, H2, H_DRILL, Server, caps, core, ok, problem, run
 
 URI = "s3://bucket/a.md"
 TARGET = "documents?uri=s3%3A%2F%2Fbucket%2Fa.md"
@@ -661,6 +661,46 @@ def test_move_resend_errors_are_reported(code: str, error: type[Exception]) -> N
     server = Flaky(1, problem(code, 404 if code == "DPE_NOT_FOUND" else 409))
     with pytest.raises(error):
         drive(core().move(URI, "s3://bucket/b.md", H1), server)
+
+
+# ------------------------------------------------------ 契约升级期（#218）
+
+
+def test_base_hash_accepts_a_supported_old_contract() -> None:
+    """过渡期：base_hash 可以是服务端仍支持的另一契约的值（core §5.1、HTTP §3.1）。"""
+    c = core(hash_contracts=["dpe1", dpe_hash.DRILL_CONTRACT])
+    _, server = run(c.delete(URI, H_DRILL), ok(status=204))
+    (request,) = server.requests
+    assert request.headers["If-Match"] == f'"{H_DRILL}"'
+
+
+def test_base_hash_rejects_a_contract_the_server_does_not_support() -> None:
+    with pytest.raises(dpe_hash.ContractUnsupportedError):
+        run(core().delete(URI, H_DRILL), ok(status=204))
+
+
+def test_move_with_an_old_contract_base_accepts_a_result_in_the_requested_contract() -> None:
+    """结果按请求声明的契约给出，不能要求它等于旧契约的 base（#218-B）。"""
+    c = core(hash_contracts=["dpe1", dpe_hash.DRILL_CONTRACT])
+    result, server = run(c.move(URI, "s3://bucket/b.md", H_DRILL), moved(H1))
+    assert result == MoveResult(doc_hash=H1)
+    (request,) = server.requests
+    assert json.loads(request.body_bytes() or b"")["base_hash"] == H_DRILL
+
+
+def test_move_with_an_old_contract_base_rejects_a_result_outside_the_requested_contract() -> None:
+    c = core(hash_contracts=["dpe1", dpe_hash.DRILL_CONTRACT])
+    with pytest.raises(errors.UnexpectedResponseError):
+        run(c.move(URI, "s3://bucket/b.md", H_DRILL), moved(H_DRILL))
+
+
+def test_delete_bare_412_with_an_old_contract_base_heads_and_reports_conflict() -> None:
+    """D：裸 412 的 head 返回请求声明的契约值，与旧契约 If-Match 不可比 → 冲突（保守）。"""
+    c = core(hash_contracts=["dpe1", dpe_hash.DRILL_CONTRACT])
+    server = Server(Response(412), ok(headers={"DPE-Doc-Hash": H1}))
+    with pytest.raises(errors.PreconditionFailedError):
+        drive(c.delete(URI, H_DRILL), server)
+    assert methods(server.requests) == ["DELETE", "HEAD"]
 
 
 # ---------------------------------------------------------------------- 异步驱动

@@ -37,9 +37,11 @@ MUST NOT 自行重发；``retry_safe`` 为真的请求（只读操作与断点�
 调用方（如 ``dpe_sdk.pusher`` 的待定意图）只消费公开谓词 ``outcome_unknown(exc)``：**无标记
 一律按 True（可能已生效）处理**——保守方向，标记没写上也不会误判为「确定未生效」。
 
-**契约**：``ProtocolCore`` 只使用调用方显式指定的一个 hash 契约（缺省 ``dpe_hash.CONTRACT``），
-服务端不接受时失败，不换契约、不降级（core §3.1）；之后每个请求都带 ``DPE-Hash-Contract``，
-响应中的每个 hash 都必须属于该契约。
+**契约**：``ProtocolCore`` 的请求只声明调用方显式指定的一个 hash 契约（缺省
+``dpe_hash.CONTRACT``），服务端不接受时失败，不换契约、不降级（core §3.1）；每个请求都带
+``DPE-Hash-Contract``，响应中的每个 hash 都必须属于该契约。过渡期内，前置条件的值可以是
+服务端声明支持的另一个契约（旧契约的 L；core §5.1、HTTP 绑定 §3.1），由服务端按值所带的
+契约比较——``accepted_contracts()`` 给出这次会话可用的契约集合。
 
 **错误**（HTTP 绑定 §3.2、§5）：按 code 分派，不按状态码。有 problem 体时取体中的 ``code``，
 否则取 ``DPE-Error-Code`` 头（HEAD 不能带体）；两者都没有就不是 DPE 错误，抛
@@ -313,8 +315,8 @@ class Negotiated:
 class BaseHash:
     """前置条件 ``base_hash = H``（core §5.1）：H 是读到的 doc_hash（HTTP：``If-Match: "H"``）。
 
-    ``ProtocolCore`` 发出前校验 H 是本次声明契约的 hash（不接受裸 hash）；服务端按值比较，
-    不做格式校验（core §5.2）。
+    ``ProtocolCore`` 发出前校验 H 是任一受支持契约的 hash（不接受裸 hash 或未知契约）；
+    服务端按值所带的契约比较，不做格式校验（core §5.1、§5.2）。
     """
 
     value: str
@@ -1143,7 +1145,8 @@ class ProtocolCore:
           （本文档当前状态与暂存会话，core §3.3；大文档的暂存路径：``negotiate`` → ``upload_*``）。
 
         前置条件三选一（``CommitPrecondition``），
-        ``BaseHash`` 的值必须是本次声明契约的 hash；``uri`` 或 ``base_hash`` 不合法时本地即抛
+        ``BaseHash`` 的值必须是受支持契约的 hash（过渡期内可以是旧契约的值，服务端按值所带的
+        契约比较：core §5.1、HTTP 绑定 §3.1）；``uri`` 或 ``base_hash`` 不合法时本地即抛
         dpe_hash 的错误，不发请求。
 
         结果的 ``doc_hash`` 必须等于本地算出的提交内容的 doc_hash，``delta`` 必须与提交的元素
@@ -1658,8 +1661,9 @@ class ProtocolCore:
     def delete(self, uri: str, base_hash: str) -> Operation[None]:
         """``DELETE documents?uri=``，CAS 走 ``If-Match``（core §4、§5.1）。
 
-        ``base_hash`` 必须是本次声明契约的 hash。重试规则（core §5.2、HTTP 绑定 §3.2）：响应
-        丢失时原样重发，重发后得到 ``DPE_NOT_FOUND`` 视为成功（首次请求得到它则如实抛出）；
+        ``base_hash`` 必须是受支持契约的 hash（过渡期内可以是旧契约的值）。重试规则
+        （core §5.2、HTTP 绑定 §3.2）：响应丢失时原样重发，重发后得到 ``DPE_NOT_FOUND``
+        视为成功（首次请求得到它则如实抛出）；
         无 DPE 错误码的 412 先 ``head``：不存在即成功，doc_hash 不等于 ``base_hash`` 抛
         ``PreconditionFailedError``，仍等于则是中间层误判，原样重发一次；重发后仍是这样的 412
         时再 ``head`` 判定一次，doc_hash 仍等于 ``base_hash`` 才抛 ``UnexpectedResponseError``。
@@ -1701,25 +1705,33 @@ class ProtocolCore:
     def move(self, from_uri: str, to_uri: str, base_hash: str) -> Operation[MoveResult]:
         """``POST move``：``from_uri → to_uri`` 原子改名，前置条件在请求体（core §5.2）。
 
-        ``base_hash`` 必须是本次声明契约的 hash；move 不支持 force。响应丢失时原样重发：
-        服务端对「源已不存在、目标内容等于 ``base_hash``」返回成功（core §5.2 第 4 步），其余
-        错误如实抛出。结果的 ``doc_hash`` 必须等于 ``base_hash``（file_uri 不进 hash）。
+        ``base_hash`` 必须是受支持契约的 hash（过渡期内服务端按值所带的契约比较，与请求声明的
+        契约无关：core §5.1、HTTP 绑定 §3.1）；move 不支持 force。响应丢失时原样重发：服务端对
+        「源已不存在、目标内容等于 ``base_hash``」返回成功（core §5.2 第 4 步），其余错误如实
+        抛出。``base_hash`` 与请求声明的契约相同时，结果的 ``doc_hash`` 必须等于它（file_uri
+        不进 hash）；不同时（旧契约的 base），结果按请求声明的契约给出，校验它属于该契约并与
+        ``DPE-Doc-Hash`` 头一致，不与 base 比较。
         """
         dpe_hash.normalize_file_uri(from_uri)
         dpe_hash.normalize_file_uri(to_uri)
         self._check_base_hash(base_hash)
+        base_contract = dpe_hash.parse_hash(base_hash, self.accepted_contracts())[0]
         body = {"from_uri": from_uri, "to_uri": to_uri, "base_hash": base_hash}
         tracker = _WriteAttempts()
         try:
             response, _ = yield from self._send(self._request("POST", "move", body), tracker)
             _expect(response)
             result = _parse(response, MoveResult)
-            if result.doc_hash != base_hash:
-                raise UnexpectedResponseError(
-                    f"move 结果的 doc_hash {result.doc_hash!r} 不等于 base_hash {base_hash!r}",
-                    status=response.status,
-                )
-            self._check_doc_hash_header(response, base_hash)
+            if base_contract == self.contract:
+                if result.doc_hash != base_hash:
+                    raise UnexpectedResponseError(
+                        f"move 结果的 doc_hash {result.doc_hash!r} 不等于 base_hash {base_hash!r}",
+                        status=response.status,
+                    )
+                self._check_doc_hash_header(response, base_hash)
+            else:
+                self._hash(result.doc_hash, response, "move 结果的 doc_hash")
+                self._check_doc_hash_header(response, result.doc_hash)
             return result
         except Exception as exc:
             _mark_outcome(exc, tracker)  # 结果标记（见模块说明；异常类型不变）
@@ -1830,11 +1842,23 @@ class ProtocolCore:
                 tracker.possibly_applied = True
             raise
 
+    def accepted_contracts(self) -> tuple[str, ...]:
+        """这次会话可用的契约：服务端声明支持、且本 SDK 认识（core §3.1、契约 1 §6）。
+
+        ``base_hash`` 的取值可以带其中任一契约的前缀——过渡期内服务端按值所带的契约比较条件头
+        （HTTP 绑定 §3.1、connector 契约 §7.2），与请求声明的契约无关。
+        """
+        return tuple(
+            contract
+            for contract in self.capabilities.hash_contracts
+            if contract in dpe_hash.KNOWN_CONTRACTS
+        )
+
     def _check_base_hash(self, value: str) -> None:
-        """``base_hash`` 必须是本次声明契约的 hash：不接受裸 hash，也不接受别的契约的值。"""
+        """``base_hash`` 必须是受支持契约的 hash：不接受裸 hash，也不接受未知契约的值。"""
         if not isinstance(value, str):
             raise TypeError(f"base_hash 必须是字符串，实际为 {type(value).__name__}")
-        dpe_hash.parse_hash(value, (self.contract,))
+        dpe_hash.parse_hash(value, self.accepted_contracts())
 
     def _condition(self, precondition: CommitPrecondition) -> dict[str, str]:
         """前置条件对应的条件头（HTTP 绑定 §3.2）；force 不带条件头。"""

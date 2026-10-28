@@ -1052,12 +1052,13 @@ impl ProtocolCore {
         dpe_hash::normalize_file_uri(from_uri)
             .map_err(|error| Error::from_hash_error(&error, ""))?;
         dpe_hash::normalize_file_uri(to_uri).map_err(|error| Error::from_hash_error(&error, ""))?;
-        self.check_base_hash(base_hash)?;
+        let base_contract = self.check_base_hash(base_hash)?.to_owned();
         let body = json!({"from_uri": from_uri, "to_uri": to_uri, "base_hash": base_hash});
         let request = self.write_request(Method::Post, "move".to_owned(), Some(&body), &[]);
         Ok(MoveOp {
             core: self,
             base_hash: base_hash.to_owned(),
+            base_contract,
             request,
             phase: MovePhase::Submit,
             resends: 0,
@@ -1126,10 +1127,24 @@ impl ProtocolCore {
         }
     }
 
-    /// `base_hash` 必须是本次声明契约的 hash：不接受裸 hash，也不接受别的契约的值。
-    fn check_base_hash(&self, value: &str) -> Result<(), Error> {
-        dpe_hash::parse_hash_with(value, &[self.contract.as_str()])
-            .map(|_| ())
+    /// 这次会话可用的契约：服务端声明支持、且本 SDK 认识（core §3.1、契约 1 §6）。
+    ///
+    /// 推送器等上层也用它判断同步状态中的值是否仍可作前置条件（connector 契约 §7.2）。
+    pub fn accepted_contracts(&self) -> Vec<&str> {
+        self.capabilities
+            .hash_contracts
+            .iter()
+            .map(String::as_str)
+            .filter(|contract| dpe_hash::KNOWN_CONTRACTS.contains(contract))
+            .collect()
+    }
+
+    /// `base_hash` 必须是受支持契约的 hash：不接受裸 hash，也不接受未知契约的值。
+    /// 返回该值所带的契约（过渡期内可以是旧的、但服务端仍接受的契约）。
+    fn check_base_hash<'a>(&self, value: &'a str) -> Result<&'a str, Error> {
+        let accepted = self.accepted_contracts();
+        dpe_hash::parse_hash_with(value, &accepted)
+            .map(|(contract, _)| contract)
             .map_err(|error| Error::from_hash_error(&error, ""))
     }
 
@@ -2349,6 +2364,8 @@ impl Operation for DeleteOp<'_> {
 pub struct MoveOp<'a> {
     core: &'a ProtocolCore,
     base_hash: String,
+    /// base_hash 所带的契约（过渡期内可以是旧的、但服务端仍接受的契约）。
+    base_contract: String,
     request: Request,
     phase: MovePhase,
     resends: u32,
@@ -2370,18 +2387,26 @@ impl MoveOp<'_> {
     fn finish(&mut self, response: Response) -> Result<(), Error> {
         expect_status(&response, 200)?;
         let result = parse_response(&response, MoveResult::from_value)?;
-        if result.doc_hash != self.base_hash {
-            return Err(Error::unexpected(
-                format!(
-                    "move 结果的 doc_hash {:?} 不等于 base_hash {:?}",
-                    result.doc_hash, self.base_hash
-                ),
-                response.status(),
-                None,
-            ));
+        if self.base_contract == self.core.contract {
+            if result.doc_hash != self.base_hash {
+                return Err(Error::unexpected(
+                    format!(
+                        "move 结果的 doc_hash {:?} 不等于 base_hash {:?}",
+                        result.doc_hash, self.base_hash
+                    ),
+                    response.status(),
+                    None,
+                ));
+            }
+            self.core
+                .check_doc_hash_header(&response, &self.base_hash)?;
+        } else {
+            // 旧契约的 base：结果按请求声明的契约给出，不能与 base 比较
+            self.core
+                .check_hash(&result.doc_hash, response.status(), "move 结果的 doc_hash")?;
+            self.core
+                .check_doc_hash_header(&response, &result.doc_hash)?;
         }
-        self.core
-            .check_doc_hash_header(&response, &self.base_hash)?;
         self.phase = MovePhase::Done(result);
         Ok(())
     }

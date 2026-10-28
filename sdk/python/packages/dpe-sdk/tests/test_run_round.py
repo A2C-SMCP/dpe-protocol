@@ -26,7 +26,7 @@ from client_helpers import PREFIX, REMOTE, ClientRecorder, in_process_client
 from dpe_sdk.credentials import CredentialProvider, StaticCredentialProvider
 from dpe_sdk.models import Document
 from dpe_sdk.protocol import BaseHash, IfAbsent
-from dpe_sdk.pusher import AsyncStatefulPusher
+from dpe_sdk.pusher import AsyncStatefulPusher, StateSnapshot
 from dpe_sdk.run import (
     InstanceStore,
     ItemFailure,
@@ -42,7 +42,7 @@ from dpe_sdk.run.manifest import parse_manifest
 from dpe_sdk.run.round import finished_level
 from dpe_sdk.testing import Engine, PrefixAuthorizer, create_app
 from dpe_sdk.transport import AsyncDpeClient
-from engine_helpers import make_engine
+from engine_helpers import inline, make_engine, text_doc
 
 pytestmark = pytest.mark.anyio
 
@@ -2638,6 +2638,30 @@ async def test_inferred_delete_with_l_follows_the_delete_conflict_policy(tmp_pat
         assert await _remote(h) == {P + "a.md": expected("A")}
         assert h.store is not None
         assert h.store.cursor == "c3" and h.store.written == {}
+
+
+async def test_inferred_delete_with_old_contract_l_uses_it_as_base(tmp_path: Path) -> None:
+    """推断删除遇到旧契约 L：服务端仍接受其契约时以它作前置条件，不按缺失处理（§7.2）。"""
+    engine = make_engine(contracts=(dpe_hash.CONTRACT, dpe_hash.DRILL_CONTRACT))
+    async with harness(tmp_path, engine=engine) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]], "cursor": "c1"})
+        # x 在 partial 轮里建出（W[x]=None、游标未推进），源随后不再有它
+        await h.round({"batches": [[doc_item("x.md", "X"), _error_item("e.md")]], "cursor": "c2"})
+        store = h.store
+        assert store is not None
+        snapshot = store.load(REMOTE)
+        assert snapshot is not None and P + "x.md" in snapshot.synced
+        old = inline(text_doc(["X"]), dpe_hash.DRILL_CONTRACT).doc_hash
+        store.save(
+            REMOTE,
+            StateSnapshot(synced={**snapshot.synced, P + "x.md": old}, intents=snapshot.intents),
+        )
+
+        result = await h.round(
+            {"batches": [[]], "cursor": "c3", "full_batches": [[doc_item("a.md", "A")]]}
+        )
+        assert result.outcome == "succeeded", result.failures
+        assert await _remote(h) == {P + "a.md": expected("A")}
 
 
 async def test_pending_write_overwritten_after_crash_without_l_is_reported_once(
