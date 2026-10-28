@@ -18,11 +18,13 @@ from dpe_sdk import Document, errors
 from dpe_sdk.protocol import (
     IfAbsent,
     Operation,
+    PreparedDocument,
     Request,
     Response,
     adrive,
     drive,
     fetch_capabilities,
+    outcome_unknown,
     retry_after_seconds,
 )
 from engine_helpers import inline, text_doc
@@ -77,6 +79,33 @@ def test_unknown_contract_and_protocol() -> None:
         core("dpe9", hash_contracts=["dpe9"])
     with pytest.raises(errors.IncompatibleServerError):
         core(protocol="dpe/2")
+
+
+def test_prepared_document_contract_mismatch_recomputes() -> None:
+    """内部通道的预算契约与核心不一致时，回退到公共路径重算（242a）。"""
+    document = Document.model_validate(text_doc(["a", "b"]))
+    protocol_core = core()
+    expected = protocol_core._wire_parts(document)
+    prepared = PreparedDocument(
+        contract=dpe_hash.DRILL_CONTRACT,
+        hashes=document.hashes(dpe_hash.DRILL_CONTRACT),
+        data=document.model_dump(),
+    )
+    assert protocol_core._wire_parts(document, prepared) == expected
+
+
+def test_deliver_prepared_marks_local_failure_not_sent() -> None:
+    """私有入口的本地失败（非法 uri）按「确定未发出」打标（242a 保持 #264 语义）。"""
+    document = Document.model_validate(text_doc(["a"]))
+    protocol_core = core()
+    prepared = PreparedDocument(
+        contract=dpe_hash.CONTRACT,
+        hashes=document.hashes(dpe_hash.CONTRACT),
+        data=document.model_dump(),
+    )
+    with pytest.raises(dpe_hash.DpeHashError) as excinfo:
+        list(protocol_core._deliver_prepared("zzz-no-scheme", document, prepared, IfAbsent()))
+    assert outcome_unknown(excinfo.value) is False
 
 
 def test_every_request_declares_the_contract() -> None:

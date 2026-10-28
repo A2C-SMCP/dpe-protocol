@@ -79,8 +79,8 @@ use crate::errors::Error;
 use crate::models::{ElementObject, ExpandedDocument, PageObject};
 use crate::protocol::{
     error_from_response, fetch_capabilities, local_request_error, not_sent, BlobProvider,
-    BlobSource, Body, Method, Negotiated, Operation, Precondition, ProtocolCore, Request, Response,
-    Session, Step, TransportError, DEFAULT_MAX_RESENDS,
+    BlobSource, Body, Method, Negotiated, Operation, Precondition, PreparedDocument, ProtocolCore,
+    Request, Response, Session, Step, TransportError, DEFAULT_MAX_RESENDS,
 };
 use crate::remote_url::check_remote_url;
 use crate::wire::{Capabilities, CommitResult, ListPage, MoveResult, Skeleton};
@@ -453,6 +453,21 @@ impl DpeClient {
     ) -> Result<CommitResult, Error> {
         let core = self.core().await?;
         self.drive(core.deliver(uri, document, precondition, blobs, session)?)
+            .await
+    }
+
+    /// 推送器内部通道：用预算好的三层 hash 与 dump 投递（契约不符由核心回退）。
+    pub(crate) async fn deliver_prepared<'a>(
+        &'a self,
+        uri: &str,
+        document: &ExpandedDocument,
+        prepared: &PreparedDocument,
+        precondition: Precondition,
+        blobs: Option<BlobProvider<'a>>,
+        session: Option<Session>,
+    ) -> Result<CommitResult, Error> {
+        let core = self.core().await?;
+        self.drive(core.deliver_prepared(uri, document, prepared, precondition, blobs, session)?)
             .await
     }
 
