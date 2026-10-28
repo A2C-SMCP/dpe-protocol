@@ -2788,10 +2788,10 @@ async fn batch_read_rejection_fails_only_the_offending_entry() {
         message.contains("DPE_FORBIDDEN") && message.contains("3 个 URI 中 1 个读被拒")
     }));
     assert!(
-        warnings
+        captured
             .iter()
             .all(|(_, message)| !message.contains(PROBLEM_DETAIL_SENTINEL)),
-        "日志不得回显远端 detail 文本"
+        "任何级别的日志都不得回显远端 detail 文本"
     );
     let snapshot = state(&store, &server);
     assert_eq!(
