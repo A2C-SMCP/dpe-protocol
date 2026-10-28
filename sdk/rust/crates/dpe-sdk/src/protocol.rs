@@ -927,6 +927,7 @@ impl ProtocolCore {
 
     /// 推送器内部通道：用预算好的三层 hash 与 dump 投递；契约不符时回退重算。
     /// 入口处的本地失败（uri / 前置条件 / 部件构造）按「确定未发出」标记。
+    #[cfg(any(feature = "http", test))]
     pub(crate) fn deliver_prepared<'a>(
         &'a self,
         uri: &str,
