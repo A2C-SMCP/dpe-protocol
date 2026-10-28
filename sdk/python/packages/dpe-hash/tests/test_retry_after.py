@@ -1,3 +1,4 @@
+# vector-kind: retry_after
 """Retry-After 的解析（HTTP 绑定 §5）：``retry_after_seconds`` 逐例通过向量 retry_after.json。"""
 
 from __future__ import annotations

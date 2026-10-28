@@ -1,3 +1,4 @@
+# vector-kind: nesting_depth
 """core §2.8 第 0 步第三项：对象嵌套深度上界（#94）。
 
 消费 ``vectors/nesting_depth.json``：对象级入口（本文件）与文本入口（dpe-sdk 的

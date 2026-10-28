@@ -153,30 +153,83 @@ def test_all_jcs_vectors_listed(vectors_dir: Path) -> None:
 def test_all_vector_kinds_have_consumers(vectors_dir: Path) -> None:
     """vectors/ 出现的 kind 是封闭集合，每个都必须有消费方；新增 kind 漏写消费测试时在此失败。
 
-    ``pattern``（connector 契约 §4.1.1 的正则子集）的消费方在 ``dpe-sdk`` 的
-    ``tests/test_run_pattern.py``（清单与配置校验属于 dpe-run）；``nesting_depth``（core §2.8 的
-    嵌套深度上界）的消费方在本包的 ``tests/test_nesting_depth.py``（对象级入口）与 ``dpe-sdk`` 的
-    ``tests/test_nesting_depth_entry_points.py``（文本入口与参考服务端）；``remote_url``（HTTP 绑定
-    §1 的 remote URL 文法）的消费方在本包的 ``tests/test_remote_url.py``（判定函数），以及
-    ``dpe-sdk`` 的 ``tests/test_remote_url_entry_points.py`` 与 ``dpe-conformance`` 的
-    ``tests/test_cli_remote_url.py``（入口）；``retry_after``（HTTP 绑定 §5）的消费方在本包的
-    ``tests/test_retry_after.py``。
+    本包核心测试消费 ``document`` / ``jcs`` / ``uri`` / ``invalid``（见本文件各测试）；其余 kind
+    登记在 ``sdk/python/vector-consumers.json``（路径相对 ``sdk/python/``），每个消费文件必须存在
+    且带整行标记 ``# vector-kind: <kind>``——登记与真实消费方脱钩时本测试失败。核验只到**文件级**
+    （文件存在 + 标记存在）：删掉消费测试函数而保留标记不会被发现，仍需评审把关。
     """
     kinds = {
         json.loads(f.read_text(encoding="utf-8"))["kind"]
         for f in vectors_dir.glob("*.json")
         if f.name != "manifest.json"
     }
-    assert kinds == {
-        "document",
-        "jcs",
-        "uri",
-        "invalid",
-        "nesting_depth",
-        "pattern",
-        "remote_url",
-        "retry_after",
-    }
+    consumed = {"document", "jcs", "uri", "invalid"}
+    consumed_elsewhere = _external_consumers()
+    assert kinds == consumed | consumed_elsewhere
+    assert consumed.isdisjoint(consumed_elsewhere), (
+        "同一 kind 的消费方只能登记在一处（本包核心测试或 vector-consumers.json）"
+    )
+
+
+def _external_consumers() -> set[str]:
+    """读取 ``sdk/python/vector-consumers.json`` 的跨包消费登记，返回其中的 kind 集合。
+
+    逐条核验：每个 kind 的消费方文件存在、且带 :func:`_has_marker` 约定的整行标记。任一登记
+    指向不存在的消费方（文件被删/改名/标记被移除）即失败——登记与真实消费方脱钩时本测试失败。
+    核验只到**文件级**：删掉消费测试函数而保留标记不会被发现，仍需评审把关。
+
+    登记文件属于 ``sdk/python`` 工作区，定位**不经过** :func:`vectors_dir` 夹具：``DPE_VECTORS_DIR``
+    覆盖的是向量位置（如指向仓库外的向量副本），不得牵动登记的核验。
+    """
+    workspace = Path(__file__).resolve().parents[3]
+    path = workspace / "vector-consumers.json"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AssertionError(f"读不到消费登记 {path}：{exc}") from exc
+    try:
+        registry = json.loads(text)
+    except ValueError as exc:
+        raise AssertionError(f"{path} 不是合法 JSON：{exc}") from exc
+    assert isinstance(registry, dict), f"{path} 顶层必须是对象"
+    consumers = registry.get("consumers")
+    assert isinstance(consumers, dict), f"{path} 缺少 consumers 对象"
+    kinds: set[str] = set()
+    for kind, files in consumers.items():
+        assert isinstance(files, list) and files, f"{kind} 的消费方必须是非空的文件路径数组"
+        for relative in files:
+            assert isinstance(relative, str), f"{kind} 的消费方是文件路径字符串"
+            consumer = workspace / relative
+            try:
+                content = consumer.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise AssertionError(f"消费方文件不可读 {consumer}：{exc}") from exc
+            assert _has_marker(content, kind), f"{consumer} 缺少整行标记 `# vector-kind: {kind}`"
+        kinds.add(kind)
+    return kinds
+
+
+def _has_marker(content: str, kind: str) -> bool:
+    """消费文件里的 kind 标记约定：某一行去掉行首空白后必须以 ``#`` 开头，剥掉一个 ``#``
+    与行尾空白后恰为 ``vector-kind: <kind>``（整行匹配：裸行、``//`` 注释或
+    ``pattern-renamed`` 之类的改写不命中）。"""
+    marker = f"vector-kind: {kind}"
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        if stripped[1:].strip() == marker:
+            return True
+    return False
+
+
+def test_vector_consumer_marker_is_an_exact_comment_line() -> None:
+    """标记必须是整行注释：裸行、改名与 ``//`` 注释都不命中；注释前后的空白与一个 ``#`` 允许。"""
+    assert _has_marker("# vector-kind: pattern\n", "pattern") is True
+    assert _has_marker("  #  vector-kind: pattern  \n", "pattern") is True
+    assert _has_marker("vector-kind: pattern\n", "pattern") is False
+    assert _has_marker("# vector-kind: pattern-renamed\n", "pattern") is False
+    assert _has_marker("// vector-kind: pattern\n", "pattern") is False
 
 
 def test_jcs_numbers_ignore_decimal_context(vectors_dir: Path) -> None:

@@ -1066,6 +1066,46 @@ async fn first_attempt_lost_then_rate_limited_keeps_the_intent() {
 }
 
 #[tokio::test]
+async fn coded_retryable_write_failures_are_determined_and_clear_the_intent() {
+    // 每次写尝试都得到带码 429 / 503（服务端明确裁决「未处理」）→ 结果确定，意图清除
+    for (code, status, kind) in [
+        ("DPE_RATE_LIMITED", 429, ErrorKind::RateLimited),
+        ("DPE_UNAVAILABLE", 503, ErrorKind::Unavailable),
+    ] {
+        let fake = Fake::new();
+        let server = fake.server();
+        let client = DpeClient::builder(server.remote())
+            .max_resends(0)
+            .max_retries(2)
+            .timeout(Some(Duration::from_secs(5)))
+            .build()
+            .expect("客户端");
+        let store = Arc::new(MemoryStateStore::new());
+        fake.script(
+            Route::Commit(A.into()),
+            vec![reply(Reply::problem(code, status, &[("Retry-After", "0")]))],
+        );
+
+        let results = pusher(&client, &store)
+            .push(&docs(&[(A, &text("v1"))]), &none(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(statuses(&results), [PushStatus::Failed], "{code}");
+        assert_eq!(results[0].error.as_ref().unwrap().kind(), kind, "{code}");
+        assert!(!results[0].unknown, "{code}：每次尝试都是带码裁决");
+        assert_eq!(
+            count(&server, "PUT", "/documents"),
+            3,
+            "{code}：首发 + 两次重发"
+        );
+        let snapshot = state(&store, &server);
+        assert_eq!(snapshot.intents, BTreeMap::new(), "{code}");
+        assert_eq!(snapshot.synced, BTreeMap::new(), "{code}");
+    }
+}
+
+#[tokio::test]
 async fn determined_conflict_clears_the_intent_so_later_writes_are_not_masked() {
     let fake = Fake::new();
     let server = fake.server();
@@ -2304,7 +2344,7 @@ async fn move_onto_same_content_source_rewritten_is_conflict_side_from() {
     let server = fake.server();
     let client = client(&server);
     let store = Arc::new(MemoryStateStore::new());
-    same_content_on_both_sides(&fake, &client, &store).await;
+    let v1 = same_content_on_both_sides(&fake, &client, &store).await;
     let theirs = doc_hash(&text("theirs"));
     fake.script(
         Route::Delete(A.into()),
@@ -2324,7 +2364,37 @@ async fn move_onto_same_content_source_rewritten_is_conflict_side_from() {
     assert_eq!(results[0].side, Some(Side::From));
     assert_eq!(results[0].remote.as_ref().unwrap().doc_hash, Some(theirs));
     assert_eq!(count(&server, "POST", "/move"), 0);
-    assert_eq!(state(&store, &server).intents, BTreeMap::new());
+    let snapshot = state(&store, &server);
+    assert_eq!(snapshot.synced, synced(&[(A, v1)]), "条目未迁移");
+    assert_eq!(snapshot.intents, BTreeMap::new());
+}
+
+#[tokio::test]
+async fn move_source_rewritten_onto_target_with_their_content_is_conflict() {
+    // 源被他人改写（R ≠ L）时，即使目标恰好等于改写后的值，也是冲突（不删源、不发写）
+    let fake = Fake::new();
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    after_v1(&fake, &client, &store).await;
+    let v1 = doc_hash(&text("v1"));
+    let theirs = doc_hash(&text("theirs"));
+    fake.set(A, Some(theirs.clone()));
+    fake.set(B, Some(theirs.clone()));
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Conflict]);
+    assert_eq!(results[0].side, Some(Side::From));
+    assert_eq!(results[0].remote.as_ref().unwrap().doc_hash, Some(theirs));
+    assert_eq!(count(&server, "DELETE", "/documents"), 0, "不删源");
+    assert_eq!(count(&server, "POST", "/move"), 0, "不发 move");
+    let snapshot = state(&store, &server);
+    assert_eq!(snapshot.synced, synced(&[(A, v1)]), "条目未迁移");
+    assert_eq!(snapshot.intents, BTreeMap::new());
 }
 
 #[tokio::test]

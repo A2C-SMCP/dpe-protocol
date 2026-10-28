@@ -525,6 +525,51 @@ async def test_not_sent_failures_are_determined_and_clear_the_intent() -> None:
     assert state.synced == {}
 
 
+class _CodedWriteFailures(httpx.AsyncBaseTransport):
+    """对命中的写请求一律以带码的可重试错误应答（服务端明确裁决「未处理」）；其余请求转发。"""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, status: int, code: str) -> None:
+        self._inner = inner
+        self._status = status
+        self._code = code
+        self.writes = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if _is_commit(request):
+            self.writes += 1
+            return _problem_response(
+                self._status, self._code, retryable=True, headers={"Retry-After": "0"}
+            )
+        return await self._inner.handle_async_request(request)
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "error_type"),
+    [
+        (429, "DPE_RATE_LIMITED", RateLimitedError),
+        (503, "DPE_UNAVAILABLE", UnavailableError),
+    ],
+)
+async def test_coded_retryable_write_failures_are_determined_and_clear_the_intent(
+    status: int, code: str, error_type: type[Exception]
+) -> None:
+    """每次写尝试都得到带码 429 / 503（服务端明确裁决「未处理」）→ 结果确定，意图 MUST 清除。"""
+    store = MemoryStateStore()
+    app = create_app(make_engine(), prefix=PREFIX)
+    failures = _CodedWriteFailures(httpx.ASGITransport(app=app), status, code)
+    async with in_process_client(transport=failures, max_retries=2, max_resends=0) as (client, _):
+        pusher = AsyncStatefulPusher(client, state=store)
+        results = await pusher.push({URI: _doc("v1")})
+
+    assert [r.status for r in results] == ["failed"]
+    assert isinstance(results[0].error, error_type)
+    assert results[0].unknown is False  # 每次尝试都是服务端带码裁决 → 结果确定
+    assert failures.writes == 3  # 首发 + 传输层 max_retries 两次重发
+    state = await _state(store)
+    assert state.intents == {}  # 结果已确定 → 清除
+    assert state.synced == {}
+
+
 class _LostThenFail(httpx.AsyncBaseTransport):
     """首个 commit PUT 照常送达（可能已生效）后丢弃响应；其后的 commit 尝试按 ``after`` 故障处置。
 
@@ -2051,17 +2096,30 @@ _ALLOWED = "dpe://allowed/"
 _SECRET = "dpe://secret/"
 
 
-def _problem_response(status: int, code: str) -> httpx.Response:
+_REMOTE_DETAIL = "REMOTE-DETAIL-SENTINEL-145"
+
+
+def _problem_response(
+    status: int,
+    code: str,
+    *,
+    retryable: bool = False,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
     return httpx.Response(
         status,
-        headers={"content-type": "application/problem+json", "DPE-Error-Code": code},
+        headers={
+            "content-type": "application/problem+json",
+            "DPE-Error-Code": code,
+            **(headers or {}),
+        },
         json={
             "type": "about:blank",
             "title": code,
             "status": status,
             "code": code,
-            "retryable": False,
-            "detail": "拒绝",
+            "retryable": retryable,
+            "detail": _REMOTE_DETAIL,
         },
     )
 
@@ -2130,25 +2188,42 @@ def _rejecting(secret: set[str], **options: Any) -> _RejectReads:
     )
 
 
-async def test_batch_read_rejection_fails_only_the_offending_entry() -> None:
-    """批量读因其中一个 URI 被拒：只有该条 failed（原错误、code 原样、side 为空），其余照常写入。"""
+async def test_batch_read_rejection_fails_only_the_offending_entry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """批量读因其中一个 URI 被拒：只有该条 failed（原错误、code 原样、side 为空），其余照常写入；
+    批量读被拒记一条 warning（带原错误码与计数，不带远端文本）。"""
     store = MemoryStateStore()
     transport = _rejecting({_SECRET + "b.md"})
-    async with in_process_client(transport=transport) as (client, recorder):
-        pusher = AsyncStatefulPusher(client, state=store)
-        results = await pusher.push(
-            {
-                _ALLOWED + "a.md": _doc("A"),
-                _SECRET + "b.md": _doc("B"),
-                _ALLOWED + "c.md": _doc("C"),
-            }
-        )
-        assert [r.status for r in results] == ["created", "failed", "created"]
-        assert results[1].file_uri == _SECRET + "b.md"
-        assert isinstance(results[1].error, ForbiddenError)
-        assert results[1].error.code == "DPE_FORBIDDEN"
-        assert results[1].side is None and results[1].unknown is False
-        assert len(_commits(recorder)) == 2
+    with caplog.at_level(logging.WARNING, logger="dpe_sdk.pusher"):
+        async with in_process_client(transport=transport) as (client, recorder):
+            pusher = AsyncStatefulPusher(client, state=store)
+            results = await pusher.push(
+                {
+                    _ALLOWED + "a.md": _doc("A"),
+                    _SECRET + "b.md": _doc("B"),
+                    _ALLOWED + "c.md": _doc("C"),
+                }
+            )
+            assert [r.status for r in results] == ["created", "failed", "created"]
+            assert results[1].file_uri == _SECRET + "b.md"
+            assert isinstance(results[1].error, ForbiddenError)
+            assert results[1].error.code == "DPE_FORBIDDEN"
+            assert results[1].side is None and results[1].unknown is False
+            assert len(_commits(recorder)) == 2
+    records = [r for r in caplog.records if r.name == "dpe_sdk.pusher"]
+    assert len(records) == 1 and records[0].levelno == logging.WARNING
+    assert getattr(records[0], "dpe_code", None) == "DPE_FORBIDDEN"
+    assert (getattr(records[0], "dpe_entries", None), getattr(records[0], "dpe_denied", None)) == (
+        3,
+        1,
+    )
+    assert getattr(records[0], "dpe_pusher", None) is pusher
+    assert "3 个 URI 中 1 个读被拒" in records[0].getMessage()
+    # 远端 detail 不得经 message、格式化参数或 extra 泄漏
+    assert _REMOTE_DETAIL not in records[0].getMessage()
+    assert _REMOTE_DETAIL not in repr(records[0].args)
+    assert _REMOTE_DETAIL not in repr(records[0].__dict__)
     assert transport.batch_reads == 1 and transport.single_reads == 3
     state = await _state(store)
     assert set(state.synced) == {_ALLOWED + "a.md", _ALLOWED + "c.md"}
@@ -2177,7 +2252,10 @@ async def test_batch_rejection_with_every_single_read_passing_still_writes(
         0,
     )
     assert getattr(records[0], "dpe_pusher", None) is pusher
-    assert "拒绝" not in records[0].getMessage()  # 不带远端 detail 文本
+    # 远端 detail 不得经 message、格式化参数或 extra 泄漏
+    assert _REMOTE_DETAIL not in records[0].getMessage()
+    assert _REMOTE_DETAIL not in repr(records[0].args)
+    assert _REMOTE_DETAIL not in repr(records[0].__dict__)
 
 
 async def test_network_failure_while_locating_raises_the_whole_batch() -> None:

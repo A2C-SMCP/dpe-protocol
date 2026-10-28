@@ -56,18 +56,26 @@ async def in_process_client(
     *,
     credential: CredentialProvider | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    max_retries: int | None = None,
+    max_resends: int | None = None,
     **app_options: Any,
 ) -> AsyncIterator[tuple[AsyncDpeClient, ClientRecorder]]:
     """异步客户端对真实参考服务端（ASGI 应用，进程内）。
 
     给出 ``transport`` 时以它为准（调用方自行构造并包裹参考服务端，做故障注入）；
-    此时 ``engine`` / ``app_options`` 不再使用。
+    此时 ``engine`` / ``app_options`` 不再使用。``max_retries`` / ``max_resends`` 未传入时
+    沿用 ``AsyncDpeClient`` 的默认值；需要精确断言尝试次数的用例显式传入。
     """
     inner: httpx.AsyncBaseTransport = transport or httpx.ASGITransport(
         app=create_app(engine or make_engine(), prefix=PREFIX, **app_options)
     )
     recorder = ClientRecorder(inner)
-    client = AsyncDpeClient(REMOTE, credential=credential, transport=recorder)
+    retry_options: dict[str, Any] = {}
+    if max_retries is not None:
+        retry_options["max_retries"] = max_retries
+    if max_resends is not None:
+        retry_options["max_resends"] = max_resends
+    client = AsyncDpeClient(REMOTE, credential=credential, transport=recorder, **retry_options)
     try:
         yield client, recorder
     finally:

@@ -1,3 +1,4 @@
+# vector-kind: remote_url
 """remote URL 的文法（HTTP 绑定 §1）：一致性向量 vectors/remote_url.json 逐例经 SDK 的两个入口断言。
 
 入口：``DpeClient`` / ``AsyncDpeClient`` 构造（传输层）、实例定义的 ``remote.url``（connector

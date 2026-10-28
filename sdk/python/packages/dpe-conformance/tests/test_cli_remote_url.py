@@ -1,3 +1,4 @@
+# vector-kind: remote_url
 """REMOTE-URL 按 HTTP 绑定 §1 的文法校验（#181）：逐例消费 vectors/remote_url.json。
 
 不合法的 remote 在开跑前以退出码 2 拒绝，消息不回显 URL；合法的 remote 通过这一步（用未知
