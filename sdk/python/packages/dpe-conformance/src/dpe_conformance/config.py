@@ -148,6 +148,33 @@ def _require_string(value: Any, where: str) -> str:
     return value
 
 
+def _valid_authorization(value: str) -> bool:
+    """HTTP 绑定 §6（#207、#253）：空值，或首尾 VCHAR、中间 VCHAR / SP / HTAB。
+
+    规则与两个 SDK 共用 ``sdk/testdata/header_values.json``；跑分器不依赖 dpe-sdk，故各持
+    一份实现（同 ``_proxy.py`` 的先例），由共享表保证三边语义一致。
+    """
+    if not value:
+        return True
+    for char in value:
+        code = ord(char)
+        if not (0x21 <= code <= 0x7E or code in (0x09, 0x20)):
+            return False
+    return 0x21 <= ord(value[0]) <= 0x7E and 0x21 <= ord(value[-1]) <= 0x7E
+
+
+def _require_authorization(value: Any, where: str) -> str:
+    """校验 Authorization 的值；空值合法，错误消息不回显值。"""
+    if not isinstance(value, str):
+        raise ConfigError(f"{where}必须是字符串")
+    if not _valid_authorization(value):
+        raise ConfigError(
+            f"{where} 不符合 HTTP 绑定 §6 的字符集规则（空值，或首尾 VCHAR、"
+            "中间 VCHAR / SP / HTAB）"
+        )
+    return value
+
+
 def _parse_identities(raw: Any) -> Mapping[str, Identity]:
     table = _require_table(raw, "identities")
     identities: dict[str, Identity] = {}
@@ -162,13 +189,15 @@ def _parse_identities(raw: Any) -> Mapping[str, Identity]:
         if has_literal == has_env:
             raise ConfigError(f"{where}必须且只能给 authorization 或 env 之一")
         if has_literal:
-            authorization = _require_string(fields["authorization"], f"{where}.authorization")
+            authorization = _require_authorization(
+                fields["authorization"], f"{where}.authorization"
+            )
         else:
             name = _require_string(fields["env"], f"{where}.env")
             value = os.environ.get(name)
             if value is None:
                 raise ConfigError(f"{where}.env 引用的环境变量 {name!r} 未设置")
-            authorization = _require_string(value, f"环境变量 {name}")
+            authorization = _require_authorization(value, f"环境变量 {name}")
         prefix: str | None = None
         if role == "scoped":
             prefix = _validate_uri(

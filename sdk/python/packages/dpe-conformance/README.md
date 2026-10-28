@@ -50,6 +50,8 @@ $ dpe-conformance https://host/r/1 --junit-xml report.xml --counts-json counts.j
 
 可选配置文件（TOML，封闭 schema，未知键一律拒绝），缺省在 CWD 下找 `dpe-conformance.toml`，或以 `--config` 指定。**凭证不进命令行与日志**，只放上 `Authorization` 请求头；身份建议经 `env` 引用环境变量，`authorization` 字面量仅限低权限/一次性测试凭证。
 
+配置加载阶段按 HTTP 绑定 §6 校验 `authorization` 的值（字面量与 `env` 解析结果都算）：空值合法，或首尾为 VCHAR、中间只允许 VCHAR / SP / HTAB；不合规的配置在开跑前以退出码 2 拒绝，错误消息不回显值。
+
 ```toml
 schema = 1
 uri-prefix = "dpe://conformance/"          # 测试 URI 命名空间（缺省值即此；每次运行另加一次性 token）

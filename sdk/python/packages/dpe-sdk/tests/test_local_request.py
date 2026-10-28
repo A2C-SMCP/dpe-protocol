@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -33,6 +36,14 @@ INVALID_CREDENTIALS = [
     "Bearer abc\x7fdef",
 ]
 
+#: 两个 SDK 与跑分器共用的请求头值字符集用例表（HTTP 绑定 §6，#207/#253）
+_HEADER_CASES: list[dict[str, Any]] = json.loads(
+    (Path(__file__).resolve().parents[4] / "testdata" / "header_values.json").read_text(
+        encoding="utf-8"
+    )
+)["cases"]
+assert _HEADER_CASES, "header_values.json 的 cases 不得为空"
+
 SECRET = "super-secret-token"
 
 
@@ -46,18 +57,22 @@ class _CountingTransport(httpx.BaseTransport):
 
     def __init__(self) -> None:
         self.requests = 0
+        self.headers: list[dict[str, str]] = []
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         self.requests += 1
+        self.headers.append(dict(request.headers))
         return httpx.Response(200, json=CAPABILITIES)
 
 
 class _CountingAsyncTransport(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.requests = 0
+        self.headers: list[dict[str, str]] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.requests += 1
+        self.headers.append(dict(request.headers))
         return httpx.Response(200, json=CAPABILITIES)
 
 
@@ -206,6 +221,52 @@ async def test_invalid_credential_header_value_is_a_local_request_error(value: s
     _assert_error(caught.value, forbidden=value)
     assert provider.calls == 1
     assert transport.requests == 0
+
+
+@pytest.mark.parametrize("case", _HEADER_CASES, ids=[case["name"] for case in _HEADER_CASES])
+async def test_header_value_charset_matches_the_shared_table(case: dict[str, Any]) -> None:
+    """请求头字段值字符集（HTTP 绑定 §6）：合法值发出，非法值在构造阶段本地拒绝。"""
+    provider = CountingProvider(case["value"])
+    transport = _CountingTransport()
+    client = DpeClient("http://dpe.test/r", credential=provider, transport=transport)
+    try:
+        if case["valid"]:
+            assert client.capabilities().protocol == "dpe/1"
+            assert transport.requests == 1
+            assert transport.headers[0].get("authorization") == case["value"]
+        else:
+            with pytest.raises(LocalRequestError) as caught:
+                client.capabilities()
+            assert transport.requests == 0
+            assert protocol_module.outcome_unknown(caught.value) is False
+            assert str(caught.value) == "本地请求构造失败，请求未发出"
+    finally:
+        client.close()
+    assert provider.calls == 1
+
+
+@pytest.mark.parametrize("case", _HEADER_CASES, ids=[case["name"] for case in _HEADER_CASES])
+async def test_async_header_value_charset_matches_the_shared_table(
+    case: dict[str, Any],
+) -> None:
+    """异步客户端与同步同口径：同一张共享表，合法发出、非法本地拒绝。"""
+    provider = CountingProvider(case["value"])
+    transport = _CountingAsyncTransport()
+    client = AsyncDpeClient("http://dpe.test/r", credential=provider, transport=transport)
+    try:
+        if case["valid"]:
+            assert (await client.capabilities()).protocol == "dpe/1"
+            assert transport.requests == 1
+            assert transport.headers[0].get("authorization") == case["value"]
+        else:
+            with pytest.raises(LocalRequestError) as caught:
+                await client.capabilities()
+            assert transport.requests == 0
+            assert protocol_module.outcome_unknown(caught.value) is False
+            assert str(caught.value) == "本地请求构造失败，请求未发出"
+    finally:
+        await client.aclose()
+    assert provider.calls == 1
 
 
 async def test_invalid_credential_header_value_is_not_resent_for_writes() -> None:

@@ -1,0 +1,105 @@
+{
+  "description": "请求头字段值的字符集规则（HTTP 绑定 §6，#207/#253）：两个 SDK 与一致性跑分器共用。合法 = 空值，或首尾 VCHAR（%x21-7E）、中间只允许 VCHAR / SP（%x20）/ HTAB（%x09）；不允许 obs-text（%x80-FF）与 CTL（HTAB 除外，且 HTAB 不得在首尾）。两个 SDK 对全部请求头字段值应用同一判定；跑分器用同一判定校验配置里的 authorization。",
+  "cases": [
+    {
+      "name": "空值合法",
+      "value": "",
+      "valid": true
+    },
+    {
+      "name": "普通 ASCII",
+      "value": "Bearer token",
+      "valid": true
+    },
+    {
+      "name": "内部 SP",
+      "value": "Bearer  token",
+      "valid": true
+    },
+    {
+      "name": "内部 HTAB",
+      "value": "Bearer a\tb",
+      "valid": true
+    },
+    {
+      "name": "边界 VCHAR",
+      "value": "!~",
+      "valid": true
+    },
+    {
+      "name": "单 VCHAR",
+      "value": "x",
+      "valid": true
+    },
+    {
+      "name": "首部 SP",
+      "value": " Bearer",
+      "valid": false
+    },
+    {
+      "name": "尾部 SP",
+      "value": "Bearer ",
+      "valid": false
+    },
+    {
+      "name": "首部 HTAB",
+      "value": "\tBearer",
+      "valid": false
+    },
+    {
+      "name": "尾部 HTAB",
+      "value": "Bearer\t",
+      "valid": false
+    },
+    {
+      "name": "仅一个 SP",
+      "value": " ",
+      "valid": false
+    },
+    {
+      "name": "obs-text é",
+      "value": "Bearer é",
+      "valid": false
+    },
+    {
+      "name": "obs-text U+0080",
+      "value": "Bearer \u0080",
+      "valid": false
+    },
+    {
+      "name": "obs-text ÿ",
+      "value": "Bearer ÿ",
+      "valid": false
+    },
+    {
+      "name": "LF 控制字符",
+      "value": "Bearer a\nb",
+      "valid": false
+    },
+    {
+      "name": "NUL 控制字符",
+      "value": "Bearer a\u0000b",
+      "valid": false
+    },
+    {
+      "name": "DEL 控制字符",
+      "value": "Bearer a\u007fb",
+      "valid": false
+    },
+    {
+      "name": "CR 控制字符",
+      "value": "Bearer a\rb",
+      "valid": false
+    },
+    {
+      "name": "US 控制字符",
+      "value": "Bearer a\u001fb",
+      "valid": false
+    },
+    {
+      "name": "3 字节 UTF-8",
+      "value": "Bearer 中",
+      "valid": false
+    }
+  ]
+}

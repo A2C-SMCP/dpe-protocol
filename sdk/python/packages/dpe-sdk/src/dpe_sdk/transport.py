@@ -16,10 +16,11 @@
 
 其余失败（``retry_safe`` 为假的请求可能已发出后的超时、读错误、响应丢失等）原样抛出，由
 ``drive`` / ``adrive`` 送回操作，按 core §5.2 处理。httpx 的异常不包装：调用方按异常类型区分
-连接失败、超时与响应丢失。**例外（#207）**：URL 主机不是合法 A-label 或请求头字段值含 CTL 时，
-build 阶段抛 ``LocalRequestError``（本次尝试确定未发出、写操作不重发；整体结果仍按核心累计的
-写尝试状态判定）；send 阶段的 ``httpx.LocalProtocolError`` 判定不变，只把消息重抛为固定文本、
-原错误留在 ``__cause__``。
+连接失败、超时与响应丢失。**例外（#207、#253）**：URL 主机不是合法 A-label、或请求头字段值
+不符合 HTTP 绑定 §6（CTL、obs-text、首尾 SP/HTAB）时，build 阶段抛 ``LocalRequestError``
+（本次尝试确定未发出、写操作不重发；整体结果仍按核心累计的写尝试状态判定）；
+send 阶段的 ``httpx.LocalProtocolError`` 判定不变，只把消息重抛为固定文本、原错误留在
+``__cause__``。
 写请求在连续建连失败时两级的预算会叠加（传输层每轮与核心的
 ``max_resends``，最坏 ``(1+max_retries)×(1+max_resends)`` 次尝试）——两者都只覆盖「请求确定
 未生效」的情形，叠加是安全的：建连失败确定未发出；带码的 ``DPE_RATE_LIMITED`` /
@@ -106,17 +107,22 @@ _REDACTED_LOCAL_PROTOCOL = "本地协议错误（原始消息已隐去，见 __c
 
 
 def _field_value_is_valid(value: str) -> bool:
-    """RFC 9110 field-value：CTL（``%x00-08``、``%x0A-1F``、``%x7F``）不允许，HTAB 除外。
+    """HTTP 绑定 §6（#207、#253）：值为空，或首尾 VCHAR、中间只允许 VCHAR / SP / HTAB。
 
-    在 build 阶段由 SDK 自己判定（不依赖 h11 的实现）：命中即确定请求还没发出，抛
-    ``LocalRequestError``。非 ASCII 字符不在判定范围（#207：两侧对非 ASCII 凭证的判定不一致
-    属于规范空白，另开 spec Issue）。
+    ``VCHAR = %x21-7E``、``SP = %x20``、``HTAB = %x09``：不允许 obs-text（``%x80-FF``）
+    与 CTL（#207），也不允许首尾 SP / HTAB（#253）。在 build 阶段由 SDK 自己判定（不依赖
+    h11 的实现）：命中即确定请求还没发出，抛 ``LocalRequestError``。
+
+    规则与 Rust SDK、跑分器共用 ``sdk/testdata/header_values.json``；跑分器不依赖 dpe-sdk，
+    故各持一份实现（同 ``_proxy.py`` 的先例），由共享表保证三边语义一致。
     """
+    if not value:
+        return True
     for char in value:
         code = ord(char)
-        if code == 0x7F or (code < 0x20 and char != "\t"):
+        if not (0x21 <= code <= 0x7E or code in (0x09, 0x20)):
             return False
-    return True
+    return 0x21 <= ord(value[0]) <= 0x7E and 0x21 <= ord(value[-1]) <= 0x7E
 
 
 def not_sent(exc: BaseException) -> bool:
@@ -243,7 +249,7 @@ class _ClientBase:
         return self._checked_headers(headers)
 
     def _checked_headers(self, headers: dict[str, str]) -> dict[str, str]:
-        """请求头字段值必须符合 RFC 9110 field-value（#207）：非法时请求确定未发出。"""
+        """请求头字段值必须符合 HTTP 绑定 §6（#207、#253）：非法时请求确定未发出。"""
         for value in headers.values():
             if not _field_value_is_valid(value):
                 raise LocalRequestError()
