@@ -30,7 +30,9 @@ use dpe_sdk::pusher::{
 use dpe_sdk::{ErrorKind, ExpandedDocument};
 use serde_json::{json, Value};
 
-use http_common::{capabilities_body, committed, heads_reply, MockServer, Recorded, Reply};
+use http_common::{
+    capabilities_body, committed, heads_reply, MockServer, Recorded, Reply, PROBLEM_DETAIL_SENTINEL,
+};
 use protocol_common::{doc, doc_hash, percent_decode};
 
 const A: &str = "dpe://docs/a.md";
@@ -324,7 +326,7 @@ fn intents(pairs: &[(&str, Option<String>)]) -> Intents {
 }
 
 fn problem(code: &str, status: u16) -> Reply {
-    Reply::problem(code, status, &[])
+    Reply::problem_with_detail(code, status, &[], PROBLEM_DETAIL_SENTINEL)
 }
 
 /// 首推 created 的脚本：应答后视图记为该文档。
@@ -2776,14 +2778,21 @@ async fn batch_read_rejection_fails_only_the_offending_entry() {
     assert_eq!((results[1].side, results[1].unknown), (None, false));
     assert_eq!(count(&server, "POST", "/heads"), 1);
     assert_eq!(count(&server, "HEAD", "/documents"), 3);
-    assert!(logs
-        .0
-        .lock()
-        .unwrap()
+    let captured = logs.0.lock().unwrap();
+    let warnings: Vec<_> = captured
         .iter()
-        .any(|(level, message)| *level == log::Level::Warn
-            && message.contains("DPE_FORBIDDEN")
-            && message.contains("3 个 URI 中 1 个读被拒")));
+        .filter(|(level, message)| *level == log::Level::Warn && message.contains("批量读被拒"))
+        .collect();
+    assert!(!warnings.is_empty(), "应有批量读被拒的 warn");
+    assert!(warnings.iter().any(|(_, message)| {
+        message.contains("DPE_FORBIDDEN") && message.contains("3 个 URI 中 1 个读被拒")
+    }));
+    assert!(
+        warnings
+            .iter()
+            .all(|(_, message)| !message.contains(PROBLEM_DETAIL_SENTINEL)),
+        "日志不得回显远端 detail 文本"
+    );
     let snapshot = state(&store, &server);
     assert_eq!(
         snapshot.synced.keys().cloned().collect::<Vec<_>>(),

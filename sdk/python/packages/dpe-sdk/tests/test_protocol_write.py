@@ -25,6 +25,7 @@ from dpe_sdk.protocol import (
     Response,
     adrive,
     drive,
+    mark_outcome_not_sent,
     mark_request_not_sent,
     outcome_unknown,
 )
@@ -788,6 +789,14 @@ def test_outcome_unknown_defaults_to_true_without_a_mark() -> None:
     refused = ConnectionError("建连失败")
     mark_request_not_sent(refused)
     assert outcome_unknown(refused) is True
+
+
+def test_mark_outcome_not_sent_sets_the_result_marker() -> None:
+    """写前本地失败用专用助手：同时设底标与结果标记；只有底标时仍按未知（既有边界）。"""
+    marked = ConnectionError("provider down")
+    mark_outcome_not_sent(marked)
+    assert outcome_unknown(marked) is False
+    assert getattr(marked, "dpe_request_not_sent", None) is True
 
 
 def test_commit_marks_determined_when_nothing_was_sent() -> None:

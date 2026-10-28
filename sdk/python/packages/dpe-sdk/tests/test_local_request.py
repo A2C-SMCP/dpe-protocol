@@ -14,7 +14,7 @@ from client_helpers import CountingProvider
 from dpe_sdk import protocol as protocol_module
 from dpe_sdk.errors import ClientError, LocalRequestError
 from dpe_sdk.models import Document
-from dpe_sdk.protocol import BlobSource, Force, ProtocolCore, Session, adrive, drive
+from dpe_sdk.protocol import BlobSource, Force, IfAbsent, ProtocolCore, Session, adrive, drive
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
 from engine_helpers import text_doc
 from protocol_helpers import CAPABILITIES, H1, caps
@@ -103,6 +103,25 @@ class _RotatingProvider:
         if self.calls == 1:
             return "Bearer token"
         return f"Bearer {SECRET}\ndef"
+
+
+class _ProviderFailure(Exception):
+    """provider 自己的失败：不是 SDK 错误，也不得被包装。"""
+
+
+class _FailingProvider:
+    """前 ``fail_after`` 次调用返回合法凭证，之后抛 ``error``。"""
+
+    def __init__(self, error: BaseException, *, fail_after: int = 0) -> None:
+        self.error = error
+        self.fail_after = fail_after
+        self.calls = 0
+
+    def authorization(self) -> str | None:
+        self.calls += 1
+        if self.calls > self.fail_after:
+            raise self.error
+        return "Bearer token"
 
 
 def _assert_error(error: BaseException, *, forbidden: str) -> None:
@@ -350,5 +369,61 @@ async def test_local_failure_after_an_uncertain_attempt_keeps_outcome_unknown() 
         client.close()
     assert protocol_module.outcome_unknown(caught.value) is True
     assert SECRET not in str(caught.value)
+    assert provider.calls == 2
+    assert transport.requests == 1
+
+
+async def test_provider_failure_before_a_write_is_determined_not_sent() -> None:
+    """provider 在发请求前抛错：异常实例与类型原样保留，结果确定未发出。"""
+    error = _ProviderFailure("provider down")
+    provider = _FailingProvider(error)
+    transport = _CountingTransport()
+    client = DpeClient("http://dpe.test/r", credential=provider, transport=transport)
+    core = ProtocolCore(caps(), max_resends=0)
+    document = Document.model_validate(text_doc(["hello"]))
+    try:
+        with pytest.raises(_ProviderFailure) as caught:
+            drive(core.commit("s3://bucket/a.md", document, IfAbsent()), client.send)
+    finally:
+        client.close()
+    assert caught.value is error  # 不包装成 LocalRequestError
+    assert protocol_module.outcome_unknown(caught.value) is False
+    assert provider.calls == 1
+    assert transport.requests == 0
+
+
+async def test_async_provider_failure_before_a_write_is_determined_not_sent() -> None:
+    """异步客户端同口径：provider 抛错原样上报，结果确定未发出。"""
+    error = _ProviderFailure("provider down")
+    provider = _FailingProvider(error)
+    transport = _CountingAsyncTransport()
+    client = AsyncDpeClient("http://dpe.test/r", credential=provider, transport=transport)
+    core = ProtocolCore(caps(), max_resends=0)
+    document = Document.model_validate(text_doc(["hello"]))
+    try:
+        with pytest.raises(_ProviderFailure) as caught:
+            await adrive(core.commit("s3://bucket/a.md", document, IfAbsent()), client.send)
+    finally:
+        await client.aclose()
+    assert caught.value is error
+    assert protocol_module.outcome_unknown(caught.value) is False
+    assert provider.calls == 1
+    assert transport.requests == 0
+
+
+async def test_provider_failure_after_an_uncertain_attempt_keeps_outcome_unknown() -> None:
+    """首次响应丢失、续发时 provider 抛错：整体仍按「可能已生效」，不得降级为确定未发出。"""
+    error = _ProviderFailure("provider down")
+    provider = _FailingProvider(error, fail_after=1)
+    transport = _FirstTimeoutTransport()
+    client = DpeClient("http://dpe.test/r", credential=provider, transport=transport)
+    core = ProtocolCore(caps(), max_resends=1)
+    try:
+        with pytest.raises(_ProviderFailure) as caught:
+            drive(core.delete("s3://bucket/a.md", H1), client.send)
+    finally:
+        client.close()
+    assert caught.value is error
+    assert protocol_module.outcome_unknown(caught.value) is True
     assert provider.calls == 2
     assert transport.requests == 1

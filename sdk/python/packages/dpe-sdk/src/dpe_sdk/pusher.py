@@ -113,7 +113,13 @@ from dpe_sdk.errors import (
     PreconditionFailedError,
 )
 from dpe_sdk.models import Document
-from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent, outcome_unknown
+from dpe_sdk.protocol import (
+    BaseHash,
+    BlobSource,
+    IfAbsent,
+    mark_outcome_not_sent,
+    outcome_unknown,
+)
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
 from dpe_sdk.wire import CommitResult, Delta
 
@@ -711,7 +717,12 @@ class _PusherBase:
         # 先存、存成功才生效（#134）：在副本上合并，save 返回后才替换内存中的意图；save 抛出时
         # 内存保持原样（不按键删除——同一个键上可能原本挂着结果未知的待定意图）
         pending = {**self._intents, **intents}
-        self._save(pending)
+        try:
+            self._save(pending)
+        except Exception as exc:
+            # 写前持久化失败：本批写请求确定未发出（§7.2）；异常实例与类型原样保留
+            mark_outcome_not_sent(exc)
+            raise
         self._intents = pending
 
     def flush(self) -> None:

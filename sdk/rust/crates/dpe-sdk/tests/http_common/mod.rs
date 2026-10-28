@@ -20,6 +20,9 @@ use dpe_sdk::credentials::CredentialProvider;
 use dpe_sdk::wire::Capabilities;
 use serde_json::{json, Value};
 
+/// problem 体的 detail 哨兵：日志/错误消息不得回显远端文本（#145）。
+pub const PROBLEM_DETAIL_SENTINEL: &str = "REMOTE-DETAIL-SENTINEL-145";
+
 /// 计数凭证 provider：记录取用次数，固定返回一个值（`None` 表示不带凭证）。
 #[derive(Default)]
 pub struct CountingProvider {
@@ -134,6 +137,27 @@ impl Reply {
     /// problem 应答（HTTP 绑定 §5）：体 + `DPE-Error-Code` 头。
     pub fn problem(code: &str, status: u16, headers: &[(&str, &str)]) -> Reply {
         let body = json!({"type": "urn:dpe:error:x", "title": "t", "status": status, "code": code});
+        Reply::json_with(
+            status,
+            body,
+            &[&[("DPE-Error-Code", code)][..], headers].concat(),
+        )
+    }
+
+    /// 同 [`Reply::problem`]，但 problem 体的 `detail` 使用给定文本（哨兵用于泄漏检测）。
+    pub fn problem_with_detail(
+        code: &str,
+        status: u16,
+        headers: &[(&str, &str)],
+        detail: &str,
+    ) -> Reply {
+        let body = json!({
+            "type": "urn:dpe:error:x",
+            "title": "t",
+            "status": status,
+            "code": code,
+            "detail": detail
+        });
         Reply::json_with(
             status,
             body,
