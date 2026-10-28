@@ -100,7 +100,7 @@ pusher.delete(&["s3://bucket/b.md".to_owned()], &HashMap::new()).await?;
 ```
 
 - **本地状态只作缓存**：同步状态记录每篇文档最近一次确认的 remote doc_hash，丢失时退化为以即时读到的值作 base，结果仍然正确；
-- **意图日志**：写入前先经 `StateStore::save` 持久化预期的 remote 状态，`save` 返回 `Ok` 之后才发写请求；结果确定即清除，只有结果未知才保留，下一轮按意图对账；
+- **意图日志**：写入前先经 `StateStore::save` 持久化预期的 remote 状态，`save` 返回 `Ok` 之后才发写请求；结果确定即清除，只有结果未知才保留，下一轮按意图对账。`StateStore` 的错误包装为 `ErrorKind::StateStore`，原错误经 `source()` 取回；`outcome_unknown()` 的规则：写前持久化失败为 `false`（写请求确定未发出），收尾保存失败按本批是否发过写请求（`wrote`）取 `true` / `false`，`flush()` 失败恒为 `false`；
 - **绝不自动 force、不在内部重试冲突**：冲突与失败按条目如实回报（含服务端原样的错误码、重读到的 remote 状态、move 的问题侧别），`expected_base` 让上层以重读值重提；
 - 缺省 `MemoryStateStore` 不保证崩溃持久，落盘实现属于运行器的状态目录（connector §4.4）；
 - 任何一次保存失败后，store 都可能与内存不一致（收尾失败时落后、写前失败而落盘实现写完才报错时领先）：继续使用同一个实例直到下一次保存成功，在那之前不要用同一个 store 新建实例（跨实例的保证属于运行器）；
