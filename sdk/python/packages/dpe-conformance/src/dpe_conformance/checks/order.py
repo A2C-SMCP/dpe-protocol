@@ -39,7 +39,10 @@ from dpe_conformance.support import (
     assert_staging_head_error,
     build_document,
     commit,
+    commit_with_session,
+    commit_without_session,
     delete,
+    image_element,
     inside_scoped,
     move,
     negotiate,
@@ -48,7 +51,9 @@ from dpe_conformance.support import (
     payload_limit_within_budget,
     seed,
     session_of,
+    stage_all,
     text_element,
+    unique_blob,
     upload_blob,
 )
 
@@ -679,6 +684,100 @@ def test_precondition_precedes_missing_content(
         json={"document": _document("v2").document},
     )
     assert_problem(response, status=412, code="DPE_PRECONDITION_FAILED")
+
+
+def test_precondition_precedes_missing_blob_without_session(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """core §3.3 第 5 步先于第 6 步：错误 If-Match + 内联页与元素、只缺 blob → 412；
+    以正确的前置条件重提才得到 DPE_MISSING_CONTENT，缺失清单只列 blob（页与元素已内联）。"""
+    uri = conformance_target.uri("order/precondition-vs-missing-blob-inline")
+    version1 = _document("v1")
+    seed(conformance_target, uri, version1, identity=full_identity)
+    _, blob_ref = unique_blob()
+    version2 = build_document([[text_element("v2"), image_element(blob_ref)]])
+    response = commit_without_session(
+        conformance_target,
+        uri,
+        version2,
+        identity=full_identity,
+        pages=version2.pages,
+        objects=version2.objects,
+        if_match=WRONG_HASH,
+    )
+    assert_problem(response, status=412, code="DPE_PRECONDITION_FAILED")
+
+    retried = commit_without_session(
+        conformance_target,
+        uri,
+        version2,
+        identity=full_identity,
+        pages=version2.pages,
+        objects=version2.objects,
+        if_match=version1.doc_hash,
+    )
+    problem = assert_problem(retried, status=400, code="DPE_MISSING_CONTENT")
+    assert problem["missing"] == {
+        "pages": [],
+        "content_hashes": [],
+        "blobs": [blob_ref],
+    }, f"缺失清单应只列 blob：{problem['missing']!r}"
+    assert problem["missing_truncated"] is False
+
+
+def test_precondition_precedes_missing_blob_with_session(
+    conformance_target: Target, full_identity: Identity
+) -> None:
+    """core §3.3 第 5 步先于第 6 步、core §3.4 失败的 commit 不消费会话：暂存会话中只缺
+    blob 时，错误 If-Match 先得 412；正确 If-Match 得 MISSING_CONTENT，补传 blob 后同一会话
+    提交成功。"""
+    uri = conformance_target.uri("order/precondition-vs-missing-blob-session")
+    version1 = _document("v1")
+    seed(conformance_target, uri, version1, identity=full_identity)
+    blob, blob_ref = unique_blob()
+    version2 = build_document([[text_element("v2"), image_element(blob_ref)]])
+    negotiated = negotiate(conformance_target, uri, version2, identity=full_identity)
+    assert negotiated.status_code == 200, f"negotiate 失败：{negotiated.status_code}"
+    session_id, _ = session_of(negotiated)
+    stage_all(conformance_target, session_id, version2, identity=full_identity)
+
+    wrong = commit_with_session(
+        conformance_target,
+        uri,
+        version2,
+        session_id,
+        identity=full_identity,
+        if_match=WRONG_HASH,
+    )
+    assert_problem(wrong, status=412, code="DPE_PRECONDITION_FAILED")
+
+    missing = commit_with_session(
+        conformance_target,
+        uri,
+        version2,
+        session_id,
+        identity=full_identity,
+        if_match=version1.doc_hash,
+    )
+    problem = assert_problem(missing, status=400, code="DPE_MISSING_CONTENT")
+    assert problem["missing"] == {
+        "pages": [],
+        "content_hashes": [],
+        "blobs": [blob_ref],
+    }, f"缺失清单应只列 blob：{problem['missing']!r}"
+    assert problem["missing_truncated"] is False
+
+    uploaded = upload_blob(conformance_target, session_id, blob, identity=full_identity)
+    assert uploaded.status_code in (200, 201), f"blob 上传失败：{uploaded.status_code}"
+    committed = commit_with_session(
+        conformance_target,
+        uri,
+        version2,
+        session_id,
+        identity=full_identity,
+        if_match=version1.doc_hash,
+    )
+    assert_commit_success(committed, status=200, status_text="updated", doc_hash=version2.doc_hash)
 
 
 def test_unchanged_does_not_bypass_inline_validation(

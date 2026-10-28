@@ -111,7 +111,7 @@
   - blob 整体上传的顺序为契约 → 路径引用语法 → sha256 → 会话：伪造会话 + 引用与字节不符 → `DPE_HASH_MISMATCH`。分块 `pages/{非法}` + 伪造会话 → `DPE_VALIDATION`。
 - 第 0 步：超过 `max_payload_bytes` 的请求，无论调用者是否有写授权，都返回 `413`；缺少或声明不受支持的 `DPE-Hash-Contract` 返回 `DPE_CONTRACT_UNSUPPORTED`（第 1 步，先于授权）。
 - 报文校验先于授权（#63）：无写授权的调用者提交不合法的报文（非 I-JSON、信封成员类型错误或未定义、对象违例、force 与条件头并存）时返回对应的校验错误，而不是 `403`；报文合法时一律 `403`，与文档状态无关。move 同理，源与目标两侧授权排在请求信封校验之后。
-- commit 的每个错误码都只出自 core.md §3.3 中唯一的一步：例如同时存在「内联对象字段非法」与「前置条件不满足」时返回 `DPE_VALIDATION`；同时存在「前置条件不满足」与「内容缺失」时返回 `DPE_PRECONDITION_FAILED`。
+- commit 的每个错误码都只出自 core.md §3.3 中唯一的一步：例如同时存在「内联对象字段非法」与「前置条件不满足」时返回 `DPE_VALIDATION`；同时存在「前置条件不满足」与「内容缺失」时返回 `DPE_PRECONDITION_FAILED`。内容缺失可以在任一层（页 / 元素 / blob）；本项新增 blob 层的无会话（内联页与元素）和有会话（暂存上传）两种形态，页层见既有检查，元素层缺失见安全一章。会话变体还覆盖 core.md §3.4：以错误的前置条件提交后，仍能用同一会话以正确的前置条件得到 `DPE_MISSING_CONTENT`，补传后提交成功。
 - 内容未变的 commit 即使带有非法的内联对象也返回 `DPE_VALIDATION`（第 1 步先于第 4 步）；带有合法但多余的内联对象时返回 `unchanged`，且不处理这些对象。
 - commit 的内联对象永远不会得到 `DPE_HASH_MISMATCH`；暂存上传中路径 hash 不符才会。
 

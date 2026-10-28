@@ -272,6 +272,7 @@ __all__ = [
     "expected_delta",
     "expires_at_header",
     "has_dpe_vary",
+    "image_element",
     "inside_scoped",
     "limits_of",
     "list_all",
@@ -286,6 +287,7 @@ __all__ = [
     "skeleton_multiset",
     "stage_all",
     "text_element",
+    "unique_blob",
     "upload_blob",
     "upload_element",
     "upload_offset",
@@ -620,3 +622,17 @@ def list_all(
         if cursor is None:
             return out
     raise AssertionError(f"list 分页未在 {max_pages} 页内结束")
+
+
+# ------------------------------------------------- 元素与 blob 构造（#259 追加；只追加）
+
+
+def image_element(blob_ref: str, **extra: Any) -> dict[str, Any]:
+    """引用一个 blob 的最小 Image 元素对象（可带 metadata 等额外合法字段）。"""
+    return {"category": "Image", "mime_type": "image/png", "blob": blob_ref, **extra}
+
+
+def unique_blob() -> tuple[bytes, str]:
+    """每次唯一的 blob 字节与其引用：断言不受同一持久服务端上其他用例或上一轮遗留的影响。"""
+    blob = f"blob-{uuid.uuid4().hex}".encode()
+    return blob, dpe_hash.blob_ref(blob)
