@@ -36,6 +36,16 @@ SECRET = "remote-secret-value-0123456789"
 PLUGIN_SECRET = "plugin-secret-value-9876543210"
 
 
+#: 两个 SDK 与跑分器共用的请求头值字符集用例表（HTTP 绑定 §6，#207/#253）
+_HEADER_CASES: list[dict[str, Any]] = json.loads(
+    (Path(__file__).resolve().parents[4] / "testdata" / "header_values.json").read_text(
+        encoding="utf-8"
+    )
+)["cases"]
+assert _HEADER_CASES, "header_values.json 的 cases 不得为空"
+INVALID_AUTH = next(case["value"] for case in _HEADER_CASES if case["name"] == "obs-text é")
+
+
 def _text(*texts: str) -> list[dict[str, Any]]:
     return [{"category": "NarrativeText", "text": t} for t in texts]
 
@@ -104,6 +114,7 @@ class Instance:
         # 回环地址不经代理：macOS 上 urllib 会读系统代理设置，参考服务端在本机
         self.environ = {
             "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
             "NO_PROXY": "127.0.0.1,localhost",
             "no_proxy": "127.0.0.1,localhost",
         }
@@ -377,6 +388,49 @@ def test_unauthorized_remote_is_instance_level(tmp_path: Path) -> None:
     # §5.2：remote 拒绝凭证要访问 remote 才能判定，晚于登记，属于已登记实例的实例级失败
     registry = json.loads((tmp_path / "state" / "registry.json").read_text())
     assert "inst" in registry["instances"]
+
+
+def test_invalid_credential_is_request_invalid_and_rerun_succeeds(tmp_path: Path) -> None:
+    """remote 凭证在 SDK 请求构造阶段被拒绝：实例级 request_invalid、退出码 3、remote 收到
+    0 个请求、已登记、不回显；修正凭证后重跑成功（§5.2、§7.1、§7.4、§8.4）。"""
+    _Recording.seen = []
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Recording)
+    port = httpd.server_address[1]
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+    worker.start()
+    url = f"http://127.0.0.1:{port}/r/1"
+    instance = Instance(tmp_path, url, tmp_path / "state")
+    instance.definition["remote"]["credential"] = {"env": "DPE_TEST_AUTH"}
+    instance.environ["DPE_TEST_AUTH"] = INVALID_AUTH
+    try:
+        failed = instance.run({"batches": [[doc_item("a.md", "A")]]})
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    assert failed.code == 3, failed.stderr
+    assert failed.codes() == ["request_invalid"]
+    failure = failed.report["failures"][0]
+    assert (failure["level"], failure["source"], failure["retryable"]) == (
+        "instance",
+        "runner",
+        False,
+    )
+    assert failed.report["plugin"] is None  # 未启动插件
+    assert _Recording.seen == []  # 请求在发出前被本地拒绝
+    assert INVALID_AUTH not in failed.stdout + failed.stderr
+    registry = json.loads((tmp_path / "state" / "registry.json").read_text())
+    assert "inst" in registry["instances"]
+
+    # 修正凭证后重跑：同一 URL、同一端口起参考服务端（首次失败未建立连接，端口可复用）
+    with spawn_server("--prefix", "/r/1", "--port", str(port)) as info:
+        assert info["url"] == url
+        instance.environ["DPE_TEST_AUTH"] = "Bearer valid"
+        ok = instance.run({"batches": [[doc_item("a.md", "A")]]})
+        assert ok.code == 0, ok.stderr
+        assert ok.report["counts"]["created"] == 1
+        with DpeClient(url) as client:
+            assert client.head(P + "a.md") == expected("A")
 
 
 def test_credentials_never_appear_in_output(tmp_path: Path) -> None:

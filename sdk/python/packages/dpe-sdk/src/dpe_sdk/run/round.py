@@ -32,10 +32,10 @@ remote 值作 ``expected_base`` 重提（文档已不存在即 ``if_absent`` 复
 可能残留的 L）；目标已被他人以别的内容建出则不覆盖、不重提，这条 move 计「目标已被占用」；否则
 轮末计失败——目标 document 出现过失败或本轮中止时可重试。
 
-**远端失败分层**（§7.1）：
+**远端 / 本地请求失败分层**（§7.1）：
 - 401 → 实例级 ``remote_unauthorized``；协议或契约不兼容 → 实例级 ``remote_incompatible``；
-- 本地请求构造失败（非法 A-label 主机、非法凭证头值）→ 轮级 ``remote_unavailable``
-  （临时口径，见 dpe-protocol#256：§7.1 闭集暂无专用码；SDK 不重发，每轮只失败一次）；
+- SDK 在请求构造阶段确定拒绝的本地失败（如非法 A-label 主机、请求头值不合 http.md §6）→
+  实例级 ``request_invalid``（§7.4；运行器不在实例级校验中复现该判定）；
 - 响应不是 DPE 报文（无 problem 体也无 ``DPE-Error-Code`` 的非 2xx，含 3xx；或 2xx 报文
   不合规）→ 轮级 ``remote_protocol_error``（只有 5xx 可重试）；
 - 结果未知、可重试 DPE 错误重试耗尽、网络失败 → 轮级 ``remote_unavailable``（本轮作废）；
@@ -88,6 +88,7 @@ from dpe_sdk.errors import (
     ContractUnsupportedError,
     DpeError,
     IncompatibleServerError,
+    LocalRequestError,
     UnexpectedResponseError,
 )
 from dpe_sdk.models import Document
@@ -233,7 +234,8 @@ _REMOTE_ERRORS = (DpeError, ClientError, httpx.HTTPError, OSError)
 
 
 def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
-    """把推送器回报或抛出的远端异常归入 §7.1 的层级（不含条目 URI）。"""
+    """把推送器回报或抛出的远端异常、以及 SDK 的本地请求构造失败归入 §7.1 的层级（不含条目
+    URI）。"""
     if isinstance(exc, RunFailure):
         return exc  # 状态目录失败（state_unavailable）等已归类的失败
     if not isinstance(exc, _REMOTE_ERRORS):
@@ -241,9 +243,17 @@ def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
     if isinstance(exc, IncompatibleServerError | ContractUnsupportedError):
         # remote 不支持运行器可用的协议或 hash 契约：不改动实例就无法恢复（§7.1 实例级）
         return InstanceFailure("remote_incompatible", f"remote 不兼容：{exc}", source="remote")
-    # LocalRequestError（非法 A-label 主机、非法凭证头值）暂按 §7.1 的 remote_unavailable 归类：
-    # 闭集里没有专用码，规范先行不挪用 remote_incompatible 的语义；SDK 已不重发，每轮只失败一次。
-    # 临时口径见 dpe-protocol#256（新增实例级 remote_request_invalid，0.6）。
+    if isinstance(exc, LocalRequestError):
+        # 判定锚定在异常类型，不看「确定未发出」标记：该标记还被 provider 异常、意图持久化
+        # 失败、_save_after(wrote=False)、建连失败共用，按标记判定会把暂时性失败误报为不可
+        # 重试（#256）。结果是否未知只由推送器决定意图是否保留，本分支忽略 unknown。
+        # LocalRequestError 保留给 SDK 的请求构造失败；provider 自己抛出的异常应使用自己的
+        # 类型，不应复用本类型。
+        return InstanceFailure(
+            "request_invalid",
+            "remote 请求在本地构造阶段被拒绝，确定未发出",
+            source="runner",
+        )
     if isinstance(exc, UnexpectedResponseError):
         if exc.status == 401:
             return InstanceFailure(
@@ -267,9 +277,10 @@ def _classify_remote(exc: BaseException, *, unknown: bool) -> RunFailure:
 
 
 async def negotiate_capabilities(client: AsyncDpeClient) -> None:
-    """取得 remote 能力（§7.1）：401 / 不兼容为实例级；响应不是 DPE 报文为轮级
-    ``remote_protocol_error``；网络失败与可重试错误耗尽为轮级可重试；其余确定错误（如凭证缺权限
-    得 403）与任何条目无关，归轮级、code 原样、不可重试。"""
+    """取得 remote 能力（§7.1）：401 / 不兼容为实例级；SDK 的本地请求构造失败
+    （``LocalRequestError``）为实例级 ``request_invalid``；响应不是 DPE 报文为轮级
+    ``remote_protocol_error``；网络失败与可重试错误耗尽为轮级可重试；其余 remote 返回的确定
+    错误（如凭证缺权限得 403）与任何条目无关，归轮级、code 原样、不可重试。"""
     try:
         await client.core()
     except Exception as exc:
