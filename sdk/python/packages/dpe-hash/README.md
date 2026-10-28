@@ -46,6 +46,10 @@ assert d == object_hash({"file_type": "md", "title": "报告", "pages": [p]}, "d
 | `validate_file_type(value)` / `is_valid_file_type(value)` | file_type 的语法校验（core.md §2.5，开放取值）：前者不合语法抛 `FileTypeInvalidError`（`DPE_VALIDATION`），后者只返回布尔值 |
 | `nesting_depth(value, child_field=None)` | JSON 值的嵌套深度（core.md §2.8 第 0 步，全协议唯一定义）；清单与实例定义等载体同样用它 |
 
+## 单页 hash（Rust 独有）
+
+Rust `dpe-hash` 有公开的 `page_hashes(&page, contract)`，接受一个展开页（页字段 + 内联 `elements`）并一次返回 `PageHashes { page_hash, elements }`；Python 没有对应公开入口：单页请对每个元素调用 `content_hash`，再把结果交给 `page_hash`，整篇用 `document_hashes`。这是公开面差异，不影响 hash 值；两边由同一套一致性向量保证一致。
+
 逐层入口的参数是 TypedDict，便于在编译期发现字段拼错；从线上反序列化、未加类型的 JSON（`Any`）可以直接传入，已标注为 `dict[str, Any]` 的数据请用 `object_hash`（接受 `Mapping[str, Any]`），或先 `cast`。
 
 所有入口都对封闭 schema 做完整校验：嵌套深度超过 `MAX_NESTING_DEPTH`（core §2.8 第 0 步）、未定义字段、不合语法的 file_type、不在 category 封闭枚举的值、超过 2^53−1 的整数、NaN 等一律拒绝。file_type 是开放取值（core §2.5）：语法合法的取值即使不在推荐表内也照常接受。
