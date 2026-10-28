@@ -76,6 +76,7 @@ from dpe_sdk.protocol import (
     drive,
     error_from_response,
     fetch_capabilities,
+    mark_outcome_not_sent,
     mark_request_not_sent,
 )
 from dpe_sdk.remote_url import check_remote_url
@@ -230,7 +231,13 @@ class _ClientBase:
         if gzipped:
             headers["Content-Encoding"] = "gzip"
         if self._credential is not None:
-            value = self._credential.authorization()
+            try:
+                value = self._credential.authorization()
+            except Exception as exc:
+                # provider 自己的失败发生在请求发出之前：确定未发出；异常实例与类型原样保留，
+                # 不包装成 LocalRequestError（#256 会把可能暂时性的失败误判为不可重试）
+                mark_outcome_not_sent(exc)
+                raise
             if value is not None:
                 headers[_AUTHORIZATION] = value
         return self._checked_headers(headers)

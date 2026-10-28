@@ -113,7 +113,13 @@ from dpe_sdk.errors import (
     PreconditionFailedError,
 )
 from dpe_sdk.models import Document
-from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent, outcome_unknown
+from dpe_sdk.protocol import (
+    BaseHash,
+    BlobSource,
+    IfAbsent,
+    mark_outcome_not_sent,
+    outcome_unknown,
+)
 from dpe_sdk.transport import AsyncDpeClient, DpeClient
 from dpe_sdk.wire import CommitResult, Delta
 
@@ -711,16 +717,21 @@ class _PusherBase:
         # 先存、存成功才生效（#134）：在副本上合并，save 返回后才替换内存中的意图；save 抛出时
         # 内存保持原样（不按键删除——同一个键上可能原本挂着结果未知的待定意图）
         pending = {**self._intents, **intents}
-        self._save(pending)
+        try:
+            self._save(pending)
+        except Exception as exc:
+            # 写前持久化失败：本批写请求确定未发出（§7.2）；异常实例与类型原样保留
+            mark_outcome_not_sent(exc)
+            raise
         self._intents = pending
 
     def flush(self) -> None:
         """把内存中的同步状态与意图整批写入 ``StateStore``（store 的异常原样抛出）。
 
         某次 ``save`` 失败后 store 可能与内存不一致；调用方（如运行器）用同一实例调用它补存，
-        成功后两者重新一致。
+        成功后两者重新一致。flush 不发写请求，失败时结果确定未生效。
         """
-        self._save()
+        self._save_after(wrote=False)
 
     def _save(self, intents: Mapping[str, str | None] | None = None) -> None:
         """整批保存同步状态与意图；``intents`` 缺省为内存中的意图（快照只在这里构造）。"""
@@ -731,6 +742,16 @@ class _PusherBase:
                 intents=dict(self._intents if intents is None else intents),
             ),
         )
+
+    def _save_after(self, wrote: bool) -> None:
+        """收尾保存：失败时整批报错；``wrote`` 为真（本批发过写请求）时结果未知，否则确定未
+        发出。store 的异常实例与类型原样保留。"""
+        try:
+            self._save()
+        except Exception as exc:
+            if not wrote:
+                mark_outcome_not_sent(exc)
+            raise
 
     def _move_intents(self, plans: Sequence[_Plan]) -> dict[str, str | None]:
         """move 写前的一批意图：两侧一起记（``from → 不存在``、``to → base``）。"""
@@ -1008,14 +1029,16 @@ class StatefulPusher(_PusherBase):
         }
         kept = [index for index in range(len(entries)) if index not in failures]
         results: list[PushResult] = []
+        wrote = False
         if kept:
             plans = self._plan_commit(
                 [entries[i] for i in kept], [heads[i] for i in kept], expected, contract
             )
+            wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
             outcomes = self._run_all(plans, partial(self._commit_one, blobs=blobs))
             results = self._finish_commit(plans, outcomes)
-        self._save()
+        self._save_after(wrote)
         return _merge(len(entries), failures, results)
 
     def delete(
@@ -1042,14 +1065,16 @@ class StatefulPusher(_PusherBase):
         }
         kept = [index for index in range(len(normalized)) if index not in failures]
         results: list[PushResult] = []
+        wrote = False
         if kept:
             plans = self._plan_delete(
                 [normalized[i] for i in kept], [heads[i] for i in kept], expected, contract
             )
+            wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: None for plan in plans if plan.action == "write"})
             outcomes = self._run_all(plans, self._delete_one)
             results = self._finish_delete(plans, outcomes)
-        self._save()
+        self._save_after(wrote)
         return _merge(len(normalized), failures, results)
 
     def move(
@@ -1086,6 +1111,7 @@ class StatefulPusher(_PusherBase):
         }
         kept = [index for index in range(count) if index not in failures]
         results: list[PushResult] = []
+        wrote = False
         if kept:
             plans = self._plan_move(
                 [pairs[i] for i in kept],
@@ -1094,10 +1120,11 @@ class StatefulPusher(_PusherBase):
                 expected,
                 contract,
             )
+            wrote = any(plan.action == "write" for plan in plans)
             self._persist(self._move_intents(plans))
             outcomes = self._run_all(plans, self._move_one)
             results = self._finish_move(plans, outcomes)
-        self._save()
+        self._save_after(wrote)
         return _merge(count, failures, results)
 
     def _read(self, uris: list[str]) -> tuple[list[str | None], dict[int, Exception]]:
@@ -1246,14 +1273,16 @@ class AsyncStatefulPusher(_PusherBase):
         }
         kept = [index for index in range(len(entries)) if index not in failures]
         results: list[PushResult] = []
+        wrote = False
         if kept:
             plans = self._plan_commit(
                 [entries[i] for i in kept], [heads[i] for i in kept], expected, contract
             )
+            wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: plan.new_hash for plan in plans if plan.action == "write"})
             outcomes = await self._run_all(plans, partial(self._commit_one, blobs=blobs))
             results = self._finish_commit(plans, outcomes)
-        self._save()
+        self._save_after(wrote)
         return _merge(len(entries), failures, results)
 
     async def delete(
@@ -1274,14 +1303,16 @@ class AsyncStatefulPusher(_PusherBase):
         }
         kept = [index for index in range(len(normalized)) if index not in failures]
         results: list[PushResult] = []
+        wrote = False
         if kept:
             plans = self._plan_delete(
                 [normalized[i] for i in kept], [heads[i] for i in kept], expected, contract
             )
+            wrote = any(plan.action == "write" for plan in plans)
             self._persist({plan.uri: None for plan in plans if plan.action == "write"})
             outcomes = await self._run_all(plans, self._delete_one)
             results = self._finish_delete(plans, outcomes)
-        self._save()
+        self._save_after(wrote)
         return _merge(len(normalized), failures, results)
 
     async def move(
@@ -1305,6 +1336,7 @@ class AsyncStatefulPusher(_PusherBase):
         }
         kept = [index for index in range(count) if index not in failures]
         results: list[PushResult] = []
+        wrote = False
         if kept:
             plans = self._plan_move(
                 [pairs[i] for i in kept],
@@ -1313,10 +1345,11 @@ class AsyncStatefulPusher(_PusherBase):
                 expected,
                 contract,
             )
+            wrote = any(plan.action == "write" for plan in plans)
             self._persist(self._move_intents(plans))
             outcomes = await self._run_all(plans, self._move_one)
             results = self._finish_move(plans, outcomes)
-        self._save()
+        self._save_after(wrote)
         return _merge(count, failures, results)
 
     async def _read(self, uris: list[str]) -> tuple[list[str | None], dict[int, Exception]]:

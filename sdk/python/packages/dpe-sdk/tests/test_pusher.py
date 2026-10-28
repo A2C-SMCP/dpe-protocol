@@ -36,7 +36,7 @@ from dpe_sdk.errors import (
     UnexpectedResponseError,
 )
 from dpe_sdk.models import Document
-from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent
+from dpe_sdk.protocol import BaseHash, BlobSource, IfAbsent, outcome_unknown
 from dpe_sdk.pusher import (
     AsyncStatefulPusher,
     MemoryStateStore,
@@ -1637,15 +1637,16 @@ async def test_sync_and_async_agree_against_the_same_server() -> None:
 
 
 class _FailingStore(MemoryStateStore):
-    """``failing`` 为真时 ``save`` 抛 ``OSError``（模拟落盘失败），不改动已存内容。"""
+    """``failing`` 为真时 ``save`` 抛预建的 ``OSError``（模拟落盘失败），不改动已存内容。"""
 
     def __init__(self) -> None:
         super().__init__()
         self.failing = False
+        self.error = OSError("模拟的状态落盘失败")
 
     def save(self, remote: str, snapshot: StateSnapshot) -> None:
         if self.failing:
-            raise OSError("模拟的状态落盘失败")
+            raise self.error
         super().save(remote, snapshot)
 
 
@@ -1657,8 +1658,10 @@ async def _save_failure_keeps_reconcile_drops_new_intents(
     在下次保存时落盘。"""
     uri, other = f"{base}/a.md", f"{base}/b.md"
     store.failing = True
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as excinfo:
         await driver.push({uri: _doc("v3")})
+    assert outcome_unknown(excinfo.value) is False  # 写前持久化失败：确定未发出
+    assert excinfo.value is store.error  # 原异常实例不变
     assert await foreign.head(uri) == _doc("v2").doc_hash()  # 未发写
 
     store.failing = False
@@ -1679,8 +1682,10 @@ async def _save_failure_does_not_mask_foreign_same_value_write(
     uri = f"{base}/repro.md"
     assert [r.status for r in await driver.push({uri: _doc("v1")})] == ["created"]
     store.failing = True
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as excinfo:
         await driver.push({uri: _doc("v2")})
+    assert outcome_unknown(excinfo.value) is False  # 写前持久化失败：确定未发出
+    assert excinfo.value is store.error  # 原异常实例不变
     store.failing = False
     await foreign.commit(uri, _doc("v2"), BaseHash(_doc("v1").doc_hash()))
 
@@ -1699,8 +1704,10 @@ async def _save_failure_keeps_both_move_sides_out_of_memory(
     source, target = f"{base}/from.md", f"{base}/to.md"
     assert [r.status for r in await driver.push({source: _doc("m")})] == ["created"]
     store.failing = True
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as excinfo:
         await driver.move([(source, target)])
+    assert outcome_unknown(excinfo.value) is False  # 写前持久化失败：确定未发出
+    assert excinfo.value is store.error  # 原异常实例不变
     assert await foreign.head(source) == _doc("m").doc_hash()  # 未发写
     assert await foreign.head(target) is None
 
@@ -1751,6 +1758,65 @@ async def test_intent_save_failure_does_not_leak_into_memory(mode: str, scenario
                 await _save_failure_keeps_both_move_sides_out_of_memory(
                     driver, store, foreign, url, base
                 )
+
+
+class _FinalSaveFailureStore(MemoryStateStore):
+    """第 ``fail_on`` 次 ``save`` 抛预建 ``OSError``；``seed`` 准备同步状态时不计数。"""
+
+    def __init__(self, fail_on: int) -> None:
+        super().__init__()
+        self.fail_on = fail_on
+        self.saves = 0
+        self.error = OSError("模拟的收尾落盘失败")
+
+    def seed(self, remote: str, snapshot: StateSnapshot) -> None:
+        MemoryStateStore.save(self, remote, snapshot)
+
+    def save(self, remote: str, snapshot: StateSnapshot) -> None:
+        self.saves += 1
+        if self.saves == self.fail_on:
+            raise self.error
+        super().save(remote, snapshot)
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize(
+    ("scenario", "fail_on", "expected_unknown"),
+    [("unchanged", 1, False), ("write", 2, True)],
+)
+async def test_final_save_failure_uses_the_batch_write_state(
+    mode: str, scenario: str, fail_on: int, expected_unknown: bool
+) -> None:
+    """收尾 save 失败：本批发过写请求 → 结果未知；全 unchanged（未发写）→ 确定未生效。"""
+    uri = f"dpe://final-save/{mode}/{scenario}"
+    with spawn_server("--prefix", "/r/1") as info:
+        url = info["url"]
+        store = _FinalSaveFailureStore(fail_on)
+        if scenario == "unchanged":
+            async with AsyncDpeClient(url) as foreign:
+                await foreign.commit(uri, _doc("v1"), IfAbsent())
+            store.seed(url, StateSnapshot(synced={uri: _doc("v1").doc_hash()}))
+        if mode == "sync":
+            with DpeClient(url) as client, pytest.raises(OSError) as excinfo:
+                StatefulPusher(client, state=store).push({uri: _doc("v1")})
+        else:
+            async with AsyncDpeClient(url) as async_client:
+                with pytest.raises(OSError) as excinfo:
+                    await AsyncStatefulPusher(async_client, state=store).push({uri: _doc("v1")})
+    assert excinfo.value is store.error  # 原异常实例不变
+    assert outcome_unknown(excinfo.value) is expected_unknown
+    assert store.saves == fail_on  # 失败发生在预期的第几次保存
+
+
+def test_flush_failure_is_determined_not_sent() -> None:
+    """flush 不发写请求：落盘失败时结果确定未生效，原异常实例不变。"""
+    store = _FinalSaveFailureStore(1)
+    with spawn_server() as info, DpeClient(info["url"]) as client:
+        pusher = StatefulPusher(client, state=store)
+        with pytest.raises(OSError) as excinfo:
+            pusher.flush()
+    assert excinfo.value is store.error
+    assert outcome_unknown(excinfo.value) is False
 
 
 # ------------------------------------------------------------ 写后冲突重读即已达成（#140）

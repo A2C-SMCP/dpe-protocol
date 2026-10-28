@@ -134,6 +134,7 @@ __all__ = [
     "drive",
     "error_from_response",
     "fetch_capabilities",
+    "mark_outcome_not_sent",
     "mark_request_not_sent",
     "outcome_unknown",
     "retry_after_seconds",
@@ -459,6 +460,22 @@ def mark_request_not_sent(exc: BaseException) -> None:
         setattr(exc, _REQUEST_NOT_SENT, True)
 
 
+def mark_outcome_not_sent(exc: BaseException) -> None:
+    """给「请求确定未发出」的本地失败同时打底标与写操作结果标记（False）。
+
+    与 :func:`mark_request_not_sent` 的分界：后者只给传输层异常打底标，结果标记由核心在写操作
+    异常逃出时按累计状态写入（先前有不确定尝试则仍为 True）；本函数用于写操作核心之外的本地
+    失败——意图持久化，以及传输层在请求发出前遇到的凭证 provider 失败——直接写结果标记。
+    异常类型与实例不变；若异常随后经过核心，核心仍用累计 tracker 覆写。
+
+    ``LocalRequestError`` 在构造时设置同一结果标记（见 ``errors``），核心对它有逐处特判；
+    本函数给不带该类型的本地失败提供同样的标记集。
+    """
+    mark_request_not_sent(exc)
+    with contextlib.suppress(AttributeError, TypeError):
+        setattr(exc, OUTCOME_UNKNOWN_ATTR, False)
+
+
 def _attempt_not_sent(exc: BaseException) -> bool:
     """只读这一处：该次尝试是否确定未发出（带 ``mark_request_not_sent`` 的底标）。"""
     return getattr(exc, _REQUEST_NOT_SENT, False) is True
@@ -482,8 +499,12 @@ def outcome_unknown(exc: BaseException) -> bool:
       全部通过、传输层标明「确定未发出」；其余一切结局（无底标的传输异常、任何无码响应含
       校验失败的 2xx 与未化解的裸 412、无码 4xx/5xx）都是「可能已生效」。negotiate / upload /
       head 阶段的失败不参与（当时 commit 尚未发出，整体按「确定未生效」打标）；
-    - **无标记时一律返回 True**（保守：可能已生效）——不是从核心写路径抛出的异常、或标记因故
-      没写上时，调用方（如 ``dpe_sdk.pusher`` 的待定意图）都应按「结果未知」处理。
+    - **写前本地失败也参与**：意图持久化失败、凭证 provider 在请求发出前抛错时，异常由
+      ``mark_outcome_not_sent`` 直接打「确定未生效」标记（不要求经过核心写路径）；若随后经过
+      核心，核心仍用累计状态覆写；
+    - **无标记时一律返回 True**（保守：可能已生效）——既不是核心写操作、也没有写前本地失败
+      标记的异常，或标记因故没写上时，调用方（如 ``dpe_sdk.pusher`` 的待定意图）都应按
+      「结果未知」处理。
     """
     return getattr(exc, OUTCOME_UNKNOWN_ATTR, None) is not False
 
