@@ -7,8 +7,8 @@
 //! `dpe_sdk.transport` 行为对等。
 //!
 //! **传输层可以自行重发的情形只有三类**（其余失败原样抛出，交核心按 core §5.2 处理）。本地
-//! 构造失败（非法 URL 主机、请求头字段值含 CTL）不在其列：`send` 在发出前用
-//! [`local_request_error`] 标记返回，驱动层据此直接终止、不重发（#207）：
+//! 构造失败（非法 URL 主机、请求头字段值不符合 HTTP 绑定 §6）不在其列：`send` 在发出前用
+//! [`local_request_error`] 标记返回，驱动层据此直接终止、不重发（#207、#253）：
 //!
 //! 1. [`retry_safe`](Request::retry_safe) 为真的请求（只读操作与断点查询）遇网络失败——
 //!    超时、连接中断、响应丢失等；重发安全由该字段决定，**不按 HTTP 方法推断**（`batch_head`
@@ -286,7 +286,7 @@ impl DpeClient {
 
     /// 发送一个请求，返回响应；自行重发的规则与「确定未发出」标记见模块说明。
     ///
-    /// 本地构造失败（非法 URL 主机、请求头字段值含 CTL）返回 [`LocalRequestError`] 标记（#207）；
+    /// 本地构造失败（非法 URL 主机、请求头字段值不符合 HTTP 绑定 §6）返回 [`LocalRequestError`] 标记（#207、#253）；
     /// 驱动层据此以 [`crate::ErrorKind::LocalRequest`] 终止操作、不重发。
     ///
     /// 其余失败（网络失败的异常、以及交给核心的 4xx / 5xx 响应）原样抛出或原样返回——异常
@@ -539,7 +539,7 @@ impl DpeClient {
         let mut headers = HeaderMap::new();
         for (name, value) in request.headers.iter() {
             let name = HeaderName::from_bytes(name.as_bytes()).map_err(local_request_error)?;
-            let value = HeaderValue::from_str(value).map_err(local_request_error)?;
+            let value = Self::header_value(value)?;
             headers.insert(name, value);
         }
         if gzipped {
@@ -550,11 +550,36 @@ impl DpeClient {
         }
         if let Some(provider) = &self.credential {
             if let Some(value) = provider.authorization() {
-                let value = HeaderValue::from_str(&value).map_err(local_request_error)?;
+                let value = Self::header_value(&value)?;
                 headers.insert(reqwest::header::AUTHORIZATION, value);
             }
         }
         Ok(headers)
+    }
+
+    /// 请求头字段值字符集（HTTP 绑定 §6，#207/#253）：空值合法；否则首尾 VCHAR、中间
+    /// VCHAR / SP / HTAB（不允许 obs-text 与 CTL）。规则与 Python SDK、跑分器共用
+    /// `sdk/testdata/header_values.json`，三边各持一份实现（跑分器不依赖 dpe-sdk）。
+    fn field_value_is_valid(value: &str) -> bool {
+        if value.is_empty() {
+            return true;
+        }
+        let bytes = value.as_bytes();
+        let allowed = |byte: u8| byte.is_ascii_graphic() || byte == b' ' || byte == b'\t';
+        bytes.iter().all(|byte| allowed(*byte))
+            && bytes[0].is_ascii_graphic()
+            && bytes[bytes.len() - 1].is_ascii_graphic()
+    }
+
+    /// 按 HTTP 绑定 §6 判定后构造头值；非法时以固定消息标「确定未发出」。
+    fn header_value(value: &str) -> Result<HeaderValue, TransportError> {
+        if !Self::field_value_is_valid(value) {
+            return Err(local_request_error(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "请求头字段值不符合 HTTP 绑定 §6",
+            )));
+        }
+        HeaderValue::from_str(value).map_err(local_request_error)
     }
 
     /// 一轮发送：发请求、读完响应体（响应体的读失败同样是发送失败，走同一套分类）。

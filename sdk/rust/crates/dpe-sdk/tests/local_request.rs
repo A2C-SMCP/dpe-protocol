@@ -8,6 +8,7 @@
 mod http_common;
 
 use std::error::Error as _;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -156,6 +157,59 @@ async fn invalid_credential_header_value_is_not_resent_for_writes() {
         assert_local_request(&error, "abc");
         assert_eq!(provider.calls(), 1, "{value:?}：确定未发出，不得重发");
         assert_eq!(server.count(), 0, "{value:?}：不应发出任何请求");
+    }
+}
+
+fn header_value_cases() -> Vec<(String, String, bool)> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/header_values.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("读取 {} 失败：{error}", path.display()));
+    let value: serde_json::Value = serde_json::from_str(&text).expect("header_values.json 合法");
+    let cases: Vec<(String, String, bool)> = value["cases"]
+        .as_array()
+        .expect("cases 数组")
+        .iter()
+        .map(|case| {
+            (
+                case["name"].as_str().expect("name").to_owned(),
+                case["value"].as_str().expect("value").to_owned(),
+                case["valid"].as_bool().expect("valid"),
+            )
+        })
+        .collect();
+    assert!(!cases.is_empty(), "header_values.json 的 cases 不得为空");
+    cases
+}
+
+#[tokio::test]
+async fn header_value_charset_matches_the_shared_table() {
+    // 两个 SDK 与跑分器共用同一张表（HTTP 绑定 §6，#207/#253）。
+    for (name, value, valid) in header_value_cases() {
+        let server = MockServer::start(vec![capabilities_reply(&[])]);
+        let provider = Arc::new(CountingProvider::new(value.clone()));
+        let client = client(server.remote(), &provider);
+        if valid {
+            let capabilities = client.capabilities().await.expect("合法头值应发出请求");
+            assert_eq!(capabilities.protocol, "dpe/1", "{name}");
+            assert_eq!(server.count(), 1, "{name}");
+            assert_eq!(
+                server.requests()[0].header("authorization"),
+                Some(value.as_str()),
+                "{name}"
+            );
+        } else {
+            let error = client
+                .capabilities()
+                .await
+                .expect_err("非法头值必须在发出前失败");
+            assert_eq!(error.kind(), ErrorKind::LocalRequest, "{name}");
+            assert!(!error.outcome_unknown(), "{name}");
+            assert!(!error.is_retryable(), "{name}");
+            assert_eq!(error.to_string(), "本地请求构造失败，请求未发出", "{name}");
+            assert!(error.source().is_some(), "{name}");
+            assert_eq!(server.count(), 0, "{name}");
+        }
+        assert_eq!(provider.calls(), 1, "{name}");
     }
 }
 

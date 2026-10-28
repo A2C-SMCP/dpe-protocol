@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from dpe_conformance.config import (
     DEFAULT_URI_PREFIX,
     ConfigError,
     ConformanceConfig,
+    _valid_authorization,
     find_config,
     load_config,
 )
@@ -28,10 +31,54 @@ http = "http://127.0.0.1:1/__hooks__/self-write"
 """
 
 
+#: 两个 SDK 与跑分器共用的请求头值字符集用例表（HTTP 绑定 §6，#207/#253）
+_HEADER_CASES: list[dict[str, Any]] = json.loads(
+    (Path(__file__).resolve().parents[4] / "testdata" / "header_values.json").read_text(
+        encoding="utf-8"
+    )
+)["cases"]
+assert _HEADER_CASES, "header_values.json 的 cases 不得为空"
+
+
 def _load(tmp_path: Path, text: str) -> ConformanceConfig:
     path = tmp_path / "dpe-conformance.toml"
     path.write_text(text, encoding="utf-8")
     return load_config(path)
+
+
+@pytest.mark.parametrize("case", _HEADER_CASES, ids=[case["name"] for case in _HEADER_CASES])
+def test_authorization_charset_matches_the_shared_table(case: dict[str, Any]) -> None:
+    assert _valid_authorization(case["value"]) is case["valid"]
+
+
+@pytest.mark.parametrize("value", ["Bearer token", ""])
+def test_identity_authorization_accepts_valid_values(tmp_path: Path, value: str) -> None:
+    config = _load(
+        tmp_path,
+        f"schema = 1\n[identities.full]\nauthorization = {json.dumps(value)}\n",
+    )
+    assert config.identities["full"].authorization == value
+
+
+@pytest.mark.parametrize("value", [" Bearer", "Bearer ", "Bearer\t", "Bearer é"])
+def test_identity_authorization_rejects_invalid_values_without_echo(
+    tmp_path: Path, value: str
+) -> None:
+    with pytest.raises(ConfigError) as caught:
+        _load(
+            tmp_path,
+            f"schema = 1\n[identities.full]\nauthorization = {json.dumps(value)}\n",
+        )
+    assert value not in str(caught.value)
+
+
+def test_identity_env_authorization_rejects_invalid_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_CONF_BAD_AUTH", "Bearer é")
+    with pytest.raises(ConfigError) as caught:
+        _load(tmp_path, 'schema = 1\n[identities.full]\nenv = "TEST_CONF_BAD_AUTH"\n')
+    assert "Bearer é" not in str(caught.value)
 
 
 def test_full_config(tmp_path: Path) -> None:

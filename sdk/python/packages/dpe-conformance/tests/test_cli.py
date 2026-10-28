@@ -210,6 +210,17 @@ def test_config_auto_discovery_in_cwd(tmp_path: Path) -> None:
     assert (totals["executed"], totals["skipped"]) == (224, 58)
 
 
+def test_invalid_authorization_config_exits_2_without_echo(tmp_path: Path) -> None:
+    """配置里的 authorization 不合 HTTP 绑定 §6：开跑前退出码 2，报错不回显值。"""
+    (tmp_path / "dpe-conformance.toml").write_text(
+        'schema = 1\n[identities.full]\nauthorization = "Bearer \\u00e9"\n',
+        encoding="utf-8",
+    )
+    completed = run_cli("http://127.0.0.1:1/r", cwd=tmp_path)
+    assert completed.returncode == 2
+    assert "Bearer é" not in completed.stderr + completed.stdout
+
+
 def test_budget_skips_are_counted(tmp_path: Path) -> None:
     """默认限额（大页对象 ⇒ 元素数超预算）下：large 章 13 执行、预算 skip 1——合规的大规模
     服务端只 skip 不判红，且 skip 计入计数。"""
