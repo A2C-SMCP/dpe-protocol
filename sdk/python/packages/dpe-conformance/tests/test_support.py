@@ -12,6 +12,7 @@ import httpx
 import pytest
 from dpe_conformance.checks import http_binding as http_binding_checks
 from dpe_conformance.checks import large as large_checks
+from dpe_conformance.checks import order as order_checks
 from dpe_conformance.checks import read as read_checks
 from dpe_conformance.config import Identity
 from dpe_conformance.plugin import Target
@@ -353,3 +354,56 @@ def test_stub_reference_document_untruncated_mismatch_fails() -> None:
     """未截断却少列一页 → 判失败（真实协议违例）。"""
     with pytest.raises(AssertionError):
         _run_reference_document_check(_StubReferenceDocument(4096, truncated=False, drop=True))
+
+
+# ------------------------------- 求值顺序：先判 blob 的服务端（#259 追加单元）
+
+
+class _StubBlobFirstTarget:
+    """最小桩 Target：模拟「先判 blob、后判前置条件」的服务端。
+
+    seed 的 commit（``If-None-Match: *``）返回 201；任何带 ``If-Match`` 的 commit 直接返回
+    ``DPE_MISSING_CONTENT``（400），使求值顺序检查的 412 断言判红。negotiate 与暂存上传按
+    正常成功路径应答，保证检查能走到 commit。
+    """
+
+    def uri(self, path: str) -> str:
+        return "dpe://conformance/stub/" + path.lstrip("/")
+
+    def send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        request = httpx.Request(method, f"http://dpe.test/{path}")
+        if method == "POST" and path == "negotiate":
+            return httpx.Response(
+                200,
+                json={
+                    "staging_session": {
+                        "id": "st-session",
+                        "expires_at": "2026-10-28T00:00:00Z",
+                    }
+                },
+                request=request,
+            )
+        if method == "PUT" and path.startswith("staging/"):
+            return httpx.Response(201, json={}, request=request)
+        if method == "PUT" and path == "documents":
+            headers = kwargs.get("headers") or {}
+            if "If-Match" in headers:
+                return _problem_response(400, "DPE_MISSING_CONTENT")
+            return httpx.Response(201, json={}, request=request)
+        raise AssertionError(f"桩未覆盖：{method} {path}")
+
+
+def test_stub_blob_first_without_session_fails() -> None:
+    """无会话变体：先判 blob 的服务端在错误 If-Match 上返回 MISSING_CONTENT → 检查判红。"""
+    with pytest.raises(AssertionError, match=r"预期 412，实际 400"):
+        order_checks.test_precondition_precedes_missing_blob_without_session(
+            cast(Target, _StubBlobFirstTarget()), _stub_identity()
+        )
+
+
+def test_stub_blob_first_with_session_fails() -> None:
+    """会话变体：先判 blob 的服务端在错误 If-Match 上返回 MISSING_CONTENT → 检查判红。"""
+    with pytest.raises(AssertionError, match=r"预期 412，实际 400"):
+        order_checks.test_precondition_precedes_missing_blob_with_session(
+            cast(Target, _StubBlobFirstTarget()), _stub_identity()
+        )

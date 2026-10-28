@@ -41,6 +41,7 @@ from dpe_conformance.support import (
     commit_without_session,
     delete,
     expected_delta,
+    image_element,
     inside_scoped,
     move,
     negotiate,
@@ -49,15 +50,12 @@ from dpe_conformance.support import (
     session_of,
     stage_all,
     text_element,
+    unique_blob,
     upload_blob,
     upload_element,
     upload_offset,
     upload_page,
 )
-
-
-def _image(blob_ref: str, **extra: Any) -> dict[str, Any]:
-    return {"category": "Image", "mime_type": "image/png", "blob": blob_ref, **extra}
 
 
 def _content_hash(element: Mapping[str, Any]) -> str:
@@ -76,16 +74,10 @@ class _Shared:
     image_hash: str
 
 
-def _unique_blob() -> tuple[bytes, str]:
-    """每次唯一的 blob 字节与其引用：断言不受其他用例留下的对象影响。"""
-    blob = f"blob-{uuid.uuid4().hex}".encode()
-    return blob, dpe_hash.blob_ref(blob)
-
-
 def _shared_content() -> _Shared:
-    blob, blob_ref = _unique_blob()
+    blob, blob_ref = unique_blob()
     text = text_element(f"secret-{uuid.uuid4().hex}")
-    image = _image(blob_ref)
+    image = image_element(blob_ref)
     return _Shared(
         document=build_document([[text, image]]),
         blob=blob,
@@ -353,12 +345,12 @@ def test_objects_held_by_current_state_are_not_missing(
     页内复用当前状态已有的元素 I，并新增引用同一 blob 的元素 I2：页上传响应只列 I2（元素层），
     I2 上传响应的 ``missing_blobs`` 为空（blob 层），无需重传字节。页层下界见 large 章。"""
     uri = conformance_target.uri(f"security/lower-bound/{uuid.uuid4().hex}")
-    blob, blob_ref = _unique_blob()
-    image = _image(blob_ref)
+    blob, blob_ref = unique_blob()
+    image = image_element(blob_ref)
     version1 = build_document([[image]])
     _publish(conformance_target, full_identity, uri, version1, {blob_ref: blob})
 
-    second_image = _image(blob_ref, metadata={"variant": 2})
+    second_image = image_element(blob_ref, metadata={"variant": 2})
     second_hash = _content_hash(second_image)
     version2 = build_document([[image], [image, second_image]])
     negotiated = negotiate(
