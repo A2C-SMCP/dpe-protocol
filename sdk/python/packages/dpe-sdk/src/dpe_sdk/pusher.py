@@ -121,7 +121,6 @@ from dpe_sdk.protocol import (
     BaseHash,
     BlobSource,
     IfAbsent,
-    ProtocolCore,
     mark_outcome_not_sent,
     outcome_unknown,
 )
@@ -362,15 +361,6 @@ def _contract_of(value: str) -> str:
     """合法 hash 值的前缀契约（值已由 ``_check_base_hash`` / ``_base_of`` 校验过）。"""
     contract, _ = dpe_hash.parse_hash(value, dpe_hash.KNOWN_CONTRACTS)
     return contract
-
-
-def _supported_contracts(core: ProtocolCore) -> tuple[str, ...]:
-    """这次会话可用的契约：服务端声明支持、且本 SDK 认识（capabilities ∩ KNOWN_CONTRACTS）。"""
-    return tuple(
-        contract
-        for contract in core.capabilities.hash_contracts
-        if contract in dpe_hash.KNOWN_CONTRACTS
-    )
 
 
 _log = logging.getLogger("dpe_sdk.pusher")
@@ -1135,7 +1125,7 @@ class StatefulPusher(_PusherBase):
         """
         core = self._client.core()
         contract = core.contract
-        contracts = _supported_contracts(core)
+        contracts = core.accepted_contracts()
         entries, expected = self._prepare(documents, expected_base, contract, contracts)
         if not entries:
             return []
@@ -1177,7 +1167,7 @@ class StatefulPusher(_PusherBase):
         """
         core = self._client.core()
         contract = core.contract
-        contracts = _supported_contracts(core)
+        contracts = core.accepted_contracts()
         normalized, expected = self._prepare_uris(uris, expected_base, contract, contracts)
         if not normalized:
             return []
@@ -1225,7 +1215,7 @@ class StatefulPusher(_PusherBase):
         """
         core = self._client.core()
         contract = core.contract
-        contracts = _supported_contracts(core)
+        contracts = core.accepted_contracts()
         pairs, expected = self._prepare_moves(moves, expected_base, contract, contracts)
         if not pairs:
             return []
@@ -1421,7 +1411,7 @@ class AsyncStatefulPusher(_PusherBase):
         """``StatefulPusher.push`` 的异步版本：语义完全相同。"""
         core = await self._client.core()
         contract = core.contract
-        contracts = _supported_contracts(core)
+        contracts = core.accepted_contracts()
         entries, expected = self._prepare(documents, expected_base, contract, contracts)
         if not entries:
             return []
@@ -1457,7 +1447,7 @@ class AsyncStatefulPusher(_PusherBase):
         """``StatefulPusher.delete`` 的异步版本：语义完全相同。"""
         core = await self._client.core()
         contract = core.contract
-        contracts = _supported_contracts(core)
+        contracts = core.accepted_contracts()
         normalized, expected = self._prepare_uris(uris, expected_base, contract, contracts)
         if not normalized:
             return []
@@ -1493,7 +1483,7 @@ class AsyncStatefulPusher(_PusherBase):
         """``StatefulPusher.move`` 的异步版本：语义完全相同。"""
         core = await self._client.core()
         contract = core.contract
-        contracts = _supported_contracts(core)
+        contracts = core.accepted_contracts()
         pairs, expected = self._prepare_moves(moves, expected_base, contract, contracts)
         if not pairs:
             return []

@@ -37,9 +37,11 @@ MUST NOT 自行重发；``retry_safe`` 为真的请求（只读操作与断点�
 调用方（如 ``dpe_sdk.pusher`` 的待定意图）只消费公开谓词 ``outcome_unknown(exc)``：**无标记
 一律按 True（可能已生效）处理**——保守方向，标记没写上也不会误判为「确定未生效」。
 
-**契约**：``ProtocolCore`` 只使用调用方显式指定的一个 hash 契约（缺省 ``dpe_hash.CONTRACT``），
-服务端不接受时失败，不换契约、不降级（core §3.1）；之后每个请求都带 ``DPE-Hash-Contract``，
-响应中的每个 hash 都必须属于该契约。
+**契约**：``ProtocolCore`` 的请求只声明调用方显式指定的一个 hash 契约（缺省
+``dpe_hash.CONTRACT``），服务端不接受时失败，不换契约、不降级（core §3.1）；每个请求都带
+``DPE-Hash-Contract``，响应中的每个 hash 都必须属于该契约。过渡期内，前置条件的值可以是
+服务端声明支持的另一个契约（旧契约的 L；core §5.1、HTTP 绑定 §3.1），由服务端按值所带的
+契约比较——``accepted_contracts()`` 给出这次会话可用的契约集合。
 
 **错误**（HTTP 绑定 §3.2、§5）：按 code 分派，不按状态码。有 problem 体时取体中的 ``code``，
 否则取 ``DPE-Error-Code`` 头（HEAD 不能带体）；两者都没有就不是 DPE 错误，抛
@@ -313,8 +315,8 @@ class Negotiated:
 class BaseHash:
     """前置条件 ``base_hash = H``（core §5.1）：H 是读到的 doc_hash（HTTP：``If-Match: "H"``）。
 
-    ``ProtocolCore`` 发出前校验 H 是本次声明契约的 hash（不接受裸 hash）；服务端按值比较，
-    不做格式校验（core §5.2）。
+    ``ProtocolCore`` 发出前校验 H 是任一受支持契约的 hash（不接受裸 hash 或未知契约）；
+    服务端按值所带的契约比较，不做格式校验（core §5.1、§5.2）。
     """
 
     value: str
@@ -1713,7 +1715,7 @@ class ProtocolCore:
         dpe_hash.normalize_file_uri(from_uri)
         dpe_hash.normalize_file_uri(to_uri)
         self._check_base_hash(base_hash)
-        base_contract = dpe_hash.parse_hash(base_hash, self._accepted_contracts())[0]
+        base_contract = dpe_hash.parse_hash(base_hash, self.accepted_contracts())[0]
         body = {"from_uri": from_uri, "to_uri": to_uri, "base_hash": base_hash}
         tracker = _WriteAttempts()
         try:
@@ -1840,7 +1842,7 @@ class ProtocolCore:
                 tracker.possibly_applied = True
             raise
 
-    def _accepted_contracts(self) -> tuple[str, ...]:
+    def accepted_contracts(self) -> tuple[str, ...]:
         """这次会话可用的契约：服务端声明支持、且本 SDK 认识（core §3.1、契约 1 §6）。
 
         ``base_hash`` 的取值可以带其中任一契约的前缀——过渡期内服务端按值所带的契约比较条件头
@@ -1856,7 +1858,7 @@ class ProtocolCore:
         """``base_hash`` 必须是受支持契约的 hash：不接受裸 hash，也不接受未知契约的值。"""
         if not isinstance(value, str):
             raise TypeError(f"base_hash 必须是字符串，实际为 {type(value).__name__}")
-        dpe_hash.parse_hash(value, self._accepted_contracts())
+        dpe_hash.parse_hash(value, self.accepted_contracts())
 
     def _condition(self, precondition: CommitPrecondition) -> dict[str, str]:
         """前置条件对应的条件头（HTTP 绑定 §3.2）；force 不带条件头。"""

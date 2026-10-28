@@ -104,6 +104,8 @@ struct Fake {
     head_delay: Mutex<Option<Duration>>,
     head_in_flight: AtomicUsize,
     head_peak: AtomicUsize,
+    /// 按 URI 覆盖单篇 HEAD 的应答（写后重读失败的用例；批量读不受影响）。
+    head_errors: Mutex<HashMap<String, Reply>>,
 }
 
 impl Fake {
@@ -129,6 +131,14 @@ impl Fake {
 
     fn get(&self, uri: &str) -> Option<String> {
         self.view.lock().unwrap().get(uri).cloned()
+    }
+
+    /// 让单篇 HEAD 对 `uri` 返回 `reply`（写后重读失败；批量读不受影响）。
+    fn head_error(&self, uri: &str, reply: Reply) {
+        self.head_errors
+            .lock()
+            .unwrap()
+            .insert(uri.to_owned(), reply);
     }
 
     fn script(&self, route: Route, steps: Vec<Step>) {
@@ -195,6 +205,9 @@ impl Fake {
                 }
                 self.head_in_flight.fetch_sub(1, Ordering::SeqCst);
                 if let Some(reply) = self.head_override.lock().unwrap().clone() {
+                    return reply;
+                }
+                if let Some(reply) = self.head_errors.lock().unwrap().get(&uri).cloned() {
                     return reply;
                 }
                 if self.invalid_reads.lock().unwrap().contains(&uri) {
@@ -787,6 +800,58 @@ async fn move_across_contracts_target_holding_same_content_deletes_source() {
     assert_eq!(results[0].precondition, Some(Precondition::BaseHash(stale)));
     assert_eq!(state(&store, &server).synced.get(B), Some(&current));
     assert_eq!(fake.get(A), None);
+}
+
+#[tokio::test]
+async fn move_across_contracts_both_rereads_fail_prefers_target_error() {
+    let fake = Fake::new();
+    fake.accept_contracts(&["dpe1", dpe_sdk::DRILL_CONTRACT]);
+    let server = fake.server();
+    let client = client(&server);
+    let store = Arc::new(MemoryStateStore::new());
+    let v1 = text("v1");
+    let current = doc_hash(&v1);
+    fake.set(A, Some(current.clone()));
+    fake.set(B, Some(current));
+    let stale = format!("{}:{}", dpe_sdk::DRILL_CONTRACT, "9".repeat(64));
+    store
+        .save(
+            &server.remote(),
+            &StateSnapshot::new(synced(&[(A, stale)]), BTreeMap::new()),
+        )
+        .unwrap();
+    fake.script(
+        Route::Move(A.into()),
+        vec![reply(problem("DPE_ALREADY_EXISTS", 409))],
+    );
+    // 两侧重读都失败：目标侧 400 DPE_VALIDATION，源侧 403 DPE_FORBIDDEN。
+    // 与 Python 口径一致，优先报目标侧错误。
+    fake.head_error(
+        B,
+        Reply::Response {
+            status: 400,
+            headers: vec![("DPE-Error-Code".to_owned(), "DPE_VALIDATION".to_owned())],
+            body: Vec::new(),
+        },
+    );
+    fake.head_error(
+        A,
+        Reply::Response {
+            status: 403,
+            headers: vec![("DPE-Error-Code".to_owned(), "DPE_FORBIDDEN".to_owned())],
+            body: Vec::new(),
+        },
+    );
+
+    let results = pusher(&client, &store)
+        .move_documents(&moves(&[(A, B)]), &none())
+        .await
+        .unwrap();
+
+    assert_eq!(statuses(&results), [PushStatus::Failed]);
+    assert_eq!(results[0].side, Some(Side::To));
+    let error = results[0].remote_error.as_ref().expect("两侧重读都失败");
+    assert_eq!(error.kind(), ErrorKind::Validation, "优先报目标侧错误");
 }
 
 #[tokio::test]

@@ -506,11 +506,6 @@ impl Outcome {
     }
 }
 
-/// 同步状态中的值是否属于指定契约。
-fn matches_contract(value: &str, contract: &str) -> bool {
-    dpe_hash::parse_hash_with(value, &[contract]).is_ok()
-}
-
 /// 值是否属于本次会话支持的任何契约。
 fn matches_any_contract(value: &str, contracts: &[&str]) -> bool {
     dpe_hash::parse_hash_with(value, contracts).is_ok()
@@ -566,6 +561,7 @@ impl PusherState {
         documents: &'d [(String, ExpandedDocument)],
         expected_base: &HashMap<String, Option<String>>,
         contract: &str,
+        contracts: &[&str],
     ) -> Result<(Vec<Entry<'d>>, Expected), Error> {
         let mut entries = Vec::with_capacity(documents.len());
         let mut seen: HashMap<String, &str> = HashMap::new();
@@ -585,7 +581,7 @@ impl PusherState {
             });
         }
         let allowed: HashSet<String> = seen.into_keys().collect();
-        let expected = Self::prepare_expected(expected_base, &allowed, contract)?;
+        let expected = Self::prepare_expected(expected_base, &allowed, contracts)?;
         Ok((entries, expected))
     }
 
@@ -593,7 +589,7 @@ impl PusherState {
     pub(crate) fn prepare_uris(
         uris: &[String],
         expected_base: &HashMap<String, Option<String>>,
-        contract: &str,
+        contracts: &[&str],
     ) -> Result<(Vec<String>, Expected), Error> {
         let mut normalized = Vec::with_capacity(uris.len());
         let mut seen: HashMap<String, &str> = HashMap::new();
@@ -608,7 +604,7 @@ impl PusherState {
             normalized.push(value);
         }
         let allowed: HashSet<String> = seen.into_keys().collect();
-        let expected = Self::prepare_expected(expected_base, &allowed, contract)?;
+        let expected = Self::prepare_expected(expected_base, &allowed, contracts)?;
         Ok((normalized, expected))
     }
 
@@ -620,7 +616,7 @@ impl PusherState {
     pub(crate) fn prepare_moves(
         moves: &[(String, String)],
         expected_base: &HashMap<String, Option<String>>,
-        contract: &str,
+        contracts: &[&str],
     ) -> Result<(Vec<(String, String)>, Expected), Error> {
         let mut pairs = Vec::with_capacity(moves.len());
         let mut sources: HashSet<String> = HashSet::new();
@@ -645,15 +641,16 @@ impl PusherState {
             sources.insert(source.clone());
             pairs.push((source, target));
         }
-        let expected = Self::prepare_expected(expected_base, &sources, contract)?;
+        let expected = Self::prepare_expected(expected_base, &sources, contracts)?;
         Ok((pairs, expected))
     }
 
-    /// 校验 `expected_base`：键必须属于本次操作的目标，值必须是本契约的 hash 或 `None`。
+    /// 校验 `expected_base`：键必须属于本次操作的目标，值必须是任一受支持契约的 hash 或
+    /// `None`（过渡期内旧契约的同步状态值照常可用）。
     fn prepare_expected(
         expected_base: &HashMap<String, Option<String>>,
         allowed: &HashSet<String>,
-        contract: &str,
+        contracts: &[&str],
     ) -> Result<Expected, Error> {
         let mut expected = HashMap::with_capacity(expected_base.len());
         for (uri, value) in expected_base {
@@ -664,9 +661,9 @@ impl PusherState {
                 )));
             }
             if let Some(value) = value {
-                if !matches_contract(value, contract) {
+                if !matches_any_contract(value, contracts) {
                     return Err(Error::invalid_argument(format!(
-                        "expected_base[{uri:?}] 不是契约 {contract} 的 hash：{value:?}"
+                        "expected_base[{uri:?}] 不是受支持契约的 hash：{value:?}"
                     )));
                 }
             }
@@ -1431,13 +1428,9 @@ mod driver {
         ) -> Result<Vec<PushResult>, Error> {
             let core = self.client.core().await?;
             let contract = core.contract().to_owned();
-            let supported = core.capabilities().hash_contracts.clone();
-            let contracts: Vec<&str> = supported
-                .iter()
-                .map(String::as_str)
-                .filter(|c| dpe_hash::KNOWN_CONTRACTS.contains(c))
-                .collect();
-            let (entries, expected) = PusherState::prepare(documents, expected_base, &contract)?;
+            let contracts = core.accepted_contracts();
+            let (entries, expected) =
+                PusherState::prepare(documents, expected_base, &contract, &contracts)?;
             if entries.is_empty() {
                 return Ok(Vec::new());
             }
@@ -1487,13 +1480,9 @@ mod driver {
         ) -> Result<Vec<PushResult>, Error> {
             let core = self.client.core().await?;
             let contract = core.contract().to_owned();
-            let supported = core.capabilities().hash_contracts.clone();
-            let contracts: Vec<&str> = supported
-                .iter()
-                .map(String::as_str)
-                .filter(|c| dpe_hash::KNOWN_CONTRACTS.contains(c))
-                .collect();
-            let (normalized, expected) = PusherState::prepare_uris(uris, expected_base, &contract)?;
+            let contracts = core.accepted_contracts();
+            let (normalized, expected) =
+                PusherState::prepare_uris(uris, expected_base, &contracts)?;
             if normalized.is_empty() {
                 return Ok(Vec::new());
             }
@@ -1547,13 +1536,8 @@ mod driver {
         ) -> Result<Vec<PushResult>, Error> {
             let core = self.client.core().await?;
             let contract = core.contract().to_owned();
-            let supported = core.capabilities().hash_contracts.clone();
-            let contracts: Vec<&str> = supported
-                .iter()
-                .map(String::as_str)
-                .filter(|c| dpe_hash::KNOWN_CONTRACTS.contains(c))
-                .collect();
-            let (pairs, expected) = PusherState::prepare_moves(moves, expected_base, &contract)?;
+            let contracts = core.accepted_contracts();
+            let (pairs, expected) = PusherState::prepare_moves(moves, expected_base, &contracts)?;
             if pairs.is_empty() {
                 return Ok(Vec::new());
             }
@@ -1812,7 +1796,11 @@ mod driver {
                                 let mut outcome = Outcome::failure(error, OutcomeKind::Failed)
                                     .with_side(Side::To)
                                     .with_reread(target);
-                                outcome.remote_error = Some(source_error);
+                                // 与 Python 口径一致：目标侧重读失败时保留目标侧错误，
+                                // 只有目标侧成功才用源侧错误补位
+                                if outcome.remote_error.is_none() {
+                                    outcome.remote_error = Some(source_error);
+                                }
                                 return outcome;
                             }
                         }
@@ -2619,7 +2607,7 @@ mod tests {
             ("DPE://docs/a.md".to_owned(), document),
         ];
         assert_eq!(
-            invalid(PusherState::prepare(&dup, &none(), C).map(|_| ())),
+            invalid(PusherState::prepare(&dup, &none(), C, &[C]).map(|_| ())),
             ErrorKind::InvalidArgument
         );
         // uri 文法错误：同 dpe-hash 的同码协议错误
@@ -2627,24 +2615,56 @@ mod tests {
             invalid(PusherState::prepare_uris(
                 &["not a uri".to_owned()],
                 &none(),
-                C
+                &[C]
             )),
             ErrorKind::Validation
         );
-        // expected_base：键在批外、值不是本契约的 hash
+        // expected_base：键在批外、值不是受支持契约的 hash
         let uris = [A.to_owned()];
         assert_eq!(
-            invalid(PusherState::prepare_uris(&uris, &expected(&[(B, None)]), C)),
+            invalid(PusherState::prepare_uris(
+                &uris,
+                &expected(&[(B, None)]),
+                &[C]
+            )),
             ErrorKind::InvalidArgument
         );
         assert_eq!(
             invalid(PusherState::prepare_uris(
                 &uris,
                 &expected(&[(A, Some(drill('1')))]),
-                C
+                &[C]
             )),
             ErrorKind::InvalidArgument
         );
+    }
+
+    #[test]
+    fn expected_base_accepts_a_still_supported_old_contract() {
+        // 与 Python 的 test_expected_base_accepts_a_still_supported_old_contract_value 对等：
+        // expected_base 是 L 的覆盖值，口径同 base_of——服务端仍接受其契约时照常可用
+        let document = doc("正文");
+        let documents = vec![(A.to_owned(), document)];
+        let contracts = [C, dpe_hash::DRILL_CONTRACT];
+        assert!(PusherState::prepare(
+            &documents,
+            &expected(&[(A, Some(drill('1')))]),
+            C,
+            &contracts,
+        )
+        .is_ok());
+        let uris = [A.to_owned()];
+        assert!(
+            PusherState::prepare_uris(&uris, &expected(&[(A, Some(drill('1')))]), &contracts,)
+                .is_ok()
+        );
+        let moves = vec![(A.to_owned(), B.to_owned())];
+        assert!(PusherState::prepare_moves(
+            &moves,
+            &expected(&[(A, Some(drill('1')))]),
+            &contracts,
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2663,7 +2683,7 @@ mod tests {
             pairs(&[("DPE://docs/a.md", A)]),         // 归一化后源＝目标
         ] {
             assert_eq!(
-                invalid(PusherState::prepare_moves(&moves, &none(), C)),
+                invalid(PusherState::prepare_moves(&moves, &none(), &[C])),
                 ErrorKind::InvalidArgument,
                 "{moves:?}"
             );
@@ -2673,13 +2693,15 @@ mod tests {
             invalid(PusherState::prepare_moves(
                 &pairs(&[(A, B)]),
                 &expected(&[(B, None)]),
-                C
+                &[C]
             )),
             ErrorKind::InvalidArgument
         );
-        assert!(
-            PusherState::prepare_moves(&pairs(&[(A, B), (X, "dpe://docs/y.md")]), &none(), C)
-                .is_ok()
-        );
+        assert!(PusherState::prepare_moves(
+            &pairs(&[(A, B), (X, "dpe://docs/y.md")]),
+            &none(),
+            &[C]
+        )
+        .is_ok());
     }
 }

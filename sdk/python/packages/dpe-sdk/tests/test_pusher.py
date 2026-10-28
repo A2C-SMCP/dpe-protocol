@@ -480,6 +480,42 @@ async def test_move_across_contracts_source_changed_target_equal_still_conflicts
     assert (result.status, result.side) == ("conflict", "from")
 
 
+class _FailingMoveRereads(httpx.AsyncBaseTransport):
+    """move 之后的两侧重读都失败，源侧与目标侧各给不同的错误；其余请求转发给参考服务端。"""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            if request.url.params.get("uri") == TARGET:
+                raise httpx.ConnectError("target re-read failed", request=request)
+            raise httpx.ConnectError("source re-read failed", request=request)
+        return await self._inner.handle_async_request(request)
+
+
+async def test_move_across_contracts_both_rereads_fail_prefers_target_error() -> None:
+    """两侧重读都失败时优先报目标侧错误（与 Rust 口径一致）。"""
+    app = create_app(make_engine(contracts=(C, dpe_hash.DRILL_CONTRACT)), prefix=PREFIX)
+    store = MemoryStateStore()
+    transport = _FailingMoveRereads(httpx.ASGITransport(app=app))
+    async with in_process_client(transport=transport) as (client, _recorder):
+        async with AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign:
+            await foreign.commit(URI, _doc("v1"), IfAbsent())
+            await foreign.commit(TARGET, _doc("v1"), IfAbsent())
+        stale = _dpex("v1")
+        store.save(REMOTE, StateSnapshot(synced={URI: stale}, intents={}))
+        reloaded = AsyncStatefulPusher(client, state=store)
+
+        results = await reloaded.move([(URI, TARGET)])
+
+    [result] = results
+    assert (result.status, result.side) == ("failed", "to")
+    assert result.remote_error is not None
+    assert "target re-read failed" in str(result.remote_error)
+    assert "source re-read failed" not in str(result.remote_error)
+
+
 class _BareDelete412(httpx.AsyncBaseTransport):
     """DELETE 直接返回无 problem 体的 412（模拟网关自行求值），其余请求转发给参考服务端。"""
 

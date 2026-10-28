@@ -1128,7 +1128,9 @@ impl ProtocolCore {
     }
 
     /// 这次会话可用的契约：服务端声明支持、且本 SDK 认识（core §3.1、契约 1 §6）。
-    fn accepted_contracts(&self) -> Vec<&str> {
+    ///
+    /// 推送器等上层也用它判断同步状态中的值是否仍可作前置条件（connector 契约 §7.2）。
+    pub fn accepted_contracts(&self) -> Vec<&str> {
         self.capabilities
             .hash_contracts
             .iter()
