@@ -23,6 +23,10 @@ assert_eq!(hashes.pages[0].elements, [h]);
 
 **原位重算**（契约 1 §6）：各入口的 `contract` 参数决定按哪个契约计算；`DRILL_CONTRACT`（`dpex`）是仅用于升级演练的假想契约，只在显式传入时接受。**升级须知**（0.4 起，不兼容）：演练契约由 `dpe2` 改名为 `dpex`，摘要前缀随之由 ASCII `dpe2` 改为 `dpex`，演练契约下的值全部变化——`dpe2` 留给将来真实的契约 2，同一个前缀不再先后对应两种算法（契约 1 §1）。dpe1 的值不变，不引起重学；只有显式使用演练契约的测试代码需要改名。
 
+## 单页 hash（Rust 独有）
+
+`page_hashes(&page, contract)` 接受一个展开页（页字段 + 内联 `elements`），按 core §2.8 的页校验顺序一次算出 `PageHashes { page_hash, elements }`；结果与 `document_hashes` 的页段一致。Python `dpe-hash` 没有对应的公开入口：单页请对每个元素调用 `content_hash`，再把结果交给 `page_hash`；整篇用 `document_hashes`。这是公开面差异，不影响 hash 值；两边由同一套向量保证一致。
+
 错误为 `dpe_hash::Error`：`kind()` 与 Python 异常子类一一对应，`code()` 是规范错误码（`DPE_VALIDATION` / `DPE_CATEGORY_UNKNOWN` / `DPE_CONTRACT_UNSUPPORTED`），`path()` 是出错位置的 RFC 6901 JSON Pointer。
 
 ## serde_json feature

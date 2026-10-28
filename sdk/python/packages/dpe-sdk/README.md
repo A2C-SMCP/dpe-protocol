@@ -56,20 +56,23 @@ with DpeClient(
 
 - **`deliver` 的选路**（core §3.2，#212，两个 SDK 一致）：新建（`IfAbsent`）整篇内联放得下 `max_payload_bytes` 就走快路径（一次 commit）；更新（`BaseHash` / `Force`）只有整篇内联不超过 `SMALL_UPDATE_BYTES`（64 KiB，`dpe_sdk.protocol` 导出）才走快路径，否则走差量路径，**页与元素都只传缺失**：`negotiate` 只交文档对象得到缺失的页（没有就直接 commit，两次往返），再 `negotiate` 一次只附带这些页、得到其中缺失的元素，commit 引用会话并只内联缺失的元素（不缺 blob 时三次往返，与新页数量无关）；缺失的 blob 由 commit 的缺失清单给出、补传后重提；请求体放不下时逐层上传。选路只看前置条件与本地算出的大小，不额外读 remote；CAS 失败后以 `session` 复用会话时，差量路径内联过的元素不在会话里，会经缺失清单再上传一次；
 - **remote**：按 HTTP 绑定 §1 的文法校验（`dpe_sdk.remote_url.check_remote_url`，即 dpe-hash 的同一函数：http / https、已是 core §1.1 规范化形式、无查询串与片段、不带凭证信息（凭证走 `CredentialProvider`）、不写默认端口、路径不以 `/` 结尾且无点段），合法即原样使用；capabilities 在实例内快照一次，服务端变更能力后新建客户端；
-- **凭证**：`CredentialProvider`（`dpe_sdk.credentials`）在每个请求发送前调用一次（传输层内部的重发同样重新取，轮换中的短时凭证在长等待后仍可用），返回 `Authorization` 头的完整值（含方案名）；SDK 不感知鉴权方案，也不解释凭证内容；
+- **凭证**：`CredentialProvider`（`dpe_sdk.credentials`）在每个请求发送前调用一次（传输层内部的重发同样重新取，轮换中的短时凭证在长等待后仍可用），返回 `Authorization` 头的完整值（含方案名）；SDK 不感知鉴权方案，也不解释凭证内容；provider 的 `authorization()` 自己抛错时，异常类型与实例原样抛出、不包装成 `LocalRequestError`；该次尝试按「确定未发出」打标（`outcome_unknown=False`；写操作此前若已有结果不确定的尝试，整体仍按核心判据为 `True`）；
 - **gzip**：服务端 capabilities 声明 `gzip`、请求体是 `application/json`、不小于 1024 字节且不是分块请求（带 `Content-Range`）时才压缩；分块上传按规范（§7）MUST NOT 压缩；
 - **重试**：传输层只自行重发三类——`retry_safe` 的请求（只读操作与断点查询，含走 POST 的 `batch_head`）遇上的网络失败、任何请求上确定未发出的建连失败、以及可重试的 DPE 错误（`DPE_RATE_LIMITED` / `DPE_UNAVAILABLE`，按 `code` 的 `retryable` 判定）按 `Retry-After`（秒数或 HTTP 日期）等待后原样重发（等待上限 5 分钟，更长则抛给调用方）。`Retry-After` 只按 RFC 9110 文法解析（HTTP 绑定 §5，`dpe_hash.retry_after_seconds`，`dpe_sdk.protocol` 重新导出）。**升级须知**（0.4 起，不兼容）：以前经 `email.utils` 接受的宽松日期（时区缩写、`+0000` 偏移、小写月份、多余空格等）现在视同没有提示（`None`）；首尾只去 SP / HTAB，NBSP 等 Unicode 空白不再去掉；rfc850 的两位年份改按 50 年规则解释；畸形时区不再漏出 `OverflowError`。参考服务端对无限期不可用改发 `Retry-After: 86400`（以前是 1）。写请求可能已发出后的超时与响应丢失一律抛回核心，由核心按 core §5.2 处理，**绝不自动 force**；
+- **非协议错误的 `retry_after`**：错误状态码（≥ 400）的响应既无 problem 体、也无有效 `DPE-Error-Code` 时，`UnexpectedResponseError` 仍会解析 `Retry-After` 头并按 RFC 9110 填入 `retry_after`（无合法头时为 `None`）；成功状态码（2xx / 3xx）的响应体或形状不合规同样抛 `UnexpectedResponseError`，但 `retry_after` 恒为 `None`。该值只作信息透传，传输层不会重试非协议错误；
 - **代理只来自环境变量**（#132）：构造客户端时按下面的规则判定一次 remote 走哪个代理，**从不读操作系统的代理设置**（macOS / Windows 的系统代理、PAC 都不看）。两个 SDK 规则相同，共用一张用例表 `sdk/testdata/proxy_env.json`：
   - https remote 用 `HTTPS_PROXY`，http remote 用 `HTTP_PROXY`，都没有时用 `ALL_PROXY`；每个名字先看大写、再看小写，空值视为未设置；
   - 环境中存在 `REQUEST_METHOD`（CGI）时忽略全部代理变量；
   - `NO_PROXY` 逗号分隔：`*` 匹配一切；IP 与 CIDR（如 `10.0.0.0/8`、`::1`）按地址匹配；其余条目是域名，匹配自身及其子域（`example.com` 与 `.example.com` 等价，不匹配 `notexample.com`）；条目不带端口；
   - 代理 URL 只支持 `http://` / `https://`（不带 scheme 按 `http://`，`user:pass@` 作为代理的 Basic 认证；密码里的 `@` 须写成 `%40`）；`socks5://` 等在构造客户端时报参数错误；
+  - userinfo 转成 `Proxy-Authorization` 的现状（两个 SDK 行为一致）：先做百分号解码（`u%40x:p%3Aw` → `Basic dUB4OnA6dw==`）；只有用户名（`user@`）时发 `Basic base64("user:")`（`dXNlcjo=`）；userinfo 为空（`@`）时两边都不发 `Proxy-Authorization`（空 userinfo 被 URL 解析丢弃，不会生成 `Basic Og==`）；`:pass@` 两边都发 `Basic base64(":pass")`；
   - 规则全部按字符判定，两个 SDK 不借助各自 URL 库的解析：空白只指 ASCII 空白（空格、`\t`、`\n`、`\r`、`\v`、`\f`），不区分大小写只按 ASCII；代理 URL 整体只能含 RFC 3986 允许的 ASCII 字符且不超过 4096 个（`\`、空白、控制字符、非 ASCII 都不合法），userinfo 只能含 RFC 3986 userinfo 字符；主机必须是方括号内的 IPv6（不带 zone）、点分十进制 IPv4 或 ASCII 字母 / 数字 / `-` 组成的域名（不接受 `xn--` 标签），端口写了就是不超过 65535 的十进制数，authority 之后只允许单个 `/`，不合法的值在构造客户端时报错（错误消息不回显值）；
   - 关闭代理：不设这些变量，或设 `NO_PROXY=*`；
   - 连不上代理、HTTPS 隧道（`CONNECT`）被代理拒绝都按「确定未发出」处理；明文 HTTP 经代理转发时代理的应答（如 502）是普通响应。
 
   **升级须知**（0.4 起，行为变化）：Python 侧以前用 httpx 的缺省，在 macOS / Windows 上环境变量为空时会悄悄走系统代理，现在改为直连——依赖系统代理上网的环境请改设 `HTTPS_PROXY` 等环境变量；隧道被拒的 `httpx.ProxyError` 现在也判为「确定未发出」。传入自定义 `transport` 时原样使用，不做上述判定；
 - **异常**：httpx 的连接失败、超时等异常原样抛出、按类型区分，不包装成协议错误；
+- **超时**：缺省 `timeout=30.0` 交给 httpx，按阶段计——connect / read / write / pool 各 30 秒，**不是整个请求的总时长**；慢速流式响应可以超过 30 秒。需要分阶段配置时传 `httpx.Timeout`，传 `None` 关闭。Rust 侧是整请求共 30 秒，慢速流式响应可能在这里成功而在 Rust 超时（见 [Rust dpe-sdk README](https://github.com/A2C-SMCP/dpe-protocol/blob/main/sdk/rust/crates/dpe-sdk/README.md)）；
 - **依赖边界**：`dpe-hash` 保持零依赖；httpx 是 `dpe-sdk` 的运行时依赖，且 `dpe_sdk` 顶层不 import 传输模块（按需 `from dpe_sdk.transport import …`）。
 
 ## 媒体上传辅助（#15）
@@ -124,8 +127,8 @@ with DpeClient("https://example.com/anything/r/42") as client:
 - **同步状态 + 意图日志**（§7.2）：同步状态（L）是每篇文档最近一次确认的 remote doc_hash，决定写入的前置条件（`if_absent` / `base_hash`）；写入前先把意图持久化到 `StateStore`（commit 记内容 hash、delete 记「不存在」、move **两侧一起**记），`save` 返回后才发写请求；结果确定即清除、只有结果未知（`unknown=True`）才保留，下一轮按意图对账恢复。缺省 `MemoryStateStore` 只在进程内、**不保证崩溃持久**；落盘实现属运行器的状态目录（契约 §4.4）；
 - **冲突如实上报**：`status == "conflict"`，带读到的（或冲突后重读的）remote 状态；**绝不自动 force、不自动重提**——`source_wins` / `report` 等策略与轮内重试上限归调用方（推送器不设 `retryable`、不在内部重试冲突，§7.1 的「超过重试上限取 true」由运行器计数），重提用 `expected_base` 覆盖前置条件（值为 `None` 表示确认「不存在」；move 以 `from_uri` 为键）；
 - **blob**：`push(..., blobs=lookup)` 把 `sha256:` 引用 → 字节来源（`BlobSource` 或 bytes）原样交给核心 `deliver`，服务端缺的 blob 按需上传；不给时缺字节如实报 `DPE_MISSING_CONTENT`（不解引用任何来源）；
-- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；逐条读都通过（拒绝与具体 URI 无关）时全部条目按逐条读到的值照常写入（connector §7.1，写入仍经 CAS）。两种情况都在 logger `dpe_sdk.pusher` 上记一条 warning（带原错误码与计数）；dpe-run 把它转成 `remote.batch_read_rejected` 事件（`code` / `entries` / `denied`）。网络失败、可重试错误耗尽、响应不是 DPE 报文与契约不兼容仍整批抛出；
-- **先存、存成功才生效**：写前 `save` 失败时整批报错、未发写，本批意图不进入内存；任何一次 `save` 失败后 store 可能与内存不一致——继续用同一实例，`flush()` 补存成功前不要用同一 store 新建实例；
+- **批量读被拒时逐条定位**（#145）：判定前的 `batch_head` 被确定、不可重试地拒绝（如其中一个 URI 不在授权前缀内）时，推送器逐 URI `head`（并发至多 `concurrency`），只让读被拒的条目以 `failed` 返回（`error` 为原错误、code 原样、`side` 为 `None`），其余照常写入；逐条读都通过（拒绝与具体 URI 无关）时全部条目按逐条读到的值照常写入（connector §7.1，写入仍经 CAS）。两种情况都在 logger `dpe_sdk.pusher` 上记一条 warning（带原错误码与计数；结构化字段在 `extra`：`dpe_pusher` / `dpe_code` / `dpe_entries` / `dpe_denied`；Rust 侧同类日志只有文本，见 [Rust dpe-sdk README](https://github.com/A2C-SMCP/dpe-protocol/blob/main/sdk/rust/crates/dpe-sdk/README.md)）；dpe-run 把它转成 `remote.batch_read_rejected` 事件（`code` / `entries` / `denied`）。网络失败、可重试错误耗尽、响应不是 DPE 报文与契约不兼容仍整批抛出；
+- **先存、存成功才生效**：写前 `save` 失败时整批报错、未发写，本批意图不进入内存，异常带 `outcome_unknown=False`（确定未发出）；收尾保存失败时整批报错，本批发过写请求则 `outcome_unknown=True`、没发过为 `False`，`flush()` 失败一律为 `False`；store 异常的实例与类型原样保留。任何一次 `save` 失败后 store 可能与内存不一致——继续用同一实例，`flush()` 补存成功前不要用同一 store 新建实例；
 - **错误与凭证**：复用 `DpeClient` 的传输层（gzip、`Retry-After`、`CredentialProvider` 全部适用）；失败按异常原类型如实回报（含服务端错误对象的 `code`），`unknown=True` 表示结果未确定——由核心的 `outcome_unknown` 判据给出（写请求任何一次尝试可能已到达服务端即未知，含「首发丢响应后重发得到 DPE 错误或建连失败」等序列），此时意图保留、下一轮对账恢复。
 
 ## 参考服务端（testing）
