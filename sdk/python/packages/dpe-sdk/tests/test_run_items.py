@@ -123,6 +123,62 @@ def test_page_step_zero_violation_reports_page_position_only() -> None:
     assert result.message.endswith("（位置 /pages/0）")
 
 
+_IJSON_MESSAGE = "字符串或对象键含孤立代理项，报文不是 I-JSON（core §2.8 第 0 步）（位置 /pages/0）"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 第 0 步与第 1–3 步（文档字段 / 页 / 元素）并存
+        {
+            "kind": "document",
+            "file_uri": P + "a.md",
+            "document": {"file_type": "bad!"},
+            "pages": [{"elements": [{"category": "Nope", "text": "\ud800"}]}],
+        },
+        # 第 0 步与第 1–4 步（再加字节来源对象）并存：占位替换后仍先判 I-JSON
+        {
+            "kind": "document",
+            "file_uri": P + "a.md",
+            "document": {"file_type": "bad!"},
+            "pages": [
+                {
+                    "elements": [
+                        {
+                            "category": "Nope",
+                            "text": "\ud800",
+                            "blob": {"inline": "@@", "handle": "h"},
+                        }
+                    ]
+                }
+            ],
+        },
+        # 单个元素内：未知 category / 未定义字段 / 非法字节来源都与孤立代理项并存
+        doc(elements=[{"category": "Nope", "text": "\ud800"}]),
+        doc(elements=[{"category": "Title", "text": "\ud800", "bogus": 1}]),
+        doc(
+            elements=[
+                {
+                    "category": "Image",
+                    "mime_type": "image/png",
+                    "text": "\ud800",
+                    "blob": {"inline": "@@", "handle": "h"},
+                }
+            ]
+        ),
+    ],
+)
+def test_ijson_wins_over_steps_one_to_four(raw: dict[str, Any]) -> None:
+    """I-JSON 违例（第 0 步）先于第 1–4 步：位置为页自身，消息与基线 c67300a 逐字一致。
+
+    运行器经插件线协议拿不到孤立代理项（host 按 §6.2 先拒绝整条消息），所以这条逐字
+    回归直接落在 ``parse_item`` 的 items 层。
+    """
+    parsed = parse_item(raw, P)
+    result = failure(parsed.error if isinstance(parsed, DocumentSegment) else parsed)
+    assert (result.code, result.message) == ("DPE_VALIDATION", _IJSON_MESSAGE)
+
+
 def test_error_items() -> None:
     reported = failure(
         parse_item(
@@ -229,6 +285,11 @@ def test_segments_concatenate_pages_and_offset_blob_slots() -> None:
     ready = events[0]
     assert len(ready.pages) == 2
     assert [(s.page, s.element) for s in ready.blobs] == [(1, 0)]
+
+
+def test_ready_document_requires_pages_and_hashes_to_be_aligned() -> None:
+    with pytest.raises(ValueError, match="逐项对齐"):
+        ReadyDocument(P + "a.md", {"file_type": "md"}, [{"elements": []}], hashes=[])
 
 
 def test_segment_rule_violations_fail_the_whole_document_once() -> None:

@@ -460,11 +460,17 @@ class _PusherBase:
         expected_base: Mapping[str, str | None] | None,
         contract: str,
         contracts: tuple[str, ...],
+        *,
+        prepared: Mapping[str, PreparedDocument] | None = None,
     ) -> tuple[list[_Entry], dict[str, str | None]]:
         """本地校验并归一化：uri 文法（core §1.1）、归一化后重复、``expected_base`` 的范围与取值。
 
         任何一项不合法都在发请求前抛 ``ValueError``（dpe_hash 的错误是其子类），整批拒绝——
         避免部分写入之后才发现拼写错误。
+
+        ``prepared`` 是运行器内部复用通道：按原 URI 或归一化后的 URI 命中，且
+        ``prepared.contract == contract`` 才采用其 ``data`` / ``hashes``；调用方 MUST 保证它们
+        与 ``documents[uri]`` 是同一篇内容（本方法不做内容级核对）。契约不等时按公共路径重算。
         """
         if not isinstance(documents, Mapping):
             raise TypeError(
@@ -481,16 +487,22 @@ class _PusherBase:
             if normalized in seen:
                 raise ValueError(f"归一化后重复的 file_uri：{seen[normalized]!r} 与 {uri!r}")
             seen[normalized] = uri
-            data = document.model_dump()
-            hashes = dpe_hash.document_hashes(cast(dpe_hash.ExpandedDocument, data), contract)
-            entries.append(
-                _Entry(
-                    normalized,
-                    document,
-                    hashes["doc_hash"],
-                    PreparedDocument(contract, hashes, data),
-                )
-            )
+            provided = prepared.get(uri) if prepared is not None else None
+            if provided is None and prepared is not None:
+                provided = prepared.get(normalized)
+            if provided is not None and provided.contract == contract:
+                if len(provided.data.get("pages", ())) != len(document.pages):
+                    raise ValueError(
+                        f"prepared 与 documents[{uri!r}] 的页数不一致，拒绝复用内部通道"
+                    )
+                data = provided.data
+                hashes = provided.hashes
+                entry_prepared = provided
+            else:
+                data = document.model_dump()
+                hashes = dpe_hash.document_hashes(cast(dpe_hash.ExpandedDocument, data), contract)
+                entry_prepared = PreparedDocument(contract, hashes, data)
+            entries.append(_Entry(normalized, document, hashes["doc_hash"], entry_prepared))
         return entries, self._prepare_expected(expected_base, set(seen), contract, contracts)
 
     def _prepare_uris(
@@ -1430,9 +1442,42 @@ class AsyncStatefulPusher(_PusherBase):
     ) -> list[PushResult]:
         """``StatefulPusher.push`` 的异步版本：语义完全相同。"""
         core = await self._client.core()
-        contract = core.contract
-        contracts = core.accepted_contracts()
-        entries, expected = self._prepare(documents, expected_base, contract, contracts)
+        entries, expected = self._prepare(
+            documents, expected_base, core.contract, core.accepted_contracts()
+        )
+        return await self._push_entries(
+            entries, expected, core.contract, core.accepted_contracts(), blobs
+        )
+
+    async def _push_prepared(
+        self,
+        documents: Mapping[str, Document],
+        prepared: Mapping[str, PreparedDocument],
+        *,
+        expected_base: Mapping[str, str | None] | None = None,
+        blobs: BlobLookup | None = None,
+    ) -> list[PushResult]:
+        """推送器内部入口：复用运行器预算的 ``PreparedDocument``；契约不符由 ``_prepare`` 回退。"""
+        core = await self._client.core()
+        entries, expected = self._prepare(
+            documents,
+            expected_base,
+            core.contract,
+            core.accepted_contracts(),
+            prepared=prepared,
+        )
+        return await self._push_entries(
+            entries, expected, core.contract, core.accepted_contracts(), blobs
+        )
+
+    async def _push_entries(
+        self,
+        entries: Sequence[_Entry],
+        expected: dict[str, str | None],
+        contract: str,
+        contracts: tuple[str, ...],
+        blobs: BlobLookup | None,
+    ) -> list[PushResult]:
         if not entries:
             return []
         heads, denied = await self._read([entry.uri for entry in entries])

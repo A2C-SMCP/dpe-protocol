@@ -13,10 +13,10 @@ import gzip
 import json
 import os
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote
 
 import dpe_hash
@@ -25,7 +25,7 @@ import pytest
 from client_helpers import PREFIX, REMOTE, ClientRecorder, in_process_client
 from dpe_sdk.credentials import CredentialProvider, StaticCredentialProvider
 from dpe_sdk.models import Document
-from dpe_sdk.protocol import BaseHash, IfAbsent
+from dpe_sdk.protocol import BaseHash, IfAbsent, PreparedDocument
 from dpe_sdk.pusher import AsyncStatefulPusher, StateSnapshot
 from dpe_sdk.run import (
     InstanceStore,
@@ -43,6 +43,8 @@ from dpe_sdk.run.round import finished_level
 from dpe_sdk.testing import Engine, PrefixAuthorizer, create_app
 from dpe_sdk.transport import AsyncDpeClient
 from engine_helpers import inline, make_engine, text_doc
+from server_helpers import spawn_server
+from test_pusher import _hash_calls
 
 pytestmark = pytest.mark.anyio
 
@@ -177,6 +179,48 @@ async def harness(
         AsyncDpeClient(REMOTE, transport=httpx.ASGITransport(app=app)) as foreign,
     ):
         yield Harness(tmp_path, client, foreign)
+
+
+@asynccontextmanager
+async def remote_harness(
+    tmp_path: Path,
+    *server_args: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+    contract: str = dpe_hash.CONTRACT,
+) -> AsyncIterator[Harness]:
+    """参考服务端子进程 + 真实 HTTP：服务端的 hash 不落进本进程的计数桩。"""
+    with spawn_server(*server_args) as info:
+        async with (
+            AsyncDpeClient(info["url"], transport=transport, contract=contract) as client,
+            AsyncDpeClient(info["url"], contract=contract) as foreign,
+        ):
+            yield Harness(tmp_path, client, foreign)
+
+
+@contextmanager
+def _document_hash_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[dict[str, int]]:
+    """计数文档层 ``doc_hash`` 与含 blob 页补算的 ``page_hash``。"""
+    counts = {"doc_hash": 0, "page_hash": 0}
+    original_doc_hash = dpe_hash.doc_hash
+    original_page_hash = dpe_hash.page_hash
+
+    def counted_doc_hash(
+        document: Any, pages: Any, contract: str = dpe_hash.CONTRACT, **kwargs: Any
+    ) -> str:
+        counts["doc_hash"] += 1
+        return original_doc_hash(document, pages, contract, **kwargs)
+
+    def counted_page_hash(
+        page: Any, elements: Any, contract: str = dpe_hash.CONTRACT, **kwargs: Any
+    ) -> str:
+        counts["page_hash"] += 1
+        return original_page_hash(page, elements, contract, **kwargs)
+
+    monkeypatch.setattr(dpe_hash, "doc_hash", counted_doc_hash)
+    monkeypatch.setattr(dpe_hash, "page_hash", counted_page_hash)
+    yield counts
 
 
 def codes(result: RoundResult) -> list[str]:
@@ -2792,3 +2836,485 @@ async def test_written_uri_seen_only_as_an_ignored_move_target_is_not_deleted(
         assert (failure.code, failure.retryable) == ("DPE_VALIDATION", True)
         assert P + "y.md" in await _remote(h)
         assert h.store is not None and P + "y.md" in h.store.written and h.store.cursor == "c1"
+
+
+# ---------------------------------------------------------------------- 242b：运行器内的 hash 复用
+
+
+async def test_round_hashes_single_page_document_once_per_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """单页首推：items 一次页视图校验、prepare 一次文档层 hash；元素预像每个一次。"""
+    landed = expected("A", "B")
+    with (
+        _hash_calls(monkeypatch) as calls,
+        _document_hash_calls(monkeypatch) as document_calls,
+    ):
+        async with remote_harness(tmp_path) as h:
+            result = await h.round({"batches": [[doc_item("a.md", "A", "B")]]})
+            assert await h.foreign.head(P + "a.md") == landed
+
+    assert result.outcome == "succeeded" and result.counts.created == 1
+    assert calls == {"document_hashes": 1, "content_hash": 0, "element_preimage": 2}
+    assert document_calls == {"doc_hash": 1, "page_hash": 0}
+
+
+async def test_round_hashes_multi_page_continued_document_once_per_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """跨批 continued + 暂存/差量路径：每页一次页视图校验、整篇一次文档层 hash。"""
+    recorder = ClientRecorder(httpx.AsyncHTTPTransport())
+    script = {
+        "batches": [
+            [
+                {
+                    "kind": "document",
+                    "file_uri": P + "big.md",
+                    "document": {"file_type": "md"},
+                    "pages": [{"elements": _text("a" * 300, "b" * 300)}],
+                    "continued": True,
+                }
+            ],
+            [
+                {
+                    "kind": "document",
+                    "file_uri": P + "big.md",
+                    "pages": [{"elements": _text("c" * 300, "d" * 300)}],
+                }
+            ],
+        ]
+    }
+    landed = Document.model_validate(
+        {
+            "file_type": "md",
+            "pages": [
+                {"elements": _text("a" * 300, "b" * 300)},
+                {"elements": _text("c" * 300, "d" * 300)},
+            ],
+        }
+    ).doc_hash()
+    with (
+        _hash_calls(monkeypatch) as calls,
+        _document_hash_calls(monkeypatch) as document_calls,
+    ):
+        async with remote_harness(tmp_path, "--max-payload-bytes", "1200", transport=recorder) as h:
+            result = await h.round(script)
+            assert await h.foreign.head(P + "big.md") == landed
+
+    assert result.outcome == "succeeded" and result.counts.created == 1
+    assert calls == {"document_hashes": 2, "content_hash": 0, "element_preimage": 4}
+    assert document_calls == {"doc_hash": 1, "page_hash": 0}
+    assert any(
+        request.method == "PUT"
+        and "/staging/" in request.url.path
+        and "/pages/" in request.url.path
+        for request in recorder.requests
+    ), "应走暂存路径上传页"
+
+
+async def test_round_hashes_blob_elements_at_most_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一页两个 blob 元素（inline + handle）：元素各补算一次，page_hash 只补算一次。"""
+    inline_data = b"tiny-bytes"
+    handle_data = b"handle-bytes"
+    landed = Document.model_validate(
+        {
+            "file_type": "md",
+            "pages": [
+                {
+                    "elements": [
+                        {
+                            "category": "Image",
+                            "mime_type": "image/png",
+                            "blob": dpe_hash.blob_ref(inline_data),
+                        },
+                        {
+                            "category": "Image",
+                            "mime_type": "image/png",
+                            "blob": dpe_hash.blob_ref(handle_data),
+                        },
+                    ]
+                }
+            ],
+        }
+    ).doc_hash()
+    with (
+        _hash_calls(monkeypatch) as calls,
+        _document_hash_calls(monkeypatch) as document_calls,
+    ):
+        async with remote_harness(tmp_path) as h:
+            result = await h.round(
+                {
+                    "batches": [
+                        [
+                            {
+                                "kind": "document",
+                                "file_uri": P + "blobs.md",
+                                "document": {"file_type": "md"},
+                                "pages": [
+                                    {
+                                        "elements": [
+                                            {
+                                                "category": "Image",
+                                                "mime_type": "image/png",
+                                                "blob": {
+                                                    "inline": base64.b64encode(inline_data).decode()
+                                                },
+                                            },
+                                            {
+                                                "category": "Image",
+                                                "mime_type": "image/png",
+                                                "blob": {
+                                                    "handle": "h1",
+                                                    "size": len(handle_data),
+                                                },
+                                            },
+                                        ]
+                                    }
+                                ],
+                            }
+                        ]
+                    ],
+                    "blobs": {"h1": base64.b64encode(handle_data).decode()},
+                }
+            )
+            assert await h.foreign.head(P + "blobs.md") == landed
+
+    assert result.outcome == "succeeded" and result.counts.created == 1
+    assert calls == {"document_hashes": 1, "content_hash": 2, "element_preimage": 4}
+    assert document_calls == {"doc_hash": 1, "page_hash": 1}
+
+
+async def test_round_lands_zero_page_document_with_one_document_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """零页文档是合法输入：没有页可校验，文档层仍只算一次 doc_hash 并成功落地。"""
+    landed = Document.model_validate({"file_type": "md", "pages": []}).doc_hash()
+    with (
+        _hash_calls(monkeypatch) as calls,
+        _document_hash_calls(monkeypatch) as document_calls,
+    ):
+        async with remote_harness(tmp_path) as h:
+            result = await h.round(
+                {
+                    "batches": [
+                        [
+                            {
+                                "kind": "document",
+                                "file_uri": P + "empty.md",
+                                "document": {"file_type": "md"},
+                                "pages": [],
+                            }
+                        ]
+                    ]
+                }
+            )
+            assert await h.foreign.head(P + "empty.md") == landed
+
+    assert result.outcome == "succeeded" and result.counts.created == 1
+    assert calls == {"document_hashes": 0, "content_hash": 0, "element_preimage": 0}
+    assert document_calls == {"doc_hash": 1, "page_hash": 0}
+
+
+async def test_round_hashes_unchanged_document_once_and_does_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N == R：照常做一次页视图校验与文档层 hash，但不再发写请求。"""
+    recorder = ClientRecorder(httpx.AsyncHTTPTransport())
+    async with remote_harness(tmp_path, transport=recorder) as h:
+        await h.round({"batches": [[doc_item("a.md", "A")]]})
+        recorder.requests.clear()
+        recorder.bodies.clear()
+        with (
+            _hash_calls(monkeypatch) as calls,
+            _document_hash_calls(monkeypatch) as document_calls,
+        ):
+            result = await h.round({"batches": [[doc_item("a.md", "A")]]})
+
+        assert result.outcome == "succeeded" and result.counts.unchanged == 1
+        assert not [
+            request
+            for request in recorder.requests
+            if request.method == "PUT" and request.url.path.endswith("/documents")
+        ]
+
+    assert calls == {"document_hashes": 1, "content_hash": 0, "element_preimage": 1}
+    assert document_calls == {"doc_hash": 1, "page_hash": 0}
+
+
+async def test_round_conflict_retry_reuses_prepared_without_rehashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """source_wins 冲突重提按 uri 复用同一份 prepared，不重跑 items / prepare 的 hash。"""
+    async with remote_harness(tmp_path) as h:
+        await h.round({"batches": [[doc_item("a.md", "v1")]]})
+        theirs = Document.model_validate(
+            {"file_type": "md", "pages": [{"elements": _text("theirs")}]}
+        )
+        v1_hash, v2_hash = expected("v1"), expected("v2")
+        await h.foreign.commit(P + "a.md", theirs, BaseHash(v1_hash))
+        with (
+            _hash_calls(monkeypatch) as calls,
+            _document_hash_calls(monkeypatch) as document_calls,
+        ):
+            result = await h.round({"batches": [[doc_item("a.md", "v2")]]})
+
+        assert result.outcome == "succeeded" and result.counts.updated == 1
+        assert await h.foreign.head(P + "a.md") == v2_hash
+
+    assert calls == {"document_hashes": 1, "content_hash": 0, "element_preimage": 1}
+    assert document_calls == {"doc_hash": 1, "page_hash": 0}
+
+
+async def test_round_prepared_contract_mismatch_falls_back_and_still_lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """prepared 的契约与 core 不等时，推送器回退重算；结果仍然正确（不在本用例断计数）。"""
+    original = AsyncStatefulPusher._push_prepared
+
+    async def swapped(
+        self: AsyncStatefulPusher,
+        documents: Any,
+        prepared: Any,
+        **kwargs: Any,
+    ) -> Any:
+        mismatched = {
+            uri: PreparedDocument(
+                dpe_hash.DRILL_CONTRACT,
+                dpe_hash.document_hashes(
+                    cast(dpe_hash.ExpandedDocument, value.data), dpe_hash.DRILL_CONTRACT
+                ),
+                value.data,
+            )
+            for uri, value in prepared.items()
+        }
+        return await original(self, documents, mismatched, **kwargs)
+
+    monkeypatch.setattr(AsyncStatefulPusher, "_push_prepared", swapped)
+    landed = expected("A")
+    async with remote_harness(tmp_path) as h:
+        result = await h.round({"batches": [[doc_item("a.md", "A")]]})
+        assert result.outcome == "succeeded" and result.counts.created == 1
+        assert await h.foreign.head(P + "a.md") == landed
+        # 回退若只发生在 _wire_parts、_prepare 仍采用 dpex hash，落盘正确但同步状态会记错
+        snapshot = h.store.load(REMOTE) if h.store else None
+        assert snapshot is not None and snapshot.synced[P + "a.md"] == landed
+
+
+async def test_round_validates_items_and_prepare_under_core_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """服务端主契约不是 dpe1 时，items / prepare 都按 core.contract 校验并复用，不靠回退。"""
+    captured: dict[str, PreparedDocument] = {}
+    original = AsyncStatefulPusher._push_prepared
+
+    async def capture(
+        self: AsyncStatefulPusher,
+        documents: Any,
+        prepared: Any,
+        **kwargs: Any,
+    ) -> Any:
+        captured.update(prepared)
+        return await original(self, documents, prepared, **kwargs)
+
+    monkeypatch.setattr(AsyncStatefulPusher, "_push_prepared", capture)
+    document = Document.model_validate(
+        {"file_type": "md", "pages": [{"elements": _text("A")}]},
+        context={"contract": dpe_hash.DRILL_CONTRACT},
+    )
+    async with remote_harness(
+        tmp_path, "--contract", dpe_hash.DRILL_CONTRACT, contract=dpe_hash.DRILL_CONTRACT
+    ) as h:
+        result = await h.round({"batches": [[doc_item("a.md", "A")]]})
+        assert result.outcome == "succeeded" and result.counts.created == 1
+        assert await h.foreign.head(P + "a.md") == document.doc_hash(dpe_hash.DRILL_CONTRACT)
+
+    [prepared] = captured.values()
+    assert prepared.contract == dpe_hash.DRILL_CONTRACT
+    assert prepared.hashes == document.hashes(dpe_hash.DRILL_CONTRACT)
+
+
+async def test_round_prepared_equals_document_model_for_blob_continued_and_multi_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """运行器私有的 PreparedDocument 与公共 ``Document.model_validate`` 逐字段等价。"""
+    captured: dict[str, PreparedDocument] = {}
+    original = AsyncStatefulPusher._push_prepared
+
+    async def capture(
+        self: AsyncStatefulPusher,
+        documents: Any,
+        prepared: Any,
+        **kwargs: Any,
+    ) -> Any:
+        captured.update(prepared)
+        return await original(self, documents, prepared, **kwargs)
+
+    monkeypatch.setattr(AsyncStatefulPusher, "_push_prepared", capture)
+    blob_data = b"blob-bytes"
+    page_a = {"elements": _text("p1a", "p1b")}
+    page_b = {"elements": _text("p2a")}
+    script = {
+        "batches": [
+            [
+                image_item("blob.md", {"handle": "h1", "size": len(blob_data)}),
+                {
+                    "kind": "document",
+                    "file_uri": P + "multi.md",
+                    "document": {"file_type": "md"},
+                    "pages": [page_a, page_b],
+                },
+                {
+                    "kind": "document",
+                    "file_uri": P + "cont.md",
+                    "document": {"file_type": "md", "title": "T"},
+                    "pages": [page_a],
+                    "continued": True,
+                },
+            ],
+            [
+                {
+                    "kind": "document",
+                    "file_uri": P + "cont.md",
+                    "pages": [page_b],
+                }
+            ],
+        ],
+        "blobs": {"h1": base64.b64encode(blob_data).decode()},
+    }
+    async with remote_harness(tmp_path) as h:
+        result = await h.round(script)
+        assert result.outcome == "succeeded", result.failures
+
+    expected_documents = {
+        P + "blob.md": Document.model_validate(
+            {
+                "file_type": "md",
+                "pages": [
+                    {
+                        "elements": [
+                            {
+                                "category": "Image",
+                                "mime_type": "image/png",
+                                "blob": dpe_hash.blob_ref(blob_data),
+                            }
+                        ]
+                    }
+                ],
+            }
+        ),
+        P + "multi.md": Document.model_validate({"file_type": "md", "pages": [page_a, page_b]}),
+        P + "cont.md": Document.model_validate(
+            {"file_type": "md", "title": "T", "pages": [page_a, page_b]}
+        ),
+    }
+    assert set(captured) == set(expected_documents)
+    for uri, document in expected_documents.items():
+        prepared = captured[uri]
+        assert prepared.contract == dpe_hash.CONTRACT
+        assert prepared.hashes == document.hashes()
+        assert prepared.data == document.model_dump()
+
+
+#: 错误码 / 位置 / 消息的逐字回归（基线 c67300a）；组合用例按 core §2.8 的最早步骤定位。
+_ERROR_CASES: list[tuple[dict[str, Any], list[dict[str, Any]], str, str]] = [
+    (
+        {"file_type": "md"},
+        [{"elements": [{"category": "Nope"}]}],
+        "DPE_CATEGORY_UNKNOWN",
+        "未知 category：'Nope'（位置 /pages/0/elements/0/category）",
+    ),
+    (
+        {"file_type": "md"},
+        [{"elements": [{"category": "NarrativeText", "text": "x", "bogus": 1}]}],
+        "DPE_VALIDATION",
+        "NarrativeText 元素不允许字段 'bogus'（位置 /pages/0/elements/0/bogus）",
+    ),
+    (
+        {"file_type": "md"},
+        [{}],
+        "DPE_VALIDATION",
+        "页缺少 elements（位置 /pages/0）",
+    ),
+    (
+        {"file_type": "bad!"},
+        [{"elements": []}],
+        "DPE_VALIDATION",
+        "file_type 不合语法：'bad!'（位置 /file_type）",
+    ),
+    (
+        {"file_type": "md", "bogus": 1},
+        [{"elements": []}],
+        "DPE_VALIDATION",
+        "文档对象不允许字段 'bogus'（位置 /bogus）",
+    ),
+    (
+        {},
+        [{"elements": []}],
+        "DPE_VALIDATION",
+        "文档对象缺少 file_type",
+    ),
+    (
+        {"file_type": "md", "title": 1},
+        [{"elements": []}],
+        "DPE_VALIDATION",
+        "title 必须是字符串或 null，实际为 int（位置 /title）",
+    ),
+    (
+        {"file_type": "md", "doc_metadata": []},
+        [{"elements": []}],
+        "DPE_VALIDATION",
+        "doc_metadata 必须是 JSON 对象，实际为 list（位置 /doc_metadata）",
+    ),
+    (
+        {"file_type": "md", "doc_metadata": _nested(500)},
+        [{"elements": []}],
+        "DPE_VALIDATION",
+        "对象的嵌套深度超过上限 64 层（core §2.8 第 0 步）",
+    ),
+    # 文档字段违例与页违例并存：页在 items 阶段先被校验（#246 的最早步骤定位）
+    (
+        {"file_type": "bad!"},
+        [{"elements": [{"category": "Nope"}]}],
+        "DPE_CATEGORY_UNKNOWN",
+        "未知 category：'Nope'（位置 /pages/0/elements/0/category）",
+    ),
+    (
+        {"file_type": "md", "bogus": 1},
+        [{"elements": [{"category": "NarrativeText", "text": "x", "bogus": 2}]}],
+        "DPE_VALIDATION",
+        "NarrativeText 元素不允许字段 'bogus'（位置 /pages/0/elements/0/bogus）",
+    ),
+]
+
+
+@pytest.mark.parametrize(("document", "pages", "code", "message"), _ERROR_CASES)
+async def test_error_code_position_and_message_match_baseline(
+    tmp_path: Path,
+    document: dict[str, Any],
+    pages: list[dict[str, Any]],
+    code: str,
+    message: str,
+) -> None:
+    async with harness(tmp_path) as h:
+        result = await h.round(
+            {
+                "batches": [
+                    [
+                        {
+                            "kind": "document",
+                            "file_uri": P + "x.md",
+                            "document": document,
+                            "pages": pages,
+                        }
+                    ]
+                ]
+            }
+        )
+    assert result.outcome == "partial"
+    assert codes(result) == [code]
+    [failure] = result.failures
+    assert isinstance(failure, ItemFailure)
+    assert failure.message == message
+    assert failure.file_uri == P + "x.md"

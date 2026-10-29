@@ -6,10 +6,11 @@
   （§6.6 第 1–2 步）。插件产出是不可信输入（§6.1）：任何违例都只让该条目失败，不抛出。
 - ``SegmentAssembler``：文档分段的拼接规则（§6.5）。
 
-元素按 core §2.8 的顺序校验：线上 ``blob`` 是字节来源对象，先换成占位引用交 ``Page`` 模型校验
-（形状 → category → 封闭 schema → 逐字段，含「不允许 blob 的 category 不得出现 blob」），通过后
-再校验字节来源对象本身（§6.6：``inline`` / ``handle`` 互斥、标准 base64、``size`` 界限）。线上
-``blob`` 若不是对象（如插件伪造的 ``sha256:`` 引用）一律拒绝——引用只由运行器计算。
+元素按 core §2.8 的顺序校验：线上 ``blob`` 是字节来源对象，先换成占位引用做页视图校验
+（``models._page_hashes``，与 ``Page`` 模型同一实现；形状 → category → 封闭 schema → 逐字段，
+含「不允许 blob 的 category 不得出现 blob」），通过后再校验字节来源对象本身（§6.6：``inline`` /
+``handle`` 互斥、标准 base64、``size`` 界限）。线上 ``blob`` 若不是对象（如插件伪造的
+``sha256:`` 引用）一律拒绝——引用只由运行器计算。
 """
 
 from __future__ import annotations
@@ -22,10 +23,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import dpe_hash
-from dpe_hash import DpeHashError
+from dpe_hash import DpeHashError, PageHashes
 
 from dpe_sdk._plain import plain
-from dpe_sdk.models import Page
+from dpe_sdk.models import _page_hashes
 from dpe_sdk.run.errors import ItemFailure, ProtocolFailure
 
 __all__ = [
@@ -129,6 +130,8 @@ class DocumentSegment:
     pages: list[dict[str, Any]]
     blobs: list[BlobSlot]
     error: ItemFailure | None = None
+    #: 与 ``pages`` 逐项对齐的预算页 hash（blob 仍是占位引用；prepare 阶段按需补算）
+    hashes: list[PageHashes] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -188,16 +191,20 @@ def _with_uri(failure: ItemFailure, **uris: str | None) -> ItemFailure:
     return failure
 
 
-def parse_item(raw: Any, uri_prefix: str) -> Item | ItemFailure:
+def parse_item(
+    raw: Any, uri_prefix: str, *, contract: str = dpe_hash.CONTRACT
+) -> Item | ItemFailure:
     """解析并校验一个产出项；失败返回 ``ItemFailure``（带所涉 URI），不抛出。
 
-    ``error`` 产出项（§6.5）直接转为 ``source="plugin"`` 的条目失败。
+    ``contract`` 是本次轮次声明的契约（运行器在能力协商后取 ``core.contract``）；
+    缺省 ``dpe1``，供不涉及契约切换的调用方使用。``error`` 产出项（§6.5）直接转为
+    ``source="plugin"`` 的条目失败。
     """
     if not isinstance(raw, dict):
         return _invalid("产出项必须是对象")
     kind = raw.get("kind")
     if kind == "document":
-        return _parse_document(raw, uri_prefix)
+        return _parse_document(raw, uri_prefix, contract)
     if kind == "delete":
         return _parse_delete(raw, uri_prefix)
     if kind == "move":
@@ -275,7 +282,9 @@ def _parse_error(raw: dict[str, Any]) -> ItemFailure:
     )
 
 
-def _parse_document(raw: dict[str, Any], uri_prefix: str) -> DocumentSegment | ItemFailure:
+def _parse_document(
+    raw: dict[str, Any], uri_prefix: str, contract: str
+) -> DocumentSegment | ItemFailure:
     uri_raw = _raw_uri(raw.get("file_uri"))
     problem = _closed(raw, _DOCUMENT_KEYS, ("file_uri", "pages"))
     continued = raw.get("continued", False)
@@ -323,18 +332,21 @@ def _parse_document(raw: dict[str, Any], uri_prefix: str) -> DocumentSegment | I
         segment.error = _invalid("pages 必须是数组", file_uri=uri)
         return segment
     for index, page in enumerate(pages):
-        parsed = _parse_page(page, index)
+        parsed = _parse_page(page, index, contract)
         if isinstance(parsed, ItemFailure):
             segment.error = _with_uri(parsed, file_uri=uri)
             return segment
-        page_obj, slots = parsed
+        page_obj, page_hashes, slots = parsed
         segment.pages.append(page_obj)
+        segment.hashes.append(page_hashes)
         segment.blobs.extend(slots)
     return segment
 
 
-def _parse_page(page: Any, index: int) -> tuple[dict[str, Any], list[BlobSlot]] | ItemFailure:
-    """校验一页（§6.6 第 2 步）：先以占位引用交 ``Page`` 模型，再校验字节来源对象。"""
+def _parse_page(
+    page: Any, index: int, contract: str
+) -> tuple[dict[str, Any], PageHashes, list[BlobSlot]] | ItemFailure:
+    """校验一页（§6.6 第 2 步）：先以占位引用做页 hash 校验，再校验字节来源对象。"""
     at = f"/pages/{index}"
     if not isinstance(page, dict):
         return _invalid(f"页必须是对象（位置 {at}）")
@@ -355,7 +367,7 @@ def _parse_page(page: Any, index: int) -> tuple[dict[str, Any], list[BlobSlot]] 
                 sources.append((position, element["blob"]))
                 element["blob"] = PLACEHOLDER_BLOB
     try:
-        Page.model_validate(working)
+        page_hashes = _page_hashes(working, contract)
     except DpeHashError as exc:
         return ItemFailure(exc.code, f"{exc.message}（位置 {at}{exc.path}）", source="validation")
     slots: list[BlobSlot] = []
@@ -367,11 +379,11 @@ def _parse_page(page: Any, index: int) -> tuple[dict[str, Any], list[BlobSlot]] 
                 return spec
             slots.append(BlobSlot(index, position, spec))
         elif element.get("blob") is not None:
-            # 通过了 Page 校验的非对象 blob（只可能是格式合法的 sha256: 引用）：线上不允许
+            # 通过了页视图校验的非对象 blob（只可能是格式合法的 sha256: 引用）：线上不允许
             return _invalid(
                 f"线上的 blob 必须是字节来源对象，不得是引用（位置 {at}/elements/{position}/blob）"
             )
-    return working, slots
+    return working, page_hashes, slots
 
 
 def _parse_blob(source: dict[str, Any], at: str) -> BlobSpec | ItemFailure:
@@ -418,6 +430,11 @@ class ReadyDocument:
     document: dict[str, Any]
     pages: list[dict[str, Any]]
     blobs: list[BlobSlot] = field(default_factory=list)
+    hashes: list[PageHashes] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if len(self.hashes) != len(self.pages):
+            raise ValueError("ReadyDocument.pages 与 hashes 必须逐项对齐")
 
 
 @dataclass
@@ -425,6 +442,7 @@ class _Open:
     file_uri: str
     document: dict[str, Any] | None
     pages: list[dict[str, Any]]
+    hashes: list[PageHashes]
     blobs: list[BlobSlot]
     #: 已判整篇失败：吞掉同一文档的后续续段，直到末段（不重复上报）
     failed: bool = False
@@ -464,7 +482,7 @@ class SegmentAssembler:
             # 出现：按同 URI 的新文档处理（§6.4 后写覆盖），不把它当续段吞掉
             current = None
         if current is None:
-            current = _Open(segment.file_uri, None, [], [])
+            current = _Open(segment.file_uri, document=None, pages=[], hashes=[], blobs=[])
             if segment.error is None and segment.document is None:
                 segment.error = _invalid("分段文档的首段必须带 document", file_uri=segment.file_uri)
             current.document = segment.document
@@ -477,6 +495,7 @@ class SegmentAssembler:
             else:
                 offset = len(current.pages)
                 current.pages.extend(segment.pages)
+                current.hashes.extend(segment.hashes)
                 current.blobs.extend(
                     BlobSlot(slot.page + offset, slot.element, slot.spec) for slot in segment.blobs
                 )
@@ -487,7 +506,13 @@ class SegmentAssembler:
         if not current.failed:
             assert current.document is not None
             events.append(
-                ReadyDocument(current.file_uri, current.document, current.pages, current.blobs)
+                ReadyDocument(
+                    current.file_uri,
+                    current.document,
+                    current.pages,
+                    blobs=current.blobs,
+                    hashes=current.hashes,
+                )
             )
         return events
 
