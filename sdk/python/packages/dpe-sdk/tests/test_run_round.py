@@ -1234,10 +1234,12 @@ class _DropCommits(httpx.AsyncBaseTransport):
     def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
         self._inner = inner
         self.armed = False
+        self.dropped = False
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await self._inner.handle_async_request(request)
         if self.armed and request.method == "PUT" and request.url.path.endswith("/documents"):
+            self.dropped = True
             raise httpx.ReadTimeout("响应丢失", request=request)
         return response
 
@@ -1542,15 +1544,67 @@ def test_incompatible_remote_is_instance_level() -> None:
         assert (failure.level, failure.code) == ("instance", "remote_incompatible")
 
 
-def test_local_request_failure_is_round_level_retryable_until_256() -> None:
-    """#256 前的临时口径：本地构造失败归 remote_unavailable（轮级可重试）；SDK 本身不重发。"""
-    from dpe_sdk.errors import LocalRequestError
+class _RotatingCredential:
+    """``after()`` 首次为真之前返回合法凭证，之后返回含 obs-text 的非法值。"""
+
+    def __init__(self, after: Callable[[], bool]) -> None:
+        self.after = after
+
+    def authorization(self) -> str | None:
+        return "Bearer é" if self.after() else "Bearer token"
+
+
+def test_request_invalid_is_anchored_on_local_request_error() -> None:
+    """#256：LocalRequestError → 实例级 request_invalid；带 not-sent 标记的 provider 异常不误归。"""
+    from dpe_sdk.errors import ClientError, LocalRequestError
+    from dpe_sdk.protocol import mark_outcome_not_sent
     from dpe_sdk.run.round import _classify_remote
 
-    failure = _classify_remote(LocalRequestError(), unknown=True)
+    for unknown in (False, True):
+        failure = _classify_remote(LocalRequestError(), unknown=unknown)
+        assert (failure.level, failure.code, failure.source) == (
+            "instance",
+            "request_invalid",
+            "runner",
+        )
+        assert failure.retryable is False
+        assert "Bearer" not in failure.message
+
+    provider_failure = ClientError("provider 自己失败")
+    mark_outcome_not_sent(provider_failure)
+    failure = _classify_remote(provider_failure, unknown=False)
+    assert (failure.level, failure.code) != ("instance", "request_invalid")
     assert (failure.level, failure.code) == ("round", "remote_unavailable")
-    assert failure.retryable is True
-    assert "Bearer" not in failure.message
+
+
+async def test_local_rejection_on_resend_is_request_invalid_and_keeps_intents(
+    tmp_path: Path,
+) -> None:
+    """首发 commit 响应丢失、续发时凭证被本地拒绝：实例级 request_invalid；结果未知，意图保留。"""
+    droppers: list[_DropCommits] = []
+
+    def wrap(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+        droppers.append(_DropCommits(inner))
+        return droppers[0]
+
+    async with harness(
+        tmp_path, wrap, credential=_RotatingCredential(lambda: droppers[0].dropped)
+    ) as h:
+        droppers[0].armed = True
+        result = await h.round({"batches": [[doc_item("a.md", "A")]]})
+
+    assert result.outcome == "failed"
+    assert result.fatal is not None
+    assert (
+        result.fatal.level,
+        result.fatal.code,
+        result.fatal.source,
+        result.fatal.retryable,
+    ) == ("instance", "request_invalid", "runner", False)
+    assert all(failure.code != "state_unavailable" for failure in result.failures)
+    reloaded = h.dir.open_instance("inst", "identity-1")
+    snapshot = reloaded.load(REMOTE)
+    assert snapshot is not None and snapshot.intents == {P + "a.md": expected("A")}
 
 
 async def test_achieved_on_reread_is_confirmed_even_without_retry_budget(tmp_path: Path) -> None:
