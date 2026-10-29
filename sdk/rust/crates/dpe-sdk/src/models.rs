@@ -72,6 +72,28 @@ use dpe_hash::{
     Result, ToJson,
 };
 
+/// 单元测试用的全树 hash 计数（只编译进 `cfg(test)`，不影响生产构建）。
+#[cfg(test)]
+pub(crate) mod test_counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        static DOCUMENT_HASHES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        DOCUMENT_HASHES.with(|counter| counter.set(0));
+    }
+
+    pub(crate) fn document_hashes() -> usize {
+        DOCUMENT_HASHES.with(Cell::get)
+    }
+
+    pub(crate) fn note_document_hashes() {
+        DOCUMENT_HASHES.with(|counter| counter.set(counter.get() + 1));
+    }
+}
+
 /// 元素对象（core §2.3）。内容字段是否允许取决于 `category`（契约 1 §4.1）。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct ElementObject {
@@ -223,6 +245,8 @@ impl ExpandedDocument {
 
     /// 三层 hash，形如 `{doc_hash, pages: [{page_hash, elements}…]}`；形状同向量的 `expected`。
     pub fn hashes(&self, contract: &str) -> Result<DocumentHashes> {
+        #[cfg(test)]
+        test_counters::note_document_hashes();
         document_hashes(self, contract)
     }
 
@@ -230,6 +254,15 @@ impl ExpandedDocument {
     pub fn doc_hash(&self, contract: &str) -> Result<String> {
         self.hashes(contract).map(|hashes| hashes.doc_hash)
     }
+}
+
+/// 由已序列化的展开文档计算三层 hash（与 [`ExpandedDocument::hashes`] 同源）。
+///
+/// 242a 的推送器先序列化一次，再用这份 dump 同时算 hash 与交给核心；单元测试计数也在这里。
+pub(crate) fn hashes_from_value(value: &Value, contract: &str) -> Result<DocumentHashes> {
+    #[cfg(test)]
+    test_counters::note_document_hashes();
+    document_hashes(value, contract)
 }
 
 // ---------------------------------------------------------------------------

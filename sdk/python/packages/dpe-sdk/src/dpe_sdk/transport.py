@@ -69,6 +69,7 @@ from dpe_sdk.protocol import (
     CommitPrecondition,
     Negotiated,
     Operation,
+    PreparedDocument,
     ProtocolCore,
     Request,
     Response,
@@ -448,6 +449,23 @@ class DpeClient(_ClientBase):
             self.core().deliver(uri, document, precondition, blobs=blobs, session=session)
         )
 
+    def _deliver_prepared(
+        self,
+        uri: str,
+        document: Document,
+        prepared: PreparedDocument,
+        precondition: CommitPrecondition,
+        *,
+        blobs: Callable[[str], BlobSource | bytes] | None = None,
+        session: Session | None = None,
+    ) -> CommitResult:
+        """推送器内部通道：用预算好的三层 hash 与 dump 投递（契约不符由核心回退）。"""
+        return self._run(
+            self.core()._deliver_prepared(
+                uri, document, prepared, precondition, blobs=blobs, session=session
+            )
+        )
+
     def delete(self, uri: str, base_hash: str) -> None:
         """``ProtocolCore.delete``（core §4）：按 CAS 删除文档。"""
         self._run(self.core().delete(uri, base_hash))
@@ -627,6 +645,23 @@ class AsyncDpeClient(_ClientBase):
         """``ProtocolCore.deliver``（core §3.2）：增量投递，只传变更，绝不自动 force。"""
         return await self._run(
             (await self.core()).deliver(uri, document, precondition, blobs=blobs, session=session)
+        )
+
+    async def _deliver_prepared(
+        self,
+        uri: str,
+        document: Document,
+        prepared: PreparedDocument,
+        precondition: CommitPrecondition,
+        *,
+        blobs: Callable[[str], BlobSource | bytes] | None = None,
+        session: Session | None = None,
+    ) -> CommitResult:
+        """推送器内部通道：用预算好的三层 hash 与 dump 投递（契约不符由核心回退）。"""
+        return await self._run(
+            (await self.core())._deliver_prepared(
+                uri, document, prepared, precondition, blobs=blobs, session=session
+            )
         )
 
     async def delete(self, uri: str, base_hash: str) -> None:

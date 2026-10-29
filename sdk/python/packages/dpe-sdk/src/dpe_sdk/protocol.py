@@ -74,7 +74,7 @@ from urllib.parse import quote
 import dpe_hash
 
 # Retry-After 的解析（HTTP 绑定 §5）在 dpe-hash，与跑分器共用；此处重新导出，公开路径不变
-from dpe_hash import DpeHashError, parse_ijson, retry_after_seconds
+from dpe_hash import DocumentHashes, DpeHashError, parse_ijson, retry_after_seconds
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
@@ -581,6 +581,19 @@ class _Parts:
     total: int
 
 
+@dataclass(frozen=True)
+class PreparedDocument:
+    """推送器预算的三层 hash 与一次 dump（242a 内部通道，不属于公开 API）。
+
+    ``contract`` 是预算时的请求声明契约；核心只在与 ``self.contract`` 相等时使用，
+    否则回退到公共路径重算。``data`` 是 ``Document.model_dump()`` 的结果。
+    """
+
+    contract: str
+    hashes: DocumentHashes
+    data: dict[str, Any]
+
+
 class ProtocolCore:
     """与一个 remote 协商后的协议核心：持有选定的契约与 limits，产出各操作。
 
@@ -643,11 +656,19 @@ class ProtocolCore:
             "utf-8"
         )
 
-    def _wire_parts(self, document: Document) -> _Parts:
+    def _wire_parts(self, document: Document, prepared: PreparedDocument | None = None) -> _Parts:
         """把展开文档拆成线上部件：文档对象、按 hash 去重的页对象与元素对象，以及 doc_hash
-        与元素总数（含重复，供 delta 校验）。"""
-        hashes = document.hashes(self.contract)
-        data = document.model_dump()
+        与元素总数（含重复，供 delta 校验）。
+
+        ``prepared`` 是推送器预算的三层 hash 与 dump；契约等于 ``self.contract`` 时直接复用，
+        否则按公共路径重算（242a）。
+        """
+        if prepared is not None and prepared.contract == self.contract:
+            hashes = prepared.hashes
+            data = prepared.data
+        else:
+            hashes = document.hashes(self.contract)
+            data = document.model_dump()
         pages: list[dict[str, Any]] = []
         objects: list[dict[str, Any]] = []
         page_by_hash: dict[str, dict[str, Any]] = {}
@@ -915,8 +936,16 @@ class ProtocolCore:
         """
         if not isinstance(page, PageObject):
             raise TypeError(f"page 必须是 dpe_sdk.PageObject，实际为 {type(page).__name__}")
-        page_hash = page.page_hash(self.contract)
-        payload = self._json_body(page.model_dump())
+        return (
+            yield from self._upload_page(
+                session, page.page_hash(self.contract), self._json_body(page.model_dump())
+            )
+        )
+
+    def _upload_page(
+        self, session: Session, page_hash: str, payload: bytes
+    ) -> Operation[list[str]]:
+        """上传已知 hash 与 payload 的页对象（242a 内部入口；不再重算 hash 或序列化）。"""
         if len(payload) > self.limits.page_max_bytes:
             raise PayloadTooLargeError(
                 f"页对象 {len(payload)} 字节，超过 page_max_bytes={self.limits.page_max_bytes}；"
@@ -951,8 +980,18 @@ class ProtocolCore:
             raise TypeError(
                 f"element 必须是 dpe_sdk.ElementObject，实际为 {type(element).__name__}"
             )
-        content_hash = element.content_hash(self.contract)
-        payload = self._json_body(element.model_dump())
+        return (
+            yield from self._upload_element(
+                session,
+                element.content_hash(self.contract),
+                self._json_body(element.model_dump()),
+            )
+        )
+
+    def _upload_element(
+        self, session: Session, content_hash: str, payload: bytes
+    ) -> Operation[list[str]]:
+        """上传已知 hash 与 payload 的元素对象（242a 内部入口；不再重算 hash 或序列化）。"""
         if len(payload) > self.limits.max_payload_bytes:
             limit = self.limits.max_payload_bytes
             raise PayloadTooLargeError(
@@ -1288,11 +1327,59 @@ class ProtocolCore:
         ``DPE_NOT_FOUND`` 等原样抛出，不做恢复；只处理上述两类。抛出的异常带 ``session``
         属性（当前会话，可能仍可复用；见 ``dpe_sdk.errors.DpeError.session``）。
         """
-        if not isinstance(document, Document):
-            raise TypeError(f"document 必须是 dpe_sdk.Document，实际为 {type(document).__name__}")
-        dpe_hash.normalize_file_uri(uri)
-        self._condition(precondition)
-        parts = self._wire_parts(document)
+        return (
+            yield from self._deliver(
+                uri, document, precondition, None, blobs=blobs, session=session
+            )
+        )
+
+    def _deliver_prepared(
+        self,
+        uri: str,
+        document: Document,
+        prepared: PreparedDocument,
+        precondition: CommitPrecondition,
+        *,
+        blobs: Callable[[str], BlobSource | bytes] | None = None,
+        session: Session | None = None,
+    ) -> Operation[CommitResult]:
+        """推送器内部通道：用预算好的三层 hash 与 dump 投递；本地失败按「确定未发出」打标。"""
+        return (
+            yield from self._deliver(
+                uri,
+                document,
+                precondition,
+                prepared,
+                blobs=blobs,
+                session=session,
+                mark_local=True,
+            )
+        )
+
+    def _deliver(
+        self,
+        uri: str,
+        document: Document,
+        precondition: CommitPrecondition,
+        prepared: PreparedDocument | None,
+        *,
+        blobs: Callable[[str], BlobSource | bytes] | None = None,
+        session: Session | None = None,
+        mark_local: bool = False,
+    ) -> Operation[CommitResult]:
+        """``deliver`` 与内部通道的共享实现；``mark_local`` 只由私有入口置位。"""
+        try:
+            if not isinstance(document, Document):
+                raise TypeError(
+                    f"document 必须是 dpe_sdk.Document，实际为 {type(document).__name__}"
+                )
+            dpe_hash.normalize_file_uri(uri)
+            self._condition(precondition)
+            parts = self._wire_parts(document, prepared)
+        except Exception as exc:
+            if mark_local:
+                mark_outcome_not_sent(exc)
+            raise
         tracker = _WriteAttempts()
         try:
             if session is not None:
@@ -1615,8 +1702,8 @@ class ProtocolCore:
                 raise UnexpectedResponseError(
                     f"缺失清单里的页 {page_hash} 不是本次提交引用的对象", status=400
                 )
-            missing_elements = yield from self.upload_page(
-                session, PageObject.model_validate(page, context={"contract": self.contract})
+            missing_elements = yield from self._upload_page(
+                session, page_hash, self._json_body(page)
             )
             uploaded.add(page_hash)
             objects.extend(missing_elements)
@@ -1629,9 +1716,8 @@ class ProtocolCore:
                 raise UnexpectedResponseError(
                     f"缺失清单里的元素 {content_hash} 不是本次提交引用的对象", status=400
                 )
-            missing_blobs = yield from self.upload_element(
-                session,
-                ElementObject.model_validate(element, context={"contract": self.contract}),
+            missing_blobs = yield from self._upload_element(
+                session, content_hash, self._json_body(element)
             )
             uploaded.add(content_hash)
             blobs_needed.extend(missing_blobs)

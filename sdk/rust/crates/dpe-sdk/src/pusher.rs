@@ -89,8 +89,8 @@ use std::fmt;
 use std::sync::Mutex;
 
 use crate::errors::{Error, ErrorKind};
-use crate::models::ExpandedDocument;
-use crate::protocol::Precondition;
+use crate::models::{hashes_from_value, ExpandedDocument};
+use crate::protocol::{Precondition, PreparedDocument};
 use crate::wire::{CommitResult, CommitStatus, Delta};
 
 #[cfg(feature = "http")]
@@ -334,6 +334,7 @@ pub(crate) struct Entry<'d> {
     pub(crate) uri: String,
     pub(crate) document: &'d ExpandedDocument,
     pub(crate) new_hash: String,
+    pub(crate) prepared: PreparedDocument,
 }
 
 /// 判定阶段的动作。
@@ -364,6 +365,8 @@ pub(crate) struct Plan<'d> {
     /// commit：展开文档（write 时投递）与本地内容 hash（已达成时确认 L=N）。
     pub(crate) document: Option<&'d ExpandedDocument>,
     pub(crate) new_hash: Option<String>,
+    /// commit write：推送器预算的三层 hash 与 dump（242a 内部通道）。
+    pub(crate) prepared: Option<PreparedDocument>,
     /// move：目标 uri（归一化）与本次使用的 base_hash（已达成 / 迁移条目时也用）。
     pub(crate) to_uri: Option<String>,
     pub(crate) base: Option<String>,
@@ -389,6 +392,7 @@ impl<'d> Plan<'d> {
             precondition: None,
             document: None,
             new_hash: None,
+            prepared: None,
             to_uri: None,
             base: None,
             to_hash: None,
@@ -572,12 +576,19 @@ impl PusherState {
                     "归一化后重复的 file_uri：{previous:?} 与 {uri:?}"
                 )));
             }
-            let new_hash = document.doc_hash(contract)?;
+            let data = serde_json::to_value(document).expect("数据模型总能序列化");
+            let hashes = hashes_from_value(&data, contract)?;
+            let prepared = PreparedDocument {
+                contract: contract.to_owned(),
+                hashes,
+                data,
+            };
             seen.insert(normalized.clone(), uri);
             entries.push(Entry {
                 uri: normalized,
                 document,
-                new_hash,
+                new_hash: prepared.hashes.doc_hash.clone(),
+                prepared,
             });
         }
         let allowed: HashSet<String> = seen.into_keys().collect();
@@ -757,6 +768,9 @@ impl PusherState {
             plan.precondition = precondition;
             plan.document = Some(entry.document);
             plan.new_hash = Some(entry.new_hash);
+            if action == Action::Write {
+                plan.prepared = Some(entry.prepared);
+            }
             plans.push(plan);
         }
         plans
@@ -1688,6 +1702,10 @@ mod driver {
         async fn commit_one(&self, plan: &Plan<'_>, blobs: Option<&SharedBlobs<'_>>) -> Outcome {
             let precondition = plan.precondition.clone().expect("write 计划必有前置条件");
             let document = plan.document.expect("commit 的 write 计划必有文档");
+            let prepared = plan
+                .prepared
+                .as_ref()
+                .expect("commit 的 write 计划必有预算");
             // 每条 deliver 拿一个转发到共享 provider 的局部闭包（见 `SharedBlobs` 的借用不变式）；
             // 调用方没给 provider 时仍传 None，保持核心「无来源即如实报缺失」的语义
             let shared = blobs.filter(|cell| lock_blobs(cell).is_some());
@@ -1700,7 +1718,7 @@ mod driver {
             });
             match self
                 .client
-                .deliver(&plan.uri, document, precondition, provider, None)
+                .deliver_prepared(&plan.uri, document, prepared, precondition, provider, None)
                 .await
             {
                 Ok(result) => Outcome::ok(Some(result)),
@@ -1851,6 +1869,15 @@ mod tests {
         .expect("合法文档")
     }
 
+    fn prepared_doc(document: &ExpandedDocument) -> PreparedDocument {
+        let hashes = document.hashes(C).expect("合法文档");
+        PreparedDocument {
+            contract: C.to_owned(),
+            hashes,
+            data: serde_json::to_value(document).expect("数据模型总能序列化"),
+        }
+    }
+
     fn none() -> Expected {
         HashMap::new()
     }
@@ -1907,10 +1934,12 @@ mod tests {
         expected: &Expected,
         contracts: &[&str],
     ) -> (Action, Option<Precondition>) {
+        let prepared = prepared_doc(document);
         let entry = Entry {
             uri: A.to_owned(),
             document,
-            new_hash: document.doc_hash(C).unwrap(),
+            new_hash: prepared.hashes.doc_hash.clone(),
+            prepared,
         };
         let plan = state
             .plan_commit(vec![entry], &[head], expected, C, contracts)
@@ -2447,10 +2476,12 @@ mod tests {
         let document = doc("v2");
         let n = document.doc_hash(C).unwrap();
         let mut state = with_synced(&[(A, h('1'))]);
+        let prepared = prepared_doc(&document);
         let entry = Entry {
             uri: A.to_owned(),
             document: &document,
             new_hash: n.clone(),
+            prepared,
         };
         let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C, &[C]);
         stage(&mut state, PusherState::commit_intents(&plans));
@@ -2482,10 +2513,12 @@ mod tests {
     fn commit_conflict_whose_reread_differs_stays_a_conflict() {
         let document = doc("v2");
         let mut state = with_synced(&[(A, h('1'))]);
+        let prepared = prepared_doc(&document);
         let entry = Entry {
             uri: A.to_owned(),
             document: &document,
-            new_hash: document.doc_hash(C).unwrap(),
+            new_hash: prepared.hashes.doc_hash.clone(),
+            prepared,
         };
         let plans = state.plan_commit(vec![entry], &[Some(h('1'))], &none(), C, &[C]);
         stage(&mut state, PusherState::commit_intents(&plans));
@@ -2568,10 +2601,12 @@ mod tests {
     fn commit_success_confirms_the_server_hash() {
         let document = doc("正文");
         let mut state = PusherState::default();
+        let prepared = prepared_doc(&document);
         let entry = Entry {
             uri: A.to_owned(),
             document: &document,
-            new_hash: document.doc_hash(C).unwrap(),
+            new_hash: prepared.hashes.doc_hash.clone(),
+            prepared,
         };
         let plans = state.plan_commit(vec![entry], &[None], &none(), C, &[C]);
         stage(&mut state, PusherState::commit_intents(&plans));

@@ -103,7 +103,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol, TypeAlias, cast
 
 import anyio
 import dpe_hash
@@ -121,6 +121,7 @@ from dpe_sdk.protocol import (
     BaseHash,
     BlobSource,
     IfAbsent,
+    PreparedDocument,
     mark_outcome_not_sent,
     outcome_unknown,
 )
@@ -257,6 +258,7 @@ class _Entry:
     uri: str
     document: Document
     new_hash: str
+    prepared: PreparedDocument
 
 
 @dataclass(frozen=True)
@@ -279,6 +281,8 @@ class _Plan:
     #: commit：展开文档（write 时内联投递）与本地内容 hash（已达成 / 成功后确认 L=N）
     document: Document | None = None
     new_hash: str | None = None
+    #: commit write：推送器预算的三层 hash 与 dump（242a 内部通道）
+    prepared: PreparedDocument | None = None
     #: move：目标 uri（归一化）与本次使用的 base_hash（已达成 / 迁移条目时也用）
     to_uri: str | None = None
     base: str | None = None
@@ -477,7 +481,16 @@ class _PusherBase:
             if normalized in seen:
                 raise ValueError(f"归一化后重复的 file_uri：{seen[normalized]!r} 与 {uri!r}")
             seen[normalized] = uri
-            entries.append(_Entry(normalized, document, document.doc_hash(contract)))
+            data = document.model_dump()
+            hashes = dpe_hash.document_hashes(cast(dpe_hash.ExpandedDocument, data), contract)
+            entries.append(
+                _Entry(
+                    normalized,
+                    document,
+                    hashes["doc_hash"],
+                    PreparedDocument(contract, hashes, data),
+                )
+            )
         return entries, self._prepare_expected(expected_base, set(seen), contract, contracts)
 
     def _prepare_uris(
@@ -626,6 +639,7 @@ class _PusherBase:
                 precondition=precondition,
                 document=entry.document,
                 new_hash=entry.new_hash,
+                prepared=entry.prepared if action == "write" else None,
             )
 
         plans: list[_Plan] = []
@@ -1304,9 +1318,15 @@ class StatefulPusher(_PusherBase):
         return outcomes
 
     def _commit_one(self, plan: _Plan, *, blobs: BlobLookup | None) -> _Outcome:
-        assert plan.precondition is not None and plan.document is not None  # write 计划必有
+        assert (
+            plan.precondition is not None
+            and plan.document is not None
+            and plan.prepared is not None
+        )  # write 计划必有
         try:
-            result = self._client.deliver(plan.uri, plan.document, plan.precondition, blobs=blobs)
+            result = self._client._deliver_prepared(
+                plan.uri, plan.document, plan.prepared, plan.precondition, blobs=blobs
+            )
         except (PreconditionFailedError, AlreadyExistsError, NotFoundError) as exc:
             remote, re_error = self._re_read(plan.uri)
             return _Outcome(error=exc, kind="conflict", remote=remote, remote_error=re_error)
@@ -1563,10 +1583,14 @@ class AsyncStatefulPusher(_PusherBase):
         return outcomes
 
     async def _commit_one(self, plan: _Plan, *, blobs: BlobLookup | None) -> _Outcome:
-        assert plan.precondition is not None and plan.document is not None  # write 计划必有
+        assert (
+            plan.precondition is not None
+            and plan.document is not None
+            and plan.prepared is not None
+        )  # write 计划必有
         try:
-            result = await self._client.deliver(
-                plan.uri, plan.document, plan.precondition, blobs=blobs
+            result = await self._client._deliver_prepared(
+                plan.uri, plan.document, plan.prepared, plan.precondition, blobs=blobs
             )
         except (PreconditionFailedError, AlreadyExistsError, NotFoundError) as exc:
             remote, re_error = await self._re_read(plan.uri)

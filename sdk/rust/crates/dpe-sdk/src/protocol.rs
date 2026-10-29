@@ -781,7 +781,7 @@ impl ProtocolCore {
         uri: &str,
         document: &ExpandedDocument,
     ) -> Result<NegotiateOp<'_>, Error> {
-        let parts = self.wire_parts(document)?;
+        let parts = self.wire_parts(document, None)?;
         self.negotiate_op(uri, &parts, &[])
     }
 
@@ -922,9 +922,37 @@ impl ProtocolCore {
         blobs: Option<BlobProvider<'a>>,
         session: Option<Session>,
     ) -> Result<DeliverOp<'a>, Error> {
+        self.deliver_with(uri, document, precondition, None, blobs, session)
+    }
+
+    /// 推送器内部通道：用预算好的三层 hash 与 dump 投递；契约不符时回退重算。
+    /// 入口处的本地失败（uri / 前置条件 / 部件构造）按「确定未发出」标记。
+    #[cfg(any(feature = "http", test))]
+    pub(crate) fn deliver_prepared<'a>(
+        &'a self,
+        uri: &str,
+        document: &ExpandedDocument,
+        prepared: &PreparedDocument,
+        precondition: Precondition,
+        blobs: Option<BlobProvider<'a>>,
+        session: Option<Session>,
+    ) -> Result<DeliverOp<'a>, Error> {
+        self.deliver_with(uri, document, precondition, Some(prepared), blobs, session)
+            .map_err(|error| error.with_outcome_unknown(false))
+    }
+
+    fn deliver_with<'a>(
+        &'a self,
+        uri: &str,
+        document: &ExpandedDocument,
+        precondition: Precondition,
+        prepared: Option<&PreparedDocument>,
+        blobs: Option<BlobProvider<'a>>,
+        session: Option<Session>,
+    ) -> Result<DeliverOp<'a>, Error> {
         dpe_hash::normalize_file_uri(uri).map_err(|error| Error::from_hash_error(&error, ""))?;
         self.condition(&precondition)?;
-        let parts = self.wire_parts(document)?;
+        let parts = self.wire_parts(document, prepared)?;
         DeliverOp::new(self, uri, parts, precondition, blobs, session)
     }
 
@@ -997,7 +1025,7 @@ impl ProtocolCore {
         session: Option<&Session>,
     ) -> Result<CommitOp<'_>, Error> {
         dpe_hash::normalize_file_uri(uri).map_err(|error| Error::from_hash_error(&error, ""))?;
-        let parts = self.wire_parts(document)?;
+        let parts = self.wire_parts(document, None)?;
         let mut body = json!({"document": &parts.document});
         if let Some(session) = session {
             body["staging_session"] = Value::String(session.id.clone());
@@ -1162,41 +1190,78 @@ impl ProtocolCore {
 
     /// 把展开文档拆成线上部件（Python `_wire_parts` 的对等）：文档对象、按 hash 去重的页对象
     /// 与元素对象，以及 doc_hash 与元素总数（含重复，供 delta 校验）。
-    fn wire_parts(&self, document: &ExpandedDocument) -> Result<WireParts, Error> {
-        let hashes = document.hashes(&self.contract)?;
+    ///
+    /// `prepared` 是推送器预算的三层 hash 与 dump；契约等于 `self.contract` 时直接复用，否则
+    /// 按公共路径重算（242a）。
+    fn wire_parts(
+        &self,
+        document: &ExpandedDocument,
+        prepared: Option<&PreparedDocument>,
+    ) -> Result<WireParts, Error> {
+        let fallback = match prepared {
+            Some(prepared) if prepared.contract == self.contract => None,
+            _ => Some((
+                document.hashes(&self.contract)?,
+                serde_json::to_value(document).expect("数据模型总能序列化"),
+            )),
+        };
+        let (hashes, data) = match (prepared, fallback.as_ref()) {
+            (Some(prepared), _) if prepared.contract == self.contract => {
+                (&prepared.hashes, &prepared.data)
+            }
+            (_, Some((hashes, data))) => (hashes, data),
+            _ => unreachable!("fallback 已覆盖 prepared 不匹配的情况"),
+        };
+        let data_pages = data
+            .get("pages")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::invalid_argument("文档 dump 缺少 pages 数组"))?;
+        if data_pages.len() != hashes.pages.len() {
+            return Err(Error::invalid_argument(
+                "文档 dump 的页数与预算的三层 hash 不一致",
+            ));
+        }
         let mut pages = Vec::new();
         let mut objects = Vec::new();
         let mut page_by_hash = std::collections::HashMap::new();
         let mut object_by_hash = std::collections::HashMap::new();
         let mut blob_mime = std::collections::HashMap::new();
         let mut total: u64 = 0;
-        for (page, page_hashes) in document.pages.iter().zip(&hashes.pages) {
+        for (page, page_hashes) in data_pages.iter().zip(&hashes.pages) {
             // 元素总数（含重复）：u64 求和的是内存中的元素数，溢出不可达；饱和写法纯防护
             total = total.saturating_add(page_hashes.elements.len() as u64);
             if page_by_hash.contains_key(&page_hashes.page_hash) {
                 continue; // 同一页对象的元素也已全部收录
             }
-            let mut wire_page = serde_json::to_value(page).expect("数据模型总能序列化");
+            let mut wire_page = page.clone();
             wire_page["elements"] = json!(page_hashes.elements);
             page_by_hash.insert(page_hashes.page_hash.clone(), wire_page.clone());
             pages.push(wire_page);
-            for (element, content_hash) in page.elements.iter().zip(&page_hashes.elements) {
+            let elements = page
+                .get("elements")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Error::invalid_argument("文档 dump 的页缺少 elements 数组"))?;
+            if elements.len() != page_hashes.elements.len() {
+                return Err(Error::invalid_argument(
+                    "文档 dump 的元素数与预算的三层 hash 不一致",
+                ));
+            }
+            for (element, content_hash) in elements.iter().zip(&page_hashes.elements) {
                 if object_by_hash.contains_key(content_hash) {
                     continue;
                 }
-                object_by_hash.insert(
-                    content_hash.clone(),
-                    serde_json::to_value(element).expect("数据模型总能序列化"),
-                );
-                objects.push(serde_json::to_value(element).expect("数据模型总能序列化"));
-                let blob = element.blob.as_ref().and_then(|value| value.as_ref());
+                object_by_hash.insert(content_hash.clone(), element.clone());
+                objects.push(element.clone());
+                let blob = element.get("blob").and_then(Value::as_str);
                 if let Some(blob) = blob {
-                    let mime = element.mime_type.as_ref().and_then(|value| value.clone());
-                    blob_mime.entry(blob.clone()).or_insert(mime);
+                    let mime = element.get("mime_type").and_then(Value::as_str);
+                    blob_mime
+                        .entry(blob.to_owned())
+                        .or_insert(mime.map(str::to_owned));
                 }
             }
         }
-        let mut document_object = serde_json::to_value(document).expect("数据模型总能序列化");
+        let mut document_object = data.clone();
         document_object["pages"] = json!(hashes
             .pages
             .iter()
@@ -1209,7 +1274,7 @@ impl ProtocolCore {
             page_by_hash,
             object_by_hash,
             blob_mime,
-            doc_hash: hashes.doc_hash,
+            doc_hash: hashes.doc_hash.clone(),
             total,
         })
     }
@@ -1713,6 +1778,14 @@ struct WireParts {
     doc_hash: String,
     /// 元素总数（含重复，供 delta 校验）。
     total: u64,
+}
+
+/// 推送器预算的三层 hash 与一次 dump（242a 内部通道，不属于公开 API）。
+#[derive(Debug)]
+pub(crate) struct PreparedDocument {
+    pub(crate) contract: String,
+    pub(crate) hashes: dpe_hash::DocumentHashes,
+    pub(crate) data: Value,
 }
 
 /// head 请求的判定结果（写操作的回退判定用）。
@@ -4498,4 +4571,238 @@ fn days_in_month(year: i64, month: u32) -> i64 {
 
 fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::test_counters;
+    use crate::pusher::PusherState;
+    use crate::wire::Capabilities;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn core_with(max_payload_bytes: u64, contracts: &[&str]) -> ProtocolCore {
+        let capabilities = Capabilities::from_value(&json!({
+            "protocol": "dpe/1",
+            "hash_contracts": contracts,
+            "limits": {
+                "max_payload_bytes": max_payload_bytes,
+                "page_max_bytes": 268435456,
+                "staging_ttl_seconds": 86400,
+                "blob_max_bytes": 104857600,
+                "blob_chunk_bytes": 8388608,
+                "batch_head_max": 2,
+                "list_page_max": 1000
+            },
+            "content_encodings": [],
+            "features": []
+        }))
+        .expect("能力模板");
+        ProtocolCore::new(capabilities, dpe_hash::CONTRACT, 2).expect("核心")
+    }
+
+    fn core() -> ProtocolCore {
+        core_with(8388608, &[dpe_hash::CONTRACT])
+    }
+
+    fn prepared_for(document: ExpandedDocument, core: &ProtocolCore) -> PreparedDocument {
+        let documents = [("dpe://docs/a.md".to_owned(), document)];
+        let (entries, _) = PusherState::prepare(
+            &documents,
+            &HashMap::new(),
+            core.contract(),
+            &[core.contract()],
+        )
+        .expect("prepare");
+        entries.into_iter().next().expect("一条").prepared
+    }
+
+    fn large_document() -> ExpandedDocument {
+        ExpandedDocument::from_value(
+            &json!({
+                "file_type": "md",
+                "pages": [{"elements": [
+                    {"category": "NarrativeText", "text": "a".repeat(300)},
+                    {"category": "NarrativeText", "text": "b".repeat(300)},
+                    {"category": "NarrativeText", "text": "c".repeat(300)},
+                    {"category": "NarrativeText", "text": "d".repeat(300)}
+                ]}]
+            }),
+            dpe_hash::CONTRACT,
+        )
+        .expect("合法文档")
+    }
+
+    fn document() -> ExpandedDocument {
+        ExpandedDocument::from_value(
+            &json!({
+                "file_type": "md",
+                "pages": [
+                    {"elements": [
+                        {"category": "NarrativeText", "text": "a"},
+                        {"category": "NarrativeText", "text": "b"}
+                    ]},
+                    {"elements": [{"category": "NarrativeText", "text": "c"}]}
+                ]
+            }),
+            dpe_hash::CONTRACT,
+        )
+        .expect("合法文档")
+    }
+
+    #[test]
+    fn prepared_document_is_hashed_once_across_pusher_and_core() {
+        let document = document();
+        let core = core();
+        test_counters::reset();
+        let documents = [("dpe://docs/a.md".to_owned(), document)];
+        let (entries, _) = PusherState::prepare(
+            &documents,
+            &HashMap::new(),
+            dpe_hash::CONTRACT,
+            &[dpe_hash::CONTRACT],
+        )
+        .expect("prepare");
+        assert_eq!(test_counters::document_hashes(), 1, "推送器预算一次");
+        let entry = entries.into_iter().next().expect("一条");
+        let parts = core
+            .wire_parts(entry.document, Some(&entry.prepared))
+            .expect("部件");
+        assert_eq!(
+            test_counters::document_hashes(),
+            1,
+            "核心复用预算，不再全树 hash"
+        );
+        assert_eq!(parts.total, 3, "元素数（含跨页）");
+        assert_eq!(parts.doc_hash, entry.prepared.hashes.doc_hash);
+    }
+
+    #[test]
+    fn contract_mismatch_falls_back_to_recomputation() {
+        let document = document();
+        let core = core();
+        test_counters::reset();
+        let hashes = document.hashes(dpe_hash::CONTRACT).expect("hash");
+        assert_eq!(test_counters::document_hashes(), 1);
+        let prepared = PreparedDocument {
+            contract: dpe_hash::DRILL_CONTRACT.to_owned(),
+            hashes,
+            data: serde_json::to_value(&document).expect("序列化"),
+        };
+        let parts = core.wire_parts(&document, Some(&prepared)).expect("部件");
+        assert_eq!(
+            test_counters::document_hashes(),
+            2,
+            "契约不符走公共路径重算"
+        );
+        assert_eq!(parts.total, 3);
+    }
+
+    #[test]
+    fn fast_path_does_not_recompute_after_prepare() {
+        let core = core();
+        test_counters::reset();
+        let document = document();
+        let prepared = prepared_for(document.clone(), &core);
+        assert_eq!(test_counters::document_hashes(), 1);
+        let mut op = core
+            .deliver_prepared(
+                "dpe://docs/a.md",
+                &document,
+                &prepared,
+                Precondition::IfAbsent,
+                None,
+                None,
+            )
+            .expect("deliver");
+        assert_eq!(test_counters::document_hashes(), 1, "投递入口不再全树 hash");
+        match op.poll().expect("第一步") {
+            Step::Send(request) => {
+                assert_eq!(request.method, Method::Put);
+                assert!(request.target.starts_with("documents?uri="));
+            }
+            Step::Done(_) => panic!("快路径应发 commit"),
+        }
+    }
+
+    #[test]
+    fn staging_path_does_not_recompute_after_prepare() {
+        let core = core_with(1500, &[dpe_hash::CONTRACT]);
+        test_counters::reset();
+        let document = large_document();
+        let prepared = prepared_for(document.clone(), &core);
+        assert_eq!(test_counters::document_hashes(), 1);
+        let mut op = core
+            .deliver_prepared(
+                "dpe://docs/a.md",
+                &document,
+                &prepared,
+                Precondition::IfAbsent,
+                None,
+                None,
+            )
+            .expect("deliver");
+        assert_eq!(test_counters::document_hashes(), 1, "暂存路径不再全树 hash");
+        match op.poll().expect("第一步") {
+            Step::Send(request) => {
+                assert_eq!(request.method, Method::Post);
+                assert_eq!(request.target, "negotiate");
+            }
+            Step::Done(_) => panic!("暂存路径应先 negotiate"),
+        }
+    }
+
+    #[test]
+    fn cross_contract_base_does_not_recompute_after_prepare() {
+        let core = core_with(8388608, &[dpe_hash::CONTRACT, dpe_hash::DRILL_CONTRACT]);
+        test_counters::reset();
+        let document = document();
+        let prepared = prepared_for(document.clone(), &core);
+        assert_eq!(test_counters::document_hashes(), 1);
+        let base = format!("{}:{}", dpe_hash::DRILL_CONTRACT, "1".repeat(64));
+        let mut op = core
+            .deliver_prepared(
+                "dpe://docs/a.md",
+                &document,
+                &prepared,
+                Precondition::BaseHash(base.clone()),
+                None,
+                None,
+            )
+            .expect("deliver");
+        assert_eq!(
+            test_counters::document_hashes(),
+            1,
+            "旧契约 base 不触发重算"
+        );
+        match op.poll().expect("第一步") {
+            Step::Send(request) => {
+                assert_eq!(request.method, Method::Put);
+                assert_eq!(
+                    request.headers.get("If-Match"),
+                    Some(format!("\"{base}\"").as_str())
+                );
+            }
+            Step::Done(_) => panic!("跨契约 base 应发 commit"),
+        }
+    }
+
+    #[test]
+    fn deliver_prepared_marks_local_failure_not_sent() {
+        let core = core();
+        let document = document();
+        let prepared = prepared_for(document.clone(), &core);
+        let error = core
+            .deliver_prepared(
+                "zzz-no-scheme",
+                &document,
+                &prepared,
+                Precondition::IfAbsent,
+                None,
+                None,
+            )
+            .expect_err("非法 uri 应本地失败");
+        assert!(!error.outcome_unknown(), "本地失败确定未发出");
+    }
 }

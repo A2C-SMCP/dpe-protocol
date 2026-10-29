@@ -13,13 +13,14 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from itertools import chain
 from typing import Any, Protocol
 
 import anyio
 import anyio.to_thread
 import dpe_hash
+import dpe_hash.contract1
 import httpx
 import pytest
 from client_helpers import PREFIX, REMOTE, ClientRecorder, in_process_client
@@ -140,6 +141,56 @@ def _hashes(document: Document) -> tuple[set[str], set[str]]:
         {page["page_hash"] for page in data["pages"]},
         set(chain.from_iterable(page["elements"] for page in data["pages"])),
     )
+
+
+@contextlib.contextmanager
+def _hash_calls(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, int]]:
+    """计数推送期间的 hash 入口：全树 document_hashes、公共 content_hash、元素预像。"""
+    counts = {"document_hashes": 0, "content_hash": 0, "element_preimage": 0}
+    original_document_hashes = dpe_hash.document_hashes
+    original_content_hash = dpe_hash.content_hash
+    original_element_preimage = dpe_hash.contract1._element_preimage
+
+    def counted_document_hashes(document: Any, contract: str = C) -> Any:
+        counts["document_hashes"] += 1
+        return original_document_hashes(document, contract)
+
+    def counted_content_hash(element: Any, contract: str = C) -> str:
+        counts["content_hash"] += 1
+        return original_content_hash(element, contract)
+
+    def counted_element_preimage(element: Any, at: str) -> str:
+        counts["element_preimage"] += 1
+        return original_element_preimage(element, at)
+
+    monkeypatch.setattr(dpe_hash, "document_hashes", counted_document_hashes)
+    monkeypatch.setattr(dpe_hash, "content_hash", counted_content_hash)
+    monkeypatch.setattr(dpe_hash.contract1, "_element_preimage", counted_element_preimage)
+    yield counts
+
+
+def _assert_one_full_hash(counts: dict[str, int], elements: int) -> None:
+    """每次 push 每篇文档全树一次、每个元素预像一次、没有额外的公共 content_hash 调用。"""
+    assert counts == {
+        "document_hashes": 1,
+        "content_hash": 0,
+        "element_preimage": elements,
+    }
+
+
+class _SyncRecorder(httpx.BaseTransport):
+    """记录请求后转发给真实 HTTP transport（242a 暂存路径断言用）。"""
+
+    def __init__(self) -> None:
+        self._inner = httpx.HTTPTransport()
+        self.requests: list[httpx.Request] = []
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return self._inner.handle_request(request)
+
+    def close(self) -> None:
+        self._inner.close()
 
 
 async def _state(store: MemoryStateStore) -> StateSnapshot:
@@ -270,6 +321,127 @@ async def test_mid_page_insert_uploads_only_new_objects() -> None:
     inlined = {dpe_hash.content_hash(o, C) for b in bodies for o in b.get("objects") or []}
     assert uploaded_pages | carried == new_pages - old_pages  # 只有新页
     assert uploaded_objects | inlined == new_objects - old_objects  # 只有新增元素
+
+
+# ------------------------------------------------------------ 242a：每篇只算一次 hash
+
+
+def test_push_hashes_each_document_once_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """快路径：推送器→核心段每篇文档全树 hash 一次，每个元素预像一次。"""
+    doc = _pages(["a", "b"], ["c"])
+    with (
+        _hash_calls(monkeypatch) as counts,
+        spawn_server() as info,
+        DpeClient(info["url"]) as client,
+    ):
+        results = StatefulPusher(client, state=MemoryStateStore()).push({URI: doc})
+    assert [r.status for r in results] == ["created"]
+    _assert_one_full_hash(counts, 3)
+
+
+async def test_async_push_hashes_each_document_once_fast_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """异步快路径与同步同口径。"""
+    doc = _pages(["a", "b"], ["c"])
+    with _hash_calls(monkeypatch) as counts, spawn_server() as info:
+        async with AsyncDpeClient(info["url"]) as client:
+            results = await AsyncStatefulPusher(client, state=MemoryStateStore()).push({URI: doc})
+    assert [r.status for r in results] == ["created"]
+    _assert_one_full_hash(counts, 3)
+
+
+def test_push_hashes_each_document_once_staging_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """暂存路径（含清单补传）：逐对象上传复用已知 hash，不重算。"""
+    doc = _pages(["a" * 300, "b" * 300], ["c" * 300, "d" * 300])
+    recorder = _SyncRecorder()
+    with (
+        _hash_calls(monkeypatch) as counts,
+        spawn_server("--max-payload-bytes", "1200") as info,
+        DpeClient(info["url"], transport=recorder) as client,
+    ):
+        results = StatefulPusher(client, state=MemoryStateStore()).push({URI: doc})
+    assert [r.status for r in results] == ["created"]
+    _assert_one_full_hash(counts, 4)
+    assert any(
+        request.method == "PUT"
+        and "/staging/" in request.url.path
+        and "/pages/" in request.url.path
+        for request in recorder.requests
+    ), "应走暂存路径上传页"
+    assert any(
+        request.method == "PUT"
+        and "/staging/" in request.url.path
+        and "/objects/" in request.url.path
+        for request in recorder.requests
+    ), "应走暂存路径上传元素"
+
+
+async def test_async_push_hashes_each_document_once_staging_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """异步暂存路径与同步同口径。"""
+    doc = _pages(["a" * 300, "b" * 300], ["c" * 300, "d" * 300])
+    recorder = ClientRecorder(httpx.AsyncHTTPTransport())
+    with _hash_calls(monkeypatch) as counts, spawn_server("--max-payload-bytes", "1200") as info:
+        async with AsyncDpeClient(info["url"], transport=recorder) as client:
+            results = await AsyncStatefulPusher(client, state=MemoryStateStore()).push({URI: doc})
+    assert [r.status for r in results] == ["created"]
+    _assert_one_full_hash(counts, 4)
+    assert any(
+        request.method == "PUT"
+        and "/staging/" in request.url.path
+        and "/pages/" in request.url.path
+        for request in recorder.requests
+    ), "应走暂存路径上传页"
+    assert any(
+        request.method == "PUT"
+        and "/staging/" in request.url.path
+        and "/objects/" in request.url.path
+        for request in recorder.requests
+    ), "应走暂存路径上传元素"
+
+
+def test_push_hashes_each_document_once_with_cross_contract_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """以旧契约为 base 的跨契约 commit：内容仍按当前契约算一次，不因 base 的契约重算。"""
+    doc1, doc2 = _doc("v1"), _doc("v2")
+    with spawn_server("--contract", "dpe1", "--contract", "dpex") as info:
+        store = MemoryStateStore()
+        with DpeClient(info["url"]) as client:
+            assert [r.status for r in StatefulPusher(client, state=store).push({URI: doc1})] == [
+                "created"
+            ]
+            stale = inline(text_doc(["v1"]), dpe_hash.DRILL_CONTRACT).doc_hash
+            store.save(info["url"], StateSnapshot(synced={URI: stale}, intents={}))
+            reloaded = StatefulPusher(client, state=store)
+            with _hash_calls(monkeypatch) as counts:
+                results = reloaded.push({URI: doc2})
+    assert [r.status for r in results] == ["updated"]
+    assert isinstance(results[0].precondition, BaseHash)
+    assert results[0].precondition.value == stale
+    _assert_one_full_hash(counts, 1)
+
+
+async def test_async_push_hashes_each_document_once_with_cross_contract_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """异步跨契约 base 与同步同口径。"""
+    doc1, doc2 = _doc("v1"), _doc("v2")
+    with spawn_server("--contract", "dpe1", "--contract", "dpex") as info:
+        store = MemoryStateStore()
+        async with AsyncDpeClient(info["url"]) as client:
+            await AsyncStatefulPusher(client, state=store).push({URI: doc1})
+            stale = inline(text_doc(["v1"]), dpe_hash.DRILL_CONTRACT).doc_hash
+            store.save(info["url"], StateSnapshot(synced={URI: stale}, intents={}))
+            reloaded = AsyncStatefulPusher(client, state=store)
+            with _hash_calls(monkeypatch) as counts:
+                results = await reloaded.push({URI: doc2})
+    assert [r.status for r in results] == ["updated"]
+    assert isinstance(results[0].precondition, BaseHash)
+    assert results[0].precondition.value == stale
+    _assert_one_full_hash(counts, 1)
 
 
 async def test_old_contract_state_entries_are_used_when_still_accepted() -> None:
