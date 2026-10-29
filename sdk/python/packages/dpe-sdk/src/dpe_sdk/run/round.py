@@ -77,12 +77,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 
+import dpe_hash
 import httpx
 from dpe_hash import DpeHashError, normalize_file_uri
 
-from dpe_sdk._plain import plain
 from dpe_sdk.errors import (
     ClientError,
     ContractUnsupportedError,
@@ -91,7 +91,8 @@ from dpe_sdk.errors import (
     LocalRequestError,
     UnexpectedResponseError,
 )
-from dpe_sdk.models import Document
+from dpe_sdk.models import Document, _build_document
+from dpe_sdk.protocol import PreparedDocument
 from dpe_sdk.pusher import AsyncStatefulPusher, PushResult, StateSnapshot
 from dpe_sdk.run.blobs import BlobStage
 from dpe_sdk.run.definition import ConflictPolicy
@@ -309,7 +310,7 @@ _SkipKind = Literal["document", "delete", "move"]
 class _Wave:
     """一波 URI 两两不同的落地操作（按流中顺序收集）。"""
 
-    commits: dict[str, Document] = field(default_factory=dict)
+    commits: dict[str, tuple[Document, PreparedDocument]] = field(default_factory=dict)
     deletes: list[str] = field(default_factory=list)
     moves: list[tuple[str, str]] = field(default_factory=list)
     uris: set[str] = field(default_factory=set)
@@ -320,7 +321,7 @@ class _Wave:
         return bool(self.uris)
 
 
-_Op = tuple[Literal["commit"], str, Document] | DeleteItem | MoveItem
+_Op = tuple[Literal["commit"], str, Document, PreparedDocument] | DeleteItem | MoveItem
 
 
 def _op_uris(op: _Op) -> set[str]:
@@ -396,6 +397,8 @@ class _Round:
         # 计数与失败可由调用方提供：本轮中途因运行器缺陷中断时，调用方仍能报告已发生的部分
         self.counts = RoundCounts() if counts is None else counts
         self.failures: list[RunFailure] = [] if failures is None else failures
+        #: 本轮请求声明的契约（能力协商后由 core.contract 覆盖）
+        self.contract = dpe_hash.CONTRACT
         self.item_failed = False
         #: 本次调用内是否有过保存失败（退出前须补存，见模块说明）
         self.save_failed = False
@@ -640,7 +643,7 @@ class _Round:
                     ops.append(event)
 
         for raw in batch.items:
-            item = parse_item(raw, self.prefix)
+            item = parse_item(raw, self.prefix, contract=self.contract)
             if scope is None or not isinstance(item, MoveItem):
                 self.mark_produced(item)
             elif item.to_uri in scope:
@@ -685,32 +688,83 @@ class _Round:
 
     # -------------------------------------------------------------- 落地
 
-    async def prepare(self, ready: ReadyDocument) -> Document | None:
-        """读取 blob、换成真实引用，再做文档层校验（§6.6 第 3–4 步）。"""
-        pages = plain(ready.pages)
+    async def prepare(self, ready: ReadyDocument) -> tuple[Document, PreparedDocument] | None:
+        """读取 blob、换成真实引用，补算含 blob 的页 hash，再做文档层校验（§6.6 第 3–4 步）。"""
+        pages = ready.pages
+        page_hashes = ready.hashes
+        dirty_pages: set[int] = set()
         for slot in ready.blobs:
             ref = await self.stage.resolve(slot.spec)
             if isinstance(ref, ItemFailure):
                 self.item_failure(ref, file_uri=ready.file_uri)
                 return None
-            pages[slot.page]["elements"][slot.element]["blob"] = ref
+            element = pages[slot.page]["elements"][slot.element]
+            element["blob"] = ref
+            at = f"/pages/{slot.page}/elements/{slot.element}"
+            try:
+                page_hashes[slot.page]["elements"][slot.element] = dpe_hash.content_hash(
+                    element, self.contract
+                )
+            except DpeHashError as exc:
+                self.item_failure(
+                    ItemFailure(
+                        exc.code,
+                        f"{exc.message}（位置 {at}{exc.path}）",
+                        source="validation",
+                    ),
+                    file_uri=ready.file_uri,
+                )
+                return None
+            dirty_pages.add(slot.page)
+        for index in sorted(dirty_pages):
+            try:
+                page_hashes[index]["page_hash"] = dpe_hash.page_hash(
+                    cast(
+                        dpe_hash.PageFields,
+                        {key: value for key, value in pages[index].items() if key != "elements"},
+                    ),
+                    page_hashes[index]["elements"],
+                    self.contract,
+                )
+            except DpeHashError as exc:
+                self.item_failure(
+                    ItemFailure(
+                        exc.code,
+                        f"{exc.message}（位置 /pages/{index}{exc.path}）",
+                        source="validation",
+                    ),
+                    file_uri=ready.file_uri,
+                )
+                return None
         try:
-            return Document.model_validate({**ready.document, "pages": pages})
+            document_hash = dpe_hash.doc_hash(
+                cast(dpe_hash.DocumentFields, ready.document),
+                [page_hash_item["page_hash"] for page_hash_item in page_hashes],
+                self.contract,
+            )
         except DpeHashError as exc:
             self.item_failure(
                 ItemFailure(exc.code, str(exc), source="validation"), file_uri=ready.file_uri
             )
             return None
+        document = _build_document(ready.document, pages)
+        prepared = PreparedDocument(
+            self.contract,
+            {"doc_hash": document_hash, "pages": page_hashes},
+            {**ready.document, "pages": pages},
+        )
+        return document, prepared
 
     async def land(self, ops: list[_Op | ReadyDocument]) -> None:
         wave = _Wave()
         for entry in ops:
             op: _Op
             if isinstance(entry, ReadyDocument):
-                document = await self.prepare(entry)
-                if document is None:
+                prepared = await self.prepare(entry)
+                if prepared is None:
                     continue
-                op = ("commit", entry.file_uri, document)
+                document, prepared_document = prepared
+                op = ("commit", entry.file_uri, document, prepared_document)
             else:
                 op = entry
             uris = _op_uris(op)
@@ -725,7 +779,7 @@ class _Round:
                 wave.moves.append((op.from_uri, op.to_uri))
                 wave.order.append(("move", {"from_uri": op.from_uri, "to_uri": op.to_uri}))
             else:
-                wave.commits[op[1]] = op[2]
+                wave.commits[op[1]] = (op[2], op[3])
                 wave.order.append(("document", {"file_uri": op[1]}))
         if wave:
             await self.flush_wave(wave)
@@ -754,10 +808,14 @@ class _Round:
             raise classified from None
 
     def _push_subset(
-        self, documents: dict[str, Document], bases: dict[str, str | None], subset: list[str]
+        self,
+        commits: dict[str, tuple[Document, PreparedDocument]],
+        bases: dict[str, str | None],
+        subset: list[str],
     ) -> Awaitable[list[PushResult]]:
-        return self.pusher.push(
-            {uri: documents[uri] for uri in subset},
+        return self.pusher._push_prepared(
+            {uri: commits[uri][0] for uri in subset},
+            {uri: commits[uri][1] for uri in subset},
             expected_base={uri: bases[uri] for uri in subset if uri in bases},
             blobs=self.stage.lookup,
         )
@@ -809,7 +867,7 @@ class _Round:
         commit_base.update({uri: None for uri in guarded})
         while commits or deletes or moves:
             cleared: list[str] = []
-            retry_commits: dict[str, Document] = {}
+            retry_commits: dict[str, tuple[Document, PreparedDocument]] = {}
             retry_deletes: list[str] = []
             retry_moves: list[tuple[str, str]] = []
             next_commit: dict[str, str | None] = {}
@@ -1169,6 +1227,7 @@ async def run_round(
     pusher_log.addHandler(rejected_reads)
     try:
         await negotiate_capabilities(pusher.client)
+        state.contract = (await pusher.client.core()).contract
         final = await state.run(cursor)
         progress.incremental = final.incremental  # 收到结束批即确定（§7.3），唯一来源
         _check_final(final, cursor_given=cursor is not None, supports_cursor=supports_cursor)

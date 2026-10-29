@@ -25,11 +25,11 @@ metadata 仍是普通 dict，原地修改它不受保护，但改动后的 hash 
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Self, cast
 
 import dpe_hash
-from dpe_hash import CONTRACT, DocumentHashes, DpeHashError, parse_ijson
+from dpe_hash import CONTRACT, DocumentHashes, DpeHashError, PageHashes, parse_ijson
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -175,6 +175,18 @@ def _build_page(page: dict[str, Any]) -> Page:
 _PAGE_SHELL = "/pages/0"
 
 
+def _page_hashes(plain: Mapping[str, Any], contract: str) -> PageHashes:
+    """按 ``document_hashes`` 的页视图校验一个已 ``plain`` 的页，错误位置还原为相对页。"""
+    try:
+        hashes = dpe_hash.document_hashes(
+            cast(dpe_hash.ExpandedDocument, {"file_type": "unk", "pages": [plain]}), contract
+        )
+    except DpeHashError as exc:
+        path = exc.path[len(_PAGE_SHELL) :] if exc.path.startswith(_PAGE_SHELL) else exc.path
+        raise type(exc)(exc.message, path) from None
+    return hashes["pages"][0]
+
+
 class Page(_DpeModel):
     """展开视图中的页：``elements`` 为元素对象本身。"""
 
@@ -186,12 +198,7 @@ class Page(_DpeModel):
     @classmethod
     def _validate(cls, data: Any, info: ValidationInfo) -> Any:
         plain = _plain(data)
-        # 借 document_hashes 的展开视图校验（页字段 → 各元素，同 core §2.8），把位置还原为相对页
-        try:
-            dpe_hash.document_hashes({"file_type": "unk", "pages": [plain]}, _contract(info))
-        except DpeHashError as exc:
-            path = exc.path[len(_PAGE_SHELL) :] if exc.path.startswith(_PAGE_SHELL) else exc.path
-            raise type(exc)(exc.message, path) from None
+        _page_hashes(plain, _contract(info))
         return {**plain, "elements": _build_page(plain).elements}
 
 
@@ -218,3 +225,8 @@ class Document(_DpeModel):
 
     def doc_hash(self, contract: str = CONTRACT) -> str:
         return self.hashes(contract)["doc_hash"]
+
+
+def _build_document(document: Mapping[str, Any], pages: Sequence[dict[str, Any]]) -> Document:
+    """由已校验的文档字段与页直接建实例（运行器私有构造，不再经 pydantic 重算整树）。"""
+    return Document.model_construct(**{**document, "pages": [_build_page(page) for page in pages]})
