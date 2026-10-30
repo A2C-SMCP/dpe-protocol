@@ -1,0 +1,111 @@
+{
+  "name": "cross_page_move",
+  "kind": "document",
+  "description": "元素跨页移动：content_hash 不变，两页 page_hash 与 doc_hash 变化（delta 应为 added=0/removed=0，retained 全保留）。",
+  "documents": {
+    "before": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "留守"
+            },
+            {
+              "category": "NarrativeText",
+              "text": "迁徙"
+            }
+          ]
+        },
+        {
+          "title": "p2",
+          "elements": []
+        }
+      ]
+    },
+    "after": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "留守"
+            }
+          ]
+        },
+        {
+          "title": "p2",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "迁徙"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "before": {
+      "dpe1": {
+        "doc_hash": "dpe1:240fe2afb7580ed9d6b51bf68d5565a84dd85f5cb18c4255d4cc6f404953a257",
+        "pages": [
+          {
+            "page_hash": "dpe1:320021fc79288c39f37a0bbd6cca498d2bdeb893b384aae797a0e950ac273db1",
+            "elements": [
+              "dpe1:c3a01ddca43a40e59c720ed8acf3898dd9d7cd4c7f6dbb9f79f270fd84e1d1be",
+              "dpe1:3986324b6774758e0f994a703195d86104fb12c693fdc4b5d01a250e131d1bdc"
+            ]
+          },
+          {
+            "page_hash": "dpe1:a45991852cd5436c92be962ce7857e0bc57f87b8e7ce899c51b3134436b8efa6",
+            "elements": []
+          }
+        ]
+      }
+    },
+    "after": {
+      "dpe1": {
+        "doc_hash": "dpe1:11c6542cb69d13daa601f9fb3f5672d76f2f5a48183bd957f06f2df0e51471c8",
+        "pages": [
+          {
+            "page_hash": "dpe1:87fbe1e443047c422cb7596d4a84062888ca1000d39d03e820288c9bcd261873",
+            "elements": [
+              "dpe1:c3a01ddca43a40e59c720ed8acf3898dd9d7cd4c7f6dbb9f79f270fd84e1d1be"
+            ]
+          },
+          {
+            "page_hash": "dpe1:14627153c6c3035723c67b7f6c2237c290e3527163557efb22ca109f9700a8cc",
+            "elements": [
+              "dpe1:3986324b6774758e0f994a703195d86104fb12c693fdc4b5d01a250e131d1bdc"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "relations": [
+    {
+      "equal": [
+        "before.pages.0.elements.1",
+        "after.pages.1.elements.0"
+      ]
+    },
+    {
+      "distinct": [
+        "before.pages.0.page_hash",
+        "after.pages.0.page_hash"
+      ]
+    },
+    {
+      "distinct": [
+        "before.doc_hash",
+        "after.doc_hash"
+      ]
+    }
+  ]
+}

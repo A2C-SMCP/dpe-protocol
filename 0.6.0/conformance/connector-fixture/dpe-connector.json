@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "name": "connector-fixture",
+  "version": "1.0",
+  "description": "connector 线协议夹具（connector 契约 §8.4）：按 config.scenario 选择场景，验证运行器",
+  "protocol_versions": [
+    "dpe-connector/1"
+  ],
+  "config_schema": {
+    "type": "object"
+  },
+  "secrets": []
+}

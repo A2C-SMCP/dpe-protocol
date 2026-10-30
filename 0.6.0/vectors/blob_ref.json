@@ -1,0 +1,38 @@
+{
+  "name": "blob_ref",
+  "kind": "document",
+  "description": "二进制字节以通用的 blob 字段（sha256 引用）与 mime_type 进 hash；哪些 category 可携带 blob 由契约 1 §4.1 表决定（目前为 Image）。url 等源信息作为元素 metadata 另进 hash（见 image_url_is_content）。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": null,
+          "elements": [
+            {
+              "category": "Image",
+              "text": "架构图",
+              "blob": "sha256:0d1d4cbe57ec0c3018a39086a89a1f3da244a65666616a29dd62b312eaaa11dc",
+              "mime_type": "image/png"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:a6801ce0ad5aa9c180d896acff050b4ec1e4f971e0040f1fa580a708b933ed80",
+        "pages": [
+          {
+            "page_hash": "dpe1:eb0c5e3a468e3db2196c15f6ff251cb423ffefea0b6766fd0c02792226dc555b",
+            "elements": [
+              "dpe1:2333bf733450b19311a583ad0c053b0752ed831f16c65e5522c2057177ad04ad"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

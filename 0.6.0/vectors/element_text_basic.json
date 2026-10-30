@@ -1,0 +1,36 @@
+{
+  "name": "element_text_basic",
+  "kind": "document",
+  "description": "最小文档：单页单 NarrativeText，三层 metadata 均缺省（规范化为 {}）。",
+  "documents": {
+    "doc": {
+      "file_type": "md",
+      "pages": [
+        {
+          "title": "p1",
+          "elements": [
+            {
+              "category": "NarrativeText",
+              "text": "Hello, DPE."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected": {
+    "doc": {
+      "dpe1": {
+        "doc_hash": "dpe1:b3e1df979dd68dd5c8578bab0d58923fe2e1639e9be3a1268abb8d4d70b5efb0",
+        "pages": [
+          {
+            "page_hash": "dpe1:1b9f73583bc1a92a74fa6501ae2cb8d585ca49f1f44b4a3749954795d8d57d20",
+            "elements": [
+              "dpe1:28471fe3f5ac6fe652994a06846031fdcece302335e3f94e018808550e66c2cc"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
