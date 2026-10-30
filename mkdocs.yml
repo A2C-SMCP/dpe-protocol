@@ -108,5 +108,6 @@ nav:
       - v1 计划: docs/plan/v1-plan.md
       - 内核迁移对照: docs/migration/kernel-to-dpe1.md
   - 发版与升级:
+      - 0.6 升级须知: docs/upgrade/v0.6.md
       - 0.5 升级须知: docs/upgrade/v0.5.md
       - 0.4 升级须知: docs/upgrade/v0.4.md
