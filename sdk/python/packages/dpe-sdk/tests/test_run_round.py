@@ -476,6 +476,11 @@ async def test_same_uri_items_take_effect_in_stream_order(tmp_path: Path) -> Non
 # ---------------------------------------------------------------------- 冲突策略
 
 
+def _overwritten(h: Harness) -> list[tuple[str, dict[str, Any]]]:
+    """本次 harness 中的 ``item.overwritten`` 事件（§7.5，#214）：(级别, 字段)。"""
+    return [(level, fields) for event, level, fields in h.events if event == "item.overwritten"]
+
+
 async def test_commit_conflict_source_wins_and_report(tmp_path: Path) -> None:
     async with harness(tmp_path) as h:
         await h.round({"batches": [[doc_item("a.md", "v1")]]})
@@ -493,11 +498,23 @@ async def test_commit_conflict_source_wins_and_report(tmp_path: Path) -> None:
         assert reported.failures[0].retryable is False
         assert reported.cursor_held_since is not None
         assert await h.foreign.head(P + "a.md") == theirs.doc_hash()  # 未覆盖
+        assert _overwritten(h) == []  # report 下的冲突什么都没覆盖
 
         won = await h.round({"batches": [[doc_item("a.md", "v2")]]})  # 缺省 source_wins
         assert won.outcome == "succeeded" and won.counts.updated == 1
         assert await h.foreign.head(P + "a.md") == expected("v2")
         assert won.cursor_held_since is None
+        assert _overwritten(h) == [
+            (
+                "warn",
+                {
+                    "kind": "overwrite",
+                    "file_uri": P + "a.md",
+                    "overwritten": theirs.doc_hash(),
+                    "written": expected("v2"),
+                },
+            )
+        ]
 
 
 class _AlwaysRaced(httpx.AsyncBaseTransport):
@@ -543,6 +560,7 @@ async def test_conflict_retries_are_bounded(tmp_path: Path) -> None:
         assert codes(result) == ["DPE_PRECONDITION_FAILED"]
         assert result.failures[0].retryable is True
         assert counter["n"] == 3  # 首次写入 + 2 次重提，每次都被抢先
+        assert _overwritten(h) == []  # 重试耗尽：没有一次重提落地
 
 
 async def test_move_target_occupied_is_a_permanent_item_failure(tmp_path: Path) -> None:
@@ -621,6 +639,8 @@ async def test_move_after_own_delete_is_achieved_by_the_target_document(tmp_path
         assert await h.foreign.head(P + "b.md") == expected("A")
         assert _synced(h) == {P + "b.md": expected("A")}
         assert _skipped(h) == []  # 例外路径不是跳过
+        # 目标以 if_absent 建出（#178）不是复活：那篇文档此前从未是本实例的值
+        assert _overwritten(h) == []
 
 
 async def test_skipped_event_cites_the_current_unachieved_move(tmp_path: Path) -> None:
@@ -1412,10 +1432,22 @@ async def test_commit_after_a_foreign_delete_follows_the_commit_policy(tmp_path:
         assert codes(reported) == ["DPE_PRECONDITION_FAILED"]
         assert reported.failures[0].retryable is False
         assert await h.foreign.head(P + "a.md") is None  # 不复活
+        assert _overwritten(h) == []
 
         revived = await h.round(changed)
         assert revived.outcome == "succeeded" and revived.counts.created == 1
         assert await h.foreign.head(P + "a.md") == expected("v2")
+        assert _overwritten(h) == [
+            (
+                "warn",
+                {
+                    "kind": "resurrect",
+                    "file_uri": P + "a.md",
+                    "overwritten": None,
+                    "written": expected("v2"),
+                },
+            )
+        ]
 
 
 async def test_delete_conflict_follows_the_delete_policy(tmp_path: Path) -> None:
@@ -1428,10 +1460,22 @@ async def test_delete_conflict_follows_the_delete_policy(tmp_path: Path) -> None
         assert reported.outcome == "partial" and codes(reported) == ["DPE_PRECONDITION_FAILED"]
         assert reported.failures[0].retryable is False
         assert await h.foreign.head(P + "a.md") == _doc_of("theirs").doc_hash()
+        assert _overwritten(h) == []
 
         won = await h.round(delete, policy=ConflictPolicy(delete="source_wins"))
         assert won.outcome == "succeeded" and won.counts.deleted == 1
         assert await h.foreign.head(P + "a.md") is None
+        assert _overwritten(h) == [
+            (
+                "warn",
+                {
+                    "kind": "delete",
+                    "file_uri": P + "a.md",
+                    "overwritten": _doc_of("theirs").doc_hash(),
+                    "written": None,
+                },
+            )
+        ]
 
 
 async def test_conflict_already_achieved_on_reread_wins_over_report(tmp_path: Path) -> None:
@@ -1457,6 +1501,8 @@ async def test_conflict_already_achieved_on_reread_wins_over_report(tmp_path: Pa
         assert result.counts.unchanged == 1
         snapshot = h.store.load(REMOTE) if h.store else None
         assert snapshot is not None and snapshot.synced[P + "a.md"] == expected("v2")
+        # 已达成（他人抢先写下同一内容，推送器跳过写入）：没有覆盖，不输出事件
+        assert _overwritten(h) == []
 
         async def rewrite() -> None:  # 使我们的 delete 得 412
             await h.foreign.commit(P + "b.md", _doc_of("b2"), BaseHash(expected("b1")))
@@ -1472,6 +1518,113 @@ async def test_conflict_already_achieved_on_reread_wins_over_report(tmp_path: Pa
         )
         assert deleted.outcome == "succeeded", deleted.failures
         assert deleted.counts.deleted == 1
+        assert _overwritten(h) == []  # delete 已达成：没有删除任何人的内容
+
+
+async def test_a_retry_that_finds_the_content_already_written_emits_nothing(
+    tmp_path: Path,
+) -> None:
+    """重提尚未来得及落地，他人已写下与我们相同的内容：推送器重读即已达成（§7.2），没有覆盖
+    他人内容，不输出 ``item.overwritten``（#214）。"""
+    made, wrap = _hooks()
+    writes = {"n": 0}
+    async with harness(tmp_path, wrap) as h:
+        hooks = made[0]
+        await h.round({"batches": [[doc_item("a.md", "v1")]]})
+        theirs = _doc_of("theirs")
+
+        async def foreign_writes() -> None:
+            writes["n"] += 1
+            if writes["n"] == 1:  # 首次提交前：他人改写，触发 source_wins 重提
+                await h.foreign.commit(P + "a.md", theirs, BaseHash(expected("v1")))
+                # 钩子是一次性的：挂回去，等重提那次 PUT
+                hooks.before.append((_is_commit, foreign_writes))
+            else:  # 重提发出前：他人已写下我们的内容
+                await h.foreign.commit(P + "a.md", _doc_of("v2"), BaseHash(theirs.doc_hash()))
+
+        hooks.before.append((_is_commit, foreign_writes))
+        result = await h.round({"batches": [[doc_item("a.md", "v2")]]})
+        assert writes["n"] == 2  # 确实经重提（第一次 PUT 冲突后重发）
+        assert result.outcome == "succeeded", result.failures
+        assert result.counts.unchanged == 1
+        assert await h.foreign.head(P + "a.md") == expected("v2")
+        assert _overwritten(h) == []
+
+
+async def test_overwritten_reports_the_base_of_the_final_retry(tmp_path: Path) -> None:
+    """前两次重提都再次撞上他人改写、第三次才落地：``overwritten`` 取最终那次成功写入的
+    ``base_hash``，不是前一次重读到的值（§7.5，#214）。"""
+    made, wrap = _hooks()
+    writes = {"n": 0}
+    async with harness(tmp_path, wrap) as h:
+        hooks = made[0]
+        await h.round({"batches": [[doc_item("a.md", "v1")]]})
+
+        async def foreign_writes() -> None:
+            writes["n"] += 1
+            current = await h.foreign.head(P + "a.md")
+            assert current is not None
+            await h.foreign.commit(P + "a.md", _doc_of(f"t{writes['n']}"), BaseHash(current))
+            if writes["n"] < 2:
+                hooks.before.append((_is_commit, foreign_writes))
+
+        hooks.before.append((_is_commit, foreign_writes))
+        result = await h.round({"batches": [[doc_item("a.md", "v2")]]})
+        assert writes["n"] == 2  # 两次重提都被抢先，第三次落地
+        assert result.outcome == "succeeded" and result.counts.updated == 1
+        assert await h.foreign.head(P + "a.md") == expected("v2")
+        assert _overwritten(h) == [
+            (
+                "warn",
+                {
+                    "kind": "overwrite",
+                    "file_uri": P + "a.md",
+                    "overwritten": _doc_of("t2").doc_hash(),
+                    "written": expected("v2"),
+                },
+            )
+        ]
+
+
+@pytest.mark.parametrize("gone_before", ["read", "delete"])
+async def test_a_delete_retry_into_an_absent_document_emits_nothing(
+    tmp_path: Path, gone_before: str
+) -> None:
+    """重提尚未来得及落地，文档已被他人删除：delete 得到「目标状态已达成」，状态同为
+    ``deleted``（§7.2），但没有任何内容是本实例删除的，不输出 ``item.overwritten``（#214）。
+    判定时已不存在（未发写，没有前置条件）与写后裁决不存在（带原错误对象）两种都算已达成。"""
+    made, wrap = _hooks()
+    reads = {"n": 0}
+    async with harness(tmp_path, wrap) as h:
+        hooks = made[0]
+        await h.round({"batches": [[doc_item("a.md", "v1")]]})
+        theirs = _doc_of("theirs")
+        await h.foreign.commit(P + "a.md", theirs, BaseHash(expected("v1")))
+
+        async def remove() -> None:
+            await h.foreign.delete(P + "a.md", theirs.doc_hash())
+
+        if gone_before == "delete":
+            hooks.before.append((_is_delete, remove))  # 重提发出 DELETE 之前
+        else:
+
+            async def remove_before_retry_read() -> None:
+                reads["n"] += 1
+                if reads["n"] == 1:  # 第一次是原判定：留到重提的那次读
+                    hooks.before.append((_is_heads, remove_before_retry_read))
+                    return
+                await remove()
+
+            hooks.before.append((_is_heads, remove_before_retry_read))
+
+        result = await h.round(
+            {"batches": [[{"kind": "delete", "file_uri": P + "a.md"}]]},
+            policy=ConflictPolicy(delete="source_wins"),
+        )
+        assert result.outcome == "succeeded", result.failures
+        assert result.counts.deleted == 1
+        assert await h.foreign.head(P + "a.md") is None
+        assert _overwritten(h) == []
 
 
 async def test_move_with_rewritten_source_is_retried_under_source_wins(tmp_path: Path) -> None:
@@ -1484,6 +1637,7 @@ async def test_move_with_rewritten_source_is_retried_under_source_wins(tmp_path:
         assert result.outcome == "succeeded", result.failures
         assert result.counts.moved == 1
         assert await h.foreign.head(P + "b.md") == _doc_of("theirs").doc_hash()  # 他人写入随之移动
+        assert _overwritten(h) == []  # move 的重提不输出：内容随 move 保留到目标
 
 
 async def test_reread_failure_after_conflict_fails_the_round(tmp_path: Path) -> None:
@@ -2731,11 +2885,24 @@ async def test_inferred_delete_with_l_follows_the_delete_conflict_policy(tmp_pat
             assert [f.code for f in held.failures] == ["DPE_PRECONDITION_FAILED"]
             assert h.store is not None and P + "x.md" in h.store.written
             assert h.store.cursor == "c1"
+            assert _overwritten(h) == []
         resolved = await h.round(script, policy=ConflictPolicy(delete="source_wins"))
         assert resolved.outcome == "succeeded", resolved.failures
         assert await _remote(h) == {P + "a.md": expected("A")}
         assert h.store is not None
         assert h.store.cursor == "c3" and h.store.written == {}
+        # 推断删除同样可追查（#214）：以重读值删除被他人改写的文档
+        assert _overwritten(h) == [
+            (
+                "warn",
+                {
+                    "kind": "delete",
+                    "file_uri": P + "x.md",
+                    "overwritten": _doc_of("theirs").doc_hash(),
+                    "written": None,
+                },
+            )
+        ]
 
 
 async def test_inferred_delete_with_old_contract_l_uses_it_as_base(tmp_path: Path) -> None:
