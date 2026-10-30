@@ -133,8 +133,17 @@ uv run dpe-git-connector        # 不直接交互使用：由 dpe-run 以 stdio 
 ### note 元素 = 一条 git note
 
 - 只读 git 的默认 notes ref **`refs/notes/commits`**（`git log` / `git show` 默认显示的就是它），
-  命令里显式写这个 ref，不受本机 `core.notesRef` / `GIT_NOTES_REF` 影响。其他 notes ref（如审查
-  工具的 `refs/notes/review`）多半是机器格式数据，且集合随环境里装了什么工具而变，不读（#222）。
+  ref 显式写死，不受本机 `core.notesRef` / `GIT_NOTES_REF` 影响。其他 notes ref（如审查工具的
+  `refs/notes/review`）多半是机器格式数据，且集合随环境里装了什么工具而变，不读（#222）。
+- **notes 树由连接器自己解析**（`git ls-tree -r`），不调用 `git notes`：异常树（同一对象既有
+  fanout 路径又有平铺路径）上 `git notes list` 会先把合并后的 note 写成新对象，违背对源仓库
+  只读的承诺，对象目录只读时还会失败（#233）。各层目录名是 2 位十六进制（fanout 可多层）、
+  去掉 `/` 后恰是被注对象 SHA（SHA-1 40 位、SHA-256 64 位）的 blob 才是 note；其余条目
+  （README 之类的名字、非 fanout 的目录、树）确定性地忽略。
+- **损坏的 notes 源如实上报**（#233，条目级 `content_invalid`、`retryable: false`）：notes ref
+  存在但指不到提交（例如被改成指向 blob）；同一被注对象在 notes 树里有多条路径**且它出现在
+  本文档里**。不替用户合并（合并会静默改内容），也不静默当作没有 notes（否则 note 元素会悄悄
+  消失、引发重学）；重复路径的被注对象不在本文档里时照旧忽略。
 - 每条 note 一个元素，**紧跟在它所注提交的元素之后**（提交说明被切成多个片段时，放在最后一个
   片段之后）：`category` = `NarrativeText`；`text` = note 原文；`metadata = {note_of: <提交 SHA>}`。
   不并进提交元素，编辑 note 不改变提交元素的 hash。不写作者与时间：note blob 本身没有，notes
@@ -187,7 +196,8 @@ uv run dpe-git-connector        # 不直接交互使用：由 dpe-run 以 stdio 
   这一轮里没能在新上限下产出的仓库（如守卫转出的 `content_invalid`）沿用旧记录，新游标的上限
   也退回旧值，下一轮仍按新上限重扫——新游标不越过未产出的变更（§6.8）。
 - **状态指纹** = 默认分支名与 tip、`since` 解析出的提交、各跟踪分支的 tip、各附注标签的
-  （名字, 标签对象 SHA）、`refs/notes/commits` 上的全部（被注对象 SHA, note blob SHA）。映射只
+  （名字, 标签对象 SHA）、`refs/notes/commits` 上的全部（被注对象 SHA, note blob SHA；损坏树里
+  的重复路径也逐条保留）。映射只
   依赖这组值（提交、标签对象与 note blob 按 SHA 不可变；标签对象 SHA 覆盖说明、tagger、target
   的任何变化），所以指纹不变即文档不变：增量轮直接**跳过**该仓库，不读提交日志。指纹**必须
   覆盖全部映射输入**（漏掉就看不到变化，是正确性问题）；多出来的输入只导致一次无产出的重扫
@@ -297,13 +307,15 @@ UTF-8（git 的缺省）。结果只取决于 Python 的编解码表，与平台
   `root` 下**子孙目录读不了**（权限等）同样只影响该子树（路径即身份，条目级
   `source_unavailable`）；`root` 自身读不了则没有可枚举的范围，整轮失败（`-32003`，退避重试）。
 - **内容类失败不可重试**：提交说明或作者 ident 按声明的编码（没有 encoding 头即 UTF-8）解不了
-  （历史里真实存在，需绕过 `git commit` 写入），声明的编码不受支持、时间戳不合规——这些内容进不了合法 DPE 值，条目级归属是
-  `content_invalid`、`retryable: false`；读取类失败（仓库不可读、默认分支解析不到）才是可
-  重试的 `source_unavailable`（§6.5 的封闭枚举按定义区分）。不做替换或猜测编码。
+  （历史里真实存在，需绕过 `git commit` 写入），声明的编码不受支持、时间戳不合规，notes ref
+  指不到提交、本文档里的被注对象在 notes 树里有多条路径（#233，源状态确定性损坏）——这些内容
+  进不了合法 DPE 值，条目级归属是 `content_invalid`、`retryable: false`；读取类失败（仓库
+  不可读、默认分支解析不到）才是可重试的 `source_unavailable`（§6.5 的封闭枚举按定义区分）。
+  不做替换或猜测编码。
 - **每个仓库每轮多次调用 git**：有变化的仓库要做默认分支解析、first-parent 链、提交日志、
   每条分支一次日志，成本随提交数与分支数增长；超大仓库的读取加速留给后续拆分。**无变化的
   仓库**每轮仍要解析状态（若干次 `rev-parse` / `symbolic-ref`、一次列标签的
-  `for-each-ref` 与一次 `git notes list`，不读提交日志），成本随仓库数
+  `for-each-ref` 与一次解析 notes 树（`git ls-tree -r`），不读提交日志），成本随仓库数
   与跟踪分支数线性增长。单批里跳过的仓库数有上限（到上限即以空批 + `next` 结束本批），单个
   `scan` 请求的工作量因此有界；但有仓库消失的轮里，轮首要为全部新出现的仓库计算移动键，这部分
   在第一个 `scan` 里一次做完。
