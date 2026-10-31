@@ -25,8 +25,9 @@
 - ``source_unavailable``（``retryable: true``——源可能恢复）：仓库不可读、默认分支无法确定、
   发现层读不了的子树；
 - ``content_invalid``（不可重试）：``file_uri`` 不合法、提交说明 / 作者不是合法 UTF-8、
-  时间戳不合规（``GitContentError``——同样扫描重跑不会成功），或按固定预算切分后仍超过远端
-  ``max_payload_bytes``（部署配置问题，不静默按远端值重新切分）。
+  时间戳不合规（``GitContentError``——同样扫描重跑不会成功）、notes ref 存在但指不到提交
+  或本文档里的被注对象在 notes 树里有多条路径（#233，源状态确定性地损坏），或按固定预算
+  切分后仍超过远端 ``max_payload_bytes``（部署配置问题，不静默按远端值重新切分）。
 
 **增量**（#66）：映射是「仓库状态」的纯函数——默认分支名与 tip、``since`` 解析出的提交、
 各跟踪分支的 tip、各附注标签的标签对象（#220）、默认 notes ref 上的 note（#222）（提交、标签
@@ -60,6 +61,7 @@ from dpe_git_connector.extractors import (
     tag_elements,
 )
 from dpe_git_connector.gitrepo import (
+    NOTES_REF,
     CommitRecord,
     GitContentError,
     GitError,
@@ -438,7 +440,19 @@ class DocumentMapper:
         # 只读出现在本文档页里的提交的 note：其余 note（已丢弃的提交、树或 blob 上的 note）
         # 不属于本文档，内容也不必是合法 UTF-8
         shown = {record.sha for _, page_records in commit_pages for record in page_records}
-        noted = {commit: blob for commit, blob in state.notes if commit in shown}
+        noted: dict[str, str] = {}
+        for commit, blob in state.notes:
+            if commit not in shown:
+                continue
+            if commit in noted:
+                # notes 树损坏：同一被注对象既有 fanout 路径又有平铺路径（或别的重名写法）。
+                # 不替用户合并（git notes list 会就地合并并写对象）——如实上报，不可重试；
+                # 不在本文档里的被注对象不受影响（上面已跳过，#233）
+                raise GitContentError(
+                    f"提交 {commit} 在 notes 树（{NOTES_REF}）里有多条路径"
+                    f"（{noted[commit]}、{blob}）：notes 树损坏，不替用户合并"
+                )
+            noted[commit] = blob
         texts = repo.note_texts(list(noted.values())) if noted else {}
         notes = {commit: texts[blob] for commit, blob in noted.items()}
 

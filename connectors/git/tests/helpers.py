@@ -66,10 +66,20 @@ def run_git(
 class FixtureRepo:
     """现场构造的夹具仓库：固定分支名、逐提交固定作者与时间戳。"""
 
-    def __init__(self, root: Path, *, default_branch: str = "main") -> None:
+    def __init__(
+        self, root: Path, *, default_branch: str = "main", object_format: str | None = None
+    ) -> None:
         self.root = root
         root.mkdir(parents=True, exist_ok=True)
-        run_git(root, "init", "-q", "-b", default_branch, ".")
+        run_git(
+            root,
+            "init",
+            "-q",
+            "-b",
+            default_branch,
+            *([f"--object-format={object_format}"] if object_format else []),
+            ".",
+        )
 
     def sha(self, rev: str = "HEAD") -> str:
         return run_git(self.root, "rev-parse", rev).strip()

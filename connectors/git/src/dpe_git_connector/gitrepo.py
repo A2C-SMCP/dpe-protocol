@@ -12,8 +12,11 @@
 - ``git rev-list --max-parents=0``：根提交集合（仓库改名的配对判据，见 ``server``）；
 - ``git for-each-ref``：空仓库判定（没有任何 ref 即零页文档，契约 1 §5 允许空文档）与附注
   标签的集合（``refs/tags/*`` 中指向标签对象的 ref，#220）；
-- ``git notes --ref=refs/notes/commits list``：默认 notes ref 上的（note blob, 被注对象）对
-  （#222；显式写 ref，不受 ``core.notesRef`` / ``GIT_NOTES_REF`` 影响）；
+- ``git ls-tree -r -z refs/notes/commits``：默认 notes ref 的 notes 树，由本模块自行解析成
+  （note blob, 被注对象）对（#222 / #233；显式写 ref，不受 ``core.notesRef`` /
+  ``GIT_NOTES_REF`` 影响）。**不用 ``git notes list``**：异常树（同一对象既有 fanout 路径又有
+  平铺路径）上它会先把合并后的 note 写成新对象再列出，违背本连接器对源仓库只读、不写
+  ``.git`` 的承诺，只读挂载的仓库上还会直接失败；
 - ``git cat-file --batch``：标签对象、note blob，以及声明了非 UTF-8 编码的提交的原始字节
   （``git log`` 的转码随平台而异，见 ``GitRepo._verbatim``）——只有标签与旧编码提交两处自行
   读取对象格式（note blob 是原文，不需要解析）。
@@ -211,6 +214,49 @@ def _decode(raw: bytes, encoding: str, sha: str) -> str:
         raise GitContentError(
             f"提交 {sha} 的说明或作者不能按{declared}解码（{exc.reason}）"
         ) from None
+
+
+#: 十六进制数字（大小写都算；git 的 note 路径允许大写，``notes list`` 的输出是小写）
+_HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
+
+
+def _is_hex(raw: bytes, length: int) -> bool:
+    """``raw`` 是否恰是 ``length`` 位十六进制数字。"""
+    return len(raw) == length and all(byte in _HEX_DIGITS for byte in raw)
+
+
+def _parse_notes_tree(raw: bytes, hexsz: int) -> tuple[tuple[str, str], ...]:
+    """``git ls-tree -r -z`` 的输出 → (被注对象 SHA, note blob SHA)，按前者排序（#233）。
+
+    解析规则（git 的 notes 树格式）：条目类型是 blob 才算候选；路径的**每层目录名**必须是 2 位
+    十六进制（fanout 可以多层），去掉 ``/`` 后必须恰好是 ``hexsz`` 位（SHA-1 仓库 40、SHA-256
+    仓库 64），才是 note。其余条目（非 2 位十六进制的目录、非 40/64 位的文件名、树、子模块）
+    都是非 note 条目，确定性地忽略——不复刻 ``git notes`` 的合并规则，同一被注对象的多条路径
+    原样保留（是否算损坏由映射按本文档判断）。
+
+    ``hexsz`` 取自解析出的 notes 提交自身的 SHA 长度：同一个仓库里对象 id 的长度一致。
+    """
+    pairs: list[tuple[str, str]] = []
+    for record in raw.split(b"\x00"):
+        if not record:
+            continue  # 末条记录之后的分隔符，以及空树
+        header, separator, path = record.partition(b"\t")
+        fields = header.split(b" ")
+        if not separator or len(fields) != 3:
+            raise GitError("git ls-tree 的输出格式不对")
+        _mode, kind, oid = fields
+        if not _is_hex(oid, hexsz):
+            raise GitError("git ls-tree 的输出格式不对：对象 id 不是十六进制")
+        if kind != b"blob":
+            continue  # 树 / 子模块等：不是 note 条目
+        components = path.split(b"/")
+        if not all(_is_hex(component, 2) for component in components[:-1]):
+            continue  # 目录层级不是 fanout：整条路径不是 note
+        name = b"".join(components)  # fanout 把对象 id 拆进了各层目录名
+        if not _is_hex(name, hexsz):
+            continue  # 去掉 / 之后不是完整的对象 id：不是 note
+        pairs.append((name.decode("ascii").lower(), oid.decode("ascii").lower()))
+    return tuple(sorted(pairs))
 
 
 def looks_like_repo(directory: Path) -> bool:
@@ -819,19 +865,27 @@ class GitRepo:
     def notes(self) -> tuple[tuple[str, str], ...]:
         """``NOTES_REF`` 上的全部 note：(被注对象 SHA, note blob SHA)，按被注对象 SHA 排序（#222）。
 
+        读的是 notes 树本身（``ls-tree -r``），**不调用 ``git notes``**：异常树上它会写对象
+        （模块 docstring）。树的解析规则见 ``_parse_notes_tree``：fanout 目录可多层，非 note
+        条目确定性地忽略，同一被注对象的多条路径如实保留（不合并——由映射决定怎么上报，#233）。
+
         被注对象可能不在本文档的任何页里（已丢弃的提交、树或 blob 上的 note）：这里照列，由
         映射按页里出现的提交过滤；状态指纹包含全部对（覆盖全部映射输入，多出的只会导致一次
-        无产出的重扫）。没有这个 ref 时为空。
+        无产出的重扫）。ref 不存在时为空；存在但不是提交（坏 ref）是源内容问题，抛
+        ``GitContentError``（不可重试），不静默当作没有 notes——否则 note 元素会悄悄消失。
         """
-        raw = self._run("notes", f"--ref={NOTES_REF}", "list")
-        pairs: list[tuple[str, str]] = []
-        for line in raw.splitlines():
-            fields = line.split()
-            if len(fields) != 2:
-                raise GitError("git notes list 的输出格式不对")
-            blob, annotated = (field.lower() for field in fields)
-            pairs.append((annotated, blob))
-        return tuple(sorted(pairs))
+        ref_oid = self._run(
+            "rev-parse", "--verify", "--quiet", "--end-of-options", NOTES_REF, allow_exit=(1,)
+        ).strip()
+        if not ref_oid:
+            return ()
+        commit = self.resolve_ref(NOTES_REF)
+        if commit is None:
+            raise GitContentError(
+                f"notes ref {NOTES_REF} 不合法：它指不到提交（例如指向 blob 或树）"
+            )
+        raw = self._run_bytes("ls-tree", "-r", "-z", "--end-of-options", commit)
+        return _parse_notes_tree(raw, len(commit))
 
     def note_texts(self, blobs: Sequence[str]) -> dict[str, str]:
         """note blob SHA → 原文（UTF-8 严格解码；解不了抛 ``GitContentError``）。"""
