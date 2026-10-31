@@ -844,6 +844,9 @@ class _Round:
             uri: self.foreign_base[uri] for uri in deletes if uri in self.foreign_base
         }
         move_base: dict[str, str | None] = {}
+        # 策略重提及其 base（#214）：与 commit_base 分开记——后者还装着 guarded 目标的
+        # if_absent（#178），复用会把目标建出误报成复活
+        retried: dict[str, str | None] = {}
         fatal: RunFailure | None = None
         # 涉及未达成 URI 的写入不发写；跳过的写入使它涉及的 URI 都未达成（永不解除），在等待
         # 的 move 因此不再能由目标 document 解除、轮末计失败——跳过必然扣住游标。目标上只有
@@ -894,8 +897,13 @@ class _Round:
                     elif settled is not None:
                         retry_commits[result.file_uri] = commits[result.file_uri]
                         next_commit[result.file_uri] = settled.base
-                    elif target and result.status in ("created", "achieved", "unchanged"):
-                        cleared.append(self.resolve_move_onto(result.file_uri))
+                        retried[result.file_uri] = settled.base
+                    else:
+                        self.overwritten(
+                            result, retried, commits[result.file_uri][1].hashes["doc_hash"]
+                        )
+                        if target and result.status in ("created", "achieved", "unchanged"):
+                            cleared.append(self.resolve_move_onto(result.file_uri))
             if deletes:
                 for result in await self.call(
                     partial(self._delete_subset, delete_base), list(deletes)
@@ -910,6 +918,9 @@ class _Round:
                     elif settled is not None:
                         retry_deletes.append(result.file_uri)
                         next_delete[result.file_uri] = settled.base
+                        retried[result.file_uri] = settled.base
+                    else:
+                        self.overwritten(result, retried, None)
             if moves:
                 for result in await self.call(partial(self._move_subset, move_base), list(moves)):
                     settled = self.settle(result, self.policy.commit, attempts)
@@ -1016,6 +1027,42 @@ class _Round:
             return self.fail(failure, uris)
         assert result.error is not None
         return self.fail(_classify_remote(result.error, unknown=result.unknown), uris)
+
+    def overwritten(
+        self, result: PushResult, retried: dict[str, str | None], written: str | None
+    ) -> None:
+        """策略重提有结论：那次重提真正落地时输出 ``item.overwritten``（§7.5，#214）。
+
+        ``retried`` 是本次波内策略重提的 ``base_hash``（commit / delete 共用；move 不在其中）。
+        只有落地才算覆盖：commit 得到 ``created`` / ``updated``，delete 真正删除成功（``deleted``
+        且发了写、没带「文档不存在」的原错误——delete 的已达成同样是这个状态）。重提后已达成、
+        再次冲突直到重试耗尽，都什么也没覆盖。``written`` 是本次提交内容的 doc_hash，delete 为
+        ``null``。
+        """
+        if result.file_uri not in retried:
+            return
+        base = retried.pop(result.file_uri)
+        if result.op == "delete":
+            # delete 的 ``deleted`` 也含「目标状态已达成」（§7.2 判定表与冲突处置表）：判定时 R
+            # 已不存在（未发写，无前置条件），或服务端裁决不存在 / 重读不存在（带原错误对象）。
+            # 那时文档不是本实例删除的，什么也没覆盖，不输出
+            if (
+                result.status != "deleted"
+                or result.precondition is None
+                or result.error is not None
+            ):
+                return
+            kind = "delete"
+        elif result.status in ("created", "updated"):
+            # base 为 null 即用 if_absent 复活他人删除的文档，否则是覆盖他人的写入
+            kind = "resurrect" if base is None else "overwrite"
+        else:
+            return
+        self.emit(
+            "item.overwritten",
+            "warn",
+            {"kind": kind, "file_uri": result.file_uri, "overwritten": base, "written": written},
+        )
 
     def resolve_move_onto(self, to_uri: str) -> str:
         """目标已由其后的 document 建出（或已等于它）：等待它的 move 按已达成计（§7.2，#178），
