@@ -1,6 +1,8 @@
-# 临时复制（#237）：与 PR「测试设施提升到 dpe_sdk.testing.harness」中的 harness.py 逐字相同。
-# 那个 PR 按发版窗口要等 0.4.0 打标签后才合并；合并后删除本文件，bench 改为
-# ``from dpe_sdk.testing.harness import ...``。
+# 临时复制（#237）：与 PR「测试设施提升到 dpe_sdk.testing.harness」中的 harness.py 基本相同，
+# 另含 #241 的修复（RecordingProxy 的 Handler 设 ``disable_nagle_algorithm = True``）。
+# 那个 PR 按发版窗口要等 0.4.0 打标签后才合并；合并后删除本文件、bench 改为
+# ``from dpe_sdk.testing.harness import ...``——切换前须确认 canonical harness 已带 #241 的修复，
+# 否则代理 hop 又会退回每小响应约 40ms。
 """端到端测试设施（#215、#237）：以独立进程起参考服务端，加一层记录请求的透明代理。
 
 只用标准库、不依赖 pytest，供 connector、示例插件、跑分器自测与基准测试共用（此前各自复制一份）。
@@ -171,6 +173,9 @@ class RecordingProxy:
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            #: 关掉 accepted socket 的 Nagle（#241）：响应头与响应体分两次写，Linux 的延迟确认
+            #: 会把第二段（响应体）扣住约 40ms。代理不需要 Nagle 的合并收益。
+            disable_nagle_algorithm = True
             #: 本条客户端连接对应的上游连接（keep-alive 复用）：每个请求新建一条会让大量连接
             #: 堆在 TIME_WAIT，长跑时耗尽本机临时端口
             _upstream: HTTPConnection | None = None

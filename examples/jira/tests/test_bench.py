@@ -15,13 +15,16 @@
 from __future__ import annotations
 
 import json
+import socket
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from typing import Any, cast
 
 from dpe_sdk.transport import DpeClient
 from fake_jira import serving
 
 from bench.__main__ import main
-from bench._harness import reference_server
+from bench._harness import RecordingProxy, reference_server
 from bench.runner import Instance, Snapshot, snapshot
 from bench.synth import build, load_profile
 from bench.workloads import _Source
@@ -108,6 +111,26 @@ def test_project_mode_recovers_after_a_failed_round_with_deletes_and_moves(
             assert actual == expected
         finally:
             instance.close()
+
+
+def test_recording_proxy_disables_nagle_on_accepted_sockets() -> None:
+    """#241：代理 accepted socket 开 TCP_NODELAY，否则 Linux 延迟确认会把响应体扣住约 40ms。"""
+    with reference_server() as server, RecordingProxy(server.url) as proxy:
+        handler = cast(type[BaseHTTPRequestHandler], proxy._server.RequestHandlerClass)
+        assert handler.disable_nagle_algorithm is True
+
+        seen: list[int] = []
+        original_setup = handler.setup
+
+        def setup(self: Any) -> None:
+            original_setup(self)
+            seen.append(self.connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+
+        cast(Any, handler).setup = setup
+        with DpeClient(proxy.url) as client:
+            assert client.head("jira://bench/probe") is None
+        # macOS 的 getsockopt 在开启时返回 4，Linux 返回 1：只断言「每条连接都非零」
+        assert seen and all(seen)
 
 
 def test_cli_writes_results_and_report(tmp_path: Path) -> None:
