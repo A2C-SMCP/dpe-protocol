@@ -19,11 +19,13 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import itertools
 import json
 import socket
 import sys
 from collections.abc import Callable, Sequence
+from functools import cache
 from typing import Any
 
 from dpe_sdk.testing._engine import Engine, EngineConfig, PrefixAuthorizer
@@ -159,6 +161,55 @@ def _announcement(
     return announcement
 
 
+def _enable_tcp_nodelay(transport: Any) -> None:
+    """给连接对应的 socket 开 ``TCP_NODELAY``；非 TCP socket 时忽略。
+
+    比 ``http.client`` 多容忍 ``EOPNOTSUPP``：macOS 的 Unix domain socket 报这个（Linux 报
+    ``ENOPROTOOPT``）。两种都不是真实故障，其余 ``OSError`` 原样抛出。
+    """
+    sock = transport.get_extra_info("socket")
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError as exc:
+        # 不是 TCP socket（Unix domain socket）：Linux 报 ENOPROTOOPT，macOS 报 EOPNOTSUPP
+        if exc.errno not in (errno.ENOPROTOOPT, errno.EOPNOTSUPP):
+            raise
+
+
+@cache
+def _http_protocol_class() -> type[Any]:
+    """uvicorn 的 HTTP 协议类：保持 auto（httptools / h11）选择，并给 accepted socket 开
+    ``TCP_NODELAY``。
+
+    uvicorn 把响应头与响应体分两次写；accepted socket 默认开 Nagle，对端没有待发数据时，Linux
+    的延迟确认会把第二段（响应体）扣住约 40ms——带响应体的请求都会慢（#241）。参考服务端是测试
+    设施，不需要 Nagle 的合并收益，直接关掉。
+    """
+    from uvicorn.protocols.http.auto import AutoHTTPProtocol
+
+    class NodelayHTTPProtocol(AutoHTTPProtocol):  # type: ignore[misc, valid-type]
+        def connection_made(self, transport: Any) -> None:
+            _enable_tcp_nodelay(transport)
+            super().connection_made(transport)
+
+    return NodelayHTTPProtocol
+
+
+def _uvicorn_config(app: Any, log_level: str) -> Any:
+    """参考服务端的 uvicorn 配置：保持既有选择，只把 HTTP 协议类换成关 Nagle 的子类（#241）。"""
+    import uvicorn
+
+    return uvicorn.Config(
+        app,
+        lifespan="on",
+        log_level=log_level,
+        access_log=False,
+        http=_http_protocol_class(),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -211,7 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     print(json.dumps(_announcement(args, host, port, family, hooks)), flush=True)
 
-    config = uvicorn.Config(app, lifespan="on", log_level=args.log_level, access_log=False)
+    config = _uvicorn_config(app, args.log_level)
     uvicorn.Server(config).run(sockets=[sock])
     return 0
 
