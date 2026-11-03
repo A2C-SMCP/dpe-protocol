@@ -54,7 +54,7 @@ with DpeClient(
     conf = client.capabilities().limits  # capabilities 快照（契约与 limits 与它绑定）
 ```
 
-> **commit 成功不等于立即可召回**：`commit`（包括 `deliver` 的最终提交）返回成功只表示内容已持久化、待索引已登记；嵌入、学习、关键词等衍生物可能仍在服务端异步收敛。DPE 不定义索引状态的查询，收敛时间由各服务端实现声明——不要用写入成功（2xx）判断文档已经可以召回。
+> **commit 成功不等于立即可召回**：`commit`（包括 `deliver` 的最终提交）返回成功只表示内容已在服务端生效（对 DPE 的读接口可见），不表示已经可召回；索引、抽取、学习产物等衍生物可能仍由服务端异步收敛，何时可用由各实现决定（以其文档为准；`unchanged` 不产生任何写入或学习动作）。DPE 不定义索引状态的查询——不要用写入的成功返回（`created` / `updated` / `unchanged`）判断文档已经可以召回。
 
 - **`deliver` 的选路**（core §3.2，#212，两个 SDK 一致）：新建（`IfAbsent`）整篇内联放得下 `max_payload_bytes` 就走快路径（一次 commit）；更新（`BaseHash` / `Force`）只有整篇内联不超过 `SMALL_UPDATE_BYTES`（64 KiB，`dpe_sdk.protocol` 导出）才走快路径，否则走差量路径，**页与元素都只传缺失**：`negotiate` 只交文档对象得到缺失的页（没有就直接 commit，两次往返），再 `negotiate` 一次只附带这些页、得到其中缺失的元素，commit 引用会话并只内联缺失的元素（不缺 blob 时三次往返，与新页数量无关）；缺失的 blob 由 commit 的缺失清单给出、补传后重提；请求体放不下时逐层上传。选路只看前置条件与本地算出的大小，不额外读 remote；CAS 失败后以 `session` 复用会话时，差量路径内联过的元素不在会话里，会经缺失清单再上传一次；
 - **remote**：按 HTTP 绑定 §1 的文法校验（`dpe_sdk.remote_url.check_remote_url`，即 dpe-hash 的同一函数：http / https、已是 core §1.1 规范化形式、无查询串与片段、不带凭证信息（凭证走 `CredentialProvider`）、不写默认端口、路径不以 `/` 结尾且无点段），合法即原样使用；capabilities 在实例内快照一次，服务端变更能力后新建客户端；
