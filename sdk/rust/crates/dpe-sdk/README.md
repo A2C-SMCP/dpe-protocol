@@ -48,6 +48,8 @@ assert_eq!(result.status.as_str(), "created");
 # }
 ```
 
+> **commit 成功不等于立即可召回**：`commit`（包括 `deliver` 的最终提交）返回成功只表示内容已持久化、待索引已登记；嵌入、学习、关键词等衍生物可能仍在服务端异步收敛。DPE 不定义索引状态的查询，收敛时间由各服务端实现声明——不要用写入成功（2xx）判断文档已经可以召回。
+
 - 只接受 remote URL 与可插拔的 `CredentialProvider`（每个请求发送前取一次，轮换中的短时凭证在重发前会重新取）；
 - remote 按 HTTP 绑定 §1 的文法校验（`dpe_sdk::remote_url::check_remote_url`，即 dpe-hash 的同一函数，与实例定义的 `remote.url` 同一个判定）：http / https、已是 core §1.1 规范化形式、无查询串与片段、无 userinfo、不写默认端口、路径不以 `/` 结尾且无点段；合法即原样使用，不合法报 `InvalidArgument`；
 - 传输层只做 I/O：拼 URL、注入凭证、按策略 gzip（请求体，HTTP 绑定 §7）、把响应还原给核心；协议判定与写操作的重试全在 sans-IO 核心；
